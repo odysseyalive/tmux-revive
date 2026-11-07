@@ -60,6 +60,16 @@ tm send-keys -t work:panel p; sleep 1.5
 check "P hides the peek box" "! screen | grep -q 'PEEK'"
 tm send-keys -t work:panel Down
 check "the arrow keys move the selection" "wait_screen '[3] ▶'"
+tm send-keys -t work:panel m; sleep 0.5
+check "M opens the message prompt, saying how to back out" "wait_screen 'Esc cancels'"
+tm send-keys -t work:panel -l 'never sent'; sleep 0.3
+tm send-keys -t work:panel Escape
+check "Esc backs out of a message" "wait_screen 'message cancelled' && ! screen | grep -q 'Esc cancels'"
+tm send-keys -t work:panel m; sleep 0.5
+tm send-keys -t work:panel -l 'never sent either'; sleep 0.3
+tm send-keys -t work:panel C-c; sleep 1
+check "Ctrl-C backs out too, and the panel stays open" "tm list-windows -F '#{window_name}' | grep -qx panel && wait_screen 'C O N T R O L' && ! screen | grep -q 'Esc cancels'"
+check "nothing was sent" "! grep -qs 'never sent' $AGENT_SAY_MAILBOX"
 before=$(screen | grep -o 'ART · [a-z ]*' | head -1)
 tm send-keys -t work:panel a
 check "A switches the artwork ($before)" "for _ in \$(seq 1 20); do after=\$(screen | grep -o 'ART · [a-z ]*' | head -1); [[ -n \$after && \$after != '$before' ]] && break; sleep 0.2; done; [[ \$after != '$before' ]]"

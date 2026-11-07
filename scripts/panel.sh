@@ -124,6 +124,14 @@ big_banner() { # big_banner WORD -> BIG_ROWS[0..5]
 }
 big_banner REVIVE
 
+# The CRT's prompt shows the system it's running on.
+case $OS in
+Darwin) OSP="macos% " ;;
+*BSD) OSP="bsd$ " ;;
+Linux) if grep -qi microsoft /proc/version 2>/dev/null; then OSP="wsl$ "; else OSP="linux$ "; fi ;;
+*) OSP="$ " ;;
+esac
+
 monitor() { # monitor WORKING ASKING AGENTS -> MON[0..5]: a little CRT, its screen live
 	local cur=" " msg col g=$GRY
 	((TICK % 2)) || cur="█"
@@ -132,7 +140,7 @@ monitor() { # monitor WORKING ASKING AGENTS -> MON[0..5]: a little CRT, its scre
 	else msg="$3 AI idle" col=$BGRN; fi
 	MON=(
 		"$g▄▄▄▄▄▄▄▄▄▄▄▄▄$R"
-		"$g█$R$BGRN$(fld " C:\\>$cur" 11)$R$g█$R"
+		"$g█$R$BGRN$(fld " $OSP$cur" 11)$R$g█$R"
 		"$g█$R$col$(fld " $msg" 11)$R$g█$R"
 		"$g▀▀▀▀▀▀▀▀▀▀▀▀▀$R"
 		"$g     ▄█▄     $R"
@@ -760,13 +768,47 @@ trim_colored() { # trim_colored TEXT WIDTH: cut to WIDTH visible characters, kee
 # ------------------------------------------------------------------ actions
 flash() { FLASH=$1 FLASH_T=$SECONDS; }
 
-ask() { # ask PROMPT -> REPLY, on the bottom line with the cursor showing
-	local rows
-	rows=$(tput lines 2>/dev/null || echo 40)
-	printf '%s' "$e[${rows};1H$e[2K$e[?25h"
+ask() { # ask PROMPT -> REPLY on the bottom line. Enter accepts; Esc, Ctrl-C or an empty line backs out (returns 1)
+	local rows cols k rest show room ok=1
+	rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80)
 	REPLY=""
-	read -e -r -p "  ${1} " REPLY
-	printf '%s' "$e[?25l"
+	# Ctrl-C backs out of the prompt rather than closing the panel. Bash runs a trap but then
+	# goes back to waiting in read, so read in short slices and check the flag between them.
+	local INTR=0
+	trap 'INTR=1' INT
+	while :; do
+		# Show the end of what's typed if it's longer than the line.
+		room=$((cols - ${#1} - 26))
+		((room < 10)) && room=10
+		show=$REPLY
+		((${#show} > room)) && show="…${show: -$((room - 1))}"
+		printf '%s' "$e[${rows};1H$e[2K  $B$BYEL$1$R $show$GRY▏ Enter sends · Esc cancels$R$e[${rows};$((4 + ${#1} + ${#show}))H$e[?25h"
+		k=""
+		until IFS= read -rsn1 -t 0.2 k; do
+			# Over 128 is the timeout slice; anything else means the input closed.
+			(($? <= 128 || INTR)) && { k=CANCEL; break; }
+			k=""
+		done
+		case $k in
+		CANCEL) ok=0; break ;;                       # Ctrl-C
+		$'\e')
+			# A lone Esc backs out; an arrow or other key sequence is just ignored.
+			rest=""
+			IFS= read -rsn1 -t 0.05 rest || true
+			[[ -z $rest ]] && { ok=0; break; }
+			IFS= read -rsn4 -t 0.02 _ || true ;;
+		"") break ;;                                # Enter
+		$'\x7f' | $'\b') REPLY=${REPLY%?} ;;          # Backspace
+		$'\x15') REPLY="" ;;                         # Ctrl-U clears the line
+		[[:cntrl:]]) ;;
+		*) REPLY+=$k ;;
+		esac
+	done
+	trap 'exit 0' INT
+	printf '%s' "$e[?25l$e[${rows};1H$e[2K"
+	((ok)) && [[ -n $REPLY ]] && return 0
+	REPLY=""
+	return 1
 }
 
 act() {
@@ -788,14 +830,12 @@ act() {
 		fi ;;
 	m | M)
 		[[ -n $id ]] || return
-		ask "Message to $name:"
-		[[ -n $REPLY ]] || return
+		ask "Message to $name:" || { flash "message cancelled"; return; }
 		out=$("$ASAY" --from panel "$id" "$REPLY" 2>&1 | tail -n 1)
 		flash "${out#agent-say: }" ;;
 	n | N)
 		[[ -n $id ]] || return
-		ask "New name for $name:"
-		[[ -n $REPLY ]] || return
+		ask "New name for $name:" || { flash "rename cancelled"; return; }
 		out=$(AGENT_SAY_PANE=$id "$ASAY" name "$REPLY" 2>&1 | head -n 1)
 		flash "${out#agent-say: }" ;;
 	p | P) PEEK=$((!PEEK)) ;;
