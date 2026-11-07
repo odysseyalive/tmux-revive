@@ -19,8 +19,8 @@
 # Delivery: tmux send-keys -l (literal), then a separate Enter after a short delay, which is
 # how a human paste+submit looks to a TUI. Every message is also appended to the receiving
 # machine's mailbox file, so long text is read from there and nothing is lost if a submit misfires.
-# A pane at a shell prompt or scrolled back in copy mode is not sent to: the shell would run
-# the message as a command, and copy mode would eat it.
+# Only a pane with an agent running in it is typed into (a shell would run the message, ssh or
+# a REPL take it as input), and not while scrolled back in copy mode, which would eat it.
 # Over ssh the remote machine needs agent-say in ~/.local/bin or on its PATH (or set AGENT_SAY_REMOTE_CMD).
 set -euo pipefail
 umask 077 # the mailbox holds whatever agents say to each other: yours only
@@ -31,11 +31,15 @@ ENTER_DELAY="${AGENT_SAY_ENTER_DELAY:-0.4}"
 INLINE_MAX="${AGENT_SAY_INLINE_MAX:-300}"
 MODE_WAIT="${AGENT_SAY_MODE_WAIT:-10}" # seconds to wait for a pane to leave copy mode
 TYPING_WAIT="${AGENT_SAY_TYPING_WAIT:-60}" # seconds to wait for someone to finish typing in a pane
-LOCK_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
 REMOTE_CMD="${AGENT_SAY_REMOTE_CMD:-PATH=\"\$HOME/.local/bin:\$PATH\" agent-say}"
 SSH="${AGENT_SAY_SSH:-ssh}"
 SHELLS=" sh bash zsh fish dash ksh tcsh csh nu "
 STATE="$(dirname "$MAILBOX")"
+# Not /tmp: another user could create our lock dirs there first and block every send.
+LOCK_DIR="${XDG_RUNTIME_DIR:-$STATE/locks}"
+MSG_MAX="${AGENT_SAY_MSG_MAX:-65536}" # bytes a message keeps; past that it is cut, with a note
+QUEUE_MAX="${AGENT_SAY_QUEUE_MAX:-50}" # messages waiting here at once, each with a process
+QUEUE_MAX_AGE="${AGENT_SAY_QUEUE_MAX_AGE:-86400}" # seconds a queued message keeps trying
 LABEL="${AGENT_SAY_HOST:-$(hostname -s 2>/dev/null || uname -n)}" # this machine, as others address it
 LINK_INTERVAL="${AGENT_SAY_LINK_INTERVAL:-2}"
 # One ssh connection reused by every call, so a link checking in every 2 s stays cheap.
@@ -174,15 +178,19 @@ resolve() {  # name or %pane-id -> pane id on this machine; two panes with one n
 	echo "$hits"
 }
 
-# Can the message be typed into this pane without harm? Waits out copy mode for a while.
+# Can the message be typed into this pane without harm? Only if an agent runs in it: text and
+# an Enter typed into anything else (a shell, ssh, sudo, a REPL) is that program's input.
+# Waits out copy mode for a while.
 check_target() {
-	local p="$1" to="$2" cmd mode dead i
+	local p="$1" to="$2" cmd mode dead ppid i
 	for ((i = 0; ; i++)); do
-		IFS=' ' read -r mode dead cmd < <(tmux display-message -p -t "$p" '#{pane_in_mode} #{pane_dead} #{pane_current_command}')
-		[[ "$dead" == 1 ]] && die "$to ($p) has exited; nothing to deliver to"
-		cmd="${cmd##*/}"; cmd="${cmd#-}"
+		IFS=' ' read -r mode dead ppid cmd < <(tmux display-message -p -t "$p" '#{pane_in_mode} #{pane_dead} #{pane_pid} #{pane_current_command}') || true
+		[[ "${dead:-}" == 1 ]] && die "$to ($p) has exited; nothing to deliver to"
+		cmd="${cmd:-}"; cmd="${cmd##*/}"; cmd="${cmd#-}"
 		[[ "$SHELLS" == *" $cmd "* ]] &&
 			die "no agent is running in $to ($p), just a $cmd prompt that would run the message as a command; not sent"
+		[[ -n "${ppid:-}" && -n "$(pane_agent_pid "$ppid")" ]] ||
+			die "no agent (claude, codex, cursor, crush, gemini) is running in $to ($p), just ${cmd:-nothing}, which would take the message as its own input; not sent"
 		[[ "$mode" == 1 ]] || return 0
 		((i >= MODE_WAIT * 2)) && soft_die "$to ($p) is scrolled back in copy mode (press q there to leave it)"
 		sleep 0.5
@@ -191,8 +199,11 @@ check_target() {
 
 # Per-pane lock, so two messages are never typed into one prompt together. mkdir is atomic
 # everywhere (macOS has no flock); the pid inside lets a lock left by a killed sender be cleared.
+lock_path() { echo "$LOCK_DIR/agent-say-$(id -u)-${1#%}.lock"; }
 take_pane_lock() {
-	local lock="$LOCK_DIR/agent-say-$(id -u)-${1#%}.lock" owner _
+	local lock owner _
+	lock="$(lock_path "$1")"
+	mkdir -p "$LOCK_DIR"
 	for _ in $(seq 1 50); do
 		if mkdir "$lock" 2>/dev/null; then
 			echo $$ >"$lock/pid"
@@ -201,14 +212,16 @@ take_pane_lock() {
 			return 0
 		fi
 		owner="$(cat "$lock/pid" 2>/dev/null || true)"
-		if [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then
-			rm -rf "$lock"  # its sender is gone
+		# Its sender is gone. Under $STATE a lock outlives a reboot, so a live pid must still be us.
+		if [[ -n "$owner" ]] && { ! kill -0 "$owner" 2>/dev/null || [[ "$(ps -ww -o args= -p "$owner" 2>/dev/null)" != *agent-say* ]]; }; then
+			rm -rf "$lock"
 			continue
 		fi
 		sleep 0.1
 	done
 	soft_die "pane $1 is busy: another message is still being typed into it"
 }
+drop_pane_lock() { rm -rf "$(lock_path "$1")"; trap - EXIT; }
 
 # What may be a pane name, a sender, or a host. Anything from another machine is checked
 # against these before it reaches a file path, a command line or a pane.
@@ -216,6 +229,28 @@ RESERVED=" name list read show link unlink "
 valid_name() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ && "$RESERVED" != *" $1 "* ]]; }
 valid_sender() { [[ "$1" =~ ^[%A-Za-z0-9][A-Za-z0-9_.:+=-]*(@[A-Za-z0-9][A-Za-z0-9._-]*)?$ ]]; }
 valid_host() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
+valid_target() { valid_name "$1" || [[ "$1" =~ ^%[0-9]+$ ]]; } # a pane here: name or %pane-id
+
+# Text typed into a pane reaches it as raw bytes: a \r would submit a second prompt of the
+# sender's choosing, ^U/^C/ESC would edit or interrupt it. Every control character (C0, DEL,
+# C1) becomes a space, and bytes that are not UTF-8 are dropped so none can pass for one.
+printable() {
+	local LC_ALL=C s="$1"
+	command -v iconv >/dev/null && s="$(printf '%s' "$s" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true)"
+	s="${s//[[:cntrl:]]/ }"
+	s="${s//$'\xc2'[$'\x80'-$'\x9f']/ }"
+	printf '%s' "$s"
+}
+
+# At most MSG_MAX bytes of a message, so one sender can't fill the disk or a pane.
+cap() {
+	if (($(printf '%s' "$1" | wc -c) > MSG_MAX)); then
+		printf '%s' "$1" | head -c "$MSG_MAX"
+		printf '\n[agent-say: cut to its first %s bytes]' "$MSG_MAX"
+	else
+		printf '%s' "$1"
+	fi
+}
 
 # A pane that can't take a message yet (someone typing, scrolled back, another message going
 # in) is never a reason to drop it. A send queues it to be delivered in the background; a
@@ -223,9 +258,11 @@ valid_host() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
 soft_die() {
 	[[ -n "${DELIVER:-}" ]] && { echo "agent-say: $*" >&2; exit 75; }
 	if [[ -n "${queue_to:-}" ]]; then
-		queue_local "$from" "$queue_to" "$msg"
-		echo "$queue_to is busy ($*); queued, it will be delivered as soon as it is free"
-		exit 0
+		if queue_local "$from" "$queue_to" "$msg"; then
+			echo "$queue_to is busy ($*); queued, it will be delivered as soon as it is free"
+			exit 0
+		fi
+		die "$queue_to is busy ($*), and $QUEUE_MAX messages already wait in the queue here; not sent, try again later"
 	fi
 	echo "agent-say: $*" >&2
 	exit 1
@@ -240,10 +277,12 @@ detach() {
 	fi
 }
 
-# Deliver a message to a pane here once it can take it (agent-say _queued).
+# Deliver a message to a pane here once it can take it (agent-say _queued). Each one waiting
+# is a process, so past QUEUE_MAX of them this fails and the caller says so.
 queue_local() { # queue_local FROM TO MESSAGE
 	local q
 	mkdir -p "$STATE/queue"
+	(($(find "$STATE/queue" -maxdepth 1 -name 'msg.*' ! -name '*.err' | wc -l) < QUEUE_MAX)) || return 1
 	q="$(mktemp "$STATE/queue/msg.XXXXXX")"
 	printf '%s' "$3" >"$q"
 	detach --from "$1" _queued "$2" "$q"
@@ -316,11 +355,21 @@ rotate_mailbox() {
 	return 0
 }
 
+# Append an entry to the mailbox. A body line starting with ## would read as an entry of its
+# own to show and read, so it gets a space in front.
+mail() { # mail HEADER BODY
+	mkdir -p "$(dirname "$MAILBOX")"
+	[[ -f "$MAILBOX" ]] && chmod 600 "$MAILBOX" # from versions that left it readable to all
+	rotate_mailbox
+	printf '## %s\n%s\n\n' "$1" "$(cap "$2" | sed 's/^##/ ##/')" >>"$MAILBOX"
+}
+
 send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	local to="$1" msg me homes host name target tkind i ts id you reply line queue_to=""
 	shift; [[ $# -gt 0 ]] || die "usage: agent-say <to> <message...>"
-	if [[ "$*" == - ]]; then msg="$(cat)"; else msg="$*"; fi
+	if [[ "$*" == - ]]; then msg="$(head -c $((MSG_MAX + 1)))"; else msg="$*"; fi
 	[[ -n "$msg" ]] || die "empty message"
+	msg="$(cap "$msg")"
 
 	if [[ -z "$from" ]]; then
 		me="$(self_pane)"; from="$( [[ -n "$me" ]] && name_of "$me" || true)"; from="${from:-${me:-unknown}}"
@@ -339,6 +388,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	if [[ "$to" == *@* ]]; then
 		host="${to#*@}"; name="${to%@*}"
 		valid_host "$host" || die "not a host: $host"
+		valid_name "$name" || die "'$name' is not a pane name"
 		[[ "$from" == *@* ]] || from="$from@$LABEL"
 		# A linked machine that checks in with us: leave it in its outbox.
 		if peer_alive "$host"; then
@@ -367,11 +417,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	fi
 	ts="$(date -u +%H:%MZ)"
 	id="$(date -u +%Y%m%d%H%M%S)-$$"
-
-	mkdir -p "$(dirname "$MAILBOX")"
-	[[ -f "$MAILBOX" ]] && chmod 600 "$MAILBOX" # from versions that left it readable to all
-	rotate_mailbox
-	printf '## [%s -> %s %s] #%s\n%s\n\n' "$from" "$to" "$(date -u +%FT%TZ)" "$id" "$msg" >> "$MAILBOX"
+	mail "[$from -> $to $(date -u +%FT%TZ)] #$id" "$msg"
 
 	# Tell the receiver its own name: Codex runs commands in a shared daemon outside the
 	# pane, so it cannot work out which pane it is in when it replies.
@@ -382,7 +428,10 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	else
 		line="[agent-msg from=$from $ts] $msg -- $reply"
 	fi
+	line="$(printable "$line")"
 
+	# Again, just before typing: the agent may have quit while we waited for its prompt.
+	check_target "$target" "$to"
 	tmux send-keys -t "$target" -l -- "$line"
 	sleep "$ENTER_DELAY"
 	tmux send-keys -t "$target" Enter
@@ -433,12 +482,26 @@ case "$cmd" in
 	_rename)
 		# Background half of `name`: wait (up to 30 minutes) for the agent to go idle, then type
 		# its rename command. Holds the pane lock so a message can't be typed at the same time.
-		p="$2" kind="$3" apid="$4" newname="$5" prev="" deadline=$((SECONDS + ${AGENT_SAY_RENAME_WAIT:-1800}))
+		# What it types is a command to that agent, so every argument must say exactly which
+		# agent, in which pane, under which name, and still hold when it types.
+		p="${2:-}" kind="${3:-}" apid="${4:-}" newname="${5:-}" prev="" deadline=$((SECONDS + ${AGENT_SAY_RENAME_WAIT:-1800}))
+		agent_there() {
+			local k a
+			read -r k a < <(pane_agent_pid "$(tmux display-message -p -t "$p" '#{pane_pid}')" "$kind") || true
+			[[ "${k:-} ${a:-}" == "$kind $apid" ]]
+		}
+		[[ "$p" =~ ^%[0-9]+$ && "$apid" =~ ^[0-9]+$ ]] && tmux list-panes -a -F '#{pane_id}' | grep -qxF -- "$p" &&
+			[[ "$kind" == claude || "$kind" == codex || "$kind" == cursor ]] && valid_name "$newname" && agent_there ||
+			die "usage: agent-say _rename <%pane-id> claude|codex|cursor <agent-pid> <name>, for that agent in that pane"
 		while ((SECONDS < deadline)); do
 			kill -0 "$apid" 2>/dev/null || exit 0 # the agent quit
 			screen="$(agent_idle "$p" "$kind" "$apid" "$prev")" && {
 				take_pane_lock "$p"
-				input_empty "$p" || { rm -rf "$LOCK_DIR/agent-say-$(id -u)-${p#%}.lock"; trap - EXIT; prev=""; sleep 1; continue; }
+				if [[ "$(tmux display-message -p -t "$p" '#{pane_in_mode}')" == 1 ]] || ! input_empty "$p"; then
+					drop_pane_lock "$p"; prev=""; sleep 1; continue
+				fi
+				agent_there || exit 0 # something else runs there now
+				check_target "$p" "$p"
 				tmux send-keys -t "$p" -l -- "/rename $newname"
 				sleep "$ENTER_DELAY"
 				tmux send-keys -t "$p" Enter
@@ -448,7 +511,8 @@ case "$cmd" in
 			prev="$screen"
 			sleep 1
 		done
-		tmux display-message -t "$p" "agent-say: $kind never went idle; type /rename $newname there yourself" 2>/dev/null
+		note="agent-say: $kind never went idle; type /rename $newname there yourself"
+		tmux display-message -t "$p" "${note//#/##}" 2>/dev/null # ## so no #{...} or #(...) in it runs
 		exit 1 ;;
 	list)
 		tmux list-panes -a -F '#{pane_id} #{?@agent,#{@agent},-} #{session_name}:#{window_index}.#{pane_index} #{pane_current_command}'
@@ -483,6 +547,7 @@ case "$cmd" in
 		echo "Agents on either side can now use plain names; name@$host or name@$LABEL picks a side." ;;
 	unlink)
 		[[ -n "${2:-}" ]] || die "usage: agent-say unlink <ssh-host>"
+		valid_host "$2" || die "not a host name: $2" # it becomes a path we rm -rf
 		d="$STATE/links/$2"
 		[[ -d "$d" ]] || die "no link to $2"
 		rm -f "$d/on"
@@ -543,13 +608,12 @@ case "$cmd" in
 						rc=0
 						printf '%s' "$text" | "$0" --from "$mfrom" _deliver "$to" >/dev/null 2>"$d/deliver.err" || rc=$?
 						# Someone typing there, or the like: delivered here once the pane is free.
-						if ((rc == 75)); then queue_local "$mfrom" "$to" "$text"; rc=0; fi
+						if ((rc == 75)); then
+							if queue_local "$mfrom" "$to" "$text"; then rc=0; else rc=1; echo "busy, and $QUEUE_MAX messages already wait in the queue" >"$d/deliver.err"; fi
+						fi
 						((rc == 0)) || why="$(tr '\n' ' ' <"$d/deliver.err")"
 					fi
-					if [[ -n "$why" ]]; then
-						mkdir -p "$(dirname "$MAILBOX")"
-						printf '## [%s -> %s %s] #%s (NOT DELIVERED: %s)\n%s\n\n' "$mfrom" "$to" "$(date -u +%FT%TZ)" "$id" "$why" "$text" >>"$MAILBOX"
-					fi
+					[[ -z "$why" ]] || mail "[$mfrom -> $to $(date -u +%FT%TZ)] #$id (NOT DELIVERED: $why)" "$text"
 					echo "$id" >>"$d/acks"
 				done <<<"$out"
 				sleep "$LINK_INTERVAL"
@@ -561,18 +625,24 @@ case "$cmd" in
 		rm -f "$d/pid" ;;
 	_queued)
 		# Background half of a send the pane couldn't take yet: try every 2 seconds until it
-		# is delivered. It only gives up if the pane can never take it (gone, or back at a
-		# shell), and then the message goes into the mailbox marked NOT DELIVERED.
-		[[ -n "$from" && -n "${2:-}" && -f "${3:-}" ]] || die "usage: agent-say --from <sender> _queued <to> <file>"
+		# is delivered. It gives up if the pane can never take it (gone, or no agent there) or
+		# after QUEUE_MAX_AGE, and then the message goes into the mailbox marked NOT DELIVERED.
+		# The file must be one queue_local wrote: this reads it out and then deletes it.
+		q="${3:-}"
+		qdir="$(cd "$STATE/queue" 2>/dev/null && pwd -P)" || qdir=""
+		valid_sender "$from" && valid_target "${2:-}" && [[ -n "$qdir" && "$(basename -- "$q")" =~ ^msg\.[A-Za-z0-9]+$ &&
+			-f "$q" && ! -L "$q" && "$(cd "$(dirname -- "$q")" 2>/dev/null && pwd -P)" == "$qdir" ]] ||
+			die "usage: agent-say --from <sender> _queued <to> <file in $STATE/queue>"
 		while :; do
 			rc=0
-			"$0" --from "$from" _deliver "$2" <"$3" >/dev/null 2>"$3.err" || rc=$?
-			((rc == 75)) && { sleep 2; continue; }
+			"$0" --from "$from" _deliver "$2" <"$q" >/dev/null 2>"$q.err" || rc=$?
+			((rc == 75 && SECONDS < QUEUE_MAX_AGE)) && { sleep 2; continue; }
 			if ((rc != 0)); then
-				printf '## [%s -> %s %s] #%s (NOT DELIVERED: %s)\n%s\n\n' "$from" "$2" "$(date -u +%FT%TZ)" \
-					"$(date -u +%Y%m%d%H%M%S)-$$" "$(tr '\n' ' ' <"$3.err")" "$(cat "$3")" >>"$MAILBOX"
+				why="$(tr '\n' ' ' <"$q.err")"
+				((rc == 75)) && why="still busy after ${QUEUE_MAX_AGE}s: $why"
+				mail "[$from -> $2 $(date -u +%FT%TZ)] #$(date -u +%Y%m%d%H%M%S)-$$ (NOT DELIVERED: $why)" "$(cat "$q")"
 			fi
-			rm -f "$3" "$3.err"
+			rm -f "$q" "$q.err"
 			exit 0
 		done ;;
 	_sync)
@@ -597,9 +667,7 @@ case "$cmd" in
 			for f in "$d"/outbox/*; do
 				[[ -f "$f" ]] || continue
 				{ read -r mto; read -r mfrom; } <"$f"
-				mkdir -p "$(dirname "$MAILBOX")"
-				printf '## [%s -> %s@%s %s] #%s (NOT DELIVERED: %s unlinked)\n%s\n\n' "$mfrom" "$mto" "$2" "$(date -u +%FT%TZ)" \
-					"$(basename "$f")" "$2" "$(tail -n +3 "$f")" >>"$MAILBOX"
+				mail "[$mfrom -> $mto@$2 $(date -u +%FT%TZ)] #$(basename "$f") (NOT DELIVERED: $2 unlinked)" "$(tail -n +3 "$f")"
 				rm -f "$f"
 			done
 			exit 0
@@ -631,7 +699,7 @@ case "$cmd" in
 		# A message a link brought in (stdin), for a pane on this machine only. Its own
 		# command, so a pane named like a command (read, list...) can't turn it into one.
 		DELIVER=1 AGENT_SAY_LOCAL_ONLY=1 MODE_WAIT=0 TYPING_WAIT=0
-		[[ -n "${2:-}" ]] || die "usage: agent-say --from <sender> _deliver <to>"
+		valid_target "${2:-}" || die "usage: agent-say --from <sender> _deliver <name or %pane-id here>"
 		send_message "$2" - ;;
 	*)
 		shift

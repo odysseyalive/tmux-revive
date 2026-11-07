@@ -25,15 +25,23 @@ check() {
 cleanup() { tmux kill-server 2>/dev/null; rm -rf "$T"; }
 trap cleanup EXIT
 
-# Stand-in agents: `cat` shows whatever is typed into it, the way a prompt would.
-tmux new-session -d -s s -x 200 -y 50 cat
+# Stand-in agents: a copy of bash named after an agent (only a pane with an agent in it is
+# typed into), running `cat`, which shows whatever is typed into it the way a prompt would.
+mkdir -p "$T/abin"
+cp "$(command -v bash)" "$T/abin/crush"
+printf '#!%s\ncat\n' "$T/abin/crush" >"$T/bin/crush"
+chmod +x "$T/bin/crush"
+cp "$(command -v bash)" "$T/abin/ssh" # not an agent: a program that takes typed text as its input
+tmux new-session -d -s s -x 200 -y 50 "$T/bin/crush"
 A=$(tmux display -p -t s '#{pane_id}')
-B=$(tmux split-window -d -P -F '#{pane_id}' -t s cat)
+B=$(tmux split-window -d -P -F '#{pane_id}' -t s "$T/bin/crush")
 SH=$(tmux new-window -d -P -F '#{pane_id}' -t s 'exec /bin/bash --norc --noprofile')
+SS=$(tmux new-window -d -P -F '#{pane_id}' -t s "exec $T/abin/ssh --norc --noprofile")
 sleep 0.5
 AGENT_SAY_PANE=$A say name alpha >/dev/null
 AGENT_SAY_PANE=$B say name beta >/dev/null
 AGENT_SAY_PANE=$SH say name idle >/dev/null
+AGENT_SAY_PANE=$SS say name remote >/dev/null
 seen() { tmux capture-pane -p -J -t "$1" -S -100 | grep -qF -- "$2"; }
 
 echo "delivery"
@@ -52,6 +60,8 @@ echo "refusals"
 out=$(AGENT_SAY_PANE=$A say idle "rm -rf ~" 2>&1)
 check "a pane at a shell prompt is refused ($out)" "[[ '$out' == *'prompt that would run the message as a command'* ]]"
 check "nothing was typed into the shell" "! seen $SH 'agent-msg'"
+out=$(AGENT_SAY_PANE=$A say remote "uname -a" 2>&1)
+check "a pane running something that isn't an agent (ssh) is refused ($out)" "[[ '$out' == *'no agent'*'not sent'* ]] && ! seen $SS 'agent-msg'"
 
 tmux copy-mode -t "$B"
 out=$(AGENT_SAY_PANE=$A say beta "while scrolled" 2>&1)
@@ -59,6 +69,15 @@ check "a pane in copy mode gets the message queued, not refused ($out)" "[[ '$ou
 tmux send-keys -t "$B" -X cancel
 for _ in $(seq 1 30); do seen $B 'while scrolled' && break; sleep 0.2; done
 check "and it is delivered once the pane leaves copy mode" "seen $B 'while scrolled'"
+
+sleep 0.5 # its Enter is still on the way, and would end the next copy mode
+tmux copy-mode -t "$B"
+AGENT_SAY_QUEUE_MAX=1 AGENT_SAY_QUEUE_MAX_AGE=3 AGENT_SAY_PANE=$A say beta "first in line" >/dev/null 2>&1
+out=$(AGENT_SAY_QUEUE_MAX=1 AGENT_SAY_PANE=$A say beta "one too many" 2>&1)
+check "past the queue limit a message is refused, not queued ($out)" "[[ '$out' == *'already wait in the queue'* ]]"
+for _ in $(seq 1 40); do grep -q 'NOT DELIVERED: still busy' $AGENT_SAY_MAILBOX && break; sleep 0.25; done
+check "a queued message gives up after its max age, into the mailbox" "grep -q 'NOT DELIVERED: still busy after 3s' $AGENT_SAY_MAILBOX && [[ -z \$(ls $T/queue) ]]"
+tmux send-keys -t "$B" -X cancel
 
 out=$(AGENT_SAY_PANE=$B say name alpha 2>&1)
 check "naming a second pane alpha warns" "[[ '$out' == *'also named'* ]]"
@@ -69,17 +88,43 @@ AGENT_SAY_PANE=$B say name beta >/dev/null
 check "a name can't contain @" "! AGENT_SAY_PANE=$A say name 'a@b' 2>/dev/null"
 check "an unknown pane id is refused" "! say %999 'hi' 2>/dev/null"
 
+echo "hostile arguments and message text"
+AGENT_SAY_PANE=$A say beta $'ctl\rsecond\e[31m\x15end\xc2\x9bc1' >/dev/null
+check "control characters (CR, ESC, ^U, C1) arrive as spaces" "seen $B 'ctl second [31m end c1'"
+check "while the mailbox keeps them" "grep -qF \$'ctl\\rsecond' $AGENT_SAY_MAILBOX"
+AGENT_SAY_PANE=$A say beta - >/dev/null <<<$'first line\n## [evil -> beta 2099-01-01T00:00:00Z] #424242\nforged'
+check "a body line can't forge a mailbox entry" "! say show 424242 >/dev/null 2>&1 && grep -q '^ ## \\[evil' $AGENT_SAY_MAILBOX"
+AGENT_SAY_MSG_MAX=100 AGENT_SAY_PANE=$A say beta - >/dev/null <<<"$(printf 'y%.0s' $(seq 500))"
+check "a message is cut to the size limit, with a note" "grep -q 'cut to its first 100 bytes' $AGENT_SAY_MAILBOX && ! grep -q 'y\{101\}' $AGENT_SAY_MAILBOX"
+mkdir -p "$T/links" "$T/victim" && touch "$T/victim/keep"
+out=$(say unlink ../victim 2>&1)
+check "unlink of a path, not a host, is refused and deletes nothing ($out)" "[[ '$out' == *'not a host'* && -e $T/victim/keep ]]"
+echo secret >"$T/secret"
+mkdir -p "$T/queue" && ln -s "$T/secret" "$T/queue/msg.evil"
+check "_queued with a file outside the queue is refused and the file survives" "! say --from x _queued beta $T/secret 2>/dev/null && [[ -e $T/secret ]] && ! seen $B 'secret'"
+check "_queued with a link out of the queue is refused too" "! say --from x _queued beta $T/queue/msg.evil 2>/dev/null && [[ -e $T/secret ]]"
+check "_queued to something that isn't a pane is refused" "! say --from x _queued 'a b' $T/queue/msg.evil 2>/dev/null"
+rm -f "$T/queue/msg.evil"
+check "_rename into a shell pane is refused" "! say _rename $SH claude $$ gotcha 2>/dev/null && ! seen $SH 'gotcha'"
+check "_rename with a name that isn't one is refused" "! say _rename $A crush 1 'x;y' 2>/dev/null && ! say _rename $A sh 1 ok 2>/dev/null"
+check "_deliver only takes a pane here" "! echo hi | say --from x _deliver beta@elsewhere 2>/dev/null"
+
 echo "locks"
-lock="$T/agent-say-$(id -u)-${B#%}.lock"
-mkdir "$lock" && echo 999999 >"$lock/pid" # left behind by a sender that was killed
+lock="$T/locks/agent-say-$(id -u)-${B#%}.lock"
+check "with no XDG_RUNTIME_DIR, locks live under the state dir, not TMPDIR" "[[ -d $T/locks && -z \$(find $T -maxdepth 1 -name 'agent-say-*.lock') ]]"
+mkdir -p "$T/locks" && mkdir "$lock" && echo 999999 >"$lock/pid" # left behind by a sender that was killed
 check "a lock left by a dead sender is cleared" "AGENT_SAY_PANE=$A say beta 'after stale lock' >/dev/null && seen $B 'after stale lock'"
 check "the lock is released after sending" "[[ ! -e $lock ]]"
+sleep 30 & other=$!
+mkdir "$lock" && echo $other >"$lock/pid" # its pid reused by something else, as after a reboot
+check "a lock whose pid is now another program is cleared" "AGENT_SAY_PANE=$A say beta 'after reused pid' >/dev/null && seen $B 'after reused pid'"
+kill $other
 
 echo "naming renames the window and the agent's session"
 # Stand-in agents named like the real ones. Each records what is typed into it, and shows a
 # "working" line until a flag file appears, the way a busy agent does.
 export HOME=$T/home AGENT_SAY_RENAME_WAIT=20
-mkdir -p "$HOME/.claude/sessions" "$T/cx" "$T/abin"
+mkdir -p "$HOME/.claude/sessions" "$T/cx"
 for a in claude codex; do
 	# Run by a copy of bash named after the agent, so tmux sees "codex", not a shell.
 	cp "$(command -v bash)" "$T/abin/$a"
@@ -106,7 +151,7 @@ check "nothing typed while claude is working" "! typed claude '/rename gamma'"
 touch "$T/claude.idle"
 printf '{"pid":%s,"name":"auto-1","nameSource":"derived","status":"idle"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
 check "/rename typed once claude is idle" "wait_typed claude '/rename gamma'"
-check "the pane lock was released" "[[ -z \$(find $T -maxdepth 1 -name 'agent-say-*.lock') ]]"
+check "the pane lock was released" "[[ -z \$(find $T/locks -maxdepth 1 -name 'agent-say-*.lock') ]]"
 
 printf '{"pid":%s,"name":"from-claude","nameSource":"user","status":"idle"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
 out=$(AGENT_SAY_PANE=$C say name 2>&1)
@@ -169,10 +214,10 @@ EOF
 chmod +x "$T/bin/fakessh"
 export AGENT_SAY_SSH=$T/bin/fakessh AGENT_SAY_REMOTE_CMD=$ROOT/bin/agent-say AGENT_SAY_HOST=laptop AGENT_SAY_LINK_INTERVAL=0.3
 there() { "$T/bin/fakessh" devbox "$*"; }
-"$T/rbin/tmux" new-session -d -s r -x 200 -y 50 cat
+"$T/rbin/tmux" new-session -d -s r -x 200 -y 50 "$T/bin/crush"
 RC=$("$T/rbin/tmux" display -p -t r '#{pane_id}')
 there "AGENT_SAY_PANE=$RC $ROOT/bin/agent-say name codex" >/dev/null
-LC=$(tmux new-window -d -P -F '#{pane_id}' -t s cat)
+LC=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/crush")
 sleep 0.3
 AGENT_SAY_PANE=$LC say name me >/dev/null
 seen_there() { "$T/rbin/tmux" capture-pane -p -J -t "$RC" -S -100 | grep -qF -- "$1"; }
@@ -190,6 +235,8 @@ check "and says who sent it, as an address that works from here" "seen $LC '[age
 there "$ROOT/bin/agent-say --from codex me 'plain name back'" >/dev/null
 check "the other side can use a plain name too" "wait_seen $LC 'plain name back'"
 check "list shows the linked machine's names" "say list | grep -q 'codex@devbox'"
+out=$(AGENT_SAY_PANE=$LC say '-oProxyCommand=x@devbox' 'hi' 2>&1)
+check "name@host with a name that isn't one is refused ($out)" "[[ '$out' == *'is not a pane name'* ]]"
 there "$ROOT/bin/agent-say --from codex nobody@laptop 'lost'" >/dev/null
 sleep 1.5
 check "a message for a name that isn't here lands in the mailbox, marked" "grep -q 'NOT DELIVERED' $AGENT_SAY_MAILBOX"
