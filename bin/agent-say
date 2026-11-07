@@ -126,12 +126,12 @@ session_name() { # session_name KIND PID
 }
 
 # Is the agent's prompt empty? Typing into a half-written prompt would send it with our text
-# stuck on the end. Claude Code and Codex draw their prompt as "❯ " / "› " with the cursor
-# right after it while it's empty; Codex fills the gap with dim placeholder text.
+# stuck on the end. Claude Code and Codex draw their prompt as "❯ " / "› " on the cursor's
+# row; Codex fills an empty one with dim placeholder text. Only the row's text is trusted, not
+# the cursor's column: an idle Claude Code can leave the cursor far right of an empty prompt.
 input_empty() {
-	local cx cy line rest e=$'\e'
-	read -r cx cy < <(tmux display-message -p -t "$1" '#{cursor_x} #{cursor_y}') || return 1
-	((cx == 2)) || return 1
+	local cy line rest e=$'\e'
+	cy="$(tmux display-message -p -t "$1" '#{cursor_y}')" || return 1
 	line="$(tmux capture-pane -e -p -t "$1" | sed -n "$((cy + 1))p")"
 	line="${line//$'\xc2\xa0'/ }" # Claude Code follows its ❯ with a no-break space
 	# Drop the prompt sign and the space after it, with any styling around them.
@@ -184,7 +184,7 @@ check_target() {
 		[[ "$SHELLS" == *" $cmd "* ]] &&
 			die "no agent is running in $to ($p), just a $cmd prompt that would run the message as a command; not sent"
 		[[ "$mode" == 1 ]] || return 0
-		((i >= MODE_WAIT * 2)) && soft_die "$to ($p) is scrolled back in copy mode (press q there to leave it); not sent"
+		((i >= MODE_WAIT * 2)) && soft_die "$to ($p) is scrolled back in copy mode (press q there to leave it)"
 		sleep 0.5
 	done
 }
@@ -217,12 +217,36 @@ valid_name() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ && "$RESERVED" != *" $
 valid_sender() { [[ "$1" =~ ^[%A-Za-z0-9][A-Za-z0-9_.:+=-]*(@[A-Za-z0-9][A-Za-z0-9._-]*)?$ ]]; }
 valid_host() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
 
-# A refusal that may pass (someone typing, a pane scrolled back or busy): for a message a
-# link brings in, the link retries it at the next check-in instead of waiting here.
+# A pane that can't take a message yet (someone typing, scrolled back, another message going
+# in) is never a reason to drop it. A send queues it to be delivered in the background; a
+# delivery attempt (DELIVER) exits 75 so whoever is retrying it tries again.
 soft_die() {
+	[[ -n "${DELIVER:-}" ]] && { echo "agent-say: $*" >&2; exit 75; }
+	if [[ -n "${queue_to:-}" ]]; then
+		queue_local "$from" "$queue_to" "$msg"
+		echo "$queue_to is busy ($*); queued, it will be delivered as soon as it is free"
+		exit 0
+	fi
 	echo "agent-say: $*" >&2
-	[[ -n "${DELIVER:-}" ]] && exit 75
 	exit 1
+}
+
+# Run agent-say in the background, out of this process group, so it outlives its caller.
+detach() {
+	if command -v setsid >/dev/null; then
+		setsid -f "$0" "$@" </dev/null >/dev/null 2>&1
+	else
+		nohup "$0" "$@" </dev/null >/dev/null 2>&1 &
+	fi
+}
+
+# Deliver a message to a pane here once it can take it (agent-say _queued).
+queue_local() { # queue_local FROM TO MESSAGE
+	local q
+	mkdir -p "$STATE/queue"
+	q="$(mktemp "$STATE/queue/msg.XXXXXX")"
+	printf '%s' "$3" >"$q"
+	detach --from "$1" _queued "$2" "$q"
 }
 
 ssh_to() { # ssh_to HOST REMOTE-COMMAND (stdin passes through)
@@ -293,7 +317,7 @@ rotate_mailbox() {
 }
 
 send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
-	local to="$1" msg me homes host name target tkind i ts id you reply line
+	local to="$1" msg me homes host name target tkind i ts id you reply line queue_to=""
 	shift; [[ $# -gt 0 ]] || die "usage: agent-say <to> <message...>"
 	if [[ "$*" == - ]]; then msg="$(cat)"; else msg="$*"; fi
 	[[ -n "$msg" ]] || die "empty message"
@@ -328,6 +352,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	fi
 
 	target="$(resolve "$to")"
+	queue_to="$to" # from here, a pane that can't take it yet queues it (soft_die)
 	take_pane_lock "$target"
 	check_target "$target" "$to"
 	# Someone typing in that pane: wait for them to send or clear it, so the message isn't
@@ -336,7 +361,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	if [[ "${tkind:-}" == claude || "${tkind:-}" == codex ]]; then
 		for ((i = 0; ; i++)); do
 			input_empty "$target" && break
-			((i >= TYPING_WAIT * 2)) && soft_die "someone is typing in $to ($target); not sent, so it can't land on their draft. Try again once they've sent it"
+			((i >= TYPING_WAIT * 2)) && soft_die "someone is typing in $to ($target)"
 			sleep 0.5
 		done
 	fi
@@ -400,11 +425,7 @@ case "$cmd" in
 				else
 					# Detached: the agent is busy running this very command, so typing now would
 					# land mid-turn. The helper waits for it to finish.
-					if command -v setsid >/dev/null; then
-						setsid -f "$0" _rename "$p" "$kind" "$apid" "$newname" </dev/null >/dev/null 2>&1
-					else
-						nohup "$0" _rename "$p" "$kind" "$apid" "$newname" </dev/null >/dev/null 2>&1 &
-					fi
+					detach _rename "$p" "$kind" "$apid" "$newname"
 					echo "$kind session will be renamed to '$newname' as soon as it is idle"
 				fi ;;
 			crush | gemini) echo "$kind has no rename command; only the pane and window were named" ;;
@@ -488,7 +509,6 @@ case "$cmd" in
 			flock -n "$lockfd" || exit 0
 		fi
 		echo $$ >"$d/pid"
-		mkdir -p "$d/retry"
 		touch "$d/acks"
 		while [[ -f "$d/on" ]]; do
 			if ! tmux list-sessions >/dev/null 2>&1; then
@@ -522,19 +542,14 @@ case "$cmd" in
 						mfrom="$mfrom@$host"
 						rc=0
 						printf '%s' "$text" | "$0" --from "$mfrom" _deliver "$to" >/dev/null 2>"$d/deliver.err" || rc=$?
-						if ((rc == 75)); then
-							# Someone typing there, or the like: try again at the next check-in,
-							# for about a minute.
-							n=$(($(cat "$d/retry/$id" 2>/dev/null || echo 0) + 1))
-							if ((n < 30)); then echo "$n" >"$d/retry/$id"; continue; fi
-						fi
+						# Someone typing there, or the like: delivered here once the pane is free.
+						if ((rc == 75)); then queue_local "$mfrom" "$to" "$text"; rc=0; fi
 						((rc == 0)) || why="$(tr '\n' ' ' <"$d/deliver.err")"
 					fi
 					if [[ -n "$why" ]]; then
 						mkdir -p "$(dirname "$MAILBOX")"
 						printf '## [%s -> %s %s] #%s (NOT DELIVERED: %s)\n%s\n\n' "$mfrom" "$to" "$(date -u +%FT%TZ)" "$id" "$why" "$text" >>"$MAILBOX"
 					fi
-					rm -f "$d/retry/$id"
 					echo "$id" >>"$d/acks"
 				done <<<"$out"
 				sleep "$LINK_INTERVAL"
@@ -544,6 +559,22 @@ case "$cmd" in
 			fi
 		done
 		rm -f "$d/pid" ;;
+	_queued)
+		# Background half of a send the pane couldn't take yet: try every 2 seconds until it
+		# is delivered. It only gives up if the pane can never take it (gone, or back at a
+		# shell), and then the message goes into the mailbox marked NOT DELIVERED.
+		[[ -n "$from" && -n "${2:-}" && -f "${3:-}" ]] || die "usage: agent-say --from <sender> _queued <to> <file>"
+		while :; do
+			rc=0
+			"$0" --from "$from" _deliver "$2" <"$3" >/dev/null 2>"$3.err" || rc=$?
+			((rc == 75)) && { sleep 2; continue; }
+			if ((rc != 0)); then
+				printf '## [%s -> %s %s] #%s (NOT DELIVERED: %s)\n%s\n\n' "$from" "$2" "$(date -u +%FT%TZ)" \
+					"$(date -u +%Y%m%d%H%M%S)-$$" "$(tr '\n' ' ' <"$3.err")" "$(cat "$3")" >>"$MAILBOX"
+			fi
+			rm -f "$3" "$3.err"
+			exit 0
+		done ;;
 	_sync)
 		# Server half of a link (run over ssh by the other machine's poller). stdin: its pane
 		# names (N name) and the messages it delivered (A id). stdout: our names, then the

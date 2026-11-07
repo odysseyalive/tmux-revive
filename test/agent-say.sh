@@ -55,8 +55,10 @@ check "nothing was typed into the shell" "! seen $SH 'agent-msg'"
 
 tmux copy-mode -t "$B"
 out=$(AGENT_SAY_PANE=$A say beta "while scrolled" 2>&1)
-check "a pane in copy mode is refused after waiting" "[[ '$out' == *'copy mode'* ]]"
+check "a pane in copy mode gets the message queued, not refused ($out)" "[[ '$out' == *'copy mode'*'queued'* ]] && ! seen $B 'while scrolled'"
 tmux send-keys -t "$B" -X cancel
+for _ in $(seq 1 30); do seen $B 'while scrolled' && break; sleep 0.2; done
+check "and it is delivered once the pane leaves copy mode" "seen $B 'while scrolled'"
 
 out=$(AGENT_SAY_PANE=$B say name alpha 2>&1)
 check "naming a second pane alpha warns" "[[ '$out' == *'also named'* ]]"
@@ -85,7 +87,7 @@ for a in claude codex; do
 #!$T/abin/$a
 while [[ ! -e $T/$a.idle ]]; do printf '\r* Working (esc to interrupt) %s' "\$SECONDS"; sleep 0.2; done
 clear
-while printf '> ' && IFS= read -r line; do echo "\$line" >>$T/$a.typed; done
+while printf '> ' && { [[ ! -e $T/$a.farcursor ]] || printf '\\033[75G'; } && IFS= read -r line; do echo "\$line" >>$T/$a.typed; done
 EOF
 	chmod +x "$T/bin/$a"
 done
@@ -134,11 +136,21 @@ check "and the draft never got sent" "! grep -q 'half a sentence' $T/codex.typed
 
 tmux send-keys -t "$X" -l 'another draft'
 out=$(AGENT_SAY_TYPING_WAIT=1 AGENT_SAY_PANE=$A say delta "do not land on the draft" 2>&1)
-check "a message waits for someone typing, then is refused ($out)" "grep -q 'someone is typing' <<<\"\$out\""
+check "a message waits for someone typing, then is queued, not refused ($out)" "[[ '$out' == *'someone is typing'*'queued'* ]]"
+check "and it isn't typed onto the draft" "! grep -q 'do not land on the draft' $T/codex.typed"
 tmux send-keys -t "$X" C-u
+check "it is delivered once the prompt is empty" "wait_typed codex 'do not land on the draft' || grep -q 'do not land on the draft' $T/codex.typed"
+check "and the draft never got sent" "! grep -q 'another draft' $T/codex.typed"
 sleep 0.3
 AGENT_SAY_PANE=$A say delta "after the draft" >/dev/null 2>&1
 check "with the prompt empty it is delivered" "wait_typed codex '[agent-msg from=alpha2 \$(date -u +%H:%MZ)] after the draft -- To answer, run the shell command: agent-say --from delta alpha2 \"<your reply>\"' || grep -q 'after the draft' $T/codex.typed"
+
+# An idle prompt can leave the cursor far to the right of an empty prompt: that is not typing.
+touch "$T/codex.farcursor"
+AGENT_SAY_PANE=$A say delta "redraw" >/dev/null 2>&1; sleep 0.5
+out=$(AGENT_SAY_TYPING_WAIT=1 AGENT_SAY_PANE=$A say delta "cursor far right" 2>&1)
+check "an empty prompt with the cursor far right is not taken for typing ($out)" "[[ '$out' == sent* ]]"
+rm -f "$T/codex.farcursor"; AGENT_SAY_PANE=$A say delta "redraw" >/dev/null 2>&1; sleep 0.3
 
 echo "a link to a machine you ssh into"
 # A second private tmux server stands in for the machine you ssh into, and a fake ssh runs
