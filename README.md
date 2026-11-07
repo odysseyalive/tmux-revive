@@ -97,12 +97,17 @@ First, give each pane a name. You only do this once. In Claude Code, type this
 into its prompt:
 
 ```
-! agent-say name claude
+! agent-say name shop-dev
 ```
+
+Pick a name that won't get mixed up with what the agents are talking about.
+A message to `api` or `tests` reads like a topic in the conversation, and
+`claude` could mean any Claude pane. Something like `shop-dev` or
+`shop-review`, the project plus the pane's job, stays clear.
 
 Then just ask your agent in plain words:
 
-> Use agent-say to ask codex to review parser.py and tell you what breaks.
+> Use agent-say to ask shop-review to review parser.py and tell you what breaks.
 
 See every pane and its name:
 
@@ -139,13 +144,13 @@ ssh -o BatchMode=yes devbox true
 Then send by name, the same as before:
 
 ```sh
-agent-say codex "run the tests and tell me what fails"
+agent-say shop-review "run the tests and tell me what fails"
 ```
 
 If a name exists on both sides, add the computer:
 
 ```sh
-agent-say codex@devbox "run the tests"
+agent-say shop-review@devbox "run the tests"
 ```
 
 Stop a link:
