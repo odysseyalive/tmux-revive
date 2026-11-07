@@ -101,7 +101,9 @@ real_path() {
 # swap_in FILE NEW: back FILE up, then put NEW in its place in one step (a crash leaves one
 # or the other, never half). Nothing changed: no backup, NEW dropped.
 swap_in() {
+	CHANGED=0
 	if cmp -s "$1" "$2"; then rm -f "$2"; return 0; fi
+	CHANGED=1
 	if [ -s "$1" ] && ! cp -p "$1" "$1.bak-revive-$(date +%Y%m%d%H%M%S)"; then
 		rm -f "$2"
 		return 1
@@ -112,6 +114,13 @@ swap_in() {
 # set_block FILE BEGIN END [TEXT]: our block in FILE replaced by TEXT, or removed if there's
 # no TEXT. A BEGIN without its END (hand-edited?) would take the rest of the file with it, so
 # then FILE is left alone.
+# told FILE HAD-BLOCK-BEFORE: say what set_block just did to FILE.
+told() {
+	if [ "${CHANGED:-1}" = 0 ]; then say "tmux-revive already set up in $1"
+	elif [ "$2" = 1 ]; then say "updated tmux-revive in $1"
+	else say "added tmux-revive to $1"; fi
+}
+
 set_block() {
 	sf=$(real_path "$1")
 	[ -f "$sf" ] || [ -n "${4:-}" ] || return 0
@@ -386,14 +395,16 @@ main() {
 			printf '%s\n' "# restores sessions, programs and Claude Code sessions on the next start."
 			printf 'run-shell "%s"\n' "$run"
 		)
-		if set_block "$conf" "$BEGIN" "$END" "$block"; then say "added tmux-revive to $conf"; fi
+		had=0; grep -qxF "$BEGIN" "$conf" 2>/dev/null && had=1
+		if set_block "$conf" "$BEGIN" "$END" "$block"; then told "$conf" "$had"; fi
 		block=$(
 			printf '%s\n' "# After a reboot, \`tmux attach\` restores your sessions before attaching."
 			printf 'TMUX_REVIVE_BIN=%s\n' "$(sq "$APP/bin/tmux-revive")"
 			printf '[ -f %s ] && . %s\n' "$(sq "$APP/scripts/shell.sh")" "$(sq "$APP/scripts/shell.sh")"
 		)
 		shell_rcs | while IFS= read -r rc; do
-			if set_block "$rc" "$BEGIN" "$END" "$block"; then say "added tmux-revive to $rc"; fi
+			had=0; grep -qxF "$BEGIN" "$rc" 2>/dev/null && had=1
+			if set_block "$rc" "$BEGIN" "$END" "$block"; then told "$rc" "$had"; fi
 		done
 		agent_setup
 		if grep -Eq "^[[:space:]]*set(-option)?[[:space:]]+-g[[:space:]]+@continuum-restore[[:space:]]+['\"]?on" "$conf"; then
