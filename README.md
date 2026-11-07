@@ -123,6 +123,10 @@ codex
 
 `agent-say list` shows every pane and its name.
 
+A name uses letters, digits and `. _ - : + =`, starts with a letter or digit,
+and has no spaces or `@`. It can't be one of agent-say's own words: `name`,
+`list`, `read`, `show`, `link` or `unlink`.
+
 ### 2. Ask your agent to send a message
 
 Just say it in plain words:
@@ -181,8 +185,31 @@ What it needs:
 
 `agent-say link` shows your links and whether they're running.
 `agent-say unlink devbox` stops one. Links come back by themselves when tmux
-starts after a reboot. A message that arrives for a name your computer
-doesn't have is kept in the mailbox, marked NOT DELIVERED.
+starts after a reboot.
+
+**The other side says a name doesn't exist?** The server only learns your
+computer's names through the link, and the link has to be started from your
+computer. Run `agent-say link` here: `devbox` should be listed as running.
+On the server, `agent-say list` then shows your names with `@` and your
+computer's name.
+
+What happens to messages over a link:
+
+- **Someone is typing in the pane a message is for:** it waits, and the link
+  tries again at each check-in for about a minute. Each message is delivered
+  once.
+- **The link goes down** (your computer is off or asleep, or tmux isn't
+  running): messages already waiting on the server are delivered when the
+  link comes back. Once your computer has missed check-ins for about a minute,
+  the server stops taking new ones: a send from there fails with an error, so
+  the agent knows it didn't arrive.
+- **You unlink:** the server is told, if it can be reached, and the messages
+  it was still holding for you go into its mailbox, marked NOT DELIVERED.
+- **A message for a name your computer doesn't have:** it goes into your
+  mailbox, marked NOT DELIVERED.
+- **Nothing that arrives over a link can run a command on your computer.**
+  Every name, sender and address from the other side is checked, and a
+  message can only be typed into an agent pane by its name.
 
 You can also send to a server you haven't linked, with `agent-say
 codex@devbox "..."`. That works for one-off messages, but a reply then needs

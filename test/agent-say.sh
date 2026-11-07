@@ -181,9 +181,47 @@ check "list shows the linked machine's names" "say list | grep -q 'codex@devbox'
 there "$ROOT/bin/agent-say --from codex nobody@laptop 'lost'" >/dev/null
 sleep 1.5
 check "a message for a name that isn't here lands in the mailbox, marked" "grep -q 'NOT DELIVERED' $AGENT_SAY_MAILBOX"
+
+echo "the link is robust against the other side"
+outbox=$T/rstate/agent-say/peers/laptop/outbox
+forge() { printf '%s\n%s\n%s' "$2" codex "$3" >"$outbox/$1"; } # what a compromised server could queue
+forge 20990101000000-1-1 'x@-oProxyCommand=touch${IFS}'"$T"'/pwned' 'run this'
+forge 20990101000000-1-2 '%0' 'straight to a pane id'
+forge 20990101000000-1-3 'read' 'a name that is a command'
+sleep 2
+check "a forged address can't make this machine run anything" "[[ ! -e $T/pwned ]]"
+check "forged addresses are refused into the mailbox, not delivered" "[[ \$(grep -c 'is not a pane name' $AGENT_SAY_MAILBOX) -ge 3 ]]"
+check "and acknowledged, so they aren't fetched again" "[[ -z \$(ls $outbox) ]]"
+check "a pane can't be named like a command" "! AGENT_SAY_PANE=$LC say name read 2>/dev/null"
+check "a sender name with a space is refused" "! AGENT_SAY_PANE=$LC say --from 'a b' codex 'x' 2>/dev/null"
+
+"$T/rbin/tmux" set-option -p -t "$RC" -u @agent # nothing named on the other side
+there "$ROOT/bin/agent-say --from codex me 'with nothing named there'" >/dev/null 2>&1
+there "$ROOT/bin/agent-say --from codex me@laptop 'with nothing named there'" >/dev/null
+check "the link still works when the other side has no named panes" "wait_seen $LC 'with nothing named there'"
+"$T/rbin/tmux" set-option -p -t "$RC" @agent codex
+
+# Someone typing in the pane a message is for: the link retries instead of stalling.
+tmux send-keys -t "$X" -l 'my draft'
+sleep 0.5
+there "$ROOT/bin/agent-say --from codex delta@laptop 'after your draft'" >/dev/null
+sleep 2
+check "a message waits while someone types there" "! grep -q 'after your draft' $T/codex.typed"
+check "and the link keeps checking in meanwhile" "[[ -n \$(find $T/rstate/agent-say/peers/laptop/alive -newermt '-2 seconds') ]]"
+tmux send-keys -t "$X" C-u
+check "it is delivered once the prompt is empty" "wait_typed codex '[agent-msg from=codex@devbox \$(date -u +%H:%MZ)] after your draft -- To answer, run the shell command: agent-say --from delta codex@devbox \"<your reply>\"' || grep -q 'after your draft' $T/codex.typed"
+check "and only once" "[[ \$(grep -c 'after your draft' $T/codex.typed) -eq 1 ]]"
+
+say _resume-links; say _resume-links; sleep 0.5
+check "starting the link twice runs one poller" "[[ \$(pgrep -fc 'agent-say _poll devbox') -eq 1 ]]"
+
+# Stop the poller (as a reboot would), then queue: the message waits, and unlink marks it.
+pkill -f 'agent-say _poll devbox'; sleep 0.3
+there "$ROOT/bin/agent-say --from codex me@laptop 'never fetched'" >/dev/null
 say unlink devbox >/dev/null
 sleep 0.5
 check "unlink stops it" "! pgrep -f 'agent-say _poll devbox' >/dev/null"
+check "and the other side marks what it held as NOT DELIVERED" "grep -q 'NOT DELIVERED: laptop unlinked' $T/rstate/agent-say/mailbox.md && [[ -z \$(ls $outbox) ]]"
 "$T/rbin/tmux" kill-server
 
 echo "$pass passed, $fail failed"

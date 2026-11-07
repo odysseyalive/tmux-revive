@@ -184,7 +184,7 @@ check_target() {
 		[[ "$SHELLS" == *" $cmd "* ]] &&
 			die "no agent is running in $to ($p), just a $cmd prompt that would run the message as a command; not sent"
 		[[ "$mode" == 1 ]] || return 0
-		((i >= MODE_WAIT * 2)) && die "$to ($p) is scrolled back in copy mode (press q there to leave it); not sent"
+		((i >= MODE_WAIT * 2)) && soft_die "$to ($p) is scrolled back in copy mode (press q there to leave it); not sent"
 		sleep 0.5
 	done
 }
@@ -207,10 +207,26 @@ take_pane_lock() {
 		fi
 		sleep 0.1
 	done
-	die "pane $1 is busy: another message is still being typed into it"
+	soft_die "pane $1 is busy: another message is still being typed into it"
+}
+
+# What may be a pane name, a sender, or a host. Anything from another machine is checked
+# against these before it reaches a file path, a command line or a pane.
+RESERVED=" name list read show link unlink "
+valid_name() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ && "$RESERVED" != *" $1 "* ]]; }
+valid_sender() { [[ "$1" =~ ^[%A-Za-z0-9][A-Za-z0-9_.:+=-]*(@[A-Za-z0-9][A-Za-z0-9._-]*)?$ ]]; }
+valid_host() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
+
+# A refusal that may pass (someone typing, a pane scrolled back or busy): for a message a
+# link brings in, the link retries it at the next check-in instead of waiting here.
+soft_die() {
+	echo "agent-say: $*" >&2
+	[[ -n "${DELIVER:-}" ]] && exit 75
+	exit 1
 }
 
 ssh_to() { # ssh_to HOST REMOTE-COMMAND (stdin passes through)
+	[[ "$1" != -* ]] || die "not a host: $1"
 	mkdir -p "$STATE"
 	$SSH "${SSH_OPTS[@]}" "$1" "$2"
 }
@@ -223,7 +239,17 @@ ssh_to() { # ssh_to HOST REMOTE-COMMAND (stdin passes through)
 #   on A: $STATE/links/<host>/{on,pid,names}       B's names, as A last saw them
 #   on B: $STATE/peers/<label>/{alive,names,outbox/} A's names; messages waiting for A
 peer_alive() { [[ -n "$(find "$STATE/peers/$1/alive" -mmin -1 2>/dev/null)" ]]; } # checked in within a minute
-link_running() { local pid; pid="$(cat "$STATE/links/$1/pid" 2>/dev/null)" && [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; }
+# The poller holds an flock on links/<host>/lock for as long as it runs. Without flock
+# (macOS), the pid file, checked against the process's command line so a reused pid after
+# a reboot is not mistaken for it.
+link_running() {
+	local d="$STATE/links/$1" pid
+	if command -v flock >/dev/null; then
+		[[ -e "$d/lock" ]] && ! flock -n "$d/lock" true
+		return
+	fi
+	pid="$(cat "$d/pid" 2>/dev/null)" && [[ -n "$pid" && "$(ps -o args= -p "$pid" 2>/dev/null)" == *"_poll $1"* ]]
+}
 
 # Where else a name lives: "name@host" for each linked machine that has a pane by that name.
 remote_homes() {
@@ -237,7 +263,7 @@ remote_homes() {
 	return 0
 }
 
-local_names() { tmux list-panes -a -F '#{@agent}' 2>/dev/null | grep -v '^$' | sort -u; }
+local_names() { tmux list-panes -a -F '#{@agent}' 2>/dev/null | grep -v '^$' | sort -u || true; } # none named: no output, not a failure
 
 start_poller() {
 	link_running "$1" && return 0
@@ -266,6 +292,78 @@ rotate_mailbox() {
 	return 0
 }
 
+send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
+	local to="$1" msg me homes host name target tkind i ts id you reply line
+	shift; [[ $# -gt 0 ]] || die "usage: agent-say <to> <message...>"
+	if [[ "$*" == - ]]; then msg="$(cat)"; else msg="$*"; fi
+	[[ -n "$msg" ]] || die "empty message"
+
+	if [[ -z "$from" ]]; then
+		me="$(self_pane)"; from="$( [[ -n "$me" ]] && name_of "$me" || true)"; from="${from:-${me:-unknown}}"
+	fi
+	valid_sender "$from" || die "'$from' can't be a sender name (no spaces; letters, digits and . _ - : + =)"
+
+	# A name with no pane here may live on a linked machine.
+	# (Not for what a link brings in: that is for this machine, never sent on.)
+	if [[ "$to" != *@* && "$to" != %* && -z "${AGENT_SAY_LOCAL_ONLY:-}" && -z "$(panes_named "$to")" ]]; then
+		mapfile -t homes < <(remote_homes "$to" | sort -u)
+		((${#homes[@]} == 0)) && die "no pane named '$to' here or on a linked machine (see: agent-say list)"
+		((${#homes[@]} > 1)) && die "'$to' is on more than one linked machine (${homes[*]}); say which, e.g. ${homes[0]}"
+		to="${homes[0]}"
+	fi
+
+	if [[ "$to" == *@* ]]; then
+		host="${to#*@}"; name="${to%@*}"
+		valid_host "$host" || die "not a host: $host"
+		[[ "$from" == *@* ]] || from="$from@$LABEL"
+		# A linked machine that checks in with us: leave it in its outbox.
+		if peer_alive "$host"; then
+			queue_for_peer "$host" "$name" "$from" "$msg"
+			return
+		fi
+		# Otherwise hand the message to agent-say on that host over ssh. The message travels
+		# on stdin, so no shell quoting of its content is needed.
+		printf '%s' "$msg" | ssh_to "$host" "$REMOTE_CMD --from $(printf %q "$from") $(printf %q "$name") -"
+		return
+	fi
+
+	target="$(resolve "$to")"
+	take_pane_lock "$target"
+	check_target "$target" "$to"
+	# Someone typing in that pane: wait for them to send or clear it, so the message isn't
+	# typed on top of their draft. (Claude Code and Codex, whose prompts we can read.)
+	read -r tkind _ < <(pane_agent_pid "$(tmux display-message -p -t "$target" '#{pane_pid}')") || true
+	if [[ "${tkind:-}" == claude || "${tkind:-}" == codex ]]; then
+		for ((i = 0; ; i++)); do
+			input_empty "$target" && break
+			((i >= TYPING_WAIT * 2)) && soft_die "someone is typing in $to ($target); not sent, so it can't land on their draft. Try again once they've sent it"
+			sleep 0.5
+		done
+	fi
+	ts="$(date -u +%H:%MZ)"
+	id="$(date -u +%Y%m%d%H%M%S)-$$"
+
+	mkdir -p "$(dirname "$MAILBOX")"
+	[[ -f "$MAILBOX" ]] && chmod 600 "$MAILBOX" # from versions that left it readable to all
+	rotate_mailbox
+	printf '## [%s -> %s %s] #%s\n%s\n\n' "$from" "$to" "$(date -u +%FT%TZ)" "$id" "$msg" >> "$MAILBOX"
+
+	# Tell the receiver its own name: Codex runs commands in a shared daemon outside the
+	# pane, so it cannot work out which pane it is in when it replies.
+	you="$(name_of "$target")"; you="${you:-$target}"
+	reply="To answer, run the shell command: agent-say --from $you $from \"<your reply>\""
+	if (( ${#msg} > INLINE_MAX )) || [[ "$msg" == *$'\n'* ]]; then
+		line="[agent-msg from=$from $ts] Long message, read it by running: agent-say show $id. $reply"
+	else
+		line="[agent-msg from=$from $ts] $msg -- $reply"
+	fi
+
+	tmux send-keys -t "$target" -l -- "$line"
+	sleep "$ENTER_DELAY"
+	tmux send-keys -t "$target" Enter
+	echo "sent to $to ($target)"
+}
+
 from=""
 if [[ "${1:-}" == --from ]]; then from="${2:-}"; shift 2 || die "--from needs a value"; fi
 
@@ -280,7 +378,7 @@ case "$cmd" in
 			[[ -n "${kind:-}" ]] && newname="$(session_name "$kind" "$apid")"
 			[[ -n "$newname" ]] || die "usage: agent-say name <name> (this pane's ${kind:-shell} session has no name of its own to use)"
 		fi
-		[[ "$newname" != *[[:space:]@]* && "$newname" != %* ]] || die "a name can't contain spaces or @, or start with %"
+		valid_name "$newname" || die "'$newname' can't be a name: use letters, digits and . _ - : + =, starting with a letter or digit (and not one of:$RESERVED)"
 		others="$(panes_named "$newname" | grep -vx -- "$p" || true)"
 		tmux set-option -p -t "$p" @agent "$newname"
 		echo "pane $p is now '$newname'"
@@ -351,7 +449,7 @@ case "$cmd" in
 			done
 			exit 0
 		fi
-		[[ "$host" != */* ]] || die "not a host name: $host"
+		valid_host "$host" || die "not a host name: $host"
 		d="$STATE/links/$host"
 		mkdir -p "$d"
 		# Check it works before leaving anything running.
@@ -368,7 +466,11 @@ case "$cmd" in
 		[[ -d "$d" ]] || die "no link to $2"
 		rm -f "$d/on"
 		pid="$(cat "$d/pid" 2>/dev/null || true)"
-		[[ -n "$pid" ]] && kill "$pid" 2>/dev/null
+		[[ -n "$pid" && "$(ps -o args= -p "$pid" 2>/dev/null)" == *"_poll $2"* ]] && kill "$pid" 2>/dev/null
+		# Tell the other side, so what it still holds for us is marked NOT DELIVERED there
+		# instead of waiting for a check-in that won't come.
+		echo B | timeout 15 $SSH "${SSH_OPTS[@]}" "$2" "$REMOTE_CMD _sync $(printf %q "$LABEL")" >/dev/null 2>&1 ||
+			echo "agent-say: couldn't tell $2; messages it holds for here wait until you link again" >&2
 		rm -rf "$d"
 		echo "unlinked $2" ;;
 	_resume-links)
@@ -378,8 +480,16 @@ case "$cmd" in
 		done
 		exit 0 ;;
 	_poll)
-		host="$2" d="$STATE/links/$2" acks=() fails=0
+		host="$2" d="$STATE/links/$2" fails=0
+		valid_host "$host" && [[ -d "$d" ]] || exit 1
+		# One poller per link: a second one (two tmux starts at once) leaves.
+		if command -v flock >/dev/null; then
+			exec {lockfd}>"$d/lock"
+			flock -n "$lockfd" || exit 0
+		fi
 		echo $$ >"$d/pid"
+		mkdir -p "$d/retry"
+		touch "$d/acks"
 		while [[ -f "$d/on" ]]; do
 			if ! tmux list-sessions >/dev/null 2>&1; then
 				# No tmux here: nothing to deliver to. tmux-revive restarts the link with tmux.
@@ -387,22 +497,45 @@ case "$cmd" in
 				sleep 5; continue
 			fi
 			fails=0
-			if out="$( { local_names | sed 's/^/N /'; for a in "${acks[@]}"; do echo "A $a"; done; } |
+			# Acks live on disk until the other side has them, so a restart can't redeliver.
+			cp "$d/acks" "$d/acks.sent"
+			if out="$( { local_names | sed 's/^/N /'; sed 's/^/A /' "$d/acks.sent"; } |
 				ssh_to "$host" "$REMOTE_CMD _sync $(printf %q "$LABEL")" 2>"$d/error.new")"; then
 				rm -f "$d/error" "$d/error.new"
-				acks=()
-				sed -n 's/^N //p' <<<"$out" >"$d/names.new" && mv "$d/names.new" "$d/names"
+				grep -vxFf "$d/acks.sent" "$d/acks" >"$d/acks.new" || true
+				mv "$d/acks.new" "$d/acks"
+				sed -n 's/^N //p' <<<"$out" | while read -r n; do valid_name "$n" && echo "$n"; done >"$d/names.new"
+				mv "$d/names.new" "$d/names"
 				while read -r tag id to mfrom body; do
 					[[ "$tag" == M ]] || continue
-					# Reply address: the name you ssh to, which may differ from its own hostname.
-					mfrom="${mfrom%@*}@$host"
-					if ! base64 -d <<<"$body" | AGENT_SAY_LOCAL_ONLY=1 "$0" --from "$mfrom" "$to" - >/dev/null 2>"$d/deliver.err"; then
-						# Refused here (no such pane, a shell prompt...): keep it in the mailbox.
-						mkdir -p "$(dirname "$MAILBOX")"
-						printf '## [%s -> %s %s] #%s (NOT DELIVERED: %s)\n%s\n\n' "$mfrom" "$to" "$(date -u +%FT%TZ)" "$id" \
-							"$(tr '\n' ' ' <"$d/deliver.err")" "$(base64 -d <<<"$body")" >>"$MAILBOX"
+					[[ "$id" =~ ^[A-Za-z0-9-]+$ ]] || continue
+					grep -qxF -- "$id" "$d/acks" && continue # handled; its ack is on the way
+					text="$(base64 -d <<<"$body" 2>/dev/null)"
+					mfrom="${mfrom%@*}"
+					why=""
+					if ! valid_name "$to"; then
+						why="'$to' is not a pane name"
+					elif ! valid_sender "$mfrom"; then
+						why="'$mfrom' is not a sender name"
+					else
+						# Reply address: the name you ssh to, which may differ from its hostname.
+						mfrom="$mfrom@$host"
+						rc=0
+						printf '%s' "$text" | "$0" --from "$mfrom" _deliver "$to" >/dev/null 2>"$d/deliver.err" || rc=$?
+						if ((rc == 75)); then
+							# Someone typing there, or the like: try again at the next check-in,
+							# for about a minute.
+							n=$(($(cat "$d/retry/$id" 2>/dev/null || echo 0) + 1))
+							if ((n < 30)); then echo "$n" >"$d/retry/$id"; continue; fi
+						fi
+						((rc == 0)) || why="$(tr '\n' ' ' <"$d/deliver.err")"
 					fi
-					acks+=("$id")
+					if [[ -n "$why" ]]; then
+						mkdir -p "$(dirname "$MAILBOX")"
+						printf '## [%s -> %s %s] #%s (NOT DELIVERED: %s)\n%s\n\n' "$mfrom" "$to" "$(date -u +%FT%TZ)" "$id" "$why" "$text" >>"$MAILBOX"
+					fi
+					rm -f "$d/retry/$id"
+					echo "$id" >>"$d/acks"
 				done <<<"$out"
 				sleep "$LINK_INTERVAL"
 			else
@@ -415,16 +548,31 @@ case "$cmd" in
 		# Server half of a link (run over ssh by the other machine's poller). stdin: its pane
 		# names (N name) and the messages it delivered (A id). stdout: our names, then the
 		# messages waiting for it (M id to from base64).
-		[[ -n "${2:-}" && "$2" != */* ]] || die "usage: agent-say _sync <label>"
+		valid_host "${2:-}" || die "usage: agent-say _sync <label>"
 		d="$STATE/peers/$2"
 		mkdir -p "$d/outbox"
 		: >"$d/names.new"
+		bye=""
 		while read -r tag val; do
 			case "$tag" in
-				N) echo "$val" >>"$d/names.new" ;;
-				A) [[ "$val" != */* ]] && rm -f "$d/outbox/$val" ;;
+				N) valid_name "$val" && echo "$val" >>"$d/names.new" ;;
+				A) [[ "$val" =~ ^[A-Za-z0-9-]+$ ]] && rm -f "$d/outbox/$val" ;;
+				B) bye=1 ;;
 			esac
 		done
+		if [[ -n "$bye" ]]; then
+			# It unlinked: what we still hold for it won't be fetched. Say so in our mailbox.
+			rm -f "$d/alive" "$d/names" "$d/names.new"
+			for f in "$d"/outbox/*; do
+				[[ -f "$f" ]] || continue
+				{ read -r mto; read -r mfrom; } <"$f"
+				mkdir -p "$(dirname "$MAILBOX")"
+				printf '## [%s -> %s@%s %s] #%s (NOT DELIVERED: %s unlinked)\n%s\n\n' "$mfrom" "$mto" "$2" "$(date -u +%FT%TZ)" \
+					"$(basename "$f")" "$2" "$(tail -n +3 "$f")" >>"$MAILBOX"
+				rm -f "$f"
+			done
+			exit 0
+		fi
 		mv "$d/names.new" "$d/names"
 		touch "$d/alive"
 		local_names | sed 's/^/N /'
@@ -448,71 +596,13 @@ case "$cmd" in
 			/^## /{keep = (who == "" || index($0, "-> " who " ") > 0); if (keep) c++}
 			keep {buf[c] = buf[c] $0 "\n"}
 			END{s = c - n + 1; if (s < 1) s = 1; for (i = s; i <= c; i++) printf "%s", buf[i]}' "$MAILBOX" ;;
+	_deliver)
+		# A message a link brought in (stdin), for a pane on this machine only. Its own
+		# command, so a pane named like a command (read, list...) can't turn it into one.
+		DELIVER=1 AGENT_SAY_LOCAL_ONLY=1 MODE_WAIT=0 TYPING_WAIT=0
+		[[ -n "${2:-}" ]] || die "usage: agent-say --from <sender> _deliver <to>"
+		send_message "$2" - ;;
 	*)
-		to="$cmd"; shift; [[ $# -gt 0 ]] || die "usage: agent-say <to> <message...>"
-		if [[ "$*" == - ]]; then msg="$(cat)"; else msg="$*"; fi
-		[[ -n "$msg" ]] || die "empty message"
-
-		if [[ -z "$from" ]]; then
-			me="$(self_pane)"; from="$( [[ -n "$me" ]] && name_of "$me" || true)"; from="${from:-${me:-unknown}}"
-		fi
-
-		# A name with no pane here may live on a linked machine.
-		# (Not for what a link brings in: that is for this machine, never sent on.)
-		if [[ "$to" != *@* && "$to" != %* && -z "${AGENT_SAY_LOCAL_ONLY:-}" && -z "$(panes_named "$to")" ]]; then
-			mapfile -t homes < <(remote_homes "$to" | sort -u)
-			((${#homes[@]} == 0)) && die "no pane named '$to' here or on a linked machine (see: agent-say list)"
-			((${#homes[@]} > 1)) && die "'$to' is on more than one linked machine (${homes[*]}); say which, e.g. ${homes[0]}"
-			to="${homes[0]}"
-		fi
-
-		if [[ "$to" == *@* ]]; then
-			host="${to#*@}"; name="${to%@*}"
-			[[ "$from" == *@* ]] || from="$from@$LABEL"
-			# A linked machine that checks in with us: leave it in its outbox.
-			if peer_alive "$host"; then
-				queue_for_peer "$host" "$name" "$from" "$msg"
-				exit
-			fi
-			# Otherwise hand the message to agent-say on that host over ssh. The message travels
-			# on stdin, so no shell quoting of its content is needed.
-			printf '%s' "$msg" | ssh_to "$host" "$REMOTE_CMD --from $(printf %q "$from") $(printf %q "$name") -"
-			exit
-		fi
-
-		target="$(resolve "$to")"
-		take_pane_lock "$target"
-		check_target "$target" "$to"
-		# Someone typing in that pane: wait for them to send or clear it, so the message isn't
-		# typed on top of their draft. (Claude Code and Codex, whose prompts we can read.)
-		read -r tkind _ < <(pane_agent_pid "$(tmux display-message -p -t "$target" '#{pane_pid}')") || true
-		if [[ "${tkind:-}" == claude || "${tkind:-}" == codex ]]; then
-			for ((i = 0; ; i++)); do
-				input_empty "$target" && break
-				((i >= TYPING_WAIT * 2)) && die "someone is typing in $to ($target); not sent, so it can't land on their draft. Try again once they've sent it"
-				sleep 0.5
-			done
-		fi
-		ts="$(date -u +%H:%MZ)"
-		id="$(date -u +%Y%m%d%H%M%S)-$$"
-
-		mkdir -p "$(dirname "$MAILBOX")"
-		[[ -f "$MAILBOX" ]] && chmod 600 "$MAILBOX" # from versions that left it readable to all
-		rotate_mailbox
-		printf '## [%s -> %s %s] #%s\n%s\n\n' "$from" "$to" "$(date -u +%FT%TZ)" "$id" "$msg" >> "$MAILBOX"
-
-		# Tell the receiver its own name: Codex runs commands in a shared daemon outside the
-		# pane, so it cannot work out which pane it is in when it replies.
-		you="$(name_of "$target")"; you="${you:-$target}"
-		reply="To answer, run the shell command: agent-say --from $you $from \"<your reply>\""
-		if (( ${#msg} > INLINE_MAX )) || [[ "$msg" == *$'\n'* ]]; then
-			line="[agent-msg from=$from $ts] Long message, read it by running: agent-say show $id. $reply"
-		else
-			line="[agent-msg from=$from $ts] $msg -- $reply"
-		fi
-
-		tmux send-keys -t "$target" -l -- "$line"
-		sleep "$ENTER_DELAY"
-		tmux send-keys -t "$target" Enter
-		echo "sent to $to ($target)" ;;
+		shift
+		send_message "$cmd" "$@" ;;
 esac
