@@ -17,7 +17,7 @@ agents send each other messages, even across accounts and across computers.
 - [Everyday use](#everyday-use)
 - [Handy commands](#handy-commands)
 - [Agents talking to each other](#agents-talking-to-each-other)
-- [Another computer you ssh into](#another-computer-you-ssh-into)
+- [Linking AI sessions across multiple computers](#linking-ai-sessions-across-multiple-computers)
 - [Options](#options)
 
 ## Install
@@ -119,7 +119,7 @@ agent-say read 5
 A word of caution. Anything that can run `agent-say` can type into your
 agents, so treat it the way you'd treat access to your terminal.
 
-## Another computer you ssh into
+## Linking AI sessions across multiple computers
 
 Link tmux on your computer to tmux on a server, and the agents on both sides
 can talk to each other by name. Run this once on **your own computer**, using
