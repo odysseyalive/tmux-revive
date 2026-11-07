@@ -76,6 +76,8 @@ starttime() { # field 22 of /proc/PID/stat, robust to spaces in comm
 
 quote_argv() { printf '%q ' "$@" | sed 's/ $//'; }
 
+UUID='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
 # ------------------------------------------------------------ claude code
 # Every live Claude Code process writes <config>/sessions/<pid>.json holding
 # its sessionId, cwd, name and Remote Control bridge. Map pid -> that record.
@@ -120,13 +122,18 @@ claude_keep_args() {
 }
 
 detect_claude() { # detect_claude PID -> prints JSON detail + sets CMD
-	local pid=$1 rec start want cfg bin args name rc
+	local pid=$1 rec start want cfg bin args name rc sid
 	rec=${CLAUDE[$pid]:-}
 	[[ -z $rec ]] && return 1
-	# A stale file from before a crash can name a pid that was later reused.
+	# The id goes into a command line that restore runs through a shell: a
+	# record that is not a plain UUID is not Claude's, and is ignored.
+	sid=$(jq -r '.sessionId' <<<"$rec")
+	[[ $sid =~ ^$UUID$ ]] || return 1
+	# A stale file from before a crash can name a pid that was later reused,
+	# and anyone can drop a file naming any pid: the start time must match.
 	if start=$(starttime "$pid"); then
 		want=$(jq -r '.procStart // empty' <<<"$rec")
-		[[ -n $want && $want != "$start" ]] && return 1
+		[[ $want == "$start" ]] || return 1
 	else # no /proc (macOS): at least require a claude process
 		read_argv "$pid"
 		[[ ${COMM[$pid]:-} == claude* || ${ARGV[*]:-} == *claude* ]] || return 1
@@ -147,7 +154,7 @@ detect_claude() { # detect_claude PID -> prints JSON detail + sets CMD
 
 	CMD=""
 	[[ $cfg != "$HOME/.claude" ]] && CMD="CLAUDE_CONFIG_DIR=$(printf '%q' "$cfg") "
-	CMD+="$(printf '%q' "$bin") --resume $(jq -r '.sessionId' <<<"$rec")"
+	CMD+="$(printf '%q' "$bin") --resume $(printf '%q' "$sid")"
 	[[ -n $args ]] && CMD+=" $args"
 
 	# Bring the Remote Control bridge back too, so the session is reachable
@@ -169,7 +176,6 @@ detect_claude() { # detect_claude PID -> prints JSON detail + sets CMD
 #      used only when it is the sole process of that agent in the project
 #   3. an id on its command line (it may have switched session since)
 #   4. the agent's own picker, or its "most recent", marked exact:false
-UUID='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 
 proc_start_epoch() { # seconds since the epoch; Linux only
 	local st btime
@@ -373,7 +379,7 @@ detect_gemini() {
 PROGRAMS=" $(opt @revive-programs 'vim nvim vi man less more tail top htop btop watch ssh mosh journalctl lazygit lazydocker yazi ranger k9s') "
 
 detect_program() { # foreground job of the pane's tty
-	local shell_pid=$1 cwd=$2 fg name
+	local shell_pid=$1 fg name
 	fg=$(ps -o tpgid= -p "$shell_pid" 2>/dev/null | tr -d ' ')
 	[[ -z $fg || $fg -le 0 ]] && return 1
 	# The pane's own process is the foreground job: idle if it is a shell,
@@ -383,18 +389,17 @@ detect_program() { # foreground job of the pane's tty
 	((${#ARGV[@]})) || return 1
 	name=${ARGV[0]##*/}
 	[[ $PROGRAMS == *" :all: "* || $PROGRAMS == *" $name "* ]] || return 1
-	if [[ $name == nvim || $name == vim ]] && [[ -f $cwd/Session.vim ]]; then
-		CMD="$name -S Session.vim"
-	else
-		CMD=$(quote_argv "${ARGV[@]}")
-	fi
+	# The argv as it ran, -S included if vim had one. Adding -S for a
+	# Session.vim that merely sits in the directory would source a file vim
+	# never trusted (a cloned repo can ship one).
+	CMD=$(quote_argv "${ARGV[@]}")
 	DETAIL=$(jq -cn --arg n "$name" '{program: $n}')
 }
 
 # ------------------------------------------------------------------- panes
 stamp=$(date +%Y%m%dT%H%M%S)
 work=$(mktemp -d "$DIR/.save.XXXXXX")
-on_exit "rm -rf '$work'"
+on_exit "rm -rf $(printf '%q' "$work")"
 : >"$work/panes.jsonl"
 lines=$(opt @revive-scrollback 2000)
 S=$'\x1f'
@@ -410,7 +415,7 @@ while IFS=$S read -r sess attached widx wname layout wactive autoren zoomed pidx
 		if detect_crush "$p"; then kind=crush; break; fi
 		if detect_gemini "$p"; then kind=gemini; break; fi
 	done
-	if [[ $kind == shell ]] && detect_program "$ppid" "$cwd"; then kind=program; fi
+	if [[ $kind == shell ]] && detect_program "$ppid"; then kind=program; fi
 	[[ $kind =~ ^(claude|codex|cursor|crush|gemini)$ ]] && ((agents++))
 	# Agents resume by project directory: start each where its session lives.
 	[[ -n $CWD_OVERRIDE ]] && cwd=$CWD_OVERRIDE

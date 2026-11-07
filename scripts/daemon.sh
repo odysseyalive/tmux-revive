@@ -16,7 +16,10 @@ same_server() { [[ $(tm display-message -p '#{pid}' 2>/dev/null) == "$spid" ]]; 
 
 logind_watch() {
 	command -v systemd-inhibit >/dev/null && command -v gdbus >/dev/null || return 0
-	trap 'pkill -P "${wpid:-0}" 2>/dev/null; kill "${wpid:-0}" 2>/dev/null; exit 0' TERM INT
+	# Only ever signal our own watcher: an empty pid would mean process
+	# group 0, everything we share a group with.
+	wpid=""
+	trap '[[ -n $wpid ]] && { pkill -P "$wpid"; kill "$wpid"; } 2>/dev/null; exit 0' TERM INT
 	while same_server; do
 		# The inhibitor lives exactly as long as this pipeline. Ending it
 		# after the save releases logind to carry on.
@@ -40,6 +43,7 @@ logind_watch() {
 		pkill -P "$wpid" 2>/dev/null
 		kill "$wpid" 2>/dev/null
 		wait "$wpid" 2>/dev/null
+		wpid=""
 		[[ $event == shutdown ]] && return 0
 		# After sleep: wait for resume before re-arming. Inhibitor setup
 		# failing (no polkit rights) also lands here; back off.

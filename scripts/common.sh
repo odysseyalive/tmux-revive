@@ -7,12 +7,18 @@ REVIVE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [[ -d $REVIVE_ROOT/vendor/bin ]] && PATH="$REVIVE_ROOT/vendor/bin:$PATH"
 OS=$(uname -s)
 
+# Snapshots hold scrollback (pasted secrets, tokens) and agent session ids:
+# everything we write is for this user only. tmux gets the user's own umask
+# back, since a server it starts hands its umask to every shell it runs.
+REVIVE_UMASK=$(umask)
+umask 077
+
 # Talk to the right tmux server. Tests point REVIVE_SOCKET at a private socket.
 tm() {
 	if [[ -n ${REVIVE_SOCKET:-} ]]; then
-		tmux -S "$REVIVE_SOCKET" "$@"
+		(umask "$REVIVE_UMASK" && exec tmux -S "$REVIVE_SOCKET" "$@")
 	else
-		tmux "$@"
+		(umask "$REVIVE_UMASK" && exec tmux "$@")
 	fi
 }
 
@@ -28,6 +34,10 @@ revive_dir() {
 	[[ -z $d ]] && d=$(opt @revive-dir "${XDG_DATA_HOME:-$HOME/.local/share}/tmux-revive")
 	d=${d/#\~/$HOME}
 	mkdir -p "$d/snapshots" "$d/panes"
+	# Older versions left it world-readable: close it up, once.
+	if [[ -n $(find "$d" -maxdepth 0 ! -perm 700 2>/dev/null) ]]; then
+		chmod 700 "$d" && chmod -R go-rwx "$d" 2>/dev/null
+	fi
 	printf '%s' "$d"
 }
 
@@ -36,7 +46,7 @@ log() {
 }
 
 msg() {
-	tm display-message "tmux-revive: $*" 2>/dev/null || true
+	tm display-message "tmux-revive: ${*//\#/##}" 2>/dev/null || true # no formats
 	log "$*"
 }
 
@@ -67,7 +77,7 @@ take_lock() {
 	fi
 	for ((i = 0; i <= w * 10; i++)); do
 		if shlock -f "$f" -p $$ 2>/dev/null; then
-			on_exit "rm -f '$f'"
+			on_exit "rm -f $(printf '%q' "$f")"
 			return 0
 		fi
 		((w)) || return 1

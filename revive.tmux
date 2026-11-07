@@ -27,6 +27,12 @@ if [ -z "$BASH4" ]; then
 fi
 tmux set-option -g @revive-bash "$BASH4"
 run() { printf '%q %q' "$BASH4" "$S/$1"; }
+# run-shell expands formats in its command, so a '#' in the install path
+# must reach it as '##'.
+rs() { local c="$(run "$1")"; shift; c="$c${*:+ $*}"; printf '%s' "${c//\#/##}"; }
+# A command string tmux parses again (hooks): single-quote it for tmux,
+# splicing any ' as '\'' (the %q output inside may itself hold one).
+tq() { local c=$1 q="'" r="'\\''"; printf "'%s'" "${c//$q/$r}"; }
 
 # Saving and restoring are automatic, so no keys are bound unless you ask
 # for them. Drop the bindings older versions made by default.
@@ -38,8 +44,8 @@ restore_key=$(get @revive-restore-key none)
 status_key=$(get @revive-status-key none)
 panel_key=$(get @revive-panel-key none)
 
-[ "$save_key" != none ] && tmux bind-key "$save_key" run-shell -b "$(run save.sh) manual"
-[ "$restore_key" != none ] && tmux bind-key "$restore_key" run-shell -b "$(run restore.sh)"
+[ "$save_key" != none ] && tmux bind-key "$save_key" run-shell -b "$(rs save.sh manual)"
+[ "$restore_key" != none ] && tmux bind-key "$restore_key" run-shell -b "$(rs restore.sh)"
 [ "$status_key" != none ] &&
 	tmux bind-key "$status_key" display-popup -E -w 90% -h 80% \
 		"$(printf %q "$ROOT/bin/tmux-revive") status; printf '\\npress a key'; read -rsn1"
@@ -49,7 +55,7 @@ panel_key=$(get @revive-panel-key none)
 
 # Save the moment you detach: the usual last thing before a shutdown.
 # An indexed hook slot keeps any client-detached hooks of your own intact.
-tmux set-hook -g 'client-detached[77]' "run-shell -b '$(run save.sh) detach'"
+tmux set-hook -g 'client-detached[77]' "run-shell -b $(tq "$(rs save.sh detach)")"
 
 # Save when you close a pane, window or session, so what you closed stays
 # closed. tmux exits the moment its last session goes, before any hook runs,
@@ -61,14 +67,15 @@ tmux set-hook -g 'client-detached[77]' "run-shell -b '$(run save.sh) detach'"
 	tmux set-option -g @revive-exit-empty "$(tmux show-option -gv exit-empty)"
 tmux set-option -g exit-empty off
 for h in pane-exited after-kill-pane window-unlinked session-closed; do
-	tmux set-hook -g "$h[77]" "run-shell -b '$(run save.sh) close --quiet'"
+	tmux set-hook -g "$h[77]" "run-shell -b $(tq "$(rs save.sh close --quiet)")"
 done
 
 # Interval saves + a final save on shutdown/suspend (one daemon per server).
-tmux run-shell -b "$(run daemon.sh)"
+tmux run-shell -b "$(rs daemon.sh)"
 
 # agent-say links to machines you ssh into come back with tmux.
-tmux run-shell -b "$(printf %q "$ROOT/bin/agent-say") _resume-links"
+as=$(printf %q "$ROOT/bin/agent-say")
+tmux run-shell -b "${as//\#/##} _resume-links"
 
 # First start after a reboot: bring everything back.
-tmux run-shell -b "$(run restore.sh) --auto"
+tmux run-shell -b "$(rs restore.sh --auto)"

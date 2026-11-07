@@ -92,6 +92,10 @@ for i in "${!placeholders[@]}"; do
 	placeholders[i]=$tmp
 done
 
+# tmux expands formats (#{...}, and #() runs a command) in names, titles and
+# start directories: a saved `#(...)` must come back as text, not run.
+lit() { printf '%s' "${1//\#/##}"; }
+
 init=$REVIVE_ROOT/scripts/pane-init.sh
 pane_cmd() { # pane_cmd PANE_JSON -> shell command line for the new pane
 	local cmd scroll cmdf=""
@@ -134,21 +138,21 @@ while read -r sjson; do
 			if [[ -z $wid ]]; then
 				if ((created == 0)); then
 					read -r wid last < <(tm new-session -d -P -F '#{window_id} #{pane_id}' \
-						-s "$name" -n "$wname" -c "$cwd" -x "${W:-200}" -y "${H:-50}" "$cmd")
+						-s "$(lit "$name")" -n "$(lit "$wname")" -c "$(lit "$cwd")" -x "${W:-200}" -y "${H:-50}" "$cmd")
 					tm move-window -s "$wid" -t "=$name:$widx" 2>/dev/null
 					created=1
 				else
 					read -r wid last < <(tm new-window -d -P -F '#{window_id} #{pane_id}' \
-						-t "=$name:$widx" -n "$wname" -c "$cwd" "$cmd")
+						-t "=$name:$widx" -n "$(lit "$wname")" -c "$(lit "$cwd")" "$cmd")
 				fi
 			else
 				# Split the newest pane so pane order matches the saved layout.
-				last=$(tm split-window -d -P -F '#{pane_id}' -t "$last" -c "$cwd" "$cmd")
+				last=$(tm split-window -d -P -F '#{pane_id}' -t "$last" -c "$(lit "$cwd")" "$cmd")
 				tm select-layout -t "$wid" tiled >/dev/null 2>&1
 			fi
 			[[ $(jq -r '.active' <<<"$pjson") == true ]] && active_pane=$last
 			title=$(jq -r '.title // empty' <<<"$pjson")
-			[[ -n $title ]] && tm select-pane -t "$last" -T "$title"
+			[[ -n $title ]] && tm select-pane -t "$last" -T "$(lit "$title")"
 			[[ $(jq -r '.kind' <<<"$pjson") =~ ^(claude|codex|cursor|crush|gemini)$ ]] && ((agents++))
 		done
 		tm select-layout -t "$wid" "$layout" >/dev/null 2>&1

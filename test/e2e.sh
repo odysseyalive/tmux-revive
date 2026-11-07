@@ -86,14 +86,41 @@ if command -v sqlite3 >/dev/null; then
 	sqlite3 "$CODEX_HOME/state_5.sqlite" "insert into threads values ('01aaaaaa-2222-7000-8000-000000000002', '$T/codexB', 'cli', 0, $now), ('01aaaaaa-3333-7000-8000-000000000003', '$T/codexB', 'cli', 0, $((now - 86400)))"
 fi
 
+# Hostile input, all in one session dropped again after the restore: names
+# that are tmux formats, forged Claude records, a planted Session.vim.
+# #() jobs run with the server's environment; '##' makes a literal '#'.
+export REVIVE_PWNED=$T/pwned
+EVIL='x#(touch $REVIVE_PWNED)' EVILW='w#(touch $REVIVE_PWNED)'
+t new-session -d -s "${EVIL//#/##}" -n "${EVILW//#/##}" -c "$T/proj" "$REVIVE_SHELL"
+t new-window -t "=$EVIL" -c "$T/proj" "$REVIVE_SHELL"
+t send-keys -t "=$EVIL:1" "$T/bin/claude forged-a" Enter
+t new-window -t "=$EVIL" -c "$T/proj" "$REVIVE_SHELL"
+t send-keys -t "=$EVIL:2" "$T/bin/claude forged-b" Enter
+mkdir -p "$T/vimproj" && : >"$T/vimproj/Session.vim"
+ln -s "$(command -v sleep)" "$T/bin/vim"
+t new-window -t "=$EVIL" -c "$T/vimproj" "$REVIVE_SHELL"
+t send-keys -t "=$EVIL:3" "$T/bin/vim 300" Enter
+sleep 1
+fa=$(pgrep -f "$T/bin/claude forged-a") fb=$(pgrep -f "$T/bin/claude forged-b")
+# a: a shell command for an id, start time right. b: a real UUID, no procStart.
+printf '{"pid":%s,"sessionId":"x; touch %s/pwned2","procStart":"%s"}' "$fa" "$T" "$(awk '{print $22}' /proc/"$fa"/stat)" >"$FAKEHOME/.claude/sessions/$fa.json"
+printf '{"pid":%s,"sessionId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}' "$fb" >"$FAKEHOME/.claude/sessions/$fb.json"
+
+# A revive dir older versions left readable by everyone gets closed up.
+mkdir -p "$REVIVE_DIR/snapshots" && chmod 755 "$REVIVE_DIR" && : >"$REVIVE_DIR/revive.log" && chmod 644 "$REVIVE_DIR/revive.log"
+
 echo "save"
 HOME=$FAKEHOME bash "$ROOT/scripts/save.sh" manual --quiet
 state=$REVIVE_DIR/last/state.json
 check "snapshot written" "[[ -f $state ]]"
+check "revive dir is 700" "[[ \$(stat -c %a $REVIVE_DIR) == 700 ]]"
+check "nothing in it readable by group or others" "[[ -z \$(find $REVIVE_DIR ! -type l -perm /077) ]]"
+check "forged claude records ignored (bad id, no procStart)" "jq -e '[.. | objects | select(.kind? == \"claude\")] | length == 1' $state >/dev/null && ! grep -q -e pwned2 -e aaaaaaaa-bbbb $state"
+check "Session.vim in the cwd does not add -S" "jq -e '.. | objects | select(.kind? == \"program\" and .cwd == \"$T/vimproj\") | .cmd | (test(\"vim 300\") and (test(\"-S\") | not))' $state >/dev/null"
 check "claude pane resolved to its session" "jq -e '.. | objects | select(.kind? == \"claude\") | .cmd | test(\"--resume 11111111-2222-3333-4444-555555555555\")' $state >/dev/null"
 check "prompt argument dropped, --model kept" "jq -e '.. | objects | select(.kind? == \"claude\") | .cmd | (test(\"resend\") | not) and test(\"--model opus\")' $state >/dev/null"
 check "remote control carried over" "jq -e '.. | objects | select(.kind? == \"claude\") | .cmd | test(\"--remote-control demo\")' $state >/dev/null"
-check "pager pane captured as a program" "jq -e '.. | objects | select(.kind? == \"program\") | .cmd | test(\"less\")' $state >/dev/null"
+check "pager pane captured as a program" "jq -e '[.. | objects | select(.kind? == \"program\") | .cmd] | any(test(\"less\"))' $state >/dev/null"
 check "split pane cwd kept" "jq -e '[.sessions[] | select(.name==\"work\") | .windows[0].panes[].cwd] | index(\"/tmp\")' $state >/dev/null"
 
 if ((AGENTS)); then
@@ -114,6 +141,9 @@ t set-option -g default-shell "$REVIVE_SHELL"
 bash "$ROOT/scripts/restore.sh" --auto
 sleep 2
 
+check "format names restored literally" "t has-session -t \"=\$EVIL\" && [[ \$(t display -p -t \"=\$EVIL:0\" '#{window_name}') == \"\$EVILW\" ]]"
+check "format names did not run their #()" "[[ ! -e $T/pwned && ! -e $T/pwned2 ]]"
+t kill-session -t "=$EVIL"
 sessions=$(t list-sessions -F '#{session_name}' | sort | tr '\n' ' ')
 want='agent work '
 ((AGENTS)) && want='agent cu cx work '
