@@ -63,5 +63,8 @@ done
 # Interval saves + a final save on shutdown/suspend (one daemon per server).
 tmux run-shell -b "$(run daemon.sh)"
 
+# agent-say links to machines you ssh into come back with tmux.
+tmux run-shell -b "$(printf %q "$ROOT/bin/agent-say") _resume-links"
+
 # First start after a reboot: bring everything back.
 tmux run-shell -b "$(run restore.sh) --auto"

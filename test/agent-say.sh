@@ -77,13 +77,15 @@ echo "naming renames the window and the agent's session"
 # Stand-in agents named like the real ones. Each records what is typed into it, and shows a
 # "working" line until a flag file appears, the way a busy agent does.
 export HOME=$T/home AGENT_SAY_RENAME_WAIT=20
-mkdir -p "$HOME/.claude/sessions" "$T/cx"
+mkdir -p "$HOME/.claude/sessions" "$T/cx" "$T/abin"
 for a in claude codex; do
+	# Run by a copy of bash named after the agent, so tmux sees "codex", not a shell.
+	cp "$(command -v bash)" "$T/abin/$a"
 	cat >"$T/bin/$a" <<EOF
-#!/usr/bin/env bash
+#!$T/abin/$a
 while [[ ! -e $T/$a.idle ]]; do printf '\r* Working (esc to interrupt) %s' "\$SECONDS"; sleep 0.2; done
-clear; echo '> '
-while IFS= read -r line; do echo "\$line" >>$T/$a.typed; done
+clear
+while printf '> ' && IFS= read -r line; do echo "\$line" >>$T/$a.typed; done
 EOF
 	chmod +x "$T/bin/$a"
 done
@@ -92,7 +94,7 @@ wait_typed() { for _ in $(seq 60); do typed "$1" "$2" && return 0; sleep 0.25; d
 
 C=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/claude")
 sleep 0.5
-cpid=$(pgrep -f "^bash $T/bin/claude\$")
+cpid=$(pgrep -f "^$T/abin/claude $T/bin/claude\$")
 printf '{"pid":%s,"name":"auto-1","nameSource":"derived","status":"busy"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
 out=$(AGENT_SAY_PANE=$C say name gamma 2>&1)
 check "naming says the claude session will follow" "[[ '$out' == *'claude session will be renamed'* ]]"
@@ -122,7 +124,67 @@ check "from inside codex's server, the codex pane in this directory is found ($o
 sleep 1.5
 check "nothing typed while codex shows it is working" "! typed codex '/rename delta'"
 touch "$T/codex.idle"
-check "/rename typed once codex is idle" "wait_typed codex '/rename delta'"
+sleep 0.5
+tmux send-keys -t "$X" -l 'half a sentence'
+sleep 3
+check "nothing typed while someone has a draft in the prompt" "! typed codex '/rename delta' && ! typed codex 'half a sentence/rename delta'"
+tmux send-keys -t "$X" C-u
+check "/rename typed once codex is idle and its prompt is empty" "wait_typed codex '/rename delta'"
+check "and the draft never got sent" "! grep -q 'half a sentence' $T/codex.typed"
+
+tmux send-keys -t "$X" -l 'another draft'
+out=$(AGENT_SAY_TYPING_WAIT=1 AGENT_SAY_PANE=$A say delta "do not land on the draft" 2>&1)
+check "a message waits for someone typing, then is refused ($out)" "grep -q 'someone is typing' <<<\"\$out\""
+tmux send-keys -t "$X" C-u
+sleep 0.3
+AGENT_SAY_PANE=$A say delta "after the draft" >/dev/null 2>&1
+check "with the prompt empty it is delivered" "wait_typed codex '[agent-msg from=alpha2 \$(date -u +%H:%MZ)] after the draft -- To answer, run the shell command: agent-say --from delta alpha2 \"<your reply>\"' || grep -q 'after the draft' $T/codex.typed"
+
+echo "a link to a machine you ssh into"
+# A second private tmux server stands in for the machine you ssh into, and a fake ssh runs
+# commands "there": its own tmux, state and mailbox. Nothing reaches a real ssh or tmux.
+mkdir -p "$T/rbin" "$T/rstate" "$T/rtmp" "$T/rhome"
+printf '#!/bin/sh\nexec %q -S %q -f /dev/null "$@"\n' "$real_tmux" "$T/rsock" >"$T/rbin/tmux"
+chmod +x "$T/rbin/tmux"
+cat >"$T/bin/fakessh" <<EOF
+#!/usr/bin/env bash
+while [[ \$1 == -* ]]; do case \$1 in -o | -p | -i) shift 2 ;; *) shift ;; esac; done
+shift # the host
+exec env -u AGENT_SAY_PANE -u AGENT_SAY_LOCAL_ONLY PATH="$T/rbin:\$PATH" XDG_STATE_HOME=$T/rstate \\
+	AGENT_SAY_MAILBOX=$T/rstate/agent-say/mailbox.md AGENT_SAY_HOST=devbox-1 TMPDIR=$T/rtmp HOME=$T/rhome \\
+	bash -c "\$*"
+EOF
+chmod +x "$T/bin/fakessh"
+export AGENT_SAY_SSH=$T/bin/fakessh AGENT_SAY_REMOTE_CMD=$ROOT/bin/agent-say AGENT_SAY_HOST=laptop AGENT_SAY_LINK_INTERVAL=0.3
+there() { "$T/bin/fakessh" devbox "$*"; }
+"$T/rbin/tmux" new-session -d -s r -x 200 -y 50 cat
+RC=$("$T/rbin/tmux" display -p -t r '#{pane_id}')
+there "AGENT_SAY_PANE=$RC $ROOT/bin/agent-say name codex" >/dev/null
+LC=$(tmux new-window -d -P -F '#{pane_id}' -t s cat)
+sleep 0.3
+AGENT_SAY_PANE=$LC say name me >/dev/null
+seen_there() { "$T/rbin/tmux" capture-pane -p -J -t "$RC" -S -100 | grep -qF -- "$1"; }
+wait_seen() { for _ in $(seq 40); do seen "$1" "$2" && return 0; sleep 0.25; done; return 1; }
+
+out=$(say link devbox 2>&1)
+check "link reaches the other machine and lists its panes ($out)" "[[ '$out' == *'Its panes: codex'* ]]"
+check "the link keeps running in the background" "say link | grep -q '^devbox  running'"
+AGENT_SAY_PANE=$LC say codex "ping from here" >/dev/null
+check "a plain name reaches the pane on the linked machine" "seen_there '[agent-msg from=me@laptop' && seen_there 'ping from here'"
+check "its reply command points back here" "seen_there 'agent-say --from codex me@laptop'"
+there "$ROOT/bin/agent-say --from codex me@laptop 'pong from codex'" >/dev/null
+check "a reply from there arrives here, with no way in to this machine" "wait_seen $LC 'pong from codex'"
+check "and says who sent it, as an address that works from here" "seen $LC '[agent-msg from=codex@devbox'"
+there "$ROOT/bin/agent-say --from codex me 'plain name back'" >/dev/null
+check "the other side can use a plain name too" "wait_seen $LC 'plain name back'"
+check "list shows the linked machine's names" "say list | grep -q 'codex@devbox'"
+there "$ROOT/bin/agent-say --from codex nobody@laptop 'lost'" >/dev/null
+sleep 1.5
+check "a message for a name that isn't here lands in the mailbox, marked" "grep -q 'NOT DELIVERED' $AGENT_SAY_MAILBOX"
+say unlink devbox >/dev/null
+sleep 0.5
+check "unlink stops it" "! pgrep -f 'agent-say _poll devbox' >/dev/null"
+"$T/rbin/tmux" kill-server
 
 echo "$pass passed, $fail failed"
 ((fail == 0))

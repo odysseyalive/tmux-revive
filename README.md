@@ -97,8 +97,9 @@ One name does three things:
 - **The agent's own session** is renamed with its `/rename` command. That's
   the name you see when resuming and in Remote Control. The agent is busy
   running the naming command at that moment, so `agent-say` waits until it
-  has finished and is waiting for you (up to 2 minutes), then types
-  `/rename` for it. It never types into a question the agent is asking you.
+  has finished and is waiting for you (up to 30 minutes), then types
+  `/rename` for it. It never types into a question the agent is asking you,
+  or into a prompt where you have started typing.
 
 | Agent | Session renamed? |
 | --- | --- |
@@ -143,22 +144,49 @@ pane as a new message, and the first agent carries on. You just watch.
 Long messages show up as a short note with an ID. The agent reads the whole
 message with `agent-say show <id>`.
 
-### Other computers
+### Another computer you ssh into
 
-Add `@` and the computer's name, the same name you'd use with `ssh`:
+Say you have two terminals: one in tmux on your own computer, and one where
+you ssh into a server and run tmux there, with Claude Code or Codex in each.
+Link them once, from **your own computer**, using the name you'd type after
+`ssh`:
 
 ```sh
-agent-say codex@devbox "run the tests and tell me what fails"
+agent-say link devbox
 ```
 
-This needs three things:
+From then on, agents on either side reach each other by the names you gave
+their panes, as if they were on one computer:
 
-- `agent-say` installed on the other computer (run the installer there).
-- ssh that logs in without asking for a password (key-based login).
-- The other computer able to ssh back to yours, for replies. If its name for
-  your computer differs from your computer's own name, set
-  `AGENT_SAY_HOST=<that name>`. If it can't reach you at all, run both agents
-  on one computer instead.
+```sh
+agent-say codex "run the tests on the server and tell me what fails"   # here -> there
+agent-say claude "all green"                                           # there -> here
+```
+
+Replies come back on their own. If a name exists on both computers, add
+`@` and the computer to pick one: `codex@devbox`, or `claude@<your computer>`.
+`agent-say list` shows the names on both sides.
+
+How it works: your computer checks in with the server over ssh every couple
+of seconds, the same direction you already connect. Each check-in swaps the
+pane names on both sides and brings back anything the server's agents sent
+you. Your computer never has to accept a connection, so this works from
+behind a home router or on a laptop with no ssh server.
+
+What it needs:
+
+- `agent-say` on the server: run the installer there too.
+- ssh that logs in without asking for a password (key-based login). Test it
+  with `ssh -o BatchMode=yes devbox true`.
+
+`agent-say link` shows your links and whether they're running.
+`agent-say unlink devbox` stops one. Links come back by themselves when tmux
+starts after a reboot. A message that arrives for a name your computer
+doesn't have is kept in the mailbox, marked NOT DELIVERED.
+
+You can also send to a server you haven't linked, with `agent-say
+codex@devbox "..."`. That works for one-off messages, but a reply then needs
+the server to be able to ssh back to you.
 
 Different accounts on one computer need nothing special. Each agent keeps
 its own login. They only need to be in the same tmux.
@@ -186,8 +214,11 @@ Things to keep in mind:
   anything risky.
 - **Two agents that answer everything can chat forever.** Say when no reply
   is needed.
-- **You can type in a pane while a message is arriving**, and the two can mix.
-  This mostly matters when you're typing in that exact moment.
+- **Your drafts are safe in Claude Code and Codex.** If you've started typing
+  in an agent's prompt, a message waits for you to send or clear it (up to a
+  minute, then it's refused) instead of landing on top of your text. A
+  `/rename` waits the same way. In other agents `agent-say` can't see the
+  prompt, so a message typed while you're typing there can still mix.
 
 Every message is also kept in `~/.local/state/agent-say/mailbox.md`, which
 only you can read. `agent-say read 5` shows the last five, and
@@ -197,7 +228,7 @@ mailbox passes 1 MB, it moves to `mailbox.md.1` and a new one starts.
 **Settings** (environment variables): `AGENT_SAY_ENTER_DELAY` (0.4 seconds
 between typing a message and pressing Enter; raise it if a busy agent leaves
 a message unsent), `AGENT_SAY_INLINE_MAX` (300 characters before a message
-counts as long), `AGENT_SAY_MODE_WAIT` (10 seconds), `AGENT_SAY_RENAME_WAIT` (120 seconds), `AGENT_SAY_MAILBOX`,
+counts as long), `AGENT_SAY_MODE_WAIT` (10 seconds), `AGENT_SAY_RENAME_WAIT` (1800 seconds), `AGENT_SAY_TYPING_WAIT` (60 seconds), `AGENT_SAY_LINK_INTERVAL` (2 seconds), `AGENT_SAY_MAILBOX`,
 `AGENT_SAY_MAILBOX_MAX`, `AGENT_SAY_SSH`, `AGENT_SAY_REMOTE_CMD`,
 `AGENT_SAY_HOST`.
 
