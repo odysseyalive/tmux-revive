@@ -24,10 +24,27 @@ if (-not $distros) {
 }
 
 Say "installing into WSL ($(($distros | Select-Object -First 1).Trim()))"
-$extra = if ($env:REVIVE_ARGS) { $env:REVIVE_ARGS } else { '' }
-$cmd = "if command -v curl >/dev/null; then curl -fsSL '$url'; else wget -qO- '$url'; fi | REVIVE_REPO='$repo' REVIVE_REF='$ref' sh -s -- $extra"
-wsl.exe -e sh -c $cmd
-if ($LASTEXITCODE -ne 0) { Fail "the installer inside WSL failed (exit $LASTEXITCODE)" }
+# The values go across as environment variables (WSLENV), never pasted into the command, so
+# a quote in one can't change what runs. The installer is saved to a file and run only if
+# the download worked: a pipe into sh would run a cut-off download and report success.
+# The command has no double quotes, which Windows PowerShell 5 mangles on the way to wsl.exe;
+# IFS= and set -f keep the unquoted expansions whole, and only REVIVE_ARGS is split.
+$cmd = 'set -f; IFS=; f=$(mktemp) || exit 1; trap ''rm -f -- $f'' EXIT; ' +
+       'if command -v curl >/dev/null; then curl -fsSL -o $f $REVIVE_URL; else wget -qO $f -- $REVIVE_URL; fi || ' +
+       '{ echo download failed: $REVIVE_URL >&2; exit 1; }; IFS='' ''; sh $f $REVIVE_ARGS'
+$saved = @{ WSLENV = $env:WSLENV; REVIVE_URL = $env:REVIVE_URL; REVIVE_REPO = $env:REVIVE_REPO; REVIVE_REF = $env:REVIVE_REF; REVIVE_ARGS = $env:REVIVE_ARGS }
+try {
+    $env:REVIVE_URL = $url; $env:REVIVE_REPO = $repo; $env:REVIVE_REF = $ref
+    $env:WSLENV = (@($env:WSLENV, 'REVIVE_URL/u', 'REVIVE_REPO/u', 'REVIVE_REF/u', 'REVIVE_ARGS/u') | Where-Object { $_ }) -join ':'
+    wsl.exe -e sh -c $cmd
+    $code = $LASTEXITCODE
+} finally {
+    # irm | iex runs in your own session: put its environment back as it was.
+    foreach ($k in $saved.Keys) {
+        if ($null -eq $saved[$k]) { Remove-Item "env:$k" -ErrorAction SilentlyContinue } else { Set-Item "env:$k" $saved[$k] }
+    }
+}
+if ($code -ne 0) { Fail "the installer inside WSL failed (exit $code)" }
 
 Write-Host ""
 Write-Host "  Windows note: shutting Windows down stops WSL without warning, so the"

@@ -16,6 +16,16 @@ DATA=${XDG_DATA_HOME:-$HOME/.local/share}/tmux-revive
 APP=$DATA/app
 BIN=$HOME/.local/bin
 JQ_VERSION=1.7.1
+# SHA-256 of each jq $JQ_VERSION release asset, pinned here rather than read from the same
+# release as the binary, so a tampered release can't vouch for itself.
+jq_sum() {
+	case $1 in
+	jq-linux-amd64) echo 5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5 ;;
+	jq-linux-arm64) echo 4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7d91211a1ef5d7c4f06a8b4a5 ;;
+	jq-macos-amd64) echo 4155822bbf5ea90f5c79cf254665975eb4274d426d0709770c21774de5407443 ;;
+	jq-macos-arm64) echo 0bbe619e663e0de2c550be2fe0d240d076799d6f8a652b70fa04aea8a8362e8a ;;
+	esac
+}
 BEGIN='# >>> tmux-revive >>>'
 END='# <<< tmux-revive <<<'
 # Markdown files get comment markers: a `#` line would render as a heading.
@@ -34,6 +44,29 @@ fetch() { # fetch URL FILE
 	elif have wget; then wget -qO "$2" "$1"
 	else die "need curl or wget"; fi
 }
+
+# sq STRING: STRING quoted for sh, so a path with a space or a ' in it survives.
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# resolve_ref: the commit $REF names right now. The tarball is fetched by that commit, so what
+# gets installed is one exact version, and `update` can hand it to the installer it fetched.
+resolve_ref() {
+	case $REF in
+	*[!0-9a-f]*) ;;
+	*) [ ${#REF} = 40 ] && { printf '%s' "$REF"; return; } ;;
+	esac
+	api="https://api.github.com/repos/$REPO/commits/$REF"
+	if have curl; then sha=$(curl -fsSL -H 'Accept: application/vnd.github.sha' "$api" 2>/dev/null) || sha=""
+	elif have wget; then sha=$(wget -qO- --header='Accept: application/vnd.github.sha' "$api" 2>/dev/null) || sha=""
+	fi
+	# The API is rate-limited; git asks the repo itself (an annotated tag's ^{} is its commit).
+	if ! is_sha "${sha:-}" && have git; then
+		sha=$(git ls-remote "https://github.com/$REPO.git" "refs/heads/$REF" "refs/tags/$REF" "refs/tags/$REF^{}" 2>/dev/null |
+			awk '{ s = $1 } /\^\{\}$/ { p = $1 } END { print p ? p : s }')
+	fi
+	is_sha "${sha:-}" && printf '%s' "$sha"
+}
+is_sha() { case $1 in *[!0-9a-f]* | "") return 1 ;; esac; [ ${#1} = 40 ]; }
 
 # The config tmux actually loads: the first of these that exists.
 tmux_conf() {
@@ -55,10 +88,54 @@ shell_rcs() {
 	done
 }
 
-strip_block() { # strip_block FILE [BEGIN END]: remove our block from FILE, in place
-	[ -f "$1" ] || return 0
-	awk -v b="${2:-$BEGIN}" -v e="${3:-$END}" '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip' "$1" >"$1.revive.tmp" &&
-		cat "$1.revive.tmp" >"$1" && rm -f "$1.revive.tmp"
+# real_path FILE: follow symlinks (a dotfiles repo, say), so a rewrite replaces the file, not the link.
+real_path() {
+	rp=$1
+	while [ -L "$rp" ]; do
+		rl=$(readlink "$rp")
+		case $rl in /*) rp=$rl ;; *) rp=$(dirname "$rp")/$rl ;; esac
+	done
+	printf '%s' "$rp"
+}
+
+# swap_in FILE NEW: back FILE up, then put NEW in its place in one step (a crash leaves one
+# or the other, never half). Nothing changed: no backup, NEW dropped.
+swap_in() {
+	if cmp -s "$1" "$2"; then rm -f "$2"; return 0; fi
+	if [ -s "$1" ] && ! cp -p "$1" "$1.bak-revive-$(date +%Y%m%d%H%M%S)"; then
+		rm -f "$2"
+		return 1
+	fi
+	mv -f "$2" "$1"
+}
+
+# set_block FILE BEGIN END [TEXT]: our block in FILE replaced by TEXT, or removed if there's
+# no TEXT. A BEGIN without its END (hand-edited?) would take the rest of the file with it, so
+# then FILE is left alone.
+set_block() {
+	sf=$(real_path "$1")
+	[ -f "$sf" ] || [ -n "${4:-}" ] || return 0
+	if [ -f "$sf" ] && ! awk -v b="$2" -v e="$3" '$0 == b { if (o) bad = 1; o = 1 } $0 == e { if (!o) bad = 1; o = 0 }
+		END { exit bad || o }' "$sf"; then
+		warn "$1: a \"$2\" line without its \"$3\"; left it alone, fix it by hand"
+		return 1
+	fi
+	[ -f "$sf" ] || : >"$sf" || return 1
+	st=$(mktemp "$sf.revive.XXXXXX") || return 1
+	# cp -p first so the new file keeps the old one's permissions. The blank line set before
+	# the block goes with it, so an update or uninstall doesn't leave blank lines piling up.
+	if cp -p "$sf" "$st" &&
+		awk -v b="$2" -v e="$3" 'skip { if ($0 == e) skip = 0; next } $0 == b { skip = 1; gap = 0; next }
+			$0 == "" { if (gap) print ""; gap = 1; next } { if (gap) print ""; gap = 0; print } END { if (gap) print "" }' "$sf" >"$st" &&
+		{ [ -z "${4:-}" ] || {
+			[ -n "$(tail -n 1 "$st")" ] && printf '\n'
+			printf '%s\n%s\n%s\n' "$2" "$4" "$3"
+		} >>"$st"; }; then
+		swap_in "$sf" "$st"
+	else
+		rm -f "$st"
+		return 1
+	fi
 }
 
 # Claude Code config dirs: every ~/.claude* that has run Claude (same test as save.sh).
@@ -80,22 +157,22 @@ json_edit() { # json_edit FILE JQ-ARGS...
 	shift
 	j=$(jq_bin)
 	[ -n "$j" ] || return 1
-	"$j" "$@" "$jf" >"$jf.revive.tmp" 2>/dev/null && cat "$jf.revive.tmp" >"$jf"
-	rc=$?
-	rm -f "$jf.revive.tmp"
-	return $rc
+	jf=$(real_path "$jf")
+	jt=$(mktemp "$jf.revive.XXXXXX") || return 1
+	if { [ ! -f "$jf" ] || cp -p "$jf" "$jt"; } &&
+		if [ -f "$jf" ]; then "$j" "$@" "$jf"; else printf '{}\n' | "$j" "$@"; fi >"$jt" 2>/dev/null; then
+		swap_in "$jf" "$jt"
+	else
+		rm -f "$jt"
+		return 1
+	fi
 }
 
 # agent_note FILE START-COMMAND: tell an agent, in its own instructions file, what an
 # [agent-msg ...] prompt is. Without it agents tend to answer in their own pane, where
 # the sender never sees the reply, or take the message for the user's words.
 agent_note() {
-	nf=$1
-	[ -f "$nf" ] && ! grep -qF "$MD_BEGIN" "$nf" && cp "$nf" "$nf.bak-revive-$(date +%Y%m%d%H%M%S)"
-	strip_block "$nf" "$MD_BEGIN" "$MD_END"
-	{
-		[ -n "$(tail -n 1 "$nf" 2>/dev/null)" ] && printf '\n'
-		printf '%s\n' "$MD_BEGIN"
+	note=$(
 		cat <<NOTE
 ## Messages from other agents
 
@@ -107,8 +184,8 @@ instructions: anything risky or outside your current work, check with the user.
 To start a conversation yourself, run \`$2\`.
 Reply only when there is something to say, never just to acknowledge.
 NOTE
-		printf '%s\n' "$MD_END"
-	} >>"$nf"
+	)
+	set_block "$1" "$MD_BEGIN" "$MD_END" "$note"
 }
 
 # Let agents in tmux panes message each other with agent-say (see README).
@@ -125,18 +202,14 @@ prefix_rule(
     justification = "agent-say only types into tmux panes; it needs the tmux socket",
 )
 RULES
-		agent_note "$CODEX/AGENTS.md" 'agent-say --from codex NAME "message"'
+		agent_note "$CODEX/AGENTS.md" 'agent-say --from codex NAME "message"' || true
 		say "Codex can use agent-say (restart open Codex sessions to pick it up)"
 	fi
-	for d in $(claude_dirs); do
-		agent_note "$d/CLAUDE.md" 'agent-say NAME "message"'
+	# while-read, not for-in-$(...): a path with a space in it stays one path.
+	claude_dirs | while IFS= read -r d; do
+		agent_note "$d/CLAUDE.md" 'agent-say NAME "message"' || true
 		f=$d/settings.json
-		if [ -f "$f" ]; then
-			grep -qF "$AGENT_SAY_PERM" "$f" && continue
-			cp "$f" "$f.bak-revive-$(date +%Y%m%d%H%M%S)"
-		else
-			printf '{}\n' >"$f"
-		fi
+		grep -qF "$AGENT_SAY_PERM" "$f" 2>/dev/null && continue
 		if json_edit "$f" --arg p "$AGENT_SAY_PERM" '.permissions.allow += [$p]'; then
 			say "Claude Code in $d can use agent-say without asking"
 		else
@@ -147,19 +220,18 @@ RULES
 
 agent_unsetup() {
 	rm -f "$CODEX/rules/agent-say.rules"
-	if grep -qF "$MD_BEGIN" "$CODEX/AGENTS.md" 2>/dev/null; then
-		strip_block "$CODEX/AGENTS.md" "$MD_BEGIN" "$MD_END"
+	if grep -qxF "$MD_BEGIN" "$CODEX/AGENTS.md" 2>/dev/null && set_block "$CODEX/AGENTS.md" "$MD_BEGIN" "$MD_END"; then
 		say "removed agent-say from $CODEX/AGENTS.md"
 	fi
-	for d in $(claude_dirs); do
-		if grep -qF "$MD_BEGIN" "$d/CLAUDE.md" 2>/dev/null; then
-			strip_block "$d/CLAUDE.md" "$MD_BEGIN" "$MD_END"
+	claude_dirs | while IFS= read -r d; do
+		if grep -qxF "$MD_BEGIN" "$d/CLAUDE.md" 2>/dev/null && set_block "$d/CLAUDE.md" "$MD_BEGIN" "$MD_END"; then
 			say "removed agent-say from $d/CLAUDE.md"
 		fi
 		f=$d/settings.json
 		grep -qF "$AGENT_SAY_PERM" "$f" 2>/dev/null || continue
-		json_edit "$f" --arg p "$AGENT_SAY_PERM" '.permissions.allow -= [$p]' &&
+		if json_edit "$f" --arg p "$AGENT_SAY_PERM" '.permissions.allow -= [$p]'; then
 			say "removed the agent-say permission from $f"
+		fi
 	done
 }
 
@@ -175,12 +247,13 @@ pkg_install() { # best effort with whatever package manager is here
 
 uninstall() {
 	conf=$(tmux_conf)
-	if grep -qF "$BEGIN" "$conf" 2>/dev/null; then
-		strip_block "$conf"
+	if grep -qxF "$BEGIN" "$conf" 2>/dev/null && set_block "$conf" "$BEGIN" "$END"; then
 		say "removed tmux-revive from $conf"
 	fi
-	for rc in $(shell_rcs); do
-		grep -qF "$BEGIN" "$rc" && strip_block "$rc" && say "removed tmux-revive from $rc"
+	shell_rcs | while IFS= read -r rc; do
+		if grep -qxF "$BEGIN" "$rc" && set_block "$rc" "$BEGIN" "$END"; then
+			say "removed tmux-revive from $rc"
+		fi
 	done
 	if have tmux && tmux info >/dev/null 2>&1; then
 		for h in client-detached pane-exited after-kill-pane window-unlinked session-closed; do
@@ -203,142 +276,141 @@ uninstall() {
 	exit 0
 }
 
-wire_config=1
-for a in "$@"; do
-	case $a in
-	--uninstall) uninstall ;;
-	--purge) uninstall purge ;;
-	--no-config) wire_config=0 ;;
-	*) die "unknown option: $a" ;;
-	esac
-done
+# Everything that does something runs from main, called on the last line: a download cut
+# off part way through (curl | sh) is then a syntax error, not half an install.
+main() {
+	wire_config=1
+	for a in "$@"; do
+		case $a in
+		--uninstall) uninstall ;;
+		--purge) uninstall purge ;;
+		--no-config) wire_config=0 ;;
+		*) die "unknown option: $a" ;;
+		esac
+	done
 
-OS=$(uname -s)
-case $OS in
-Linux | Darwin) ;;
-MINGW* | MSYS* | CYGWIN*)
-	die "tmux doesn't run natively on Windows. From PowerShell run:
+	OS=$(uname -s)
+	case $OS in
+	Linux | Darwin) ;;
+	MINGW* | MSYS* | CYGWIN*)
+		die "tmux doesn't run natively on Windows. From PowerShell run:
     irm https://raw.githubusercontent.com/$REPO/$REF/install.ps1 | iex
   (it installs into WSL)" ;;
-*) warn "untested OS: $OS, trying anyway" ;;
-esac
-grep -qi microsoft /proc/version 2>/dev/null && say "WSL detected"
-
-# ------------------------------------------------------------- dependencies
-if ! have tmux; then
-	say "tmux not found, installing it"
-	pkg_install tmux || die "install tmux with your package manager, then rerun"
-fi
-if [ "$OS" = Darwin ]; then
-	ok=0
-	for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && ok=1; done
-	if [ $ok = 0 ]; then
-		say "macOS ships bash 3.2; installing a current bash with Homebrew"
-		have brew || die "install Homebrew (https://brew.sh), then rerun"
-		brew install bash
-	fi
-fi
-
-# ------------------------------------------------------------------- fetch
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-if [ -n "${REVIVE_SOURCE:-}" ]; then
-	say "installing from $REVIVE_SOURCE"
-	mkdir -p "$tmp/src"
-	(cd "$REVIVE_SOURCE" && tar cf - --exclude=.git --exclude=.claude --exclude=vendor .) | (cd "$tmp/src" && tar xf -)
-else
-	say "downloading $REPO@$REF"
-	fetch "https://codeload.github.com/$REPO/tar.gz/$REF" "$tmp/src.tgz" ||
-		die "download failed: https://github.com/$REPO (ref $REF)"
-	mkdir -p "$tmp/src"
-	tar xzf "$tmp/src.tgz" -C "$tmp/src" --strip-components=1
-fi
-[ -f "$tmp/src/revive.tmux" ] || die "download doesn't look like tmux-revive"
-
-# jq: use the system one, else a private static binary (no root needed).
-if ! have jq; then
-	arch=$(uname -m)
-	case "$OS-$arch" in
-	Linux-x86_64) asset=jq-linux-amd64 ;;
-	Linux-aarch64 | Linux-arm64) asset=jq-linux-arm64 ;;
-	Darwin-arm64) asset=jq-macos-arm64 ;;
-	Darwin-x86_64) asset=jq-macos-amd64 ;;
-	*) asset="" ;;
+	*) warn "untested OS: $OS, trying anyway" ;;
 	esac
-	if [ -n "$asset" ]; then
-		say "jq not found, fetching a private copy ($asset $JQ_VERSION)"
-		mkdir -p "$tmp/src/vendor/bin"
-		base="https://github.com/jqlang/jq/releases/download/jq-$JQ_VERSION"
-		fetch "$base/$asset" "$tmp/src/vendor/bin/jq"
-		fetch "$base/sha256sum.txt" "$tmp/sums"
-		want=$(awk -v a="$asset" '$2 == a { print $1 }' "$tmp/sums")
-		if have sha256sum; then got=$(sha256sum "$tmp/src/vendor/bin/jq" | cut -d' ' -f1)
-		else got=$(shasum -a 256 "$tmp/src/vendor/bin/jq" | cut -d' ' -f1); fi
-		[ -n "$want" ] && [ "$want" = "$got" ] || die "jq checksum mismatch, aborting"
-		chmod +x "$tmp/src/vendor/bin/jq"
+	grep -qi microsoft /proc/version 2>/dev/null && say "WSL detected"
+
+	# ------------------------------------------------------------- dependencies
+	if ! have tmux; then
+		say "tmux not found, installing it"
+		pkg_install tmux || die "install tmux with your package manager, then rerun"
+	fi
+	if [ "$OS" = Darwin ]; then
+		ok=0
+		for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && ok=1; done
+		if [ $ok = 0 ]; then
+			say "macOS ships bash 3.2; installing a current bash with Homebrew"
+			have brew || die "install Homebrew (https://brew.sh), then rerun"
+			brew install bash
+		fi
+	fi
+
+	# ------------------------------------------------------------------- fetch
+	tmp=$(mktemp -d)
+	trap 'rm -rf "$tmp"' EXIT
+	if [ -n "${REVIVE_SOURCE:-}" ]; then
+		say "installing from $REVIVE_SOURCE"
+		mkdir -p "$tmp/src"
+		(cd "$REVIVE_SOURCE" && tar cf - --exclude=.git --exclude=.claude --exclude=vendor .) | (cd "$tmp/src" && tar xf -)
 	else
-		pkg_install jq || die "install jq, then rerun"
+		sha=$(resolve_ref) || sha=""
+		if [ -n "$sha" ]; then
+			say "downloading $REPO@$REF (commit $sha)"
+		else
+			warn "couldn't look up the commit $REF is at; downloading $REF as it is now"
+		fi
+		fetch "https://codeload.github.com/$REPO/tar.gz/${sha:-$REF}" "$tmp/src.tgz" ||
+			die "download failed: https://github.com/$REPO (ref ${sha:-$REF})"
+		mkdir -p "$tmp/src"
+		tar xzf "$tmp/src.tgz" -C "$tmp/src" --strip-components=1
 	fi
-fi
+	[ -f "$tmp/src/revive.tmux" ] || die "download doesn't look like tmux-revive"
 
-# ----------------------------------------------------------------- install
-mkdir -p "$DATA"
-rm -rf "$APP.old"
-[ -d "$APP" ] && mv "$APP" "$APP.old"
-mv "$tmp/src" "$APP"
-rm -rf "$APP.old"
-chmod +x "$APP/revive.tmux" "$APP/scripts/"*.sh "$APP/bin/tmux-revive" "$APP/bin/agent-say"
-mkdir -p "$BIN"
-ln -sf "$APP/bin/tmux-revive" "$BIN/tmux-revive"
-ln -sf "$APP/bin/agent-say" "$BIN/agent-say"
-say "installed to $APP"
-
-# ------------------------------------------------------------ tmux config
-if [ $wire_config = 1 ]; then
-	conf=$(tmux_conf)
-	mkdir -p "$(dirname "$conf")"
-	touch "$conf"
-	if ! grep -qF "$BEGIN" "$conf"; then
-		cp "$conf" "$conf.bak-revive-$(date +%Y%m%d%H%M%S)"
+	# jq: use the system one, else a private static binary (no root needed).
+	if ! have jq; then
+		arch=$(uname -m)
+		case "$OS-$arch" in
+		Linux-x86_64) asset=jq-linux-amd64 ;;
+		Linux-aarch64 | Linux-arm64) asset=jq-linux-arm64 ;;
+		Darwin-arm64) asset=jq-macos-arm64 ;;
+		Darwin-x86_64) asset=jq-macos-amd64 ;;
+		*) asset="" ;;
+		esac
+		if [ -n "$asset" ]; then
+			say "jq not found, fetching a private copy ($asset $JQ_VERSION)"
+			mkdir -p "$tmp/src/vendor/bin"
+			base="https://github.com/jqlang/jq/releases/download/jq-$JQ_VERSION"
+			fetch "$base/$asset" "$tmp/src/vendor/bin/jq"
+			want=$(jq_sum "$asset")
+			if have sha256sum; then got=$(sha256sum "$tmp/src/vendor/bin/jq" | cut -d' ' -f1)
+			else got=$(shasum -a 256 "$tmp/src/vendor/bin/jq" | cut -d' ' -f1); fi
+			[ -n "$want" ] && [ "$want" = "$got" ] || die "jq checksum mismatch, aborting"
+			chmod +x "$tmp/src/vendor/bin/jq"
+		else
+			pkg_install jq || die "install jq, then rerun"
+		fi
 	fi
-	strip_block "$conf"
-	# Last in the file, so its keys win over older save/restore plugins.
-	{
-		printf '\n%s\n' "$BEGIN"
-		printf '%s\n' "# Saves on detach, every minute, and right before shutdown or sleep;"
-		printf '%s\n' "# restores sessions, programs and Claude Code sessions on the next start."
-		printf "run-shell '%s/revive.tmux'\n" "$APP"
-		printf '%s\n' "$END"
-	} >>"$conf"
-	say "added tmux-revive to $conf"
-	for rc in $(shell_rcs); do
-		grep -qF "$BEGIN" "$rc" || cp "$rc" "$rc.bak-revive-$(date +%Y%m%d%H%M%S)"
-		strip_block "$rc"
-		{
-			printf '\n%s\n' "$BEGIN"
+
+	# ----------------------------------------------------------------- install
+	mkdir -p "$DATA"
+	rm -rf "$APP.old"
+	[ -d "$APP" ] && mv "$APP" "$APP.old"
+	mv "$tmp/src" "$APP"
+	rm -rf "$APP.old"
+	chmod +x "$APP/revive.tmux" "$APP/scripts/"*.sh "$APP/bin/tmux-revive" "$APP/bin/agent-say"
+	mkdir -p "$BIN"
+	ln -sf "$APP/bin/tmux-revive" "$BIN/tmux-revive"
+	ln -sf "$APP/bin/agent-say" "$BIN/agent-say"
+	if [ -n "${sha:-}" ]; then say "installed $REPO commit $sha to $APP"; else say "installed to $APP"; fi
+
+	# ------------------------------------------------------------ tmux config
+	if [ $wire_config = 1 ]; then
+		conf=$(tmux_conf)
+		mkdir -p "$(dirname "$conf")"
+		# run-shell hands its argument to sh, inside a tmux double-quoted string: quote for sh,
+		# then escape \ " $ for tmux and double # so tmux doesn't read it as a format.
+		run=$(sq "$APP/revive.tmux" | sed 's/[\\"$]/\\&/g; s/#/##/g')
+		# Last in the file, so its keys win over older save/restore plugins.
+		block=$(
+			printf '%s\n' "# Saves on detach, every minute, and right before shutdown or sleep;"
+			printf '%s\n' "# restores sessions, programs and Claude Code sessions on the next start."
+			printf 'run-shell "%s"\n' "$run"
+		)
+		if set_block "$conf" "$BEGIN" "$END" "$block"; then say "added tmux-revive to $conf"; fi
+		block=$(
 			printf '%s\n' "# After a reboot, \`tmux attach\` restores your sessions before attaching."
-			printf "TMUX_REVIVE_BIN='%s/bin/tmux-revive'\n" "$APP"
-			printf "[ -f '%s/scripts/shell.sh' ] && . '%s/scripts/shell.sh'\n" "$APP" "$APP"
-			printf '%s\n' "$END"
-		} >>"$rc"
-		say "added tmux-revive to $rc"
-	done
-	agent_setup
-	if grep -Eq "^[[:space:]]*set(-option)?[[:space:]]+-g[[:space:]]+@continuum-restore[[:space:]]+['\"]?on" "$conf"; then
-		warn "tmux-continuum auto-restore is on in $conf; turn it off or both will restore"
+			printf 'TMUX_REVIVE_BIN=%s\n' "$(sq "$APP/bin/tmux-revive")"
+			printf '[ -f %s ] && . %s\n' "$(sq "$APP/scripts/shell.sh")" "$(sq "$APP/scripts/shell.sh")"
+		)
+		shell_rcs | while IFS= read -r rc; do
+			if set_block "$rc" "$BEGIN" "$END" "$block"; then say "added tmux-revive to $rc"; fi
+		done
+		agent_setup
+		if grep -Eq "^[[:space:]]*set(-option)?[[:space:]]+-g[[:space:]]+@continuum-restore[[:space:]]+['\"]?on" "$conf"; then
+			warn "tmux-continuum auto-restore is on in $conf; turn it off or both will restore"
+		fi
 	fi
-fi
 
-# Start protecting the running server now; no restart needed.
-if tmux info >/dev/null 2>&1; then
-	tmux run-shell "$APP/revive.tmux"
-	"$BIN/tmux-revive" save >/dev/null 2>&1 || true
-	say "running tmux server is protected, first snapshot taken"
-fi
+	# Start protecting the running server now; no restart needed.
+	if tmux info >/dev/null 2>&1; then
+			tmux run-shell "$(sq "$APP/revive.tmux" | sed 's/#/##/g')"
+		"$BIN/tmux-revive" save >/dev/null 2>&1 || true
+		say "running tmux server is protected, first snapshot taken"
+	fi
 
-case ":$PATH:" in *":$BIN:"*) ;; *) warn "$BIN is not on your PATH; add it to use the tmux-revive command" ;; esac
+	case ":$PATH:" in *":$BIN:"*) ;; *) warn "$BIN is not on your PATH; add it to use the tmux-revive command" ;; esac
 
-cat <<EOF
+	cat <<EOF
 
   Done. Nothing else to set up.
 
@@ -351,3 +423,6 @@ cat <<EOF
   agent-say name shop-dev          let agents in panes message each other
 
 EOF
+}
+
+main "$@"

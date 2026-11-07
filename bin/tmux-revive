@@ -31,7 +31,9 @@ wake)
 	# Inside tmux there is nothing to wake; show what's saved instead.
 	[[ -n ${TMUX:-} ]] && exec "$BASH" "$ROOT/scripts/restore.sh" --dry-run
 	# A fresh `tmux` loads the config, which auto-restores and replaces the
-	# empty session it starts with. A live server just needs attaching.
+	# empty session it starts with. A live server just needs attaching. Under
+	# the user's own umask: a server started here hands it to every shell.
+	umask "$REVIVE_UMASK"
 	tmux has-session 2>/dev/null && exec tmux attach
 	exec tmux
 	;;
@@ -58,12 +60,19 @@ update)
 	# from a local checkout instead of downloading.
 	shift
 	if [[ -n ${REVIVE_SOURCE:-} ]]; then exec sh "$REVIVE_SOURCE/install.sh" "$@"; fi
-	url="https://raw.githubusercontent.com/${REVIVE_REPO:-odysseyalive/tmux-revive}/${REVIVE_REF:-main}/install.sh"
+	repo=${REVIVE_REPO:-odysseyalive/tmux-revive} ref=${REVIVE_REF:-main}
+	# Pin the commit first and hand it on, so the installer fetched here and the app it
+	# downloads are the same version even if main moves in between.
+	api="https://api.github.com/repos/$repo/commits/$ref"
+	if command -v curl >/dev/null; then sha=$(curl -fsSL -H 'Accept: application/vnd.github.sha' "$api" 2>/dev/null)
+	else sha=$(wget -qO- --header='Accept: application/vnd.github.sha' "$api" 2>/dev/null); fi
+	[[ $sha =~ ^[0-9a-f]{40}$ ]] && ref=$sha # else the installer looks it up itself
+	url="https://raw.githubusercontent.com/$repo/$ref/install.sh"
 	inst=$(mktemp) || exit 1
 	trap 'rm -f "$inst"' EXIT
 	if command -v curl >/dev/null; then curl -fsSL "$url" -o "$inst"; else wget -qO "$inst" "$url"; fi ||
 		{ echo "tmux-revive: download failed: $url" >&2; exit 1; }
-	sh "$inst" "$@"
+	REVIVE_REF=$ref sh "$inst" "$@"
 	;;
 save) "$BASH" "$ROOT/scripts/save.sh" manual ;;
 restore) shift; "$BASH" "$ROOT/scripts/restore.sh" "$@" ;;
