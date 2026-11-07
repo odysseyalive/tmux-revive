@@ -169,7 +169,11 @@ uninstall() {
 		grep -qF "$BEGIN" "$rc" && strip_block "$rc" && say "removed tmux-revive from $rc"
 	done
 	if have tmux && tmux info >/dev/null 2>&1; then
-		tmux set-hook -gu 'client-detached[77]' 2>/dev/null || true
+		for h in client-detached pane-exited after-kill-pane window-unlinked session-closed; do
+			tmux set-hook -gu "$h[77]" 2>/dev/null || true
+		done
+		ee=$(tmux show-option -gqv @revive-exit-empty)
+		[ -n "$ee" ] && tmux set-option -g exit-empty "$ee" && tmux set-option -gu @revive-exit-empty
 		pkill -f "$APP/scripts/daemon.sh" 2>/dev/null || true
 	fi
 	agent_unsetup

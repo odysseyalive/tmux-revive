@@ -47,6 +47,19 @@ status_key=$(get @revive-status-key none)
 # An indexed hook slot keeps any client-detached hooks of your own intact.
 tmux set-hook -g 'client-detached[77]' "run-shell -b '$(run save.sh) detach'"
 
+# Save when you close a pane, window or session, so what you closed stays
+# closed. tmux exits the moment its last session goes, before any hook runs,
+# so keep the server up (exit-empty off) long enough to record that you
+# closed everything; save.sh then shuts it down as tmux would have, unless
+# you had exit-empty off yourself. kill-server and a shutdown signal fire no
+# hooks, so they keep the last snapshot for the next start.
+[ -z "$(tmux show-option -gqv @revive-exit-empty)" ] &&
+	tmux set-option -g @revive-exit-empty "$(tmux show-option -gv exit-empty)"
+tmux set-option -g exit-empty off
+for h in pane-exited after-kill-pane window-unlinked session-closed; do
+	tmux set-hook -g "$h[77]" "run-shell -b '$(run save.sh) close --quiet'"
+done
+
 # Interval saves + a final save on shutdown/suspend (one daemon per server).
 tmux run-shell -b "$(run daemon.sh)"
 

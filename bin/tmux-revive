@@ -38,7 +38,8 @@ start)
 	# Start the server after a reboot and wait for the restore, so that a
 	# plain `tmux attach` finds every session (see scripts/shell.sh).
 	server_alive && exit 0
-	[[ -f $(revive_dir)/last/state.json ]] || exit 0
+	state=$(revive_dir)/last/state.json
+	[[ -f $state && $(jq '.sessions | length' "$state") != 0 ]] || exit 0
 	tm new-session -d || exit 1 # loads the config, which restores
 	for _ in $(seq 150); do
 		[[ $(opt @revive-done '') == 1 ]] && break

@@ -32,6 +32,12 @@ if [[ ! -f $state ]]; then
 	exit 0
 fi
 
+# You closed everything before tmux exited: nothing to bring back.
+if ((auto)) && [[ $(jq '.sessions | length' "$state") == 0 ]]; then
+	rm -f "$DIR/.shutdown"
+	exit 0
+fi
+
 if ((dry)); then
 	jq -r '"snapshot \(.saved_at) on \(.host) (\(.reason))",
 	  (.sessions[] | "session \(.name)", (.windows[] | "  window \(.index) \(.name)",
@@ -54,8 +60,11 @@ if ((auto)); then
 	done
 	started=$(tm display-message -p '#{start_time}' 2>/dev/null) || exit 0
 	(($(date +%s) - started > 60)) && exit 0
+	rm -f "$DIR/.shutdown" # this is the start after it
 fi
 tm set-option -g @revive-restored 1
+tm set-option -g @revive-restoring 1
+on_exit "tm set-option -gu @revive-restoring 2>/dev/null"
 
 SHELLS=" sh bash zsh fish dash ksh tcsh nu "
 # A placeholder is the empty session a fresh `tmux` makes: one window, one

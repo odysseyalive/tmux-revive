@@ -187,8 +187,37 @@ sleep 3
 out=$(tmux list-sessions -F '#{session_name}:#{session_attached}' 2>&1)
 check "tmux attach after reboot is attached to the restored session ($out)" "[[ '$out' == 'agent:1' ]]"
 check "claude resumed its exact conversation" "grep -q '^$T/proj --resume 99999999-2222-3333-4444-555555555555' $T/claude-launches"
-tmux kill-server
+
+# What you close stays closed: closing panes, windows and finally the last
+# session (exiting tmux without detaching) must not come back next start.
+echo "close things on purpose, exit tmux, start again"
+snap_has() { jq -e "$1" "$REVIVE_DIR/last/state.json" >/dev/null 2>&1; }
+wait_snap() { for _ in $(seq 100); do snap_has "$1" && return 0; sleep 0.1; done; return 1; }
+tmux new-window -d -t agent -n extra -c "$T/proj"
+tmux split-window -d -t agent:extra -c /tmp
+bash "$ROOT/scripts/save.sh" manual --quiet
+check "extra window saved" "snap_has '[.sessions[].windows[] | select(.name == \"extra\")] | length == 1'"
+tmux send-keys -t agent:extra.1 'exit' Enter
+check "typing exit in a pane saves without it" "wait_snap '.reason == \"close\" and ([.sessions[].windows[] | select(.name == \"extra\") | .panes[]] | length == 1)'"
+tmux kill-window -t agent:extra
+check "killing a window saves without it" "wait_snap '[.sessions[].windows[] | select(.name == \"extra\")] | length == 0'"
+launches=$(wc -l <"$T/claude-launches")
+tmux new-session -d -s last -c "$T/proj"
+tmux kill-session -t agent
+check "killing a session saves without it" "wait_snap '[.sessions[].name] == [\"last\"]'"
+sleep 0.5
+tmux send-keys -t last 'exit' Enter
+check "typing exit in the last pane leaves an empty snapshot" "wait_snap '.sessions == [] and .reason == \"close\"'"
+for _ in $(seq 50); do tmux has-session 2>/dev/null || break; sleep 0.1; done
+check "tmux exited" "! tmux has-session 2>/dev/null"
+check "the snapshot before it is still listed" "[[ \$(find $REVIVE_DIR/snapshots -mindepth 1 -maxdepth 1 | wc -l) -ge 2 ]]"
 kill "$spid" 2>/dev/null
+pkill -f "$T/bin/claude"
+tmux new-session -d -s 0
+sleep 2
+check "a fresh tmux restores nothing" "[[ \$(tmux list-sessions -F '#{session_name}' | tr '\n' ' ') == '0 ' ]]"
+check "claude was not relaunched" "[[ \$(wc -l <$T/claude-launches) -eq $launches ]]"
+tmux kill-server
 pkill -f "$T/bin/claude"
 
 echo "$pass passed, $fail failed"

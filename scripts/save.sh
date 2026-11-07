@@ -2,7 +2,10 @@
 # Snapshot every tmux session, window, pane, and the exact AI-agent session
 # running in each pane, so restore.sh can bring it all back after a reboot.
 #
-# usage: save.sh [manual|auto|detach|shutdown|sleep] [--quiet]
+# usage: save.sh [manual|auto|detach|close|shutdown|sleep] [--quiet]
+#   close: a pane, window or session was closed on purpose. Closing the last
+#   one records an empty snapshot, so the next start restores nothing, then
+#   ends the server (revive.tmux keeps it alive for this).
 set -uo pipefail
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -17,13 +20,31 @@ DIR=$(revive_dir)
 # A periodic save while the machine is going down would capture panes whose
 # programs have already been killed, and overwrite the good snapshot with a
 # hollow one. The logind hook (reason=shutdown) saves before that point.
-if [[ $reason == auto || $reason == detach ]] && command -v systemctl >/dev/null; then
+if [[ $reason == auto || $reason == detach || $reason == close ]] && command -v systemctl >/dev/null; then
 	case $(systemctl is-system-running 2>/dev/null) in
 	stopping) exit 0 ;;
 	esac
 fi
+# Panes dying because the machine is going down are not closes either. The
+# shutdown save leaves a marker; the next startup restore clears it.
+if [[ $reason == close && -n $(find "$DIR/.shutdown" -mmin -10 2>/dev/null) ]]; then
+	exit 0
+fi
+# A restore moves windows and drops its placeholder session: not closes.
+[[ $reason == close && $(opt @revive-restoring '') == 1 ]] && exit 0
+[[ $reason == shutdown ]] && touch "$DIR/.shutdown"
 
-take_lock "$DIR/.save.lock" 10 || exit 0
+if [[ $reason == close ]]; then
+	# Closing panes one after another fires a save for each. One save waiting
+	# behind the running one covers them all, since it reads tmux only after
+	# it stops waiting; the rest leave. Waiting longer than usual matters
+	# here: the save after the last close is the one that counts.
+	take_lock "$DIR/.close.lock" || exit 0
+	take_lock "$DIR/.save.lock" 30 || exit 0
+	drop_lock "$DIR/.close.lock"
+else
+	take_lock "$DIR/.save.lock" 10 || exit 0
+fi
 
 # ---------------------------------------------------------------- processes
 declare -A CHILDREN COMM
@@ -374,6 +395,7 @@ detect_program() { # foreground job of the pane's tty
 stamp=$(date +%Y%m%dT%H%M%S)
 work=$(mktemp -d "$DIR/.save.XXXXXX")
 on_exit "rm -rf '$work'"
+: >"$work/panes.jsonl"
 lines=$(opt @revive-scrollback 2000)
 S=$'\x1f'
 fmt="#{session_name}${S}#{session_attached}${S}#{window_index}${S}#{window_name}${S}#{window_layout}${S}#{window_active}${S}#{automatic-rename}${S}#{window_zoomed_flag}${S}#{pane_index}${S}#{pane_id}${S}#{pane_pid}${S}#{pane_current_path}${S}#{pane_active}${S}#{pane_title}${S}#{session_last_attached}"
@@ -415,7 +437,9 @@ while IFS=$S read -r sess attached widx wname layout wactive autoren zoomed pidx
 	((count++))
 done < <(tm list-panes -a -F "$fmt")
 
-if ((count == 0)); then
+# No panes left after a close means you shut everything down yourself: keep
+# that as an empty snapshot. Any other empty save is a server on its way out.
+if ((count == 0)) && [[ $reason != close ]]; then
 	log "nothing to save ($reason)"
 	exit 0
 fi
@@ -453,6 +477,10 @@ mapfile -t old < <(find "$DIR/snapshots" -mindepth 1 -maxdepth 1 -type d | sort 
 ((${#old[@]})) && rm -rf "${old[@]}"
 
 log "saved $count panes, $agents agent sessions ($reason) -> ${target##*/}"
+# Everything is closed: end the server the way tmux would have.
+if ((count == 0)) && [[ $(opt @revive-exit-empty on) == on && -z $(tm list-sessions -F x 2>/dev/null) ]]; then
+	tm kill-server 2>/dev/null
+fi
 if [[ $reason == manual && $quiet == 0 ]]; then
 	tm display-message "tmux-revive: saved $count panes, $agents agent sessions" 2>/dev/null
 fi

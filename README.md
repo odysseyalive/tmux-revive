@@ -53,6 +53,13 @@ tmux-revive uninstall [--purge]
 ## When it saves
 
 - when you detach
+- when you close a pane, window or session, so what you closed stays closed.
+  Closing the last one (typing `exit` in it, or `kill-session`) records an
+  empty snapshot, and the next `tmux` starts fresh instead of reopening
+  everything. The snapshot before it stays in `tmux-revive list` if you want
+  it back. To let it record that, tmux-revive turns `exit-empty` off and ends
+  the server itself once the save is done (it leaves the server running if you
+  had `exit-empty off` already).
 - every 60 seconds, but only when something changed (unchanged snapshots are refreshed in place)
 - **right before shutdown or suspend** (Linux with systemd): it holds a logind
   *delay* inhibitor, so logind waits while it takes a final snapshot with
@@ -196,6 +203,9 @@ Put these before the tmux-revive block in your config.
   no shutdown hook on macOS, so saves come from detach and the interval.
 - Windows: shutting Windows down stops WSL without notice, so the last snapshot
   is from your detach or the last interval.
+- `tmux kill-server` looks the same to tmux as a shutdown signal, so it keeps
+  the last snapshot and the next start restores it. Close sessions instead
+  when you mean to start fresh.
 - If tmux-continuum is also set to auto-restore, turn one of them off.
 
 ## Test

@@ -58,6 +58,12 @@ elapsed=0
 while same_server; do
 	sleep 5 # short ticks so the daemon dies within seconds of its server
 	((elapsed += 5))
+	# Backstop for the close hooks: a server left with no sessions is one
+	# you closed down; record that and let it exit (see revive.tmux).
+	if [[ $(opt @revive-exit-empty on) == on && -z $(tm list-sessions -F x 2>/dev/null) ]] && same_server; then
+		"${SAVE[@]}" close --quiet
+		continue
+	fi
 	interval=$(opt @revive-interval 60)
 	if ((interval > 0 && elapsed >= interval)); then
 		elapsed=0

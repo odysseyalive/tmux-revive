@@ -54,11 +54,14 @@ _run_cleanup() {
 trap _run_cleanup EXIT
 
 # take_lock FILE [WAIT_SECONDS]: flock where it exists (Linux), shlock on
-# macOS. Held until the script exits. Fails when someone else holds it.
+# macOS. Held until the script exits or drop_lock. Fails when someone else
+# holds it.
+declare -A LOCK_FDS=()
 take_lock() {
 	local f=$1 w=${2:-0} fd i
 	if command -v flock >/dev/null; then
 		exec {fd}>"$f"
+		LOCK_FDS[$f]=$fd
 		if ((w)); then flock -w "$w" "$fd"; else flock -n "$fd"; fi
 		return
 	fi
@@ -71,6 +74,16 @@ take_lock() {
 		sleep 0.1
 	done
 	return 1
+}
+
+drop_lock() {
+	local fd=${LOCK_FDS[$1]:-}
+	if [[ -n $fd ]]; then
+		exec {fd}>&-
+		unset 'LOCK_FDS[$1]'
+	else
+		rm -f "$1"
+	fi
 }
 
 # read_argv PID -> global ARGV array. Exact on Linux; on macOS argument
