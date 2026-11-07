@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# tmux-revive: survive detach + reboot, and wake every pane's program back up,
+# Claude Code sessions included, in the exact session each one was running.
+#
+# Load from tmux.conf:   run-shell ~/.local/share/tmux-revive/revive.tmux
+# or with TPM:           set -g @plugin 'odysseyalive/tmux-revive'
+#
+# This file must stay bash-3.2 safe (stock macOS); the scripts it launches
+# run under the newest bash it can find.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+S="$ROOT/scripts"
+
+get() {
+	local v
+	v=$(tmux show-option -gqv "$1")
+	printf '%s' "${v:-$2}"
+}
+
+BASH4=""
+for b in "$(get @revive-bash '')" "$BASH" /opt/homebrew/bin/bash /usr/local/bin/bash "$(command -v bash)"; do
+	[ -n "$b" ] && [ -x "$b" ] || continue
+	if [ "$("$b" -c 'echo ${BASH_VERSINFO[0]}')" -ge 4 ] 2>/dev/null; then BASH4=$b; break; fi
+done
+if [ -z "$BASH4" ]; then
+	tmux display-message "tmux-revive: needs bash 4 or newer (macOS: brew install bash)"
+	exit 0
+fi
+tmux set-option -g @revive-bash "$BASH4"
+run() { printf '%q %q' "$BASH4" "$S/$1"; }
+
+save_key=$(get @revive-save-key C-s)
+restore_key=$(get @revive-restore-key C-r)
+status_key=$(get @revive-status-key M-r)
+
+[ "$save_key" != none ] && tmux bind-key "$save_key" run-shell -b "$(run save.sh) manual"
+[ "$restore_key" != none ] && tmux bind-key "$restore_key" run-shell -b "$(run restore.sh)"
+[ "$status_key" != none ] &&
+	tmux bind-key "$status_key" display-popup -E -w 90% -h 80% \
+		"$(printf %q "$ROOT/bin/tmux-revive") status; printf '\\npress a key'; read -rsn1"
+
+# Save the moment you detach: the usual last thing before a shutdown.
+# An indexed hook slot keeps any client-detached hooks of your own intact.
+tmux set-hook -g 'client-detached[77]' "run-shell -b '$(run save.sh) detach'"
+
+# Interval saves + a final save on shutdown/suspend (one daemon per server).
+tmux run-shell -b "$(run daemon.sh)"
+
+# First start after a reboot: bring everything back.
+tmux run-shell -b "$(run restore.sh) --auto"

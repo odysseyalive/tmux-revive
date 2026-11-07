@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# tmux-revive command line.
+#   tmux-revive                      wake: start tmux, restore, attach
+#   tmux-revive save                 snapshot now
+#   tmux-revive restore [SNAPSHOT]   restore latest (or a named snapshot)
+#   tmux-revive status [SNAPSHOT]    what a restore would bring back
+#   tmux-revive list                 snapshots, newest first
+#   tmux-revive log                  recent activity
+#   tmux-revive doctor               check the moving parts
+#   tmux-revive uninstall [--purge]  remove (--purge also deletes snapshots)
+if ((BASH_VERSINFO[0] < 4)); then
+	for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [[ -x $b ]] && exec "$b" "$0" "$@"; done
+	echo "tmux-revive needs bash 4+ (macOS: brew install bash)" >&2
+	exit 1
+fi
+set -uo pipefail
+self=${BASH_SOURCE[0]}
+while [[ -L $self ]]; do
+	t=$(readlink "$self")
+	[[ $t == /* ]] && self=$t || self=$(dirname "$self")/$t
+done
+ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../scripts/common.sh
+source "$ROOT/scripts/common.sh"
+
+case ${1:-wake} in
+wake)
+	# Inside tmux there is nothing to wake; show what's saved instead.
+	[[ -n ${TMUX:-} ]] && exec "$BASH" "$ROOT/scripts/restore.sh" --dry-run
+	# A fresh `tmux` loads the config, which auto-restores and replaces the
+	# empty session it starts with. A live server just needs attaching.
+	tmux has-session 2>/dev/null && exec tmux attach
+	exec tmux
+	;;
+uninstall)
+	inst=$ROOT/install.sh
+	[[ ${2:-} == --purge ]] && exec sh "$inst" --purge
+	exec sh "$inst" --uninstall
+	;;
+save) "$BASH" "$ROOT/scripts/save.sh" manual ;;
+restore) shift; "$BASH" "$ROOT/scripts/restore.sh" "$@" ;;
+status) shift; "$BASH" "$ROOT/scripts/restore.sh" --dry-run "$@" ;;
+list)
+	DIR=$(revive_dir)
+	cur=$(cd -P "$DIR/last" 2>/dev/null && pwd)
+	for d in $(find "$DIR/snapshots" -mindepth 1 -maxdepth 1 -type d | sort -r); do
+		mark=" "
+		[[ $d == "$cur" ]] && mark="*"
+		jq -r --arg m "$mark" --arg id "${d##*/}" \
+			'"\($m) \($id)  \(.saved_at)  \(.reason)  \([.sessions[].windows[].panes[]] | length) panes, \([.sessions[].windows[].panes[] | select(.kind == "claude" or .kind == "codex" or .kind == "gemini")] | length) agents"' \
+			"$d/state.json" 2>/dev/null
+	done
+	;;
+log) tail -n "${2:-30}" "$(revive_dir)/revive.log" ;;
+doctor)
+	ok() { printf '  \033[32mok\033[0m   %s\n' "$*"; }
+	bad() { printf '  \033[31mno\033[0m   %s\n' "$*"; }
+	for c in tmux jq ps; do command -v "$c" >/dev/null && ok "$c" || bad "$c missing (required)"; done
+	for c in systemd-inhibit gdbus; do command -v "$c" >/dev/null && ok "$c" || bad "$c missing: no final save on shutdown, interval saves only"; done
+	if server_alive; then
+		spid=$(tm display-message -p '#{pid}')
+		pgrep -f "daemon.sh" >/dev/null && ok "daemon running (server $spid)" || bad "daemon not running: is revive.tmux loaded?"
+		systemd-inhibit --list --no-pager 2>/dev/null | grep -q tmux-revive && ok "shutdown/sleep inhibitor held" || bad "no logind inhibitor held"
+		[[ -n $(tm show-hooks -g client-detached 2>/dev/null | grep save.sh) ]] && ok "save-on-detach hook" || bad "save-on-detach hook missing"
+	else
+		bad "no tmux server running"
+	fi
+	DIR=$(revive_dir)
+	[[ -f $DIR/last/state.json ]] && ok "latest snapshot: $(jq -r .saved_at "$DIR/last/state.json")" || bad "no snapshot yet"
+	;;
+*) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
