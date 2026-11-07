@@ -28,9 +28,14 @@ fi
 tmux set-option -g @revive-bash "$BASH4"
 run() { printf '%q %q' "$BASH4" "$S/$1"; }
 
-save_key=$(get @revive-save-key C-s)
-restore_key=$(get @revive-restore-key C-r)
-status_key=$(get @revive-status-key M-r)
+# Saving and restoring are automatic, so no keys are bound unless you ask
+# for them. Drop the bindings older versions made by default.
+for k in C-s C-r M-r; do
+	tmux list-keys -T prefix "$k" 2>/dev/null | grep -q tmux-revive && tmux unbind-key -T prefix "$k"
+done
+save_key=$(get @revive-save-key none)
+restore_key=$(get @revive-restore-key none)
+status_key=$(get @revive-status-key none)
 
 [ "$save_key" != none ] && tmux bind-key "$save_key" run-shell -b "$(run save.sh) manual"
 [ "$restore_key" != none ] && tmux bind-key "$restore_key" run-shell -b "$(run restore.sh)"

@@ -8,6 +8,8 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/revive-e2e.XXXXXX")
 # bash --norc everywhere: your rc files must not change PATH under the test,
 # or a typed `claude` could reach the real CLI.
 export REVIVE_SOCKET=$T/sock REVIVE_DIR=$T/data SHELL=/bin/bash
+# Run from inside tmux, $TMUX would point plain `tmux` at your server.
+unset TMUX TMUX_PANE
 mkdir -p "$T/sh"
 printf '#!/bin/sh\nexec /bin/bash --norc --noprofile "$@"\n' >"$T/sh/bash"
 chmod +x "$T/sh/bash"
@@ -132,6 +134,62 @@ echo "second restore is a no-op"
 bash "$ROOT/scripts/restore.sh"
 sleep 1
 check "no duplicate claude" "[[ \$(wc -l <$T/claude-launches) -eq 1 ]]"
+
+# The everyday flow, end to end, through tmux's own config: close the
+# terminal you are attached from (a plain detach), "reboot", then type
+# `tmux attach` in a new shell. No keys, no tmux-revive commands.
+echo "close the terminal, reboot, tmux attach"
+t kill-server
+pkill -f "$T/bin/claude"
+: >"$T/claude-launches"
+unset REVIVE_SOCKET
+cat >"$T/tmux.conf" <<CONF
+set -g default-shell $REVIVE_SHELL
+set -g @revive-interval 0
+set -g @revive-shutdown-hook off
+run-shell '$ROOT/revive.tmux'
+CONF
+# `tmux` here means the real tmux reading this config on the private socket.
+real_tmux=$(command -v tmux)
+printf '#!/bin/sh\nexec %q -S %q -f %q "$@"\n' "$real_tmux" "$T/sock2" "$T/tmux.conf" >"$T/bin/tmux"
+chmod +x "$T/bin/tmux"
+hash -r # forget the real tmux bash already looked up
+[[ $(command -v tmux) == "$T/bin/tmux" ]] || { echo "refusing: plain tmux would reach a real server"; exit 1; }
+rm -rf "$REVIVE_DIR"
+export HOME=$FAKEHOME TMUX_REVIVE_BIN=$ROOT/bin/tmux-revive
+tmux new-session -d -s agent -x 120 -y 40 -c "$T/proj"
+sleep 1
+check "no keys bound by default" "! tmux list-keys -T prefix | grep -q tmux-revive"
+tmux send-keys -t agent "$T/bin/claude --model opus" Enter
+sleep 1
+cpid=$(pgrep -f "$T/bin/claude" | head -1)
+start=$(awk '{print $22}' /proc/"$cpid"/stat 2>/dev/null)
+rm -f "$FAKEHOME"/.claude/sessions/*.json
+printf '{"pid":%s,"sessionId":"99999999-2222-3333-4444-555555555555","cwd":"%s","procStart":"%s"}' \
+	"$cpid" "$T/proj" "$start" >"$FAKEHOME/.claude/sessions/$cpid.json"
+script -qfc "tmux attach -t agent" /dev/null >/dev/null 2>&1 &
+spid=$!
+sleep 1
+kill -HUP "$spid" 2>/dev/null # the terminal window closes
+wait "$spid" 2>/dev/null
+snapstate=$REVIVE_DIR/last/state.json
+for _ in $(seq 50); do [[ -f $snapstate ]] && break; sleep 0.1; done
+check "closing the terminal saved a snapshot" "jq -e '.reason == \"detach\"' $snapstate >/dev/null"
+check "that snapshot holds the claude session" "jq -e '.. | objects | select(.kind? == \"claude\") | .cmd | test(\"--resume 99999999\")' $snapstate >/dev/null"
+
+tmux kill-server
+pkill -f "$T/bin/claude"
+sleep 0.5
+# A new terminal: an interactive shell with the installer's rc block, typing `tmux attach`.
+script -qfc "bash --norc --noprofile -c '. $ROOT/scripts/shell.sh; tmux attach'" /dev/null >/dev/null 2>&1 &
+spid=$!
+sleep 3
+out=$(tmux list-sessions -F '#{session_name}:#{session_attached}' 2>&1)
+check "tmux attach after reboot is attached to the restored session ($out)" "[[ '$out' == 'agent:1' ]]"
+check "claude resumed its exact conversation" "grep -q '^$T/proj --resume 99999999-2222-3333-4444-555555555555' $T/claude-launches"
+tmux kill-server
+kill "$spid" 2>/dev/null
+pkill -f "$T/bin/claude"
 
 echo "$pass passed, $fail failed"
 ((fail == 0))

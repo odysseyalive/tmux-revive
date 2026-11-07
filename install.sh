@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.sh | sh
 #
 # Options (after `sh -s --`):  --uninstall   --purge (uninstall + delete snapshots)
-#                              --no-config   (don't touch tmux.conf)
+#                              --no-config   (don't touch tmux.conf or shell rc files)
 # Environment:  REVIVE_REPO=owner/name   REVIVE_REF=branch|tag
 #               REVIVE_SOURCE=/local/checkout   (install from a directory)
 set -eu
@@ -41,6 +41,14 @@ tmux_conf() {
 	fi
 }
 
+# Interactive shell rc files that exist, so a plain `tmux attach` after a
+# reboot restores first (scripts/shell.sh).
+shell_rcs() {
+	for f in "$HOME/.bashrc" "${ZDOTDIR:-$HOME}/.zshrc"; do
+		[ -f "$f" ] && printf '%s\n' "$f"
+	done
+}
+
 strip_block() { # remove our block from FILE, in place
 	[ -f "$1" ] || return 0
 	awk -v b="$BEGIN" -v e="$END" '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip' "$1" >"$1.revive.tmp" &&
@@ -63,6 +71,9 @@ uninstall() {
 		strip_block "$conf"
 		say "removed tmux-revive from $conf"
 	fi
+	for rc in $(shell_rcs); do
+		grep -qF "$BEGIN" "$rc" && strip_block "$rc" && say "removed tmux-revive from $rc"
+	done
 	if have tmux && tmux info >/dev/null 2>&1; then
 		tmux set-hook -gu 'client-detached[77]' 2>/dev/null || true
 		pkill -f "$APP/scripts/daemon.sh" 2>/dev/null || true
@@ -186,6 +197,18 @@ if [ $wire_config = 1 ]; then
 		printf '%s\n' "$END"
 	} >>"$conf"
 	say "added tmux-revive to $conf"
+	for rc in $(shell_rcs); do
+		grep -qF "$BEGIN" "$rc" || cp "$rc" "$rc.bak-revive-$(date +%Y%m%d%H%M%S)"
+		strip_block "$rc"
+		{
+			printf '\n%s\n' "$BEGIN"
+			printf '%s\n' "# After a reboot, \`tmux attach\` restores your sessions before attaching."
+			printf "TMUX_REVIVE_BIN='%s/bin/tmux-revive'\n" "$APP"
+			printf "[ -f '%s/scripts/shell.sh' ] && . '%s/scripts/shell.sh'\n" "$APP" "$APP"
+			printf '%s\n' "$END"
+		} >>"$rc"
+		say "added tmux-revive to $rc"
+	done
 	if grep -Eq "^[[:space:]]*set(-option)?[[:space:]]+-g[[:space:]]+@continuum-restore[[:space:]]+['\"]?on" "$conf"; then
 		warn "tmux-continuum auto-restore is on in $conf; turn it off or both will restore"
 	fi
@@ -204,12 +227,10 @@ cat <<EOF
 
   Done. Nothing else to set up.
 
-  Detach, shut down, boot, then run   tmux
-  and every session comes back, with Claude Code resumed in the same
-  conversation it was in.  (tmux-revive  also works: it restores and attaches.)
+  Detaching saves. After a reboot, open a new terminal and run
+  tmux  or  tmux attach  and every session comes back, with Claude Code
+  resumed in the same conversation it was in. No keys to press.
 
-  prefix + Ctrl-s  save now       prefix + Ctrl-r  restore
-  prefix + Alt-r   what would be restored
   tmux-revive doctor               check everything is wired up
 
 EOF

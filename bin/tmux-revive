@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tmux-revive command line.
 #   tmux-revive                      wake: start tmux, restore, attach
+#   tmux-revive start                start tmux and restore, don't attach
 #   tmux-revive save                 snapshot now
 #   tmux-revive restore [SNAPSHOT]   restore latest (or a named snapshot)
 #   tmux-revive status [SNAPSHOT]    what a restore would bring back
@@ -31,6 +32,17 @@ wake)
 	# empty session it starts with. A live server just needs attaching.
 	tmux has-session 2>/dev/null && exec tmux attach
 	exec tmux
+	;;
+start)
+	# Start the server after a reboot and wait for the restore, so that a
+	# plain `tmux attach` finds every session (see scripts/shell.sh).
+	server_alive && exit 0
+	[[ -f $(revive_dir)/last/state.json ]] || exit 0
+	tm new-session -d || exit 1 # loads the config, which restores
+	for _ in $(seq 150); do
+		[[ $(opt @revive-done '') == 1 ]] && break
+		sleep 0.1
+	done
 	;;
 uninstall)
 	inst=$ROOT/install.sh
@@ -68,5 +80,5 @@ doctor)
 	DIR=$(revive_dir)
 	[[ -f $DIR/last/state.json ]] && ok "latest snapshot: $(jq -r .saved_at "$DIR/last/state.json")" || bad "no snapshot yet"
 	;;
-*) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+*) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

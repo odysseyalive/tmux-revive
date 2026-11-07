@@ -26,16 +26,15 @@ protecting a tmux server that is already running. Rerunning it updates in place.
 
 ## Use
 
-1. Work in tmux as usual. Detach (or don't).
+1. Work in tmux as usual. Detach the usual way: prefix + d, or just close the
+   terminal. That saves.
 2. Shut down.
-3. After boot, run `tmux` (or `tmux-revive`, which also attaches when a server
-   is already up).
+3. After boot, open a terminal and run `tmux` or `tmux attach`. Everything is
+   back, Claude Code included, in the conversation it was in.
 
-| Key | Does |
-| --- | --- |
-| prefix + Ctrl-s | save now |
-| prefix + Ctrl-r | restore the latest snapshot |
-| prefix + Alt-r | show what a restore would bring back |
+There are no keys to press and nothing to run. The installer adds a few lines
+to your `~/.bashrc` / `~/.zshrc` so `tmux attach` (`tmux a`) restores before
+it attaches when no server is running yet; a bare `tmux` restores on its own.
 
 ```
 tmux-revive status     what the latest snapshot holds, and the exact resume commands
@@ -105,7 +104,7 @@ set -g @revive-claude-remote-control on
 set -g @revive-programs 'vim nvim less htop'   # or ':all:'
 set -g @revive-scrollback 2000      # lines per shell pane, 0 = off
 set -g @revive-keep 30              # snapshots kept
-set -g @revive-save-key C-s         # 'none' to unbind
+set -g @revive-save-key C-s         # optional keys; none are bound by default
 set -g @revive-restore-key C-r
 set -g @revive-status-key M-r
 set -g @revive-dir '~/.local/share/tmux-revive'

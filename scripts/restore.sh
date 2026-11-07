@@ -19,6 +19,10 @@ while [[ ${1:-} == --* ]]; do
 	shift
 done
 
+# Startup restore announces when it is over, so `tmux-revive start` (behind
+# a plain `tmux attach` after a reboot) knows when to attach.
+((auto && !dry)) && on_exit "tm set-option -g @revive-done 1 2>/dev/null"
+
 DIR=$(revive_dir)
 snap=${1:-$DIR/last}
 [[ -d $snap ]] || snap="$DIR/snapshots/$snap"
@@ -35,7 +39,10 @@ if ((dry)); then
 	exit 0
 fi
 
-take_lock "$DIR/.restore.lock" || exit 0
+if ! take_lock "$DIR/.restore.lock"; then
+	CLEANUP=() # another restore is running; it signals when done
+	exit 0
+fi
 
 if ((auto)); then
 	[[ $(opt @revive-auto-restore on) == on ]] || exit 0
