@@ -91,17 +91,18 @@ tmux-revive uninstall
 
 ## Control panel
 
-A live, BBS-style view of every pane: what's running in it, and whether each
-AI agent is working, waiting on you, or asking a question before it can go on.
-It also shows CPU, memory and git status, recent agent messages, links and saves.
+Remember the old BBS screens? This is a live one for every pane. It shows
+what's running in each, and whether each AI agent is working, waiting on you,
+or stuck on a question before it can go on. CPU, memory and git status are
+there too, along with recent agent messages, links and saves.
 
 ```sh
 tmux-revive panel
 ```
 
-Pick a pane with its number or the arrow keys, then press a letter: **J** to
-jump to it, **M** to message it, **N** to name it, **P** to show or hide a peek
-at its screen, **S** to save now, and **Q** to quit.
+Pick a pane by its number or with the arrow keys, then press a letter. **J**
+jumps to it, **M** messages it, **N** names it, and **P** shows or hides a
+quick peek at its screen. **S** saves right now, and **Q** quits.
 
 ## Agents talking to each other
 
@@ -186,7 +187,7 @@ you'll most likely want is the number of seconds between saves:
 set -g @revive-interval 60
 ```
 
-To open the panel as a popup with a key (prefix + P here):
+Want the panel to pop up with a key? This one uses prefix + P:
 
 ```tmux
 set -g @revive-panel-key P
