@@ -348,6 +348,6 @@ cat <<EOF
 
   tmux-revive doctor               check everything is wired up
   tmux-revive update               get the latest version
-  agent-say name claude            let agents in panes message each other
+  agent-say name shop-dev          let agents in panes message each other
 
 EOF
