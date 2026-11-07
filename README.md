@@ -1,4 +1,4 @@
-![tmux-revive: terminal panes lighting back up, with messages flying between them and out to another computer](assets/header.png)
+![tmux-revive: a watercolor laptop whose tmux panes are lighting back up, with notes passed between them and a cable out to one server in another room](assets/header.png)
 
 # tmux-revive
 
@@ -101,9 +101,9 @@ into its prompt:
 ```
 
 Pick a name that won't get mixed up with what the agents are talking about.
-A message to `api` or `tests` reads like a topic in the conversation, and
-`claude` could mean any Claude pane. Something like `shop-dev` or
-`shop-review`, the project plus the pane's job, stays clear.
+Send a message to `api` or `tests` and it reads like just another topic in
+the conversation, and `claude` could be any Claude pane at all. The project
+plus the pane's job, so `shop-dev` or `shop-review`, keeps things clear.
 
 Then just ask your agent in plain words:
 
