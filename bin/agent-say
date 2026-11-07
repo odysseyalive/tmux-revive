@@ -6,20 +6,28 @@
 #   agent-say list                     show tagged panes
 #   agent-say <to> <message...>        send; <to> is a name, a %pane-id, or name@ssh-host
 #   agent-say <to> -                   send the message read from stdin
+#   agent-say show <id>                one message, by the id its notice gave
 #   agent-say read [n] [name]          last n mailbox entries (default 20), optionally only to <name>
 #
 # Options before <to>: --from <label> overrides the sender label.
 # Delivery: tmux send-keys -l (literal), then a separate Enter after a short delay, which is
 # how a human paste+submit looks to a TUI. Every message is also appended to the receiving
 # machine's mailbox file, so long text is read from there and nothing is lost if a submit misfires.
+# A pane at a shell prompt or scrolled back in copy mode is not sent to: the shell would run
+# the message as a command, and copy mode would eat it.
 # Over ssh the remote machine needs agent-say in ~/.local/bin or on its PATH (or set AGENT_SAY_REMOTE_CMD).
 set -euo pipefail
+umask 077 # the mailbox holds whatever agents say to each other: yours only
 
 MAILBOX="${AGENT_SAY_MAILBOX:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-say/mailbox.md}"
+MAILBOX_MAX="${AGENT_SAY_MAILBOX_MAX:-1048576}" # bytes; the older half moves to mailbox.md.1
 ENTER_DELAY="${AGENT_SAY_ENTER_DELAY:-0.4}"
 INLINE_MAX="${AGENT_SAY_INLINE_MAX:-300}"
+MODE_WAIT="${AGENT_SAY_MODE_WAIT:-10}" # seconds to wait for a pane to leave copy mode
+LOCK_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
 REMOTE_CMD="${AGENT_SAY_REMOTE_CMD:-PATH=\"\$HOME/.local/bin:\$PATH\" agent-say}"
 SSH="${AGENT_SAY_SSH:-ssh}"
+SHELLS=" sh bash zsh fish dash ksh tcsh csh nu "
 
 die() { echo "agent-say: $*" >&2; exit 1; }
 
@@ -42,25 +50,90 @@ self_pane() {
 
 name_of() { tmux display-message -p -t "$1" '#{@agent}' 2>/dev/null; }
 
-resolve() {  # name or %pane-id -> pane id on this machine
-	local t="$1"
-	if [[ "$t" == %* ]]; then echo "$t"; return; fi
-	tmux list-panes -a -F '#{pane_id} #{@agent}' | awk -v n="$t" '$2==n {print $1; exit}'
+panes_named() { tmux list-panes -a -F '#{pane_id} #{@agent}' | awk -v n="$1" '$2==n {print $1}'; }
+
+resolve() {  # name or %pane-id -> pane id on this machine; two panes with one name is an error
+	local t="$1" hits
+	if [[ "$t" == %* ]]; then
+		tmux list-panes -a -F '#{pane_id}' | grep -qxF -- "$t" || die "no pane $t (see: agent-say list)"
+		echo "$t"; return
+	fi
+	hits="$(panes_named "$t")"
+	[[ -n "$hits" ]] || die "no pane named '$t' (see: agent-say list)"
+	[[ "$hits" != *$'\n'* ]] || die "more than one pane is named '$t' ($(tr '\n' ' ' <<<"$hits"| sed 's/ $//')); rename one with: agent-say name <other-name>, or send to a pane id"
+	echo "$hits"
+}
+
+# Can the message be typed into this pane without harm? Waits out copy mode for a while.
+check_target() {
+	local p="$1" to="$2" cmd mode dead i
+	for ((i = 0; ; i++)); do
+		IFS=' ' read -r mode dead cmd < <(tmux display-message -p -t "$p" '#{pane_in_mode} #{pane_dead} #{pane_current_command}')
+		[[ "$dead" == 1 ]] && die "$to ($p) has exited; nothing to deliver to"
+		cmd="${cmd##*/}"; cmd="${cmd#-}"
+		[[ "$SHELLS" == *" $cmd "* ]] &&
+			die "no agent is running in $to ($p), just a $cmd prompt that would run the message as a command; not sent"
+		[[ "$mode" == 1 ]] || return 0
+		((i >= MODE_WAIT * 2)) && die "$to ($p) is scrolled back in copy mode (press q there to leave it); not sent"
+		sleep 0.5
+	done
+}
+
+# Per-pane lock, so two messages are never typed into one prompt together. mkdir is atomic
+# everywhere (macOS has no flock); the pid inside lets a lock left by a killed sender be cleared.
+take_pane_lock() {
+	local lock="$LOCK_DIR/agent-say-$(id -u)-${1#%}.lock" owner _
+	for _ in $(seq 1 50); do
+		if mkdir "$lock" 2>/dev/null; then
+			echo $$ >"$lock/pid"
+			# shellcheck disable=SC2064 # expand now: $lock is gone by exit time
+			trap "rm -rf $(printf %q "$lock")" EXIT
+			return 0
+		fi
+		owner="$(cat "$lock/pid" 2>/dev/null || true)"
+		if [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then
+			rm -rf "$lock"  # its sender is gone
+			continue
+		fi
+		sleep 0.1
+	done
+	die "pane $1 is busy: another message is still being typed into it"
+}
+
+# Keep the mailbox from growing forever: past MAILBOX_MAX, start a new one and keep one old.
+rotate_mailbox() {
+	local size
+	[[ -f "$MAILBOX" ]] || return 0
+	size="$(wc -c <"$MAILBOX")"
+	((size > MAILBOX_MAX)) && mv -f "$MAILBOX" "$MAILBOX.1"
+	return 0
 }
 
 from=""
 if [[ "${1:-}" == --from ]]; then from="${2:-}"; shift 2 || die "--from needs a value"; fi
 
-cmd="${1:-}"; [[ -n "$cmd" ]] || { sed -n '2,14p' "$0"; exit 1; }
+cmd="${1:-}"; [[ -n "$cmd" ]] || { sed -n '2,18p' "$0"; exit 1; }
 
 case "$cmd" in
 	name)
-		[[ -n "${2:-}" ]] || die "usage: agent-say name <name>"
+		[[ -n "${2:-}" && "$2" != *[[:space:]@]* && "$2" != %* ]] || die "usage: agent-say name <name> (no spaces or @, can't start with %)"
 		p="$(self_pane)"; [[ -n "$p" ]] || die "not in a tmux pane (set AGENT_SAY_PANE)"
+		others="$(panes_named "$2" | grep -vx -- "$p" || true)"
 		tmux set-option -p -t "$p" @agent "$2"
-		echo "pane $p is now '$2'" ;;
+		echo "pane $p is now '$2'"
+		if [[ -n "$others" ]]; then
+			echo "agent-say: warning: $(tr '\n' ' ' <<<"$others")also named '$2'; messages to '$2' will be refused until only one pane has it" >&2
+		fi ;;
 	list)
 		tmux list-panes -a -F '#{pane_id} #{?@agent,#{@agent},-} #{session_name}:#{window_index}.#{pane_index} #{pane_current_command}' ;;
+	show)
+		[[ -n "${2:-}" ]] || die "usage: agent-say show <id>"
+		files=()
+		for f in "$MAILBOX.1" "$MAILBOX"; do [[ -f "$f" ]] && files+=("$f"); done
+		((${#files[@]})) || die "the mailbox is empty"
+		out="$(awk -v id="$2" '/^## /{keep = (index($0, "] #" id) > 0)} keep' "${files[@]}")"
+		[[ -n "$out" ]] || die "no message $2 in the mailbox"
+		printf '%s\n' "$out" ;;
 	read)
 		[[ -f "$MAILBOX" ]] || { echo "(mailbox empty)"; exit 0; }
 		# Optional name: only messages addressed to it.
@@ -88,29 +161,26 @@ case "$cmd" in
 			exit
 		fi
 
-		target="$(resolve "$to")"; [[ -n "$target" ]] || die "no pane named '$to' (see: agent-say list)"
+		target="$(resolve "$to")"
+		take_pane_lock "$target"
+		check_target "$target" "$to"
 		ts="$(date -u +%H:%MZ)"
+		id="$(date -u +%Y%m%d%H%M%S)-$$"
 
 		mkdir -p "$(dirname "$MAILBOX")"
-		printf '## [%s -> %s %s]\n%s\n\n' "$from" "$to" "$(date -u +%FT%TZ)" "$msg" >> "$MAILBOX"
+		[[ -f "$MAILBOX" ]] && chmod 600 "$MAILBOX" # from versions that left it readable to all
+		rotate_mailbox
+		printf '## [%s -> %s %s] #%s\n%s\n\n' "$from" "$to" "$(date -u +%FT%TZ)" "$id" "$msg" >> "$MAILBOX"
 
 		# Tell the receiver its own name: Codex runs commands in a shared daemon outside the
 		# pane, so it cannot work out which pane it is in when it replies.
 		you="$(name_of "$target")"; you="${you:-$target}"
 		reply="To answer, run the shell command: agent-say --from $you $from \"<your reply>\""
 		if (( ${#msg} > INLINE_MAX )) || [[ "$msg" == *$'\n'* ]]; then
-			line="[agent-msg from=$from $ts] Long message, read it by running: agent-say read 1 $you. $reply"
+			line="[agent-msg from=$from $ts] Long message, read it by running: agent-say show $id. $reply"
 		else
 			line="[agent-msg from=$from $ts] $msg -- $reply"
 		fi
-
-		# One sender at a time per pane, or two messages typed at once merge into one prompt.
-		# mkdir is atomic everywhere (macOS has no flock).
-		lock="${TMPDIR:-/tmp}/agent-say-$(id -u)-${target#%}.lock"
-		got=""
-		for _ in $(seq 1 50); do mkdir "$lock" 2>/dev/null && { got=1; break; }; sleep 0.1; done
-		[[ -n "$got" ]] || die "pane $target is busy (stale lock? remove $lock)"
-		trap 'rmdir "$lock" 2>/dev/null' EXIT
 
 		tmux send-keys -t "$target" -l -- "$line"
 		sleep "$ENTER_DELAY"
