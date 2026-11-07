@@ -2,7 +2,9 @@
 # agent-say: let agent CLIs in tmux panes (Claude Code, Codex, ...) message each other,
 # on one machine or across machines over ssh. Works across accounts: it only types into panes.
 #
-#   agent-say name <name>              tag the current pane (e.g. claude, codex)
+#   agent-say name [name]              tag the current pane (e.g. claude, codex); also renames
+#                                      its window and the agent's session (Claude Code, Codex,
+#                                      Cursor). No name: use the agent session's own name.
 #   agent-say list                     show tagged panes
 #   agent-say <to> <message...>        send; <to> is a name, a %pane-id, or name@ssh-host
 #   agent-say <to> -                   send the message read from stdin
@@ -34,7 +36,8 @@ die() { echo "agent-say: $*" >&2; exit 1; }
 # Pane of the caller: walk up the process tree until we reach a pane's shell.
 # $TMUX_PANE is only a fallback: Codex runs commands in a shared app-server daemon whose
 # $TMUX_PANE belongs to whichever pane started the daemon, so there it would name the
-# wrong pane. Inside that daemon we return nothing and the caller must pass --from.
+# wrong pane. Inside that daemon the pane is the one Codex pane working in this directory;
+# with none or several, we return nothing and the caller must pass --from.
 self_pane() {
 	if [[ -n "${AGENT_SAY_PANE:-}" ]]; then echo "$AGENT_SAY_PANE"; return; fi
 	local panes pid=$$ hit
@@ -42,10 +45,89 @@ self_pane() {
 	while [[ -n "$pid" && "$pid" -gt 1 ]]; do
 		hit="$(awk -v p="$pid" '$1==p {print $2; exit}' <<<"$panes")"
 		if [[ -n "$hit" ]]; then echo "$hit"; return; fi
-		[[ "$(ps -o args= -p "$pid" 2>/dev/null)" == *codex*app-server* ]] && return 0
+		if [[ "$(ps -o args= -p "$pid" 2>/dev/null)" == *codex*app-server* ]]; then
+			codex_pane_here
+			return 0
+		fi
 		pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
 	done
 	echo "${TMUX_PANE:-}"
+}
+
+# The one pane running Codex in the current directory, if there is exactly one.
+codex_pane_here() {
+	local id ppid cwd hits=()
+	while read -r id ppid cwd; do
+		[[ "$cwd" == "$PWD" && "$(pane_agent_pid "$ppid" codex)" ]] && hits+=("$id")
+	done < <(tmux list-panes -a -F '#{pane_id} #{pane_pid} #{pane_current_path}')
+	((${#hits[@]} == 1)) && echo "${hits[0]}"
+	return 0
+}
+
+# Which agent runs in a pane: the first agent process under the pane's shell.
+# pane_agent_pid PANE_PID [KIND] prints "kind pid".
+pane_agent_pid() {
+	local root=$1 want=${2:-} pid ppid args kind
+	declare -A kids=() argv=()
+	while read -r pid ppid args; do
+		kids[$ppid]+="$pid "
+		argv[$pid]=$args
+	done < <(ps -eo pid=,ppid=,args=)
+	local queue=("$root")
+	while ((${#queue[@]})); do
+		pid=${queue[0]}; queue=("${queue[@]:1}")
+		args=${argv[$pid]:-}
+		kind=""
+		case " $args " in
+			*app-server*) ;;
+			*/claude\ * | " claude "* | *" claude --"*) kind=claude ;;
+			*/codex\ * | " codex "*) kind=codex ;;
+			*cursor-agent*) kind=cursor ;;
+			*/crush\ * | " crush "*) kind=crush ;;
+			*/gemini\ * | *" gemini "*) kind=gemini ;;
+		esac
+		if [[ -n $kind && ( -z $want || $kind == "$want" ) ]]; then echo "$kind $pid"; return; fi
+		# shellcheck disable=SC2206
+		[[ -n ${kids[$pid]:-} ]] && queue+=(${kids[$pid]})
+	done
+}
+
+# Claude Code's record of a running session: <config>/sessions/<pid>.json.
+claude_record() {
+	local f
+	for f in "$HOME"/.claude*/sessions/"$1".json ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR/sessions/$1.json"}; do
+		[[ -f $f ]] && { echo "$f"; return; }
+	done
+}
+
+# The name the agent in a pane already gave its session, if any.
+session_name() { # session_name KIND PID
+	local f db
+	case $1 in
+		claude)
+			f="$(claude_record "$2")"
+			[[ -n $f ]] && jq -r 'select(.nameSource == "user") | .name // empty' "$f" 2>/dev/null ;;
+		codex)
+			[[ -n ${CODEX_THREAD_ID:-} ]] || return 0
+			db="$(command ls -t "${CODEX_HOME:-$HOME/.codex}"/state_*.sqlite 2>/dev/null | head -1)"
+			[[ -n $db ]] && command -v sqlite3 >/dev/null &&
+				sqlite3 "$db" "select name from threads where id = '${CODEX_THREAD_ID//\'/}'" 2>/dev/null ;;
+	esac
+}
+
+# Is the agent waiting for input, with nothing on screen asking a question? Its screen must
+# hold still, show no "working" or approval prompt, and Claude Code must report itself idle.
+agent_idle() { # agent_idle PANE KIND PID PREVIOUS-SCREEN -> prints the screen; 0 when idle
+	local screen f
+	screen="$(tmux capture-pane -p -t "$1" 2>/dev/null)" || return 2
+	printf '%s' "$screen"
+	if [[ $2 == claude ]]; then
+		f="$(claude_record "$3")"
+		[[ -n $f && "$(jq -r '.status // empty' "$f" 2>/dev/null)" == idle ]] || return 1
+	fi
+	[[ "$screen" == "$4" ]] || return 1
+	! grep -v '^[[:space:]]*$' <<<"$screen" | tail -n 15 | grep -qiE \
+		'esc to (interrupt|cancel)|ctrl\+c to (interrupt|cancel)|yes, proceed|do you want to|would you like to|allow (once|always)|\(y/n\)|\[y/n\]|trust (this|the) folder'
 }
 
 name_of() { tmux display-message -p -t "$1" '#{@agent}' 2>/dev/null; }
@@ -112,18 +194,67 @@ rotate_mailbox() {
 from=""
 if [[ "${1:-}" == --from ]]; then from="${2:-}"; shift 2 || die "--from needs a value"; fi
 
-cmd="${1:-}"; [[ -n "$cmd" ]] || { sed -n '2,18p' "$0"; exit 1; }
+cmd="${1:-}"; [[ -n "$cmd" ]] || { sed -n '2,20p' "$0"; exit 1; }
 
 case "$cmd" in
 	name)
-		[[ -n "${2:-}" && "$2" != *[[:space:]@]* && "$2" != %* ]] || die "usage: agent-say name <name> (no spaces or @, can't start with %)"
-		p="$(self_pane)"; [[ -n "$p" ]] || die "not in a tmux pane (set AGENT_SAY_PANE)"
-		others="$(panes_named "$2" | grep -vx -- "$p" || true)"
-		tmux set-option -p -t "$p" @agent "$2"
-		echo "pane $p is now '$2'"
+		newname="${2:-}"
+		p="$(self_pane)"; [[ -n "$p" ]] || die "can't tell which pane this is: run it in the pane's terminal, or set AGENT_SAY_PANE=%<id> (see: agent-say list)"
+		read -r kind apid < <(pane_agent_pid "$(tmux display-message -p -t "$p" '#{pane_pid}')") || true
+		if [[ -z "$newname" ]]; then
+			[[ -n "${kind:-}" ]] && newname="$(session_name "$kind" "$apid")"
+			[[ -n "$newname" ]] || die "usage: agent-say name <name> (this pane's ${kind:-shell} session has no name of its own to use)"
+		fi
+		[[ "$newname" != *[[:space:]@]* && "$newname" != %* ]] || die "a name can't contain spaces or @, or start with %"
+		others="$(panes_named "$newname" | grep -vx -- "$p" || true)"
+		tmux set-option -p -t "$p" @agent "$newname"
+		echo "pane $p is now '$newname'"
 		if [[ -n "$others" ]]; then
-			echo "agent-say: warning: $(tr '\n' ' ' <<<"$others")also named '$2'; messages to '$2' will be refused until only one pane has it" >&2
-		fi ;;
+			echo "agent-say: warning: $(tr '\n' ' ' <<<"$others")also named '$newname'; messages to '$newname' will be refused until only one pane has it" >&2
+		fi
+		# The window, when this pane has it to itself.
+		if [[ "$(tmux display-message -p -t "$p" '#{window_panes}')" == 1 ]]; then
+			tmux rename-window -t "$p" "$newname"
+			echo "window renamed to '$newname'"
+		else
+			echo "window not renamed: it holds other panes too"
+		fi
+		# The agent's own session, the way you would: its /rename command, typed once it's idle.
+		case "${kind:-}" in
+			claude | codex | cursor)
+				if [[ "$(session_name "$kind" "$apid")" == "$newname" ]]; then
+					: # already its name
+				else
+					# Detached: the agent is busy running this very command, so typing now would
+					# land mid-turn. The helper waits for it to finish.
+					if command -v setsid >/dev/null; then
+						setsid -f "$0" _rename "$p" "$kind" "$apid" "$newname" </dev/null >/dev/null 2>&1
+					else
+						nohup "$0" _rename "$p" "$kind" "$apid" "$newname" </dev/null >/dev/null 2>&1 &
+					fi
+					echo "$kind session will be renamed to '$newname' as soon as it is idle"
+				fi ;;
+			crush | gemini) echo "$kind has no rename command; only the pane and window were named" ;;
+		esac ;;
+	_rename)
+		# Background half of `name`: wait (up to 2 minutes) for the agent to go idle, then type
+		# its rename command. Holds the pane lock so a message can't be typed at the same time.
+		p="$2" kind="$3" apid="$4" newname="$5" prev="" deadline=$((SECONDS + ${AGENT_SAY_RENAME_WAIT:-120}))
+		while ((SECONDS < deadline)); do
+			kill -0 "$apid" 2>/dev/null || exit 0 # the agent quit
+			screen="$(agent_idle "$p" "$kind" "$apid" "$prev")" && {
+				take_pane_lock "$p"
+				tmux send-keys -t "$p" -l -- "/rename $newname"
+				sleep "$ENTER_DELAY"
+				tmux send-keys -t "$p" Enter
+				exit 0
+			}
+			(($? == 2)) && exit 0 # the pane is gone
+			prev="$screen"
+			sleep 1
+		done
+		tmux display-message -t "$p" "agent-say: $kind never went idle; type /rename $newname there yourself" 2>/dev/null
+		exit 1 ;;
 	list)
 		tmux list-panes -a -F '#{pane_id} #{?@agent,#{@agent},-} #{session_name}:#{window_index}.#{pane_index} #{pane_current_command}' ;;
 	show)

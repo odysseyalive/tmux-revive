@@ -85,15 +85,41 @@ runs it as a command):
 ! agent-say name claude
 ```
 
-For Codex, name the pane in the terminal **before** starting Codex, because
-Codex can't tell which pane it's in:
+Or just ask the agent: "name this pane claude with agent-say". That works
+in Codex too.
+
+One name does three things:
+
+- **The pane** gets the name, so other agents can send it messages. The name
+  belongs to the pane, so it stays when you restart the agent there.
+- **The tmux window** is renamed too, so you can see it in your status bar.
+  This is skipped when the window is split between several panes.
+- **The agent's own session** is renamed with its `/rename` command. That's
+  the name you see when resuming and in Remote Control. The agent is busy
+  running the naming command at that moment, so `agent-say` waits until it
+  has finished and is waiting for you (up to 2 minutes), then types
+  `/rename` for it. It never types into a question the agent is asking you.
+
+| Agent | Session renamed? |
+| --- | --- |
+| Claude Code | yes |
+| Codex | yes |
+| Cursor Agent | yes |
+| Crush, Gemini | no, they have no rename command; only the pane and window are named |
+
+**Already named your session?** Run `agent-say name` with no name, and the
+pane takes the name the session already has (Claude Code and Codex).
+
+**Codex** runs its commands outside its own pane, so `agent-say` finds the
+Codex pane working in the same folder. If two Codex panes work in the same
+folder, it can't tell them apart. Then name the pane in the terminal before
+starting Codex:
 
 ```sh
 agent-say name codex
 codex
 ```
 
-The name belongs to the pane, so it stays when you restart the agent there.
 `agent-say list` shows every pane and its name.
 
 ### 2. Ask your agent to send a message
@@ -171,7 +197,7 @@ mailbox passes 1 MB, it moves to `mailbox.md.1` and a new one starts.
 **Settings** (environment variables): `AGENT_SAY_ENTER_DELAY` (0.4 seconds
 between typing a message and pressing Enter; raise it if a busy agent leaves
 a message unsent), `AGENT_SAY_INLINE_MAX` (300 characters before a message
-counts as long), `AGENT_SAY_MODE_WAIT` (10 seconds), `AGENT_SAY_MAILBOX`,
+counts as long), `AGENT_SAY_MODE_WAIT` (10 seconds), `AGENT_SAY_RENAME_WAIT` (120 seconds), `AGENT_SAY_MAILBOX`,
 `AGENT_SAY_MAILBOX_MAX`, `AGENT_SAY_SSH`, `AGENT_SAY_REMOTE_CMD`,
 `AGENT_SAY_HOST`.
 

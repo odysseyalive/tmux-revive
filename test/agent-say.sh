@@ -73,5 +73,56 @@ mkdir "$lock" && echo 999999 >"$lock/pid" # left behind by a sender that was kil
 check "a lock left by a dead sender is cleared" "AGENT_SAY_PANE=$A say beta 'after stale lock' >/dev/null && seen $B 'after stale lock'"
 check "the lock is released after sending" "[[ ! -e $lock ]]"
 
+echo "naming renames the window and the agent's session"
+# Stand-in agents named like the real ones. Each records what is typed into it, and shows a
+# "working" line until a flag file appears, the way a busy agent does.
+export HOME=$T/home AGENT_SAY_RENAME_WAIT=20
+mkdir -p "$HOME/.claude/sessions" "$T/cx"
+for a in claude codex; do
+	cat >"$T/bin/$a" <<EOF
+#!/usr/bin/env bash
+while [[ ! -e $T/$a.idle ]]; do printf '\r* Working (esc to interrupt) %s' "\$SECONDS"; sleep 0.2; done
+clear; echo '> '
+while IFS= read -r line; do echo "\$line" >>$T/$a.typed; done
+EOF
+	chmod +x "$T/bin/$a"
+done
+typed() { [[ -f $T/$1.typed ]] && grep -qxF -- "$2" "$T/$1.typed"; }
+wait_typed() { for _ in $(seq 60); do typed "$1" "$2" && return 0; sleep 0.25; done; return 1; }
+
+C=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/claude")
+sleep 0.5
+cpid=$(pgrep -f "^bash $T/bin/claude\$")
+printf '{"pid":%s,"name":"auto-1","nameSource":"derived","status":"busy"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
+out=$(AGENT_SAY_PANE=$C say name gamma 2>&1)
+check "naming says the claude session will follow" "[[ '$out' == *'claude session will be renamed'* ]]"
+check "window renamed (the pane has it to itself)" "[[ \$(tmux display -p -t $C '#{window_name}') == gamma ]]"
+sleep 2
+check "nothing typed while claude is working" "! typed claude '/rename gamma'"
+touch "$T/claude.idle"
+printf '{"pid":%s,"name":"auto-1","nameSource":"derived","status":"idle"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
+check "/rename typed once claude is idle" "wait_typed claude '/rename gamma'"
+check "the pane lock was released" "[[ -z \$(find $T -maxdepth 1 -name 'agent-say-*.lock') ]]"
+
+printf '{"pid":%s,"name":"from-claude","nameSource":"user","status":"idle"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
+out=$(AGENT_SAY_PANE=$C say name 2>&1)
+check "no name given: the claude session's own name is used" "[[ \$(tmux display -p -t $C '#{@agent}') == from-claude ]]"
+check "and it isn't typed back as a rename" "[[ '$out' != *'will be renamed'* ]]"
+out=$(AGENT_SAY_PANE=$SH say name 2>&1)
+check "no name given in a plain shell pane is refused" "grep -q 'no name of its own' <<<\"\$out\""
+out=$(AGENT_SAY_PANE=$A say name alpha2 2>&1)
+check "a pane sharing its window leaves the window name alone" "[[ '$out' == *'window not renamed'* ]]"
+
+# Codex runs commands in a shared background server, outside any pane: agent-say finds the
+# one Codex pane working in the command's directory.
+X=$(tmux new-window -d -P -F '#{pane_id}' -t s -c "$T/cx" "$T/bin/codex")
+sleep 0.5
+out=$(cd "$T/cx" && TMUX_PANE=$A bash -c 'exec -a "codex app-server" bash -c "\"\$0\" name delta; true" '"$ROOT/bin/agent-say" 2>&1)
+check "from inside codex's server, the codex pane in this directory is found ($out)" "[[ \$(tmux display -p -t $X '#{@agent}') == delta ]] && [[ \$(tmux display -p -t $A '#{@agent}') != delta ]]"
+sleep 1.5
+check "nothing typed while codex shows it is working" "! typed codex '/rename delta'"
+touch "$T/codex.idle"
+check "/rename typed once codex is idle" "wait_typed codex '/rename delta'"
+
 echo "$pass passed, $fail failed"
 ((fail == 0))
