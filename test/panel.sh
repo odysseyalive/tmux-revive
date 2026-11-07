@@ -5,7 +5,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T=$(mktemp -d "${TMPDIR:-/tmp}/panel-test.XXXXXX")
 unset TMUX TMUX_PANE
-export REVIVE_DIR=$T/data AGENT_SAY_MAILBOX=$T/mail/mailbox.md REVIVE_PANEL_REFRESH=1
+export REVIVE_DIR=$T/data AGENT_SAY_MAILBOX=$T/mail/mailbox.md REVIVE_PANEL_REFRESH=1 REVIVE_PANEL_SPLASH=0
 tm() { tmux -L "revive-panel-test-$$" -f /dev/null "$@"; }
 pass=0 fail=0
 check() {
@@ -27,15 +27,20 @@ sleep 0.5
 
 echo "one frame"
 # Inside the private server, so the panel reads its panes, not yours.
-frame() { tm run-shell "COLUMNS=$1 LINES=40 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
-for c in 80 100 130; do
-	widths=$(frame "$c" | awk '{print length}' | sort -u | tr '\n' ' ')
-	check "every line is exactly $c wide ($widths)" "[[ '$widths' == '$c ' ]]"
+frame() { tm run-shell "COLUMNS=$1 LINES=${2:-40} REVIVE_PANEL_ART=${3:-} REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
+for size in "80 24" "100 40" "130 40" "200 60"; do
+	read -r c l <<<"$size"
+	shape=$(frame "$c" "$l" | awk '{w[length]=1; n++} END{for (k in w) printf "%s ", k; print "x " n}')
+	check "it fills a ${c}x$l pane exactly ($shape)" "[[ '$shape' == '$c x $l' ]]"
+done
+for a in city mountains ocean space circuit rain grid; do
+	out=$(frame 120 45 "$a")
+	check "the $a artwork draws and fits" "grep -q 'ART · ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
 done
 out=$(frame 130)
 check "a shell pane shows as a shell" "grep -q 'bash *· shell' <<<\"\$out\""
 check "a program shows as running" "grep -q 'top *▸ running' <<<\"\$out\""
-check "the command keys are listed" "grep -qF '[J]ump  [M]essage  [N]ame  [P]eek  [S]ave  [Q]uit' <<<\"\$out\""
+check "the command keys are listed" "grep -qF '[J]ump  [M]essage  [N]ame  [P]eek  [A]rt  [S]ave  [Q]uit' <<<\"\$out\""
 check "a narrow terminal still finds programs (ps not cut to COLUMNS)" "frame 80 | grep -q 'top *▸ running'"
 
 echo "keys"
@@ -55,8 +60,18 @@ tm send-keys -t work:panel p; sleep 1.5
 check "P hides the peek box" "! screen | grep -q 'PEEK'"
 tm send-keys -t work:panel Down
 check "the arrow keys move the selection" "wait_screen '[3] ▶'"
+before=$(screen | grep -o 'ART · [a-z ]*' | head -1)
+tm send-keys -t work:panel a
+check "A switches the artwork ($before)" "for _ in \$(seq 1 20); do after=\$(screen | grep -o 'ART · [a-z ]*' | head -1); [[ -n \$after && \$after != '$before' ]] && break; sleep 0.2; done; [[ \$after != '$before' ]]"
 tm send-keys -t work:panel q; sleep 1
 check "Q quits" "! tm list-windows -F '#{window_name}' | grep -qx panel"
+
+echo "splash"
+tm new-window -d -t work -n splash "env REVIVE_PANEL_SPLASH=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh"
+check "the dial-up splash plays" "for _ in \$(seq 1 40); do tm capture-pane -p -t work:splash | grep -q 'CONNECT 33600' && break; sleep 0.1; done; tm capture-pane -p -t work:splash | grep -q 'CONNECT 33600'"
+tm send-keys -t work:splash x
+check "a key skips it to the panel" "for _ in \$(seq 1 30); do tm capture-pane -p -t work:splash | grep -q 'C O N T R O L' && break; sleep 0.2; done; tm capture-pane -p -t work:splash | grep -q 'C O N T R O L'"
+tm send-keys -t work:splash q
 
 echo "$pass passed, $fail failed"
 ((fail == 0))

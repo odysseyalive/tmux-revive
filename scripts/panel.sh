@@ -49,6 +49,10 @@ vlen() { # visible length of a string holding colour codes -> VLEN
 	while [[ $s =~ $e\[[0-9\;]*m ]]; do s=${s//"${BASH_REMATCH[0]}"/}; done
 	VLEN=${#s}
 }
+padv() { # padv TEXT WIDTH: a coloured string padded (or cut) to WIDTH visible characters
+	vlen "$1"
+	if ((VLEN > $2)); then trim_colored "$1" "$2"; else printf '%s%*s' "$1" $(($2 - VLEN)) ''; fi
+}
 OUT=()
 line() { OUT+=("$1"); }
 row() { # row CONTENT: one line inside the frame, cut or padded to the inner width
@@ -57,13 +61,17 @@ row() { # row CONTENT: one line inside the frame, cut or padded to the inner wid
 	((VLEN > IW)) && { c=$(trim_colored "$c" "$IW"); VLEN=$IW; }
 	line "$FRAME║$R $c$(rep ' ' $((IW - VLEN))) $FRAME║$R"
 }
+# A section title on a solid blue band that fades into the black on both sides: shading as
+# a short transition between two colours, the way the artpack groups used it.
+tab() { printf '%s' "$BLU░▒▓$BGBLU$B$BWHT $1 $R$BLU▓▒░$R"; }
 sect() { # sect TITLE [RIGHT-TITLE SPLIT-AT]: a divider carrying section titles
-	local t="$FRAME╠═$BBLU[ $B$BCYN$1$R$BBLU ]$FRAME" used=$((${#1} + 5))
+	local t="$FRAME╠═$(tab "$1")"
 	if [[ -n ${2:-} ]]; then
-		t+="$(rep ═ $(($3 - used + 1)))╤═$BBLU[ $B$BCYN$2$R$BBLU ]$FRAME"
-		used=$(($3 + 2 + ${#2} + 5))
+		vlen "$t"
+		t+="$FRAME$(rep ═ $(($3 + 2 - VLEN)))╤═$(tab "$2")"
 	fi
-	line "$t$(rep ═ $((W - 2 - used)))╣$R"
+	vlen "$t"
+	line "$t$FRAME$(rep ═ $((W - 1 - VLEN)))╣$R"
 }
 
 # Block letters for the banner, three rows each.
@@ -80,6 +88,302 @@ banner_rows() { # banner_rows WORD -> BANNER[0..2]
 	done
 }
 banner_rows REVIVE
+
+# The big banner: five rows of block letters, white fading through cyan to blue, with a
+# blue ░ drop shadow one cell down and right, the way the old ANSI groups drew them.
+declare -A BIG=(
+	[R]="█████▄|██   █|█████▀|██  ▀▄|██   █" [E]="██████|██    |█████ |██    |██████"
+	[V]="██  ██|██  ██|▐█  █▌| ▀██▀ |  ▀▀  " [I]="██|██|██|██|██"
+)
+big_banner() { # big_banner WORD -> BIG_ROWS[0..5]
+	local w=$1 i r c ch up cur out parts
+	local -a G=("" "" "" "" "") shade=("$B$BWHT" "$B$BCYN" "$B$BCYN" "$CYN" "$BBLU")
+	for ((i = 0; i < ${#w}; i++)); do
+		IFS='|' read -ra parts <<<"${BIG[${w:i:1}]}"
+		for r in 0 1 2 3 4; do G[r]+="${parts[r]} "; done
+	done
+	G[5]=""
+	BIG_ROWS=()
+	for r in 0 1 2 3 4 5; do
+		out="" cur=""
+		for ((c = 0; c <= ${#G[0]}; c++)); do
+			ch=${G[r]:c:1} up=" "
+			((r > 0 && c > 0)) && up=${G[r - 1]:c-1:1}
+			if [[ -n $ch && $ch != " " ]]; then
+				[[ $cur == L ]] || { out+="$R${shade[r]}"; cur=L; }
+				out+=$ch
+			elif [[ -n $up && $up != " " ]]; then
+				[[ $cur == S ]] || { out+="$R$BLU"; cur=S; }
+				out+="░"
+			else
+				out+=" "
+			fi
+		done
+		BIG_ROWS+=("$out$R")
+	done
+}
+big_banner REVIVE
+
+monitor() { # monitor WORKING ASKING AGENTS -> MON[0..5]: a little CRT, its screen live
+	local cur=" " msg col g=$GRY
+	((TICK % 2)) || cur="█"
+	if (($2)); then msg="$2 NEED YOU" col="$B$BMAG$BLINK"
+	elif (($1)); then msg="$1 working" col=$BYEL
+	else msg="$3 AI idle" col=$BGRN; fi
+	MON=(
+		"$g▄▄▄▄▄▄▄▄▄▄▄▄▄$R"
+		"$g█$R$BGRN$(fld " C:\\>$cur" 11)$R$g█$R"
+		"$g█$R$col$(fld " $msg" 11)$R$g█$R"
+		"$g▀▀▀▀▀▀▀▀▀▀▀▀▀$R"
+		"$g     ▄█▄     $R"
+		"$g  ▀▀▀▀▀▀▀▀▀  $R"
+	)
+}
+
+spark() { # spark WIDTH: CPU history as a ▁▂▃▅▇ graph, newest on the right
+	local w=$1 i v max=10 lvl out="" bars=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
+	local -a h=("${CPU_HIST[@]: -$w}")
+	for v in "${h[@]}"; do ((v > max)) && max=$v; done
+	for ((i = ${#h[@]}; i < w; i++)); do out+="$GRY▁"; done
+	for v in "${h[@]}"; do
+		lvl=$((v * 7 / max))
+		if ((lvl <= 1)); then out+="$BLU"; elif ((lvl <= 3)); then out+="$BBLU"; elif ((lvl <= 5)); then out+="$BCYN"; else out+="$BYEL"; fi
+		out+=${bars[lvl]}
+	done
+	printf '%s' "$out$R"
+}
+CPU_HIST=()
+
+# ------------------------------------------------------------------ artwork
+# Scenes drawn to whatever space is free, so the panel fills its pane at any size. One is
+# picked at random when the panel opens (REVIVE_PANEL_ART=<name> picks one), A cycles them.
+SCENES=(city mountains ocean space circuit rain grid)
+TITLES=("night city" "mountains" "moonlit sea" "deep space" "circuit board" "digital rain" "neon grid")
+SCENE=$((RANDOM % ${#SCENES[@]}))
+for i in "${!SCENES[@]}"; do [[ ${SCENES[i]} == "${REVIVE_PANEL_ART:-}" ]] && SCENE=$i; done
+BGBLK="$e[40m" BGGRY="$e[100m"
+
+# A canvas of characters and colours, filled by a scene and turned into rows by emit.
+canvas() { ART_W=$1 ART_H=$2 CH=() CO=(); }
+put() { # put ROW COL CHAR COLOUR (off the canvas: ignored)
+	(($1 >= 0 && $1 < ART_H && $2 >= 0 && $2 < ART_W)) || return 0
+	CH[$1 * ART_W + $2]=$3 CO[$1 * ART_W + $2]=$4
+}
+rnd() { SEED=$(((SEED * 1103515245 + 12345) & 2147483647)) RV=$((SEED >> 8)); } # same seed, same picture
+emit() { # -> ART rows, switching colour only where it changes
+	local r c i out cur col
+	ART=()
+	for ((r = 0; r < ART_H; r++)); do
+		out="" cur=""
+		for ((c = 0; c < ART_W; c++)); do
+			i=$((r * ART_W + c)) col=${CO[i]-}
+			[[ $col == "$cur" ]] || { out+="$R$col"; cur=$col; }
+			out+=${CH[i]:- }
+		done
+		ART+=("$out$R")
+	done
+}
+stars() { # stars ROWS ONE-IN-N: sky dust in the top ROWS rows; a few twinkle
+	local r c
+	for ((r = 0; r < $1; r++)); do
+		for ((c = 0; c < ART_W; c++)); do
+			rnd
+			((RV % $2)) && continue
+			if (((RV / 7 + TICK) % 9 == 0)); then put $r $c "*" "$BWHT"
+			elif ((RV % 3 == 0)); then put $r $c "·" "$GRY"
+			else put $r $c "." "$BLU"; fi
+		done
+	done
+}
+art() { # art WIDTH HEIGHT -> ART rows of the current scene
+	canvas "$1" "$2"
+	SEED=$((7919 * (SCENE + 1)))
+	((ART_W > 0 && ART_H > 0)) && "scene_${SCENES[SCENE]}"
+	emit
+}
+
+scene_city() { # towers with lit windows under the stars, a few lights going on and off
+	local W=$ART_W H=$ART_H
+	local x=0 bw bh top body r c lit
+	stars "$H" 23
+	put $((H > 4)) $((W * 4 / 5)) "●" "$BYEL"
+	while ((x < W)); do
+		rnd; bw=$((3 + RV % 6))
+		rnd; bh=$((H / 3 + RV % (H - H / 3 + 1)))
+		((bh < 1)) && bh=1
+		rnd; if ((RV % 2)); then top=$BLU body="$e[44m"; else top=$GRY body=$BGGRY; fi
+		for ((c = x; c < x + bw && c < W; c++)); do
+			put $((H - bh)) $c "▄" "$top"
+			for ((r = H - bh + 1; r < H; r++)); do
+				rnd; lit=0
+				if (((c - x) % 2)); then
+					((RV % 3 == 0)) && lit=1
+					(((c * 31 + r * 17 + TICK) % 23 == 0)) && lit=$((!lit))
+				fi
+				if ((lit)); then put $r $c "▪" "$body$BYEL"; else put $r $c " " "$body"; fi
+			done
+		done
+		rnd; x=$((x + bw + RV % 2))
+	done
+}
+
+tri() { # tri X PERIOD AMPLITUDE -> TRI: a triangle wave from 0 up to AMPLITUDE and back
+	local per=$2 x h
+	((per < 2)) && per=2
+	x=$((($1 % per + per) % per)) h=$((per / 2))
+	TRI=$(((x < h ? x : per - x) * $3 / h))
+}
+
+ridge() { # ridge C -> HB HF: the far and near ridge heights at column C
+	tri $(($1 + P1)) $((ART_W / 4 + 8)) $((ART_H * 3 / 5)); HB=$((ART_H / 4 + TRI))
+	tri $(($1 + P2)) 9 1; HB=$((HB + TRI))
+	((HB > ART_H - 1)) && HB=$((ART_H - 1))
+	tri $(($1 + P3)) $((ART_W / 7 + 6)) $((ART_H / 4)); HF=$((1 + TRI))
+}
+
+scene_mountains() { # two ridges of peaks, snow on the high ones, a moon over them
+	local W=$ART_W H=$ART_H
+	local c r hb hf lb rb lf rf top
+	rnd; P1=$((RV % 97)); rnd; P2=$((RV % 13)); rnd; P3=$((RV % 61))
+	stars "$H" 19
+	put 0 $((W / 6)) "●" "$BWHT"
+	for ((c = 0; c < W; c++)); do
+		ridge $((c - 1)); lb=$HB lf=$HF
+		ridge $((c + 1)); rb=$HB rf=$HF
+		ridge $c; hb=$HB hf=$HF
+		# The top cell follows the slope: ▟ climbing, ▙ falling, ▲ a summit.
+		if ((rb > hb && lb <= hb)); then top="▟"; elif ((lb > hb && rb <= hb)); then top="▙"
+		elif ((lb < hb && rb < hb)); then top="▲"; else top="▄"; fi
+		for ((r = H - hb; r < H; r++)); do
+			if ((r == H - hb)); then
+				if ((hb >= H * 2 / 3)); then put $r $c "$top" "$BWHT"; else put $r $c "$top" "$BBLU"; fi
+			else
+				put $r $c "▒" "$BBLU"
+			fi
+		done
+		if ((rf > hf && lf <= hf)); then top="▟"; elif ((lf > hf && rf <= hf)); then top="▙"
+		elif ((lf < hf && rf < hf)); then top="▲"; else top="▄"; fi
+		for ((r = H - hf; r < H; r++)); do
+			if ((r == H - hf)); then put $r $c "$top" "$BLU"; else put $r $c "█" "$BLU"; fi
+		done
+	done
+}
+
+scene_ocean() { # a moon on the horizon, its light trailing across moving water
+	local W=$ART_W H=$ART_H
+	local hz=$((H * 2 / 5)) mc=$((W * 7 / 10)) r c d waves=("~" "∼" "-" "≈" "~")
+	((hz < 1)) && hz=1
+	stars "$hz" 15
+	put $((hz > 1 ? hz - 2 : 0)) $mc "●" "$BWHT"
+	for ((c = 0; c < W; c++)); do put $hz $c "▁" "$BLU"; done
+	for ((r = hz + 1; r < H; r++)); do
+		for ((c = 0; c < W; c++)); do
+			d=$((c > mc ? c - mc : mc - c))
+			if ((d <= (r - hz) + 1 && (c + r + TICK) % 3)); then
+				put $r $c "═" "$BYEL"
+			else
+				rnd
+				((RV % 3)) && continue
+				if (((r - hz) % 2)); then put $r $c "${waves[(c + r * 3 + TICK) % 5]}" "$BBLU"
+				else put $r $c "${waves[(c + r * 3 + TICK) % 5]}" "$CYN"; fi
+			fi
+		done
+	done
+}
+
+scene_space() { # a ringed planet, starfields and a comet crossing over time
+	local W=$ART_W H=$ART_H
+	local pr=$((H / 2)) pc=$((W / 4)) rad r c dx dy cx cr k tail=("=" "-" "-" "·" "·")
+	rad=$((H * 2 / 5)); ((rad < 1)) && rad=1
+	stars "$H" 11
+	for ((r = pr - rad; r <= pr + rad; r++)); do
+		for ((c = pc - 2 * rad; c <= pc + 2 * rad; c++)); do
+			dx=$((c - pc)) dy=$(((r - pr) * 2))
+			((dx * dx + dy * dy <= 4 * rad * rad)) || continue
+			if ((dx < -rad / 2)); then put $r $c "█" "$BCYN"; elif ((dx < rad / 2)); then put $r $c "▓" "$CYN"; else put $r $c "▒" "$BLU"; fi
+		done
+	done
+	for ((c = pc - 4 * rad; c <= pc + 4 * rad; c++)); do
+		dx=$((c - pc)); ((dx < 0)) && dx=$((-dx))
+		((dx > 2 * rad - 1)) && put $pr $c "─" "$BYEL"
+	done
+	cr=$((H / 4)) cx=$((TICK * 3 % (W + 12) - 6))
+	put $cr $cx "*" "$BWHT"
+	for ((k = 1; k <= 5; k++)); do
+		if ((k <= 2)); then put $cr $((cx - k)) "${tail[k - 1]}" "$BCYN"; else put $cr $((cx - k)) "${tail[k - 1]}" "$BLU"; fi
+	done
+}
+
+scene_circuit() { # traces turning corners, chips and blinking LEDs
+	local W=$ART_W H=$ART_H
+	local n k r c len vl i led
+	n=$((W * H / 28 + 1))
+	for ((k = 0; k < n; k++)); do
+		rnd; r=$((RV % H)); rnd; c=$((RV % W)); rnd; len=$((3 + RV % 12)); rnd; vl=$((RV % (H / 2 + 1)))
+		put $r $c "●" "$GRN"
+		for ((i = 1; i < len; i++)); do put $r $((c + i)) "─" "$GRN"; done
+		if ((vl)); then
+			put $r $((c + len)) "┐" "$GRN"
+			for ((i = 1; i < vl; i++)); do put $((r + i)) $((c + len)) "│" "$GRN"; done
+		fi
+		if (((k + TICK) % 4 == 0)); then led="$BRED"; else led="$BGRN"; fi
+		put $((r + (vl ? vl : 0))) $((c + len)) "◆" "$led"
+	done
+	for ((k = 0; k < 2 && H >= 3; k++)); do
+		rnd; r=$((1 + RV % (H - 2))); rnd; c=$((RV % W))
+		for ((i = 0; i < 8; i++)); do
+			put $((r - 1)) $((c + i)) "┬" "$GRY"
+			put $r $((c + i)) "▓" "$GRY"
+			put $((r + 1)) $((c + i)) "┴" "$GRY"
+		done
+	done
+}
+
+scene_rain() { # columns of falling code, bright at the head and fading behind
+	local W=$ART_W H=$ART_H
+	local g="01001101#%&*+=<>" c k r off len head
+	for ((c = 0; c < W; c += 2)); do
+		rnd; off=$((RV % (H * 2 + 1))); rnd; len=$((3 + RV % 7))
+		head=$(((TICK * 2 + off) % (H + len)))
+		for ((k = 0; k < len; k++)); do
+			r=$((head - k))
+			((r < 0 || r >= H)) && continue
+			rnd
+			if ((k == 0)); then put $r $c "${g:RV % ${#g}:1}" "$BWHT"
+			elif ((k < 3)); then put $r $c "${g:RV % ${#g}:1}" "$BGRN"
+			elif ((k < 5)); then put $r $c "${g:RV % ${#g}:1}" "$GRN"
+			else put $r $c "${g:RV % ${#g}:1}" "$GRY"; fi
+		done
+	done
+}
+
+scene_grid() { # a striped sun setting behind a neon floor that runs to the horizon
+	local W=$ART_W H=$ART_H
+	local hz=$((H / 2)) cx=$((W / 2)) sr r c d dx dy k x col
+	((hz < 1)) && hz=1
+	sr=$hz; ((sr > W / 5)) && sr=$((W / 5)); ((sr < 1)) && sr=1
+	stars "$hz" 21
+	for ((r = hz - sr; r < hz; r++)); do
+		dy=$(((hz - r) * 2))
+		(((hz - r) <= sr / 2 && (hz - r) % 2 == 1)) && continue # the stripes
+		if ((r < hz - sr * 2 / 3)); then col=$BYEL; elif ((r < hz - sr / 3)); then col=$BRED; else col=$BMAG; fi
+		for ((c = cx - 2 * sr; c <= cx + 2 * sr; c++)); do
+			dx=$((c - cx))
+			((dx * dx + dy * dy <= 4 * sr * sr)) && put $r $c "█" "$col"
+		done
+	done
+	for ((c = 0; c < W; c++)); do put $hz $c "─" "$BMAG"; done
+	for ((r = hz + 1; r < H; r++)); do
+		d=$((r - hz))
+		if ((d == 1 || d == 3 || d == 6 || d == 10 || d == 15 || d == 21)); then
+			for ((c = 0; c < W; c++)); do put $r $c "─" "$MAG"; done
+		fi
+		for ((k = -20; k <= 20; k++)); do
+			x=$((cx + k * (d * 3 + 2)))
+			if ((k < 0)); then put $r $x "/" "$BMAG"; elif ((k > 0)); then put $r $x "\\" "$BMAG"; else put $r $x "│" "$BMAG"; fi
+		done
+	done
+}
 
 meter() { # meter PERCENT -> five shaded cells, retro style
 	local p=${1%.*} out="" i lvl
@@ -233,10 +537,19 @@ state_cell() { # coloured status, 18 characters wide
 }
 
 draw_panes() {
-	local i n=${#P_ID[@]} name key folder git cells mark wide=$((IW >= 100))
+	local i n=${#P_ID[@]} name key folder git cells mark wide=$((IW >= 100)) extra NW=15 FW=15
+	# Spare width goes to the name and folder columns.
+	if ((wide)); then
+		extra=$((IW - 99))
+		NW=$((15 + (extra / 2 > 14 ? 14 : extra / 2)))
+		FW=$((15 + (extra - NW + 15 > 20 ? 20 : extra - NW + 15)))
+	else
+		extra=$((IW - 69))
+		NW=$((15 + (extra > 14 ? 14 : extra)))
+	fi
 	# Built from the same widths as the rows below, so the columns line up.
-	local hdr="$(fld ' #' 6)$(fld NAME 16)$(fld APP 10)$(fld STATE 18)"
-	((wide)) && hdr+="$(fld FOLDER 16)$(fld GIT 14)"
+	local hdr="$(fld ' #' 6)$(fld NAME $((NW + 1)))$(fld APP 10)$(fld STATE 18)"
+	((wide)) && hdr+="$(fld FOLDER $((FW + 1)))$(fld GIT 14)"
 	hdr+="$(fld CPU 13)   MEM"
 	row "$GRY$hdr$R"
 	for ((i = 0; i < n; i++)); do
@@ -248,11 +561,11 @@ draw_panes() {
 		cells="$key "
 		if ((i == SEL)); then mark="$BYEL▶$R"; else mark=" "; fi
 		cells+="$mark "
-		if ((i == SEL)); then cells+="$REV$BCYN$(fld "$name" 15)$R "; else cells+="$BWHT$(fld "$name" 15)$R "; fi
+		if ((i == SEL)); then cells+="$REV$BCYN$(fld "$name" "$NW")$R "; else cells+="$BWHT$(fld "$name" "$NW")$R "; fi
 		if ((P_AGENT[i])); then cells+="$BCYN$(fld "${P_APP[i]}" 9)$R "; else cells+="$CYN$(fld "${P_APP[i]}" 9)$R "; fi
 		cells+="$(state_cell "${P_STATE[i]}")"
 		if ((wide)); then
-			cells+="$BBLU$(fld "$folder" 15)$R "
+			cells+="$BBLU$(fld "$folder" "$FW")$R "
 			if [[ $git == *\* ]]; then cells+="$BYEL$(fld "$git" 13)$R "; else cells+="$GRN$(fld "$git" 13)$R "; fi
 		fi
 		cells+="$BCYN$(meter "${P_CPU[i]}")$R $(printf '%4s%%' "${P_CPU[i]}")  $(printf '%6s' "$(human "${P_MEM[i]}")")"
@@ -340,26 +653,61 @@ draw() {
 		((P_AGENT[i])) && ((s++))
 	done
 
-	# Banner: block letters in a cyan-to-blue fade, the board's details beside them.
+	# Banner: block letters, a little CRT and the board's details. The big one when there's room.
 	line "$FRAME╔$(rep ═ $((W - 2)))╗$R"
-	local tag=("$BBLU░▒▓$R$B$BWHT T M U X $R$BBLU▓▒░$R" "$B${BCYN}C O N T R O L   P A N E L$R" "$GRY node $BWHT$HOST$GRY · $(date +%H:%M:%S) · $n panes · $s agents$R")
-	local shade=("$BCYN" "$CYN" "$BBLU")
-	for i in 0 1 2; do row "  ${shade[i]}$B${BANNER[i]}$R   ${tag[i]}"; done
+	local BH=3 total=0 BAN=()
+	if ((lines - n >= 30)); then
+		BH=6
+		monitor "$w" "$a" "$s"
+		local tag=("$BBLU░▒▓$R$B$BWHT T M U X $R$BBLU▓▒░$R" "$B${BCYN}C O N T R O L   P A N E L$R"
+			"$GRY$(rep ─ 25)$R" "$GRY node   $BWHT$HOST$R" "$GRY time   $BWHT$(date '+%a %H:%M:%S')$R"
+			"$GRY sysop  $BWHT${USER:-you}$GRY · $n panes · $s agents$R")
+		for i in 0 1 2 3 4 5; do
+			if ((IW >= 100)); then BAN[i]=" ${BIG_ROWS[i]}  ${MON[i]}   $(padv "${tag[i]}" 36)"; else BAN[i]=" ${BIG_ROWS[i]}  $(padv "${tag[i]}" 36)"; fi
+		done
+	else
+		local tag=("$BBLU░▒▓$R$B$BWHT T M U X $R$BBLU▓▒░$R" "$B${BCYN}C O N T R O L   P A N E L$R" "$GRY node $BWHT$HOST$GRY · $(date +%H:%M:%S) · $n panes · $s agents$R")
+		local shade=("$BCYN" "$CYN" "$BBLU")
+		for i in 0 1 2; do BAN[i]="  ${shade[i]}$B${BANNER[i]}$R   $(padv "${tag[i]}" 60)"; done
+	fi
+	# Whatever width is left beside the banner shows the scene.
+	vlen "${BAN[0]}"
+	local tw=$((IW - VLEN - 1))
+	if ((tw >= 8)); then
+		art "$tw" "$BH"
+		for ((i = 0; i < BH; i++)); do row "${BAN[i]} ${ART[i]}"; done
+	else
+		for ((i = 0; i < BH; i++)); do row "${BAN[i]}"; done
+	fi
 	counts="$BYEL$w working$R$GRY · $R$BMAG$a asking$R"
 	((a)) && counts="$BYEL$w working$R$GRY · $R$B$BMAG$BLINK$a asking$R"
 	sect "PANES"
 	draw_panes
-	row "$GRY$(rep ─ $((IW - 22)))$R  $counts"
+	# CPU across every pane, as a running graph.
+	for i in "${P_CPU[@]}"; do total=$((total + i)); done
+	CPU_HIST+=("$total")
+	((${#CPU_HIST[@]} > 200)) && CPU_HIST=("${CPU_HIST[@]: -200}")
+	vlen "$counts"
+	row "$GRY cpu $R$(spark $((IW - 8 - VLEN)))  $counts"
 
 	messages
 	links_saves
 	local bottom=$(( ${#MSG[@]} > ${#SIDE[@]} ? ${#MSG[@]} : ${#SIDE[@]} ))
-	# Fixed rows: frame 2, banner 3, section bars 3, column header 1, totals 1, keys 1.
-	avail=$((lines - 11 - n - bottom - 1))
+	# Fixed rows: frame 2, banner, section bars 3, column header 1, totals 1, keys 1. The peek
+	# takes up to 14 of the rest and the scene the remainder, so the panel fills its pane.
+	avail=$((lines - BH - 8 - n - bottom))
 	if ((PEEK && n && avail >= 4)); then
 		peek_h=$((avail - 1 > 14 ? 14 : avail - 1))
+		avail=$((avail - peek_h - 1))
 		draw_peek "$peek_h"
 	fi
+	if ((avail >= 3)); then
+		sect "ART · ${TITLES[SCENE]}"
+		art "$IW" $((avail - 1))
+		for l in "${ART[@]}"; do row "$l"; done
+		avail=0
+	fi
+	for ((; avail > 0; avail--)); do row ""; done
 
 	LW=$(((IW - 3) * 3 / 5)) RW=$((IW - 3 - LW))
 	sect "MESSAGES" "LINKS · SAVES" "$((LW + 1))"
@@ -376,14 +724,16 @@ draw() {
 
 	# Command bar.
 	local k=""
-	for c in "J:ump" "M:essage" "N:ame" "P:eek" "S:ave" "Q:uit"; do
+	for c in "J:ump" "M:essage" "N:ame" "P:eek" "A:rt" "S:ave" "Q:uit"; do
 		k+="$BBLU[$B$BYEL${c%%:*}$R$BBLU]$R$BWHT${c#*:}$R  "
 	done
 	k+="$GRY↑↓ or 1-9 select$R"
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	line "$FRAME╠$(rep ═ $((W - 2)))╣$R"
 	row "$k"
-	line "$FRAME╚$(rep ═ $((W - 2)))╝$R"
+	local sig="$BLU▓▒░$R$GRY tmux-revive bbs · est. 2026 $R$BLU░▒▓$R"
+	vlen "$sig"
+	line "$FRAME╚$(rep ═ $((W - 4 - VLEN)))$R$sig$FRAME══╝$R"
 
 	if ((ONCE)); then
 		printf '%s\n' "${OUT[@]}"
@@ -449,6 +799,9 @@ act() {
 		out=$(AGENT_SAY_PANE=$id "$ASAY" name "$REPLY" 2>&1 | head -n 1)
 		flash "${out#agent-say: }" ;;
 	p | P) PEEK=$((!PEEK)) ;;
+	a | A)
+		SCENE=$(((SCENE + 1) % ${#SCENES[@]}))
+		flash "art: ${TITLES[SCENE]}" ;;
 	s | S)
 		if "$BASH" "$REVIVE_ROOT/scripts/save.sh" manual >/dev/null 2>&1; then flash "saved"; else flash "save failed (see: tmux-revive log)"; fi ;;
 	q | Q) exit 0 ;;
@@ -460,6 +813,30 @@ act() {
 }
 
 restore_term() { printf '%s' "$e[?25h$e[?1049l"; }
+
+# Dial-up welcome, the first time the panel opens on a tmux server (REVIVE_PANEL_SPLASH=1
+# always shows it, 0 never). Any key skips it. Returns 1 once skipped.
+splash() {
+	local rows cols top left i c t
+	rows=$(tput lines 2>/dev/null || echo 30) cols=$(tput cols 2>/dev/null || echo 80)
+	top=$(((rows - 13) / 2)) left=$(((cols - 44) / 2))
+	((top < 1)) && top=1
+	((left < 1)) && left=1
+	printf '%s' "$e[2J"
+	for i in 0 1 2 3 4 5; do printf '%s' "$e[$((top + i));${left}H${BIG_ROWS[i]}"; done
+	pause() { ! IFS= read -rsn1 -t "$1" _; }
+	typed() { # typed ROW COLOUR TEXT: one character at a time, like a slow modem
+		printf '%s' "$e[$1;${left}H$2"
+		for ((c = 0; c < ${#3}; c++)); do printf '%s' "${3:c:1}"; pause 0.02 || return 1; done
+		printf '%s' "$R"
+	}
+	t=$((top + 8))
+	typed $t "$GRY" "ATDT 1-800-REVIVE" && pause 0.3 &&
+		typed $((t + 1)) "$GRY" "RINGING..." && pause 0.4 &&
+		typed $((t + 2)) "$B$BGRN" "CONNECT 33600/ARQ/V.42bis" && pause 0.25 &&
+		typed $((t + 4)) "$B$BCYN" "Welcome to the tmux-revive BBS, ${USER:-friend}!" && pause 0.9
+	printf '%s' "$e[2J"
+}
 
 # ------------------------------------------------------------------ main
 if ((ONCE)); then
@@ -474,6 +851,11 @@ printf '%s' "$e[?1049h$e[?25l$e[2J"
 on_exit restore_term
 trap 'exit 0' INT TERM
 trap 'printf "%s" "$e[2J"' WINCH
+case ${REVIVE_PANEL_SPLASH:-} in
+1) splash ;;
+0) ;;
+*) [[ $(opt @revive-panel-splashed '') == 1 ]] || { splash; tm set-option -g @revive-panel-splashed 1 2>/dev/null; } ;;
+esac
 
 while :; do
 	gather

@@ -102,7 +102,11 @@ tmux-revive panel
 
 Pick a pane by its number or with the arrow keys, then press a letter. **J**
 jumps to it, **M** messages it, **N** names it, and **P** shows or hides a
-quick peek at its screen. **S** saves right now, and **Q** quits.
+quick peek at its screen. **A** swaps the artwork, **S** saves right now, and
+**Q** quits.
+
+Every time it opens, one of seven pieces of old-school ANSI art fills whatever
+space is left over, sized to your pane.
 
 ## Agents talking to each other
 
