@@ -5,6 +5,7 @@
 #   tmux-revive save                 snapshot now
 #   tmux-revive restore [SNAPSHOT]   restore latest (or a named snapshot)
 #   tmux-revive status [SNAPSHOT]    what a restore would bring back
+#   tmux-revive panel                live control panel for every pane and agent
 #   tmux-revive list                 snapshots, newest first
 #   tmux-revive log                  recent activity
 #   tmux-revive doctor               check the moving parts
@@ -67,6 +68,7 @@ update)
 save) "$BASH" "$ROOT/scripts/save.sh" manual ;;
 restore) shift; "$BASH" "$ROOT/scripts/restore.sh" "$@" ;;
 status) shift; "$BASH" "$ROOT/scripts/restore.sh" --dry-run "$@" ;;
+panel) shift; exec "$BASH" "$ROOT/scripts/panel.sh" "$@" ;;
 list)
 	DIR=$(revive_dir)
 	cur=$(cd -P "$DIR/last" 2>/dev/null && pwd)

@@ -36,12 +36,16 @@ done
 save_key=$(get @revive-save-key none)
 restore_key=$(get @revive-restore-key none)
 status_key=$(get @revive-status-key none)
+panel_key=$(get @revive-panel-key none)
 
 [ "$save_key" != none ] && tmux bind-key "$save_key" run-shell -b "$(run save.sh) manual"
 [ "$restore_key" != none ] && tmux bind-key "$restore_key" run-shell -b "$(run restore.sh)"
 [ "$status_key" != none ] &&
 	tmux bind-key "$status_key" display-popup -E -w 90% -h 80% \
 		"$(printf %q "$ROOT/bin/tmux-revive") status; printf '\\npress a key'; read -rsn1"
+[ "$panel_key" != none ] &&
+	tmux bind-key "$panel_key" display-popup -E -w 95% -h 95% \
+		"REVIVE_PANEL_POPUP=1 $(printf %q "$ROOT/bin/tmux-revive") panel"
 
 # Save the moment you detach: the usual last thing before a shutdown.
 # An indexed hook slot keeps any client-detached hooks of your own intact.

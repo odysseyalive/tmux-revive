@@ -16,6 +16,7 @@ agents send each other messages, even across accounts and across computers.
 - [Install](#install)
 - [Everyday use](#everyday-use)
 - [Handy commands](#handy-commands)
+- [Control panel](#control-panel)
 - [Agents talking to each other](#agents-talking-to-each-other)
 - [Linking AI sessions across multiple computers](#linking-ai-sessions-across-multiple-computers)
 - [Options](#options)
@@ -87,6 +88,20 @@ Remove it (add `--purge` to also delete your saves):
 ```sh
 tmux-revive uninstall
 ```
+
+## Control panel
+
+A live, BBS-style view of every pane: what's running in it, and whether each
+AI agent is working, waiting on you, or asking a question before it can go on.
+It also shows CPU, memory and git status, recent agent messages, links and saves.
+
+```sh
+tmux-revive panel
+```
+
+Pick a pane with its number or the arrow keys, then press a letter: **J** to
+jump to it, **M** to message it, **N** to name it, **P** to show or hide a peek
+at its screen, **S** to save now, and **Q** to quit.
 
 ## Agents talking to each other
 
@@ -169,4 +184,10 @@ you'll most likely want is the number of seconds between saves:
 
 ```tmux
 set -g @revive-interval 60
+```
+
+To open the panel as a popup with a key (prefix + P here):
+
+```tmux
+set -g @revive-panel-key P
 ```
