@@ -105,6 +105,9 @@ jumps to it, **M** messages it, **N** names it, and **P** shows or hides a
 quick peek at its screen. **A** swaps the artwork, **S** saves right now, and
 **Q** quits.
 
+When a pane ssh's into another computer, the panel spots it and offers to link
+the agents there: **L** links it, **U** unlinks.
+
 Every time it opens, one of seven pieces of old-school ANSI art fills whatever
 space is left over, sized to your pane.
 

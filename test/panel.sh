@@ -40,7 +40,7 @@ done
 out=$(frame 130)
 check "a shell pane shows as a shell" "grep -q 'bash *· shell' <<<\"\$out\""
 check "a program shows as running" "grep -q 'top *▸ running' <<<\"\$out\""
-check "the command keys are listed" "grep -qF '[J]ump  [M]essage  [N]ame  [P]eek  [A]rt  [S]ave  [Q]uit' <<<\"\$out\""
+check "the command keys are listed" "grep -qF '[J]ump  [M]essage  [N]ame  [L]ink  [U]nlink  [P]eek  [A]rt  [S]ave  [Q]uit' <<<\"\$out\""
 # Under heavy load one frame can come back short, so allow three looks; a real regression
 # misses every time, and then the frame is printed to show what was seen.
 narrow_ok() { local i f; for i in 1 2 3; do f=$(frame 80); grep -q 'top *▸ running' <<<"$f" && return 0; done; printf '%s\n' "$f" | grep -E '\[[0-9]\]' >&2; return 1; }
@@ -78,6 +78,41 @@ tm send-keys -t work:panel a
 check "A switches the artwork ($before)" "for _ in \$(seq 1 20); do after=\$(screen | grep -o 'ART · [a-z ]*' | head -1); [[ -n \$after && \$after != '$before' ]] && break; sleep 0.2; done; [[ \$after != '$before' ]]"
 tm send-keys -t work:panel q; sleep 1
 check "Q quits" "! tm list-windows -F '#{window_name}' | grep -qx panel"
+
+echo "ssh links"
+# Which host an ssh command line connects to, as agent-say link takes it.
+dest() { bash -c 'source <(sed -n "/^ssh_dest() {/,/^}/p" "$1"); ssh_dest "$2"' _ "$ROOT/scripts/panel.sh" "$1"; }
+check "ssh host" "[[ \$(dest 'ssh devbox') == devbox ]]"
+check "ssh with options, a user and a command" "[[ \$(dest 'ssh -i /k -p 22 me@h.example ls -la') == h.example ]]"
+check "ssh:// with a port" "[[ \$(dest 'ssh ssh://me@h2.example:2222') == h2.example ]]"
+check "a jump host is skipped for the destination" "[[ \$(dest '/usr/bin/ssh -J jump h3 uptime') == h3 ]]"
+check "not ssh, or a host that can't be one" "[[ -z \$(dest 'sshd -D') && -z \$(dest 'ssh \"bad;host\"') ]]"
+
+tm new-window -d -t work -n sshpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=false REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+sshscreen() { tm capture-pane -p -t work:sshpanel; }
+wait_ssh() { for _ in $(seq 1 40); do sshscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_ssh 'C O N T R O L'
+# A pane connecting somewhere: a process whose command line is an ssh one.
+tm new-window -d -t work -n remote "bash -c 'exec -a \"ssh -p 2222 me@devbox.example\" sleep 300'"
+check "a new ssh connection is announced" "wait_ssh 'new ssh connection to devbox.example'"
+check "and offered for linking" "wait_ssh 'devbox.example · ssh in'"
+tm send-keys -t work:sshpanel u
+check "U with nothing linked says so" "wait_ssh 'nothing is linked'"
+tm send-keys -t work:sshpanel l; sleep 0.5
+check "L asks before linking" "wait_ssh 'Link agents on devbox.example with this computer?'"
+tm send-keys -t work:sshpanel n Enter
+check "anything but y backs out" "wait_ssh 'link cancelled'"
+tm send-keys -t work:sshpanel l; sleep 0.5; tm send-keys -t work:sshpanel y Enter
+check "y tries the link and shows what happened" "wait_ssh \"couldn't run agent-say on devbox.example\""
+# Pretend the link is up, then take it down with U.
+st=$(dirname "$AGENT_SAY_MAILBOX"); mkdir -p "$st/links/devbox.example"; touch "$st/links/devbox.example/on"
+check "a linked host is no longer offered" "for _ in \$(seq 1 20); do sshscreen | grep -q 'devbox.example · ssh in' || break; sleep 0.2; done; ! sshscreen | grep -q 'devbox.example · ssh in'"
+tm send-keys -t work:sshpanel u; sleep 0.5
+check "U asks before unlinking" "wait_ssh 'Unlink devbox.example? (y)'"
+tm send-keys -t work:sshpanel y Enter
+check "and unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $st/links/devbox.example ]]"
+tm send-keys -t work:sshpanel q
+tm kill-window -t work:remote 2>/dev/null
 
 echo "splash"
 tm new-window -d -t work -n splash "env REVIVE_PANEL_SPLASH=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh"

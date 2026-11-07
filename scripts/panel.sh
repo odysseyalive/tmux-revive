@@ -495,15 +495,34 @@ tree_ticks() { # tree_ticks PID...: CPU ticks used so far by these processes (Li
 }
 
 # One record per pane, in these parallel arrays.
-P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=()
+P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=()
+# ssh_dest ARGS -> the host an `ssh ...` command line connects to, as agent-say link takes it
+# (no user@, no port), or nothing. Options that take a value are skipped with their value.
+ssh_dest() {
+	local -a a
+	local i d
+	read -ra a <<<"$1"
+	[[ ${a[0]##*/} == ssh ]] || return 0
+	for ((i = 1; i < ${#a[@]}; i++)); do
+		case ${a[i]} in
+		-[BbcDEeFIiJLlmOoPpQRSWw]) ((i++)) ;;
+		-*) ;;
+		*)
+			d=${a[i]#ssh://} d=${d##*@} d=${d%%:*}
+			[[ $d =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && printf '%s' "$d"
+			return 0 ;;
+		esac
+	done
+}
+linked() { [[ -f $ASTATE/links/$1/on ]]; }
 gather() {
-	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t
+	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh
 	PCHILD=() PARGS=() PRSS=() PCPU=()
 	while read -r pid ppid rss pcpu args; do
 		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu
 	done < <(ps -ww -eo pid=,ppid=,rss=,pcpu=,args= 2>/dev/null) # -ww: never cut to $COLUMNS
 	now=${EPOCHREALTIME:-$SECONDS}
-	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=()
+	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=()
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
 		clean loc cmd path name
 		# The pane's process tree, breadth-first, and the first agent in it.
@@ -543,6 +562,15 @@ gather() {
 		else
 			st=program P_APP+=("$cmd") P_AGENT+=(0)
 		fi
+		# An ssh connection in a pane without an agent: a host its agents could be linked to.
+		ssh=""
+		if [[ $st == program ]]; then
+			for p in "${tree[@]}"; do
+				ssh=$(ssh_dest "${PARGS[$p]:-}")
+				[[ -n $ssh ]] && break
+			done
+		fi
+		P_SSH+=("$ssh")
 		P_ID+=("$id") P_LOC+=("$loc") P_NAME+=("$name") P_STATE+=("$st")
 		P_DIR+=("$path") P_GIT+=("$(git_info "$path")") P_CPU+=("$cpu") P_MEM+=("$mem")
 	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
@@ -670,7 +698,16 @@ links_saves() { # -> SIDE lines: saves, then links
 		clean h
 		if [[ -n $(find "$d/alive" -mmin -1 2>/dev/null) ]]; then SIDE+=("$BGRN◌$R $BWHT$h$R $GRY· checks in here$R"); fi
 	done
-	((${#SIDE[@]} > 2)) || SIDE+=("$GRY  no links · agent-say link <host>$R")
+	# ssh connections in panes that aren't linked yet: offered for linking with L.
+	local i seen=" "
+	for i in "${!P_SSH[@]}"; do
+		h=${P_SSH[i]}
+		[[ -z $h || $seen == *" $h "* ]] && continue
+		seen+="$h "
+		linked "$h" && continue
+		SIDE+=("$BYEL◇$R $BWHT$h$R $GRY· ssh in ${P_NAME[i]:-${P_LOC[i]}} ·$R $BBLU[$B${BYEL}L$R$BBLU]$R${BWHT}ink?$R")
+	done
+	((${#SIDE[@]} > 2)) || SIDE+=("$GRY  no links · ssh to a host and press L$R")
 }
 
 draw() {
@@ -756,10 +793,11 @@ draw() {
 
 	# Command bar.
 	local k=""
-	for c in "J:ump" "M:essage" "N:ame" "P:eek" "A:rt" "S:ave" "Q:uit"; do
+	for c in "J:ump" "M:essage" "N:ame" "L:ink" "U:nlink" "P:eek" "A:rt" "S:ave" "Q:uit"; do
 		k+="$BBLU[$B$BYEL${c%%:*}$R$BBLU]$R$BWHT${c#*:}$R  "
 	done
-	k+="$GRY↑↓ or 1-9 select$R"
+	vlen "$k"
+	((VLEN + 15 <= IW)) && k+="$GRY↑↓ 1-9 select$R"
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	line "$FRAME╠$(rep ═ $((W - 2)))╣$R"
 	row "$k"
@@ -862,6 +900,40 @@ act() {
 		ask "New name for $name:" || { flash "rename cancelled"; return; }
 		out=$(AGENT_SAY_PANE=$id "$ASAY" name "$REPLY" 2>&1 | head -n 1)
 		flash "${out#agent-say: }" ;;
+	l | L)
+		# The selected pane's ssh host, or else the first one not linked yet.
+		local h=${P_SSH[SEL]:-} i
+		if [[ -z $h ]] || linked "$h"; then
+			h=""
+			for i in "${!P_SSH[@]}"; do [[ -n ${P_SSH[i]} ]] && ! linked "${P_SSH[i]}" && { h=${P_SSH[i]}; break; }; done
+		fi
+		[[ -n $h ]] || { flash "no ssh connection to link: ssh to a host in a pane first"; return; }
+		ask "Link agents on $h with this computer? (y)" || { flash "link cancelled"; return; }
+		[[ $REPLY == [yY]* ]] || { flash "link cancelled"; return; }
+		flash "linking $h…"; draw
+		out=$(timeout 30 "$ASAY" link "$h" 2>&1 | head -n 1)
+		clean out
+		flash "${out#agent-say: }" ;;
+	u | U | d | D)
+		# The selected pane's ssh host if it's linked, the only link, or ask which.
+		local h=${P_SSH[SEL]:-} d hosts=() i
+		for d in "$ASTATE"/links/*/; do [[ -f $d/on ]] && hosts+=("$(basename "$d")"); done
+		((${#hosts[@]})) || { flash "nothing is linked"; return; }
+		if [[ -z $h ]] || ! linked "$h"; then
+			if ((${#hosts[@]} == 1)); then
+				h=${hosts[0]}
+			else
+				ask "Unlink which? (${hosts[*]})" || { flash "unlink cancelled"; return; }
+				h=$REPLY
+				linked "$h" || { flash "not linked: $h"; return; }
+			fi
+		fi
+		ask "Unlink $h? (y)" || { flash "unlink cancelled"; return; }
+		[[ $REPLY == [yY]* ]] || { flash "unlink cancelled"; return; }
+		flash "unlinking $h…"; draw
+		out=$(timeout 30 "$ASAY" unlink "$h" 2>&1 | tail -n 1)
+		clean out
+		flash "${out#agent-say: }" ;;
 	p | P) PEEK=$((!PEEK)) ;;
 	a | A)
 		SCENE=$(((SCENE + 1) % ${#SCENES[@]}))
@@ -921,6 +993,7 @@ case ${REVIVE_PANEL_SPLASH:-} in
 *) [[ $(opt @revive-panel-splashed '') == 1 ]] || { splash; tm set-option -g @revive-panel-splashed 1 2>/dev/null; } ;;
 esac
 
+declare -A SSH_SEEN=()
 while :; do
 	gather
 	# Keep the same pane selected when panes come and go.
@@ -929,6 +1002,12 @@ while :; do
 	fi
 	((SEL >= ${#P_ID[@]})) && SEL=$((${#P_ID[@]} ? ${#P_ID[@]} - 1 : 0))
 	SEL_ID=${P_ID[SEL]:-}
+	for i in "${!P_SSH[@]}"; do
+		h=${P_SSH[i]}
+		[[ -n $h && -z ${SSH_SEEN[$h]:-} ]] || continue
+		SSH_SEEN[$h]=1
+		linked "$h" || flash "new ssh connection to $h · press L to link its agents"
+	done
 	draw
 	((TICK++))
 	key=""
