@@ -53,6 +53,15 @@ padv() { # padv TEXT WIDTH: a coloured string padded (or cut) to WIDTH visible c
 	vlen "$1"
 	if ((VLEN > $2)); then trim_colored "$1" "$2"; else printf '%s%*s' "$1" $(($2 - VLEN)) ''; fi
 }
+# Folder and pane names, process names, mail from linked machines and ssh errors can carry
+# escape sequences (an OSC 52 clipboard write, a faked screen). clean drops C0, DEL and C1
+# controls from the named variables, so only the panel's own colour codes reach the terminal.
+C1=""
+for i in {128..159}; do printf -v c '\\xc2\\x%x' "$i"; printf -v c "$c"; C1+=$c; done # UTF-8 bytes
+clean() { # clean VAR...
+	local -n _v
+	for _v; do _v=${_v//[[:cntrl:]]/} _v=${_v//[$C1]/}; done
+}
 OUT=()
 line() { OUT+=("$1"); }
 row() { # row CONTENT: one line inside the frame, cut or padded to the inner width
@@ -453,14 +462,24 @@ screen_state() { # screen_state PANE -> asking / working / waiting, read off the
 	shopt -u nocasematch
 }
 
+# git in a pane's folder, which may be anyone's repo: its config must not get to run a
+# command (core.fsmonitor, hooks), and the panel must not take the index lock from you.
+pgit() { GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor= -c core.hooksPath=/dev/null --no-optional-locks -C "$@"; }
 git_info() { # git_info DIR -> "branch" or "branch*" (uncommitted changes), cached 15 s
-	local d=$1 b dirty
+	local d=$1 b dirty filters
 	if [[ -n ${GIT_T[$d]:-} ]] && ((SECONDS - GIT_T[$d] < 15)); then printf '%s' "${GIT[$d]}"; return; fi
-	b=$(git -C "$d" symbolic-ref --short -q HEAD 2>/dev/null || git -C "$d" rev-parse --short HEAD 2>/dev/null)
+	b=$(pgit "$d" symbolic-ref --short -q HEAD 2>/dev/null || pgit "$d" rev-parse --short HEAD 2>/dev/null)
 	if [[ -n $b ]]; then
-		dirty=$(git -C "$d" status --porcelain -uno 2>/dev/null | head -c1)
-		[[ -n $dirty ]] && b+="*"
+		# A clean/process filter would run while status rehashes files. Yours (global, system,
+		# git-lfs) are trusted; one the repo sets itself means no dirty check there.
+		filters=$(pgit "$d" config --show-scope --get-regexp '^filter\..*\.(clean|process)$' 2>/dev/null |
+			grep -v $'^\\(global\\|system\\)\t')
+		if [[ -z $filters ]]; then
+			dirty=$(pgit "$d" status --porcelain -uno 2>/dev/null | head -c1)
+			[[ -n $dirty ]] && b+="*"
+		fi
 	fi
+	clean b
 	GIT[$d]=$b GIT_T[$d]=$SECONDS
 	printf '%s' "$b"
 }
@@ -486,6 +505,7 @@ gather() {
 	now=${EPOCHREALTIME:-$SECONDS}
 	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=()
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
+		clean loc cmd path name
 		# The pane's process tree, breadth-first, and the first agent in it.
 		tree=() q=("$ppid0") kind="" apid=""
 		while ((${#q[@]})); do
@@ -600,6 +620,7 @@ messages() { # -> MSG lines for the message center
 	local h b from to when id rest qn
 	if [[ -f $AMAIL ]]; then
 		while IFS=$'\t' read -r h b; do
+			clean h b
 			[[ $h =~ ^\#\#\ \[([^ ]+)\ -\>\ ([^ ]+)\ ([^]]+)\]\ \#([^ ]+)(.*)$ ]] || continue
 			from=${BASH_REMATCH[1]} to=${BASH_REMATCH[2]} when=${BASH_REMATCH[3]} rest=${BASH_REMATCH[5]}
 			when=${when:11:5}
@@ -617,12 +638,13 @@ messages() { # -> MSG lines for the message center
 
 links_saves() { # -> SIDE lines: saves, then links
 	SIDE=()
-	local last at reason n iv d h pid names
+	local last at reason n iv d h pid names err
 	last=$(cd -P "$DIR/last" 2>/dev/null && pwd)
 	n=$(find "$DIR/snapshots" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
 	iv=$(opt @revive-interval 60)
 	if [[ -n $last && -f $last/state.json ]]; then
 		IFS=$'\t' read -r at reason < <(jq -r '[.saved_at, .reason] | @tsv' "$last/state.json" 2>/dev/null)
+		clean at reason
 		SIDE+=("$BCYN▓ SAVED$R $BWHT${at:11:8}$R $GRY($reason)$R")
 	else
 		SIDE+=("$BCYN▓ SAVED$R $GRY never$R")
@@ -630,13 +652,14 @@ links_saves() { # -> SIDE lines: saves, then links
 	SIDE+=("$GRY  $n kept · every ${iv}s · on detach$R")
 	for d in "$ASTATE"/links/*/; do
 		[[ -f $d/on ]] || continue
-		h=$(basename "$d")
+		h=$(basename "$d") err=$(head -c 60 "$d/error" 2>/dev/null)
+		clean h err
 		pid=$(cat "$d/pid" 2>/dev/null)
 		names=$(grep -c . "$d/names" 2>/dev/null)
 		if [[ -n $pid ]] && [[ $(ps -ww -o args= -p "$pid" 2>/dev/null) == *"_poll $h"* ]] && [[ ! -s $d/error ]]; then
 			SIDE+=("$BGRN●$R $BWHT$h$R $GRY· linked · ${names:-0} names$R")
 		elif [[ -s $d/error ]]; then
-			SIDE+=("$BRED●$R $BWHT$h$R $BRED$(head -c 60 "$d/error")$R")
+			SIDE+=("$BRED●$R $BWHT$h$R $BRED$err$R")
 		else
 			SIDE+=("$BRED●$R $BWHT$h$R $GRY· not running$R")
 		fi
@@ -644,6 +667,7 @@ links_saves() { # -> SIDE lines: saves, then links
 	for d in "$ASTATE"/peers/*/; do
 		[[ -d $d ]] || continue
 		h=$(basename "$d")
+		clean h
 		if [[ -n $(find "$d/alive" -mmin -1 2>/dev/null) ]]; then SIDE+=("$BGRN◌$R $BWHT$h$R $GRY· checks in here$R"); fi
 	done
 	((${#SIDE[@]} > 2)) || SIDE+=("$GRY  no links · agent-say link <host>$R")
@@ -766,7 +790,7 @@ trim_colored() { # trim_colored TEXT WIDTH: cut to WIDTH visible characters, kee
 }
 
 # ------------------------------------------------------------------ actions
-flash() { FLASH=$1 FLASH_T=$SECONDS; }
+flash() { FLASH=$1 FLASH_T=$SECONDS; clean FLASH; } # agent-say's reply can quote anything
 
 ask() { # ask PROMPT -> REPLY on the bottom line. Enter accepts; Esc, Ctrl-C or an empty line backs out (returns 1)
 	local rows cols k rest show room ok=1

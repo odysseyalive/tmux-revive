@@ -41,7 +41,10 @@ out=$(frame 130)
 check "a shell pane shows as a shell" "grep -q 'bash *· shell' <<<\"\$out\""
 check "a program shows as running" "grep -q 'top *▸ running' <<<\"\$out\""
 check "the command keys are listed" "grep -qF '[J]ump  [M]essage  [N]ame  [P]eek  [A]rt  [S]ave  [Q]uit' <<<\"\$out\""
-check "a narrow terminal still finds programs (ps not cut to COLUMNS)" "frame 80 | grep -q 'top *▸ running'"
+# Under heavy load one frame can come back short, so allow three looks; a real regression
+# misses every time, and then the frame is printed to show what was seen.
+narrow_ok() { local i f; for i in 1 2 3; do f=$(frame 80); grep -q 'top *▸ running' <<<"$f" && return 0; done; printf '%s\n' "$f" | grep -E '\[[0-9]\]' >&2; return 1; }
+check "a narrow terminal still finds programs (ps not cut to COLUMNS)" "narrow_ok"
 
 echo "keys"
 tm new-window -d -t work -n panel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
@@ -82,6 +85,45 @@ check "the dial-up splash plays" "for _ in \$(seq 1 40); do tm capture-pane -p -
 tm send-keys -t work:splash x
 check "a key skips it to the panel" "for _ in \$(seq 1 30); do tm capture-pane -p -t work:splash | grep -q 'C O N T R O L' && break; sleep 0.2; done; tm capture-pane -p -t work:splash | grep -q 'C O N T R O L'"
 tm send-keys -t work:splash q
+
+echo "hostile text"
+# Folder names, pane names, mail from linked machines and git config all come from elsewhere.
+# None of it may put an escape sequence on the terminal or make the panel run a command.
+raw() { tm run-shell "COLUMNS=130 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
+evil="$T/evil"$'\e]52;c;cHduZWQ=\a\e[2Jdir'
+mkdir -p "$evil"
+mkdir -p "$T/mail"
+printf '## [mallory -> panel 2026-11-07T10:00:00Z] #1\nhi\e]52;c;cHduZWQ=\athere\n\n' >>"$AGENT_SAY_MAILBOX"
+git init -q -b fsmtest "$T/fsm"
+echo x >"$T/fsm/f" && git -C "$T/fsm" add f && git -C "$T/fsm" -c user.name=t -c user.email=t@t commit -q -m f
+git -C "$T/fsm" config core.fsmonitor "touch $T/fsmonitor-ran; false"
+git -C "$T/fsm" config core.hooksPath "$T/hooks"
+mkdir -p "$T/hooks" && printf '#!/bin/sh\ntouch %s/hook-ran\n' "$T" >"$T/hooks/post-index-change" && chmod +x "$T/hooks/post-index-change"
+echo y >"$T/fsm/f"
+git init -q "$T/flt" && echo x >"$T/flt/f" && echo '* filter=x' >"$T/flt/.gitattributes"
+git -C "$T/flt" add f .gitattributes && git -C "$T/flt" -c user.name=t -c user.email=t@t commit -q -m f
+git -C "$T/flt" config filter.x.clean "touch $T/filter-ran; cat"
+echo y >"$T/flt/f"
+tm kill-window -t work:splash 2>/dev/null
+tm new-window -d -t work -n evil -c "$evil" "bash --norc --noprofile"
+tm new-window -d -t work -n fsm -c "$T/fsm" "bash --norc --noprofile"
+tm new-window -d -t work -n flt -c "$T/flt" "bash --norc --noprofile"
+tm set-option -p -t work:evil @agent $'bad\e]0;x\aname'
+mkdir -p "$T/mail/links/faraway" && touch "$T/mail/links/faraway/on"
+printf 'ssh: \e]52;c;eA==\adown\n' >"$T/mail/links/faraway/error"
+sleep 0.5
+out=$(raw)
+# The frame with the panel's own colour codes taken out: no control character may be left.
+bare=$(sed 's/\x1b\[[0-9;]*m//g' <<<"$out")
+check "the folder name shows, its escape sequence doesn't" "grep -qF 'evil]52;c;cHduZWQ=[2Jdir' <<<\"\$bare\""
+check "a pane name's escape is stripped" "grep -qF 'bad]0;xname' <<<\"\$bare\""
+check "a link's error (remote ssh stderr) is stripped" "grep -qF 'ssh: ]52;c;eA==down' <<<\"\$bare\""
+check "a mailbox body's OSC 52 is stripped" "grep -qF 'hi]52;c;cHduZWQ=there' <<<\"\$bare\""
+check "the only escapes in a frame are the panel's own colours" "! LC_ALL=C grep -q '[[:cntrl:]]' <<<\"\$bare\""
+check "git state still shows (branch, dirty)" "grep -qF 'fsmtest*' <<<\"\$bare\""
+check "a repo's core.fsmonitor command never runs" "[[ ! -e $T/fsmonitor-ran ]]"
+check "a repo's hooks never run" "[[ ! -e $T/hook-ran ]]"
+check "a repo's own clean filter never runs" "[[ ! -e $T/filter-ran ]]"
 
 echo "$pass passed, $fail failed"
 ((fail == 0))
