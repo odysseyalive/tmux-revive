@@ -31,7 +31,7 @@ fi
 if ((dry)); then
 	jq -r '"snapshot \(.saved_at) on \(.host) (\(.reason))",
 	  (.sessions[] | "session \(.name)", (.windows[] | "  window \(.index) \(.name)",
-	    (.panes[] | "    pane \(.index) [\(.kind)] \(.cwd)\(if .cmd then "\n      $ " + .cmd else "" end)")))' "$state"
+	    (.panes[] | "    pane \(.index) [\(.kind)] \(.cwd)\(if .cmd then "\n      $ " + .cmd else "" end)\(if .detail.exact == false then "\n      (best guess: the exact session could not be identified)" else "" end)")))' "$state"
 	exit 0
 fi
 
@@ -133,7 +133,7 @@ while read -r sjson; do
 			[[ $(jq -r '.active' <<<"$pjson") == true ]] && active_pane=$last
 			title=$(jq -r '.title // empty' <<<"$pjson")
 			[[ -n $title ]] && tm select-pane -t "$last" -T "$title"
-			[[ $(jq -r '.kind' <<<"$pjson") =~ ^(claude|codex|gemini)$ ]] && ((agents++))
+			[[ $(jq -r '.kind' <<<"$pjson") =~ ^(claude|codex|cursor|crush|gemini)$ ]] && ((agents++))
 		done
 		tm select-layout -t "$wid" "$layout" >/dev/null 2>&1
 		if [[ $(jq -r '.auto_rename' <<<"$wjson") == true ]]; then

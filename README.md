@@ -2,8 +2,8 @@
 
 Detach, shut the machine down, boot, type `tmux`: every session, window, split
 and program comes back. Claude Code panes resume **the exact conversation**
-they were in, with their Remote Control link restored. Codex and Gemini panes
-resume too.
+they were in, with their Remote Control link restored. Codex, Cursor Agent
+and Crush panes resume their exact sessions too.
 
 ## Install
 
@@ -76,8 +76,20 @@ conversation. Commands run through an interactive shell, so your PATH and
 version managers apply. When the program exits you land in a shell in the same
 directory.
 
-Codex: the session ID comes from the rollout file the process holds open
-(`codex resume <id>`). Gemini: `gemini --resume latest` in the same project.
+### Other agents
+
+| Agent | Resumes | How the session is found |
+| --- | --- | --- |
+| Codex | exact thread (`codex resume <id>`) | its log ties the process ID to a thread; else the one thread in that project touched since the process started; else the id it was launched with |
+| Cursor Agent | exact chat (`cursor-agent --resume <id>`) | the chat `store.db` the process holds open |
+| Crush | exact session (`crush --session <id>`) | the one session in that project touched since the process started; else `--session` from its command line |
+| Gemini | latest session in that project | Gemini can't resume by ID |
+
+When two instances of the same agent share a project and nothing pins one
+to its session, tmux-revive won't guess. That pane reopens the agent's
+picker (Codex, Cursor) or its most recent session (Crush), and
+`tmux-revive status` marks it "best guess". Reading Codex and Crush state
+needs `sqlite3`; without it those panes fall back the same way.
 
 Other programs: `vim nvim man less tail top htop btop watch ssh mosh journalctl
 lazygit lazydocker yazi ranger k9s` are relaunched with their arguments. nvim

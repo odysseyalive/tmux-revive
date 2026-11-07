@@ -47,7 +47,7 @@ list)
 		mark=" "
 		[[ $d == "$cur" ]] && mark="*"
 		jq -r --arg m "$mark" --arg id "${d##*/}" \
-			'"\($m) \($id)  \(.saved_at)  \(.reason)  \([.sessions[].windows[].panes[]] | length) panes, \([.sessions[].windows[].panes[] | select(.kind == "claude" or .kind == "codex" or .kind == "gemini")] | length) agents"' \
+			'"\($m) \($id)  \(.saved_at)  \(.reason)  \([.sessions[].windows[].panes[]] | length) panes, \([.sessions[].windows[].panes[] | select(.kind | test("^(claude|codex|cursor|crush|gemini)$"))] | length) agents"' \
 			"$d/state.json" 2>/dev/null
 	done
 	;;

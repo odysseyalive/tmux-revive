@@ -141,34 +141,211 @@ detect_claude() { # detect_claude PID -> prints JSON detail + sets CMD
 	CWD_OVERRIDE=$(jq -r '.cwd // empty' <<<"$rec")
 }
 
-detect_codex() {
-	local pid=$1 link id=""
-	[[ ${COMM[$pid]:-} == codex* ]] || return 1
-	while read -r link; do
-		if [[ $link =~ /rollout-.*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$ ]]; then
-			id=${BASH_REMATCH[1]}
-			break
-		fi
-	done < <(open_files "$pid")
-	read_argv "$pid"
-	# Keep only the binary; drop `resume`, prompts, and the rest.
-	local bin=${ARGV[0]:-codex}
-	[[ ${bin##*/} == codex* ]] || bin=codex
-	[[ $bin == */installs/codex/[0-9]*/* ]] && bin=codex
-	if [[ -n $id ]]; then
-		CMD="$(printf '%q' "$bin") resume $id"
-	else
-		CMD="$(printf '%q' "$bin") resume" # picker: never guess a session
-	fi
-	DETAIL=$(jq -cn --arg id "$id" '{sessionId: (if $id == "" then null else $id end)}')
+# ------------------------------------------------- other agents, shared
+# Each agent below is resolved by the same ladder, most certain first:
+#   1. a session id the process itself exposes (an open file, its own log)
+#   2. the one session in its project touched since the process started,
+#      used only when it is the sole process of that agent in the project
+#   3. an id on its command line (it may have switched session since)
+#   4. the agent's own picker, or its "most recent", marked exact:false
+UUID='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
+proc_start_epoch() { # seconds since the epoch; Linux only
+	local st btime
+	st=$(starttime "$1") || return 1
+	btime=$(awk '/^btime/ { print $2 }' /proc/stat)
+	printf '%s' $((btime + st / $(getconf CLK_TCK)))
 }
 
+proc_cwd() {
+	if [[ -e /proc/$1/cwd ]]; then
+		readlink "/proc/$1/cwd"
+	else
+		lsof -a -d cwd -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p'
+	fi
+}
+
+proc_env() { # proc_env PID NAME: the process's own environment variable
+	[[ -r /proc/$1/environ ]] || return 1
+	tr '\0' '\n' <"/proc/$1/environ" | sed -n "s/^$2=//p" | head -1
+}
+
+argv_value() { # argv_value FLAG...: what follows the flag in ARGV
+	local i a f
+	for ((i = 1; i < ${#ARGV[@]}; i++)); do
+		a=${ARGV[i]}
+		for f in "$@"; do
+			[[ $a == "$f" ]] && { printf '%s' "${ARGV[i + 1]:-}"; return 0; }
+			[[ $a == "$f="* ]] && { printf '%s' "${a#*=}"; return 0; }
+		done
+	done
+	return 1
+}
+
+argv_has() {
+	local a f
+	for a in "${ARGV[@]:1}"; do for f in "$@"; do [[ $a == "$f" ]] && return 0; done; done
+	return 1
+}
+
+# sq DB SQL: read-only query; fails quietly without sqlite3 or the file.
+sq() {
+	[[ -f $1 ]] && command -v sqlite3 >/dev/null || return 1
+	timeout 3 sqlite3 -readonly "file:$1?mode=ro" "$2" 2>/dev/null
+}
+sql_str() { printf "'%s'" "${1//\'/\'\'}"; }
+
+# newest FILE-GLOB: the highest-versioned match (state_5.sqlite over state_4)
+newest() {
+	local f
+	f=$(ls -1 $1 2>/dev/null | sort -V | tail -1)
+	[[ -n $f ]] && printf '%s' "$f"
+}
+
+# alone_in_cwd PID CWD MATCHER: no other top-level process of this agent
+# runs in the same directory. MATCHER is a function taking a pid.
+alone_in_cwd() {
+	local me=$1 cwd=$2 match=$3 p pp
+	for p in "${!COMM[@]}"; do
+		[[ $p == "$me" ]] && continue
+		"$match" "$p" || continue
+		pp=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+		"$match" "$pp" && continue # a worker of another instance
+		[[ $(proc_cwd "$p") == "$cwd" ]] && return 1
+	done
+	return 0
+}
+
+# A resolved session: set CMD and DETAIL.
+agent_result() { # agent_result ID HOW RESUME_CMD FALLBACK_CMD [CWD]
+	local id=$1 how=$2
+	if [[ -n $id ]]; then
+		CMD=$3
+		DETAIL=$(jq -cn --arg id "$id" --arg how "$how" '{sessionId: $id, exact: true, how: $how}')
+	else
+		CMD=$4
+		DETAIL='{"sessionId": null, "exact": false, "how": "fallback"}'
+	fi
+	[[ -n ${5:-} ]] && CWD_OVERRIDE=$5
+	return 0
+}
+
+# ------------------------------------------------------------------ codex
+codex_argv() { # ARGV for PID with any interpreter (a wrapper script's bash) dropped
+	read_argv "$1"
+	local a0=${ARGV[0]:-}
+	[[ ${a0##*/} != codex && ${ARGV[1]:-} == */codex ]] && ARGV=("${ARGV[@]:1}")
+	return 0
+}
+
+is_codex() {
+	codex_argv "$1"
+	local a0=${ARGV[0]:-}
+	[[ ${COMM[$1]:-} == codex* || ${a0##*/} == codex ]] || return 1
+	[[ ${ARGV[1]:-} != app-server ]] # the shared daemon is not a pane's agent
+}
+
+detect_codex() {
+	local pid=$1 id="" how="" home start cwd f bin
+	is_codex "$pid" || return 1
+	home=$(proc_env "$pid" CODEX_HOME)
+	home=${home:-$HOME/.codex}
+	cwd=$(proc_cwd "$pid")
+	start=$(proc_start_epoch "$pid")
+
+	while read -r f; do # older Codex keeps its rollout file open
+		[[ $f =~ /rollout-.*($UUID)\.jsonl$ ]] && { id=${BASH_REMATCH[1]}; how=open-file; break; }
+	done < <(open_files "$pid")
+	if [[ -z $id && -n $start ]]; then # its log tags rows pid:<pid>:<uuid>
+		id=$(sq "$(newest "$home/logs_*.sqlite")" "select thread_id from logs where process_uuid like 'pid:$pid:%' and thread_id is not null and ts >= $start order by ts desc, ts_nanos desc limit 1") && how=process-log
+	fi
+	if [[ -z $id && -n $start && -n $cwd ]] && alone_in_cwd "$pid" "$cwd" is_codex; then
+		id=$(sq "$(newest "$home/state_*.sqlite")" "select id from threads where cwd = $(sql_str "$cwd") and source = 'cli' and archived = 0 and updated_at >= $start order by updated_at desc limit 1") && how=recent-in-project
+	fi
+	codex_argv "$pid"
+	if [[ -z $id && ${ARGV[1]:-} == resume && ${ARGV[2]:-} =~ ^$UUID$ ]]; then
+		id=${ARGV[2]} how=argv
+	fi
+	[[ $id =~ ^$UUID$ ]] || id=""
+	bin=${ARGV[0]:-codex}
+	[[ ${bin##*/} == codex && $bin != */installs/codex/[0-9]*/* ]] || bin=codex
+	bin=$(printf '%q' "$bin")
+	[[ $home != "$HOME/.codex" ]] && bin="CODEX_HOME=$(printf '%q' "$home") $bin"
+	agent_result "$id" "$how" "$bin resume $id" "$bin resume" "$cwd"
+}
+
+# ----------------------------------------------------------- cursor agent
+is_cursor() {
+	read_argv "$1"
+	# Its node process is named MainThread; argv[0] is .../bin/cursor-agent
+	# (argv[1] when it is launched through a wrapper script).
+	[[ ${ARGV[0]:-} == *cursor-agent* || ${ARGV[1]:-} == */cursor-agent ]]
+}
+
+detect_cursor() {
+	local pid=$1 id="" how="" cfg start cwd f hash d newest_t=0 t keep=()
+	is_cursor "$pid" || return 1
+	cfg=$(proc_env "$pid" CURSOR_CONFIG_DIR)
+	cfg=${cfg:-$HOME/.cursor}
+	cwd=$(proc_cwd "$pid")
+	start=$(proc_start_epoch "$pid")
+
+	while read -r f; do # <config>/chats/<md5 of project>/<chat id>/store.db
+		[[ $f =~ /chats/[0-9a-f]{32}/([^/]+)/store\.db ]] && { id=${BASH_REMATCH[1]}; how=open-file; break; }
+	done < <(open_files "$pid")
+	if [[ -z $id && -n $start && -n $cwd ]] && alone_in_cwd "$pid" "$cwd" is_cursor; then
+		if command -v md5sum >/dev/null; then hash=$(printf '%s' "$cwd" | md5sum | cut -c1-32); else hash=$(printf '%s' "$cwd" | md5 -q); fi
+		for d in "$cfg/chats/$hash"/*/; do
+			[[ -f $d/store.db ]] || continue
+			t=$(stat -c %Y "$d/store.db" 2>/dev/null || stat -f %m "$d/store.db")
+			((t >= start && t > newest_t)) && { newest_t=$t; id=$(basename "$d"); how=recent-in-project; }
+		done
+	fi
+	read_argv "$pid"
+	if [[ -z $id ]] && id=$(argv_value --resume) && [[ -n $id && $id != -* ]]; then how=argv; else [[ $how ]] || id=""; fi
+	f=$(argv_value --model) && keep+=(--model "$f")
+	argv_has --force -f && keep+=(--force)
+	f=$( ((${#keep[@]})) && quote_argv "${keep[@]}")
+	agent_result "$id" "$how" "cursor-agent --resume $(printf '%q' "$id")${f:+ $f}" "cursor-agent ls" "$cwd"
+}
+
+# ------------------------------------------------------------------ crush
+is_crush() {
+	read_argv "$1"
+	local a0=${ARGV[0]:-}
+	[[ ${a0##*/} == crush && ${ARGV[1]:-} != run ]] # `crush run` is one-shot
+}
+
+detect_crush() {
+	local pid=$1 id="" how="" start cwd data db keep=() f
+	is_crush "$pid" || return 1
+	cwd=$(argv_value --cwd -c) || cwd=$(proc_cwd "$pid")
+	data=$(argv_value --data-dir -D) || data=$cwd/.crush
+	db=$data/crush.db
+	start=$(proc_start_epoch "$pid")
+
+	if [[ -n $start ]] && alone_in_cwd "$pid" "$cwd" is_crush; then
+		id=$(sq "$db" "select id from sessions where parent_session_id is null and updated_at >= $start order by updated_at desc limit 1") && how=recent-in-project
+	fi
+	read_argv "$pid"
+	if [[ -z $id ]] && id=$(argv_value --session -s) && [[ -n $id ]]; then how=argv; else [[ $how ]] || id=""; fi
+	[[ $data != "$cwd/.crush" ]] && keep+=(--data-dir "$data")
+	argv_has -yy && keep+=(-yy)
+	argv_has -y --yolo && keep+=(-y)
+	f=$( ((${#keep[@]})) && quote_argv "${keep[@]}")
+	agent_result "$id" "$how" "crush --session $(printf '%q' "$id")${f:+ $f}" "crush --continue${f:+ $f}" "$cwd"
+}
+
+# ----------------------------------------------------------------- gemini
 detect_gemini() {
 	local pid=$1
 	read_argv "$pid"
 	[[ ${ARGV[*]:-} =~ (^|/|[[:space:]])gemini([[:space:]]|$) ]] || return 1
+	# Gemini resumes by project and index, never by id: the newest is the
+	# best available, so it is marked inexact.
 	CMD="gemini --resume latest"
-	DETAIL='{}'
+	DETAIL='{"sessionId": null, "exact": false, "how": "latest-in-project"}'
+	CWD_OVERRIDE=$(proc_cwd "$pid")
 }
 
 # Ordinary programs worth relaunching. ":all:" relaunches anything.
@@ -207,11 +384,13 @@ while IFS=$S read -r sess attached widx wname layout wactive autoren zoomed pidx
 	for p in $(descendants "$ppid"); do
 		if detect_claude "$p"; then kind=claude; break; fi
 		if detect_codex "$p"; then kind=codex; break; fi
+		if detect_cursor "$p"; then kind=cursor; break; fi
+		if detect_crush "$p"; then kind=crush; break; fi
 		if detect_gemini "$p"; then kind=gemini; break; fi
 	done
 	if [[ $kind == shell ]] && detect_program "$ppid" "$cwd"; then kind=program; fi
-	[[ $kind == claude || $kind == codex || $kind == gemini ]] && ((agents++))
-	# Claude resumes by project directory: start it where the session lives.
+	[[ $kind =~ ^(claude|codex|cursor|crush|gemini)$ ]] && ((agents++))
+	# Agents resume by project directory: start each where its session lives.
 	[[ -n $CWD_OVERRIDE ]] && cwd=$CWD_OVERRIDE
 
 	scroll=""
