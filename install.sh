@@ -4,7 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.sh | sh
 #
 # Options (after `sh -s --`):  --uninstall   --purge (uninstall + delete snapshots)
-#                              --no-config   (don't touch tmux.conf or shell rc files)
+#                              --no-config   (don't touch tmux.conf, shell rc files,
+#                                             or Claude Code / Codex settings)
 # Environment:  REVIVE_REPO=owner/name   REVIVE_REF=branch|tag
 #               REVIVE_SOURCE=/local/checkout   (install from a directory)
 set -eu
@@ -17,6 +18,11 @@ BIN=$HOME/.local/bin
 JQ_VERSION=1.7.1
 BEGIN='# >>> tmux-revive >>>'
 END='# <<< tmux-revive <<<'
+# Markdown files get comment markers: a `#` line would render as a heading.
+MD_BEGIN='<!-- >>> tmux-revive agent-say >>> -->'
+MD_END='<!-- <<< tmux-revive agent-say <<< -->'
+CODEX=${CODEX_HOME:-$HOME/.codex}
+AGENT_SAY_PERM='Bash(agent-say:*)'
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; }
@@ -49,10 +55,98 @@ shell_rcs() {
 	done
 }
 
-strip_block() { # remove our block from FILE, in place
+strip_block() { # strip_block FILE [BEGIN END]: remove our block from FILE, in place
 	[ -f "$1" ] || return 0
-	awk -v b="$BEGIN" -v e="$END" '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip' "$1" >"$1.revive.tmp" &&
+	awk -v b="${2:-$BEGIN}" -v e="${3:-$END}" '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip' "$1" >"$1.revive.tmp" &&
 		cat "$1.revive.tmp" >"$1" && rm -f "$1.revive.tmp"
+}
+
+# Claude Code config dirs: every ~/.claude* that has run Claude (same test as save.sh).
+claude_dirs() {
+	for d in "$HOME"/.claude*; do
+		[ -d "$d/sessions" ] && printf '%s\n' "$d"
+	done
+}
+
+jq_bin() {
+	if have jq; then command -v jq
+	elif [ -x "$APP/vendor/bin/jq" ]; then printf '%s' "$APP/vendor/bin/jq"
+	fi
+}
+
+# Rewrite a JSON file with jq; leave it alone if it doesn't parse.
+json_edit() { # json_edit FILE JQ-ARGS...
+	jf=$1
+	shift
+	j=$(jq_bin)
+	[ -n "$j" ] || return 1
+	"$j" "$@" "$jf" >"$jf.revive.tmp" 2>/dev/null && cat "$jf.revive.tmp" >"$jf"
+	rc=$?
+	rm -f "$jf.revive.tmp"
+	return $rc
+}
+
+# Let agents in tmux panes message each other with agent-say (see README).
+agent_setup() {
+	if [ -d "$CODEX" ] || have codex; then
+		# Codex's sandbox blocks the tmux socket; this rule lets only agent-say out.
+		mkdir -p "$CODEX/rules"
+		cat >"$CODEX/rules/agent-say.rules" <<'RULES'
+# Written by tmux-revive. agent-say types messages into other agents' tmux panes,
+# which needs the tmux socket that Codex's sandbox blocks. Removed on uninstall.
+prefix_rule(
+    pattern = ["agent-say"],
+    decision = "allow",
+    justification = "agent-say only types into tmux panes; it needs the tmux socket",
+)
+RULES
+		agents=$CODEX/AGENTS.md
+		[ -f "$agents" ] && ! grep -qF "$MD_BEGIN" "$agents" && cp "$agents" "$agents.bak-revive-$(date +%Y%m%d%H%M%S)"
+		strip_block "$agents" "$MD_BEGIN" "$MD_END"
+		{
+			[ -n "$(tail -n 1 "$agents" 2>/dev/null)" ] && printf '\n'
+			printf '%s\n' "$MD_BEGIN"
+			cat <<'NOTE'
+## Messages from other agents
+
+A prompt starting with `[agent-msg from=NAME ...]` was sent by another AI agent
+in a tmux pane, not typed by the user, and the sender cannot see your chat
+output. Answer it by running the `agent-say` command the message gives you.
+To start a conversation yourself, run `agent-say --from codex NAME "message"`.
+Reply only when there is something to say, never just to acknowledge.
+NOTE
+			printf '%s\n' "$MD_END"
+		} >>"$agents"
+		say "Codex can use agent-say (restart open Codex sessions to pick it up)"
+	fi
+	for d in $(claude_dirs); do
+		f=$d/settings.json
+		if [ -f "$f" ]; then
+			grep -qF "$AGENT_SAY_PERM" "$f" && continue
+			cp "$f" "$f.bak-revive-$(date +%Y%m%d%H%M%S)"
+		else
+			printf '{}\n' >"$f"
+		fi
+		if json_edit "$f" --arg p "$AGENT_SAY_PERM" '.permissions.allow += [$p]'; then
+			say "Claude Code in $d can use agent-say without asking"
+		else
+			warn "couldn't update $f; allow $AGENT_SAY_PERM there yourself"
+		fi
+	done
+}
+
+agent_unsetup() {
+	rm -f "$CODEX/rules/agent-say.rules"
+	if grep -qF "$MD_BEGIN" "$CODEX/AGENTS.md" 2>/dev/null; then
+		strip_block "$CODEX/AGENTS.md" "$MD_BEGIN" "$MD_END"
+		say "removed agent-say from $CODEX/AGENTS.md"
+	fi
+	for d in $(claude_dirs); do
+		f=$d/settings.json
+		grep -qF "$AGENT_SAY_PERM" "$f" 2>/dev/null || continue
+		json_edit "$f" --arg p "$AGENT_SAY_PERM" '.permissions.allow -= [$p]' &&
+			say "removed the agent-say permission from $f"
+	done
 }
 
 pkg_install() { # best effort with whatever package manager is here
@@ -78,6 +172,7 @@ uninstall() {
 		tmux set-hook -gu 'client-detached[77]' 2>/dev/null || true
 		pkill -f "$APP/scripts/daemon.sh" 2>/dev/null || true
 	fi
+	agent_unsetup
 	rm -f "$BIN/tmux-revive" "$BIN/agent-say"
 	rm -rf "$APP"
 	if [ "${1:-}" = purge ]; then
@@ -210,6 +305,7 @@ if [ $wire_config = 1 ]; then
 		} >>"$rc"
 		say "added tmux-revive to $rc"
 	done
+	agent_setup
 	if grep -Eq "^[[:space:]]*set(-option)?[[:space:]]+-g[[:space:]]+@continuum-restore[[:space:]]+['\"]?on" "$conf"; then
 		warn "tmux-continuum auto-restore is on in $conf; turn it off or both will restore"
 	fi
@@ -233,5 +329,7 @@ cat <<EOF
   resumed in the same conversation it was in. No keys to press.
 
   tmux-revive doctor               check everything is wired up
+  tmux-revive update               get the latest version
+  agent-say name claude            let agents in panes message each other
 
 EOF

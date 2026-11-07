@@ -25,7 +25,9 @@ irm https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.ps1 
 That is the whole setup. The installer downloads a tarball (no git, nothing to
 compile), adds one marked block to the tmux config you already use (backing it
 up first), fetches a checksummed private `jq` if you have none, and starts
-protecting a tmux server that is already running. Rerunning it updates in place.
+protecting a tmux server that is already running. It also lets Claude Code
+and Codex use [`agent-say`](#agents-talking-to-each-other). Rerunning it, or
+running `tmux-revive update`, updates in place.
 
 ## Use
 
@@ -44,6 +46,7 @@ tmux-revive status     what the latest snapshot holds, and the exact resume comm
 tmux-revive list       snapshots, newest first
 tmux-revive restore 20261106T192239   restore an older snapshot
 tmux-revive doctor     check that everything is wired up
+tmux-revive update     install the latest version (snapshots are kept)
 tmux-revive uninstall [--purge]
 ```
 
@@ -124,34 +127,27 @@ Every message is also saved in a mailbox file
 pointing at the mailbox. Sends to the same pane take turns, so two messages
 sent at once can't run together into one prompt.
 
-**Claude Code** works as is. Allow `Bash(agent-say:*)` so it doesn't ask
-every time.
+The installer sets up both agents, and `tmux-revive update` and `uninstall`
+keep that setup in step. `--no-config` skips it. Restart any Codex session
+that was already open.
 
-**Codex** needs two things:
+- **Claude Code:** every Claude config dir (`~/.claude*` that has run Claude)
+  gets `Bash(agent-say:*)` in its `settings.json` allow list, so sending
+  doesn't prompt.
+- **Codex:** its sandbox blocks the tmux socket ("Operation not permitted").
+  `~/.codex/rules/agent-say.rules` is a
+  [rule](https://developers.openai.com/codex/rules) that lets only
+  `agent-say` run outside the sandbox. A marked block in `~/.codex/AGENTS.md`
+  tells Codex what `[agent-msg …]` lines are. Without it, Codex tends to
+  answer in its own pane, where the sender never sees the reply.
 
-1. Its sandbox blocks the tmux socket ("Operation not permitted"). This
-   [rule](https://developers.openai.com/codex/rules) lets only `agent-say`
-   run outside the sandbox. Save it as `~/.codex/rules/agent-say.rules` and
-   restart Codex:
-
-   ```python
-   prefix_rule(pattern = ["agent-say"], decision = "allow")
-   ```
-
-2. Tell it what these messages are, in `~/.codex/AGENTS.md`. Without this,
-   Codex tends to answer in its own pane, where the sender never sees it:
-
-   ```md
-   A prompt starting with `[agent-msg from=NAME ...]` was sent by another AI
-   agent in a tmux pane, not typed by the user, and the sender cannot see your
-   chat output. Answer it by running the `agent-say` command the message gives
-   you. Reply only when there is something to say, never just to acknowledge.
-   ```
+Files are backed up before their first change (`*.bak-revive-<time>`). A
+`settings.json` that isn't valid JSON is left alone with a warning.
 
 Codex runs its commands in a shared background process that isn't inside any
 pane, so it can't work out which pane it's in. Replies already contain the
-right `--from`. When Codex starts a conversation itself, it has to pass
-`--from codex`.
+right `--from`. When Codex starts a conversation itself, it passes
+`--from codex`, as its `AGENTS.md` block says to.
 
 **Different accounts:** the two agents only need to run on the same tmux
 server. Each keeps its own login (`CLAUDE_CONFIG_DIR`, Codex auth, and so on).

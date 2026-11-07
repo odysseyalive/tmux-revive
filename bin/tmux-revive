@@ -8,6 +8,7 @@
 #   tmux-revive list                 snapshots, newest first
 #   tmux-revive log                  recent activity
 #   tmux-revive doctor               check the moving parts
+#   tmux-revive update               install the latest version (keeps snapshots)
 #   tmux-revive uninstall [--purge]  remove (--purge also deletes snapshots)
 if ((BASH_VERSINFO[0] < 4)); then
 	for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [[ -x $b ]] && exec "$b" "$0" "$@"; done
@@ -49,6 +50,19 @@ uninstall)
 	[[ ${2:-} == --purge ]] && exec sh "$inst" --purge
 	exec sh "$inst" --uninstall
 	;;
+update)
+	# Rerun the latest installer: it replaces the app in place and reapplies the
+	# tmux, shell and agent setup. Snapshots are kept. REVIVE_SOURCE=dir updates
+	# from a local checkout instead of downloading.
+	shift
+	if [[ -n ${REVIVE_SOURCE:-} ]]; then exec sh "$REVIVE_SOURCE/install.sh" "$@"; fi
+	url="https://raw.githubusercontent.com/${REVIVE_REPO:-odysseyalive/tmux-revive}/${REVIVE_REF:-main}/install.sh"
+	inst=$(mktemp) || exit 1
+	trap 'rm -f "$inst"' EXIT
+	if command -v curl >/dev/null; then curl -fsSL "$url" -o "$inst"; else wget -qO "$inst" "$url"; fi ||
+		{ echo "tmux-revive: download failed: $url" >&2; exit 1; }
+	sh "$inst" "$@"
+	;;
 save) "$BASH" "$ROOT/scripts/save.sh" manual ;;
 restore) shift; "$BASH" "$ROOT/scripts/restore.sh" "$@" ;;
 status) shift; "$BASH" "$ROOT/scripts/restore.sh" --dry-run "$@" ;;
@@ -77,8 +91,14 @@ doctor)
 	else
 		bad "no tmux server running"
 	fi
+	command -v agent-say >/dev/null && ok "agent-say on PATH" || bad "agent-say not on PATH"
+	codex_home=${CODEX_HOME:-$HOME/.codex}
+	if [[ -d $codex_home ]]; then
+		[[ -f $codex_home/rules/agent-say.rules ]] && ok "Codex may run agent-say outside its sandbox" ||
+			bad "Codex can't reach tmux to use agent-say: run tmux-revive update"
+	fi
 	DIR=$(revive_dir)
 	[[ -f $DIR/last/state.json ]] && ok "latest snapshot: $(jq -r .saved_at "$DIR/last/state.json")" || bad "no snapshot yet"
 	;;
-*) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+*) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
