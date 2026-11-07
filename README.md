@@ -1,48 +1,53 @@
+![tmux-revive: terminal panes lighting back up, with messages flying between them and out to another computer](assets/header.png)
+
 # tmux-revive
 
-Turn your computer off, turn it back on, type `tmux`, and everything is where
-you left it: every session, window and split, and the programs that were
-running in them. AI coding agents pick up **the exact conversation** they were
-in. That covers Claude Code (with its Remote Control link), Codex, Cursor
-Agent and Crush.
+Here's the whole idea. You turn your computer off, turn it back on, type
+`tmux`, and everything is right where you left it. Every session, every
+window and split, and the programs that were running in them. Your AI coding
+agents pick up **the exact conversation** they were in, too. That covers
+Claude Code (Remote Control link and all), Codex, Cursor Agent and Crush.
 
-It also comes with `agent-say`, which lets those agents send each other
-messages, even across accounts and computers. See
-[Agents talking to each other](#agents-talking-to-each-other).
+It also comes with a little extra called `agent-say`. It lets those agents
+send each other messages, even across accounts and across computers. More on
+that in [Agents talking to each other](#agents-talking-to-each-other).
 
 ## Install
 
-Linux, macOS, WSL:
+On Linux, macOS or WSL:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.sh | sh
 ```
 
-Windows (PowerShell; installs into WSL, since that's where tmux runs):
+On Windows, use PowerShell. It installs into WSL, since that's where tmux
+actually runs:
 
 ```powershell
 irm https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.ps1 | iex
 ```
 
-That's all the setup there is. If tmux is already running, it's protected
-from that moment on. To update later, run `tmux-revive update`. (What the
-installer changes on your computer is listed [further down](#what-the-installer-changes).)
+And that's it. That's the setup. If tmux is already running, it's protected
+from that moment on. When you want the newest version later, run
+`tmux-revive update`. (Curious what the installer touches on your computer?
+It's all listed [further down](#what-the-installer-changes).)
 
 ## Everyday use
 
-You don't need to learn anything new.
+Honestly, there's nothing new to learn.
 
-1. **Work in tmux as usual.**
-2. **Leave the usual way:** detach with prefix + d, or just close the terminal
-   window. Your work is saved.
-3. **Shut down or restart** whenever you like.
-4. **Come back:** open a terminal and type `tmux` or `tmux attach`.
-   Everything reopens, and your agents continue their conversations.
+1. **Work in tmux the way you always do.**
+2. **Leave the way you always do.** Detach with prefix + d, or just close the
+   terminal window. Your work is saved.
+3. **Shut down or restart** whenever you feel like it.
+4. **Come back.** Open a terminal and type `tmux` or `tmux attach`.
+   Everything reopens, and your agents carry on with their conversations.
 
-**Want a clean slate instead?** Close things yourself: type `exit` in a pane,
-close a window, or close a session. tmux-revive remembers that you closed
-them, and they don't come back. Close everything and the next `tmux` starts
-empty. Closed something by mistake? Every earlier save is kept, see below.
+**Rather start with a clean slate?** Then close things yourself. Type `exit`
+in a pane, close a window, or close a session. tmux-revive remembers that you
+closed them, and they stay closed. Close everything and the next `tmux` starts
+empty. And if you closed something by mistake, don't panic. Every earlier save
+is kept (see below).
 
 ### Handy commands
 
@@ -57,7 +62,7 @@ tmux-revive uninstall  remove it (add --purge to also delete your saves)
 
 ## When it saves
 
-You never have to save by hand. It saves:
+You never have to save by hand. It takes care of that:
 
 - when you detach or close your terminal
 - when you close a pane, window or session, so what you closed stays closed
@@ -65,41 +70,43 @@ You never have to save by hand. It saves:
 - **right before your computer shuts down or goes to sleep** (Linux), while
   every program is still running
 
-It never saves while the computer is in the middle of shutting down, because
-by then programs are being killed and the save would be missing them.
+What it will never do is save while the computer is in the middle of shutting
+down. By then programs are being killed off, and the save would be missing
+them.
 
 ## Agents talking to each other
 
 `agent-say` lets an AI agent in one tmux pane send a message to an agent in
-another pane. For example, Claude Code can ask Codex to review its work, and
-Codex's answer comes back to Claude Code. A message is typed into the other
-pane as if you'd typed it, so any agent can read it. Nothing else to run: no
-server, no plugin.
+another pane. Claude Code can ask Codex to review its work, say, and Codex's
+answer comes back to Claude Code. The message gets typed into the other pane
+as if you'd typed it yourself, so any agent can read it. There's nothing else
+to run. No server, no plugin.
 
 ### 1. Give each pane a name
 
-Do this once per pane. In Claude Code, type this into its prompt (the `!`
-runs it as a command):
+You only do this once per pane. In Claude Code, type this into its prompt
+(the `!` runs it as a command):
 
 ```
 ! agent-say name claude
 ```
 
-Or just ask the agent: "name this pane claude with agent-say". That works
-in Codex too.
+Or just ask the agent: "name this pane claude with agent-say". That works in
+Codex too.
 
-One name does three things:
+That one name actually does three things:
 
 - **The pane** gets the name, so other agents can send it messages. The name
-  belongs to the pane, so it stays when you restart the agent there.
-- **The tmux window** is renamed too, so you can see it in your status bar.
-  This is skipped when the window is split between several panes.
+  belongs to the pane, not the agent, so it sticks around when you restart the
+  agent there.
+- **The tmux window** gets renamed too, so you can spot it in your status bar.
+  This part is skipped when the window is split between several panes.
 - **The agent's own session** is renamed with its `/rename` command. That's
-  the name you see when resuming and in Remote Control. The agent is busy
-  running the naming command at that moment, so `agent-say` waits until it
-  has finished and is waiting for you (up to 30 minutes), then types
-  `/rename` for it. It never types into a question the agent is asking you,
-  or into a prompt where you have started typing.
+  the name you see when resuming and in Remote Control. Here's the catch. The
+  agent is busy running the naming command at that very moment, so `agent-say`
+  waits until it has finished and is waiting on you (up to 30 minutes), then
+  types `/rename` for it. It never types into a question the agent is asking
+  you, or into a prompt where you've already started typing.
 
 | Agent | Session renamed? |
 | --- | --- |
@@ -109,12 +116,12 @@ One name does three things:
 | Crush, Gemini | no, they have no rename command; only the pane and window are named |
 
 **Already named your session?** Run `agent-say name` with no name, and the
-pane takes the name the session already has (Claude Code and Codex).
+pane borrows the name the session already has (Claude Code and Codex).
 
-**Codex** runs its commands outside its own pane, so `agent-say` finds the
-Codex pane working in the same folder. If two Codex panes work in the same
-folder, it can't tell them apart. Then name the pane in the terminal before
-starting Codex:
+**Codex** is a little different. It runs its commands outside its own pane,
+so `agent-say` goes looking for the Codex pane working in the same folder. If
+two Codex panes are working in the same folder, it can't tell them apart. In
+that case, name the pane in the terminal before you start Codex:
 
 ```sh
 agent-say name codex
@@ -123,13 +130,14 @@ codex
 
 `agent-say list` shows every pane and its name.
 
-A name uses letters, digits and `. _ - : + =`, starts with a letter or digit,
-and has no spaces or `@`. It can't be one of agent-say's own words: `name`,
-`list`, `read`, `show`, `link` or `unlink`.
+A name can use letters, digits and `. _ - : + =`. It has to start with a
+letter or digit, and it can't have spaces or `@`. It also can't be one of
+agent-say's own words, which are `name`, `list`, `read`, `show`, `link` and
+`unlink`.
 
 ### 2. Ask your agent to send a message
 
-Just say it in plain words:
+Just say it in plain words, the way you'd ask a person:
 
 > Use agent-say to ask codex to review parser.py and tell you what breaks.
 
@@ -143,114 +151,116 @@ the message, along with the exact command it should use to answer:
 ### 3. The answer comes back by itself
 
 The other agent does the work and answers. Its reply shows up in the first
-pane as a new message, and the first agent carries on. You just watch.
+pane as a new message, and the first agent carries on. You just sit back and
+watch.
 
 Long messages show up as a short note with an ID. The agent reads the whole
-message with `agent-say show <id>`.
+thing with `agent-say show <id>`.
 
 ### Another computer you ssh into
 
-Say you have two terminals: one in tmux on your own computer, and one where
-you ssh into a server and run tmux there, with Claude Code or Codex in each.
-Link them once, from **your own computer**, using the name you'd type after
-`ssh`:
+Picture two terminals. One is in tmux on your own computer. In the other, you
+ssh into a server and run tmux there. Claude Code or Codex is running in each.
+You link them once, from **your own computer**, using the same name you'd type
+after `ssh`:
 
 ```sh
 agent-say link devbox
 ```
 
 From then on, agents on either side reach each other by the names you gave
-their panes, as if they were on one computer:
+their panes, as if they were all on one computer:
 
 ```sh
 agent-say codex "run the tests on the server and tell me what fails"   # here -> there
 agent-say claude "all green"                                           # there -> here
 ```
 
-Replies come back on their own. If a name exists on both computers, add
-`@` and the computer to pick one: `codex@devbox`, or `claude@<your computer>`.
-`agent-say list` shows the names on both sides.
+Replies find their own way back. If the same name exists on both computers,
+add `@` and the computer to pick one, like `codex@devbox` or
+`claude@<your computer>`. `agent-say list` shows the names on both sides.
 
-How it works: your computer checks in with the server over ssh every couple
-of seconds, the same direction you already connect. Each check-in swaps the
-pane names on both sides and brings back anything the server's agents sent
-you. Your computer never has to accept a connection, so this works from
-behind a home router or on a laptop with no ssh server.
+So how does it work? Your computer checks in with the server over ssh every
+couple of seconds, in the same direction you already connect. Each check-in
+swaps the pane names on both sides and brings back anything the server's
+agents sent you. Your computer never has to accept a connection. That means
+it works from behind a home router, or on a laptop with no ssh server at all.
 
 What it needs:
 
-- `agent-say` on the server: run the installer there too.
-- ssh that logs in without asking for a password (key-based login). Test it
-  with `ssh -o BatchMode=yes devbox true`.
+- `agent-say` on the server. Run the installer there too.
+- ssh that logs in without asking for a password (key-based login). You can
+  test that with `ssh -o BatchMode=yes devbox true`.
 
 `agent-say link` shows your links and whether they're running.
-`agent-say unlink devbox` stops one. Links come back by themselves when tmux
+`agent-say unlink devbox` stops one. Links come back on their own when tmux
 starts after a reboot.
 
 **The other side says a name doesn't exist?** The server only learns your
 computer's names through the link, and the link has to be started from your
-computer. Run `agent-say link` here: `devbox` should be listed as running.
-On the server, `agent-say list` then shows your names with `@` and your
+computer. Run `agent-say link` here, and `devbox` should be listed as running.
+After that, `agent-say list` on the server shows your names with `@` and your
 computer's name.
 
-What happens to messages over a link:
+Here's what happens to messages over a link:
 
-- **Someone is typing in the pane a message is for:** it waits, and the link
+- **Someone is typing in the pane a message is for.** It waits, and the link
   tries again at each check-in for about a minute. Each message is delivered
   once.
 - **The link goes down** (your computer is off or asleep, or tmux isn't
-  running): messages already waiting on the server are delivered when the
+  running). Messages already waiting on the server are delivered when the
   link comes back. Once your computer has missed check-ins for about a minute,
-  the server stops taking new ones: a send from there fails with an error, so
+  the server stops taking new ones. A send from there fails with an error, so
   the agent knows it didn't arrive.
-- **You unlink:** the server is told, if it can be reached, and the messages
+- **You unlink.** The server is told, if it can be reached, and the messages
   it was still holding for you go into its mailbox, marked NOT DELIVERED.
-- **A message for a name your computer doesn't have:** it goes into your
-  mailbox, marked NOT DELIVERED.
+- **A message shows up for a name your computer doesn't have.** It goes into
+  your mailbox, marked NOT DELIVERED.
 - **Nothing that arrives over a link can run a command on your computer.**
-  Every name, sender and address from the other side is checked, and a
-  message can only be typed into an agent pane by its name.
+  Every name, sender and address from the other side is checked, and a message
+  can only be typed into an agent pane by its name.
 
 You can also send to a server you haven't linked, with `agent-say
-codex@devbox "..."`. That works for one-off messages, but a reply then needs
+codex@devbox "..."`. That's fine for a one-off message, but a reply then needs
 the server to be able to ssh back to you.
 
-Different accounts on one computer need nothing special. Each agent keeps
-its own login. They only need to be in the same tmux.
+Different accounts on one computer don't need anything special. Each agent
+keeps its own login. They just need to be in the same tmux.
 
 ### Built-in safety
 
-`agent-say` won't type a message where it could do harm. It refuses, and
-says why, when:
+`agent-say` won't type a message anywhere it could do harm. It refuses, and
+tells you why, when:
 
 - **the pane has no agent running**, just a command prompt. The message would
   be run as a command there.
-- **the pane is scrolled back** (tmux copy mode). The message would be lost.
+- **the pane is scrolled back** (tmux copy mode). The message would get lost.
   It waits 10 seconds for you to scroll back down first.
-- **two panes share a name.** It can't know which one you meant. Rename one,
-  or send to a pane ID like `%3` from `agent-say list`.
+- **two panes share a name.** It has no way of knowing which one you meant.
+  Rename one, or send to a pane ID like `%3` from `agent-say list`.
 
 Messages to the same pane wait their turn, so two can't get mixed into one.
-If a sender crashes partway through, the next message clears its leftovers.
+If a sender crashes partway through, the next message cleans up what it left
+behind.
 
-Things to keep in mind:
+A few things worth keeping in mind:
 
-- **Anything that can run `agent-say` can type into your agents.** Treat it
-  like access to your terminal. Agents are told to treat these messages as
-  coming from a colleague, not from you, and to check with you before
-  anything risky.
-- **Two agents that answer everything can chat forever.** Say when no reply
-  is needed.
+- **Anything that can run `agent-say` can type into your agents.** I'd treat
+  it like access to your terminal, because that's more or less what it is.
+  Agents are told to treat these messages as coming from a colleague, not from
+  you, and to check with you before anything risky.
+- **Two agents that answer everything can chat forever.** Really. Say when no
+  reply is needed.
 - **Your drafts are safe in Claude Code and Codex.** If you've started typing
   in an agent's prompt, a message waits for you to send or clear it (up to a
   minute, then it's refused) instead of landing on top of your text. A
   `/rename` waits the same way. In other agents `agent-say` can't see the
-  prompt, so a message typed while you're typing there can still mix.
+  prompt, so a message typed while you're typing there can still get mixed in.
 
 Every message is also kept in `~/.local/state/agent-say/mailbox.md`, which
 only you can read. `agent-say read 5` shows the last five, and
 `agent-say read 5 claude` shows the last five sent to `claude`. Once the
-mailbox passes 1 MB, it moves to `mailbox.md.1` and a new one starts.
+mailbox passes 1 MB, it moves to `mailbox.md.1` and a fresh one starts.
 
 **Settings** (environment variables): `AGENT_SAY_ENTER_DELAY` (0.4 seconds
 between typing a message and pressing Enter; raise it if a busy agent leaves
@@ -261,8 +271,8 @@ counts as long), `AGENT_SAY_MODE_WAIT` (10 seconds), `AGENT_SAY_RENAME_WAIT` (18
 
 ## Options
 
-Optional settings for your tmux config. Put them **before** the tmux-revive
-block in that file.
+These are optional settings for your tmux config. Put them **before** the
+tmux-revive block in that file.
 
 ```tmux
 set -g @revive-interval 60          # seconds between saves, 0 = only detach/shutdown
@@ -281,19 +291,19 @@ set -g @revive-claude-dirs '~/work/.claude'   # extra Claude config dirs
 
 ## Good to know
 
-- **`tmux kill-server` doesn't count as closing things.** To tmux it looks
-  just like the computer shutting down, so everything comes back next time.
-  To start fresh, close your sessions instead.
+- **`tmux kill-server` doesn't count as closing things.** As far as tmux can
+  tell, it looks just like the computer shutting down, so everything comes
+  back next time. If you want to start fresh, close your sessions instead.
 - **Reloading your tmux config** never reopens things a second time. Reopening
   only happens when tmux has just started. It never replaces a session you
   named, and it skips sessions that are already open.
-- **macOS** needs a newer bash; the installer gets it from Homebrew. macOS
-  has no warning before shutdown, so the last save is from your last detach,
-  or at most a minute old.
-- **Windows** stops WSL without warning when it shuts down, so the same
-  applies there.
+- **macOS** needs a newer bash, and the installer gets it from Homebrew. macOS
+  also gives no warning before shutdown, so the last save is from your last
+  detach, or at most a minute old.
+- **Windows** stops WSL without warning when it shuts down, so the same goes
+  for Windows.
 - **tmux-continuum:** if it's also set to restore automatically, turn one of
-  them off.
+  the two off.
 
 ## Under the hood
 
@@ -301,12 +311,12 @@ set -g @revive-claude-dirs '~/work/.claude'   # extra Claude config dirs
 
 Every running Claude Code process writes `<config dir>/sessions/<pid>.json`
 with its session ID, working directory, name and Remote Control link.
-tmux-revive walks each pane's processes, matches them to those files, and
+tmux-revive walks each pane's processes and matches them to those files. It
 checks the process start time too, so a file left behind by a crash can never
-point at the wrong process. It reads every `~/.claude*` config dir and sets
-`CLAUDE_CONFIG_DIR` again when a session used a non-default one.
+point at the wrong process. It reads every `~/.claude*` config dir, and it
+sets `CLAUDE_CONFIG_DIR` again when a session used a non-default one.
 
-When it reopens, the pane runs something like:
+When it reopens, the pane runs something like this:
 
 ```
 CLAUDE_CONFIG_DIR=~/.claude-brooke claude --resume 3caeeeb8-… --remote-control oa-work
@@ -314,10 +324,10 @@ CLAUDE_CONFIG_DIR=~/.claude-brooke claude --resume 3caeeeb8-… --remote-control
 
 It keeps flags like `--model`, `--permission-mode`, `--add-dir` and
 `--dangerously-skip-permissions`. It drops a prompt, `-p`, and an old
-`--continue`/`--resume`, so reopening never sends a prompt twice or splits
-the conversation. Commands run through your normal shell setup, so your PATH
-and version managers apply. When the program exits, you're left in a shell
-in the same folder.
+`--continue`/`--resume`, so reopening never sends a prompt twice or splits the
+conversation in two. Commands run through your normal shell setup, so your
+PATH and version managers still apply. When the program exits, you're left in
+a shell in the same folder.
 
 ### Other agents and programs
 
@@ -328,11 +338,11 @@ in the same folder.
 | Crush | exact session (`crush --session <id>`) | the one session in that project touched since the process started; else `--session` from its command line |
 | Gemini | latest session in that project | Gemini can't reopen a session by ID |
 
-When two copies of the same agent work in the same project and nothing ties
-one to its session, tmux-revive won't guess. That pane opens the agent's
-session picker (Codex, Cursor) or its most recent session (Crush), and
-`tmux-revive status` marks it "best guess". Codex and Crush need `sqlite3`
-installed for this; without it they fall back the same way.
+Sometimes two copies of the same agent are working in the same project, and
+nothing ties one of them to its session. tmux-revive won't guess. That pane
+opens the agent's session picker (Codex, Cursor) or its most recent session
+(Crush), and `tmux-revive status` marks it "best guess". Codex and Crush need
+`sqlite3` installed for this. Without it, they fall back the same way.
 
 These programs reopen with their arguments: `vim nvim man less tail top htop
 btop watch ssh mosh journalctl lazygit lazydocker yazi ranger k9s`. vim and
@@ -341,32 +351,33 @@ history back.
 
 ### Saving on shutdown and on close
 
-On Linux with systemd, tmux-revive asks the system to wait briefly before
+On Linux with systemd, tmux-revive asks the system to wait a moment before
 shutdown or sleep (a logind *delay* inhibitor). A save takes about 0.1 s, and
-the system allows up to 5 s.
+the system allows up to 5 s. Plenty of room.
 
 tmux normally quits the instant its last session closes, before it can tell
-anyone. To notice that you closed everything, tmux-revive turns tmux's
-`exit-empty` option off, saves an empty snapshot, then quits tmux itself. If
-you had already turned `exit-empty` off, tmux keeps running as you set it.
+anyone. That's a problem if you want to notice that someone closed
+everything. So tmux-revive turns tmux's `exit-empty` option off, saves an
+empty snapshot, then quits tmux itself. If you had already turned
+`exit-empty` off, tmux keeps running, just as you set it.
 
 ### What the installer changes
 
 - One marked block in your tmux config, and a few lines in `~/.bashrc` /
   `~/.zshrc` so `tmux attach` reopens everything after a restart.
-- A private copy of `jq` (checksummed) if you don't have one.
+- A private copy of `jq` (checksummed) if you don't already have one.
 - **Claude Code:** each `~/.claude*` config dir that has run Claude gets
   `Bash(agent-say:*)` in its `settings.json`, so sending doesn't ask for
-  permission, and a short note in its `CLAUDE.md` explaining what
+  permission. It also gets a short note in its `CLAUDE.md` explaining what
   `[agent-msg …]` messages are.
 - **Codex:** `~/.codex/rules/agent-say.rules` lets only `agent-say` out of
   Codex's sandbox. Without it, the sandbox blocks tmux with "Operation not
   permitted". The same note goes in `~/.codex/AGENTS.md`, telling Codex to
-  sign its messages `--from codex`. Restart any Codex session that was
-  already open.
+  sign its messages `--from codex`. Restart any Codex session that was already
+  open.
 
 Every file is backed up before its first change (`*.bak-revive-<time>`). A
-`settings.json` that isn't valid JSON is left alone with a warning.
+`settings.json` that isn't valid JSON is left alone, with a warning.
 `tmux-revive update` and `uninstall` keep all of this in step, and the
 installer's `--no-config` option skips it.
 
