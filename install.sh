@@ -78,7 +78,7 @@ uninstall() {
 		tmux set-hook -gu 'client-detached[77]' 2>/dev/null || true
 		pkill -f "$APP/scripts/daemon.sh" 2>/dev/null || true
 	fi
-	rm -f "$BIN/tmux-revive"
+	rm -f "$BIN/tmux-revive" "$BIN/agent-say"
 	rm -rf "$APP"
 	if [ "${1:-}" = purge ]; then
 		rm -rf "$DATA"
@@ -174,9 +174,10 @@ rm -rf "$APP.old"
 [ -d "$APP" ] && mv "$APP" "$APP.old"
 mv "$tmp/src" "$APP"
 rm -rf "$APP.old"
-chmod +x "$APP/revive.tmux" "$APP/scripts/"*.sh "$APP/bin/tmux-revive"
+chmod +x "$APP/revive.tmux" "$APP/scripts/"*.sh "$APP/bin/tmux-revive" "$APP/bin/agent-say"
 mkdir -p "$BIN"
 ln -sf "$APP/bin/tmux-revive" "$BIN/tmux-revive"
+ln -sf "$APP/bin/agent-say" "$BIN/agent-say"
 say "installed to $APP"
 
 # ------------------------------------------------------------ tmux config

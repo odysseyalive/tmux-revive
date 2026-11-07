@@ -5,6 +5,9 @@ and program comes back. Claude Code panes resume **the exact conversation**
 they were in, with their Remote Control link restored. Codex, Cursor Agent
 and Crush panes resume their exact sessions too.
 
+It also ships `agent-say`, which lets those agents message each other across
+panes, accounts and machines. See [Agents talking to each other](#agents-talking-to-each-other).
+
 ## Install
 
 Linux, macOS, WSL:
@@ -93,6 +96,80 @@ needs `sqlite3`; without it those panes fall back the same way.
 Other programs: `vim nvim man less tail top htop btop watch ssh mosh journalctl
 lazygit lazydocker yazi ranger k9s` are relaunched with their arguments. nvim
 and vim use `Session.vim` when one exists. Shell panes get their scrollback back.
+
+## Agents talking to each other
+
+`agent-say` lets Claude Code, Codex, or any agent in a tmux pane send a
+message to any other. It works when the two are logged into different
+accounts, and it works with an agent on another machine over ssh. There's no
+Remote Control, no server and no MCP. A message is typed into the other pane
+the way you would type it, so the agent there reads it like any other prompt.
+
+```sh
+agent-say name claude      # once per pane: give it a name (before or after starting the agent)
+agent-say codex "review parser.py and tell me what breaks"
+agent-say list             # panes and their names
+agent-say read 5 claude    # the last 5 messages sent to claude
+```
+
+The receiving agent sees one line, including the exact command to answer with:
+
+```
+[agent-msg from=claude 04:24Z] review parser.py and tell me what breaks -- To answer, run the shell command: agent-say --from codex claude "<your reply>"
+```
+
+Every message is also saved in a mailbox file
+(`~/.local/state/agent-say/mailbox.md`). Long or multi-line messages
+(`agent-say codex - < notes.md`) show up in the pane as a one-line notice
+pointing at the mailbox. Sends to the same pane take turns, so two messages
+sent at once can't run together into one prompt.
+
+**Claude Code** works as is. Allow `Bash(agent-say:*)` so it doesn't ask
+every time.
+
+**Codex** needs two things:
+
+1. Its sandbox blocks the tmux socket ("Operation not permitted"). This
+   [rule](https://developers.openai.com/codex/rules) lets only `agent-say`
+   run outside the sandbox. Save it as `~/.codex/rules/agent-say.rules` and
+   restart Codex:
+
+   ```python
+   prefix_rule(pattern = ["agent-say"], decision = "allow")
+   ```
+
+2. Tell it what these messages are, in `~/.codex/AGENTS.md`. Without this,
+   Codex tends to answer in its own pane, where the sender never sees it:
+
+   ```md
+   A prompt starting with `[agent-msg from=NAME ...]` was sent by another AI
+   agent in a tmux pane, not typed by the user, and the sender cannot see your
+   chat output. Answer it by running the `agent-say` command the message gives
+   you. Reply only when there is something to say, never just to acknowledge.
+   ```
+
+Codex runs its commands in a shared background process that isn't inside any
+pane, so it can't work out which pane it's in. Replies already contain the
+right `--from`. When Codex starts a conversation itself, it has to pass
+`--from codex`.
+
+**Different accounts:** the two agents only need to run on the same tmux
+server. Each keeps its own login (`CLAUDE_CONFIG_DIR`, Codex auth, and so on).
+
+**Over ssh:** `agent-say codex@devbox "..."` runs `agent-say` on `devbox`
+over ssh (key auth, no password prompt) and sends the message as data, so
+quotes and `$(...)` arrive unchanged. `devbox` needs `agent-say` in
+`~/.local/bin` or on its PATH; running the installer there does that. Replies
+come back to `claude@yourhost`, which only works if `devbox` can ssh back to
+you. If it can't, ssh into one machine and run both agents in its tmux, which
+needs no ssh setup at all.
+
+Be careful with two things. Anything that can run `agent-say` can type into
+your agents, so treat it like shell access. And two agents that answer every
+message will keep going forever, so say when no reply is needed. Settings:
+`AGENT_SAY_ENTER_DELAY` (0.4 s between typing and Enter; raise it if a busy
+agent leaves a message unsent), `AGENT_SAY_INLINE_MAX` (300 characters),
+`AGENT_SAY_MAILBOX`, `AGENT_SAY_SSH`, `AGENT_SAY_REMOTE_CMD`, `AGENT_SAY_HOST`.
 
 ## Options
 

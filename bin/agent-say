@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# agent-say: let agent CLIs in tmux panes (Claude Code, Codex, ...) message each other,
+# on one machine or across machines over ssh. Works across accounts: it only types into panes.
+#
+#   agent-say name <name>              tag the current pane (e.g. claude, codex)
+#   agent-say list                     show tagged panes
+#   agent-say <to> <message...>        send; <to> is a name, a %pane-id, or name@ssh-host
+#   agent-say <to> -                   send the message read from stdin
+#   agent-say read [n] [name]          last n mailbox entries (default 20), optionally only to <name>
+#
+# Options before <to>: --from <label> overrides the sender label.
+# Delivery: tmux send-keys -l (literal), then a separate Enter after a short delay, which is
+# how a human paste+submit looks to a TUI. Every message is also appended to the receiving
+# machine's mailbox file, so long text is read from there and nothing is lost if a submit misfires.
+# Over ssh the remote machine needs agent-say in ~/.local/bin or on its PATH (or set AGENT_SAY_REMOTE_CMD).
+set -euo pipefail
+
+MAILBOX="${AGENT_SAY_MAILBOX:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-say/mailbox.md}"
+ENTER_DELAY="${AGENT_SAY_ENTER_DELAY:-0.4}"
+INLINE_MAX="${AGENT_SAY_INLINE_MAX:-300}"
+REMOTE_CMD="${AGENT_SAY_REMOTE_CMD:-PATH=\"\$HOME/.local/bin:\$PATH\" agent-say}"
+SSH="${AGENT_SAY_SSH:-ssh}"
+
+die() { echo "agent-say: $*" >&2; exit 1; }
+
+# Pane of the caller: walk up the process tree until we reach a pane's shell.
+# $TMUX_PANE is only a fallback: Codex runs commands in a shared app-server daemon whose
+# $TMUX_PANE belongs to whichever pane started the daemon, so there it would name the
+# wrong pane. Inside that daemon we return nothing and the caller must pass --from.
+self_pane() {
+	if [[ -n "${AGENT_SAY_PANE:-}" ]]; then echo "$AGENT_SAY_PANE"; return; fi
+	local panes pid=$$ hit
+	panes="$(tmux list-panes -a -F '#{pane_pid} #{pane_id}' 2>/dev/null)" || return 0
+	while [[ -n "$pid" && "$pid" -gt 1 ]]; do
+		hit="$(awk -v p="$pid" '$1==p {print $2; exit}' <<<"$panes")"
+		if [[ -n "$hit" ]]; then echo "$hit"; return; fi
+		[[ "$(ps -o args= -p "$pid" 2>/dev/null)" == *codex*app-server* ]] && return 0
+		pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+	done
+	echo "${TMUX_PANE:-}"
+}
+
+name_of() { tmux display-message -p -t "$1" '#{@agent}' 2>/dev/null; }
+
+resolve() {  # name or %pane-id -> pane id on this machine
+	local t="$1"
+	if [[ "$t" == %* ]]; then echo "$t"; return; fi
+	tmux list-panes -a -F '#{pane_id} #{@agent}' | awk -v n="$t" '$2==n {print $1; exit}'
+}
+
+from=""
+if [[ "${1:-}" == --from ]]; then from="${2:-}"; shift 2 || die "--from needs a value"; fi
+
+cmd="${1:-}"; [[ -n "$cmd" ]] || { sed -n '2,14p' "$0"; exit 1; }
+
+case "$cmd" in
+	name)
+		[[ -n "${2:-}" ]] || die "usage: agent-say name <name>"
+		p="$(self_pane)"; [[ -n "$p" ]] || die "not in a tmux pane (set AGENT_SAY_PANE)"
+		tmux set-option -p -t "$p" @agent "$2"
+		echo "pane $p is now '$2'" ;;
+	list)
+		tmux list-panes -a -F '#{pane_id} #{?@agent,#{@agent},-} #{session_name}:#{window_index}.#{pane_index} #{pane_current_command}' ;;
+	read)
+		[[ -f "$MAILBOX" ]] || { echo "(mailbox empty)"; exit 0; }
+		# Optional name: only messages addressed to it.
+		awk -v n="${2:-20}" -v who="${3:-}" '
+			/^## /{keep = (who == "" || index($0, "-> " who " ") > 0); if (keep) c++}
+			keep {buf[c] = buf[c] $0 "\n"}
+			END{s = c - n + 1; if (s < 1) s = 1; for (i = s; i <= c; i++) printf "%s", buf[i]}' "$MAILBOX" ;;
+	*)
+		to="$cmd"; shift; [[ $# -gt 0 ]] || die "usage: agent-say <to> <message...>"
+		if [[ "$*" == - ]]; then msg="$(cat)"; else msg="$*"; fi
+		[[ -n "$msg" ]] || die "empty message"
+
+		if [[ -z "$from" ]]; then
+			me="$(self_pane)"; from="$( [[ -n "$me" ]] && name_of "$me" || true)"; from="${from:-${me:-unknown}}"
+		fi
+
+		if [[ "$to" == *@* ]]; then
+			# Remote: hand the message to agent-say on that host. The message travels on stdin,
+			# so no shell quoting of its content is needed. The sender becomes name@thishost,
+			# which is a valid reply address if the remote can ssh back here.
+			host="${to#*@}"; name="${to%@*}"
+			[[ "$from" == *@* ]] || from="$from@${AGENT_SAY_HOST:-$(hostname -s)}"
+			printf '%s' "$msg" | $SSH -o BatchMode=yes "$host" \
+				"$REMOTE_CMD --from $(printf %q "$from") $(printf %q "$name") -"
+			exit
+		fi
+
+		target="$(resolve "$to")"; [[ -n "$target" ]] || die "no pane named '$to' (see: agent-say list)"
+		ts="$(date -u +%H:%MZ)"
+
+		mkdir -p "$(dirname "$MAILBOX")"
+		printf '## [%s -> %s %s]\n%s\n\n' "$from" "$to" "$(date -u +%FT%TZ)" "$msg" >> "$MAILBOX"
+
+		# Tell the receiver its own name: Codex runs commands in a shared daemon outside the
+		# pane, so it cannot work out which pane it is in when it replies.
+		you="$(name_of "$target")"; you="${you:-$target}"
+		reply="To answer, run the shell command: agent-say --from $you $from \"<your reply>\""
+		if (( ${#msg} > INLINE_MAX )) || [[ "$msg" == *$'\n'* ]]; then
+			line="[agent-msg from=$from $ts] Long message, read it by running: agent-say read 1 $you. $reply"
+		else
+			line="[agent-msg from=$from $ts] $msg -- $reply"
+		fi
+
+		# One sender at a time per pane, or two messages typed at once merge into one prompt.
+		# mkdir is atomic everywhere (macOS has no flock).
+		lock="${TMPDIR:-/tmp}/agent-say-$(id -u)-${target#%}.lock"
+		got=""
+		for _ in $(seq 1 50); do mkdir "$lock" 2>/dev/null && { got=1; break; }; sleep 0.1; done
+		[[ -n "$got" ]] || die "pane $target is busy (stale lock? remove $lock)"
+		trap 'rmdir "$lock" 2>/dev/null' EXIT
+
+		tmux send-keys -t "$target" -l -- "$line"
+		sleep "$ENTER_DELAY"
+		tmux send-keys -t "$target" Enter
+		echo "sent to $to ($target)" ;;
+esac
