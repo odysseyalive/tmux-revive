@@ -55,7 +55,7 @@ self_pane() {
 	while [[ -n "$pid" && "$pid" -gt 1 ]]; do
 		hit="$(awk -v p="$pid" '$1==p {print $2; exit}' <<<"$panes")"
 		if [[ -n "$hit" ]]; then echo "$hit"; return; fi
-		if [[ "$(ps -o args= -p "$pid" 2>/dev/null)" == *codex*app-server* ]]; then
+		if [[ "$(ps -ww -o args= -p "$pid" 2>/dev/null)" == *codex*app-server* ]]; then
 			codex_pane_here
 			return 0
 		fi
@@ -82,7 +82,7 @@ pane_agent_pid() {
 	while read -r pid ppid args; do
 		kids[$ppid]+="$pid "
 		argv[$pid]=$args
-	done < <(ps -eo pid=,ppid=,args=)
+	done < <(ps -ww -eo pid=,ppid=,args=)
 	local queue=("$root")
 	while ((${#queue[@]})); do
 		pid=${queue[0]}; queue=("${queue[@]:1}")
@@ -272,7 +272,7 @@ link_running() {
 		[[ -e "$d/lock" ]] && ! flock -n "$d/lock" true
 		return
 	fi
-	pid="$(cat "$d/pid" 2>/dev/null)" && [[ -n "$pid" && "$(ps -o args= -p "$pid" 2>/dev/null)" == *"_poll $1"* ]]
+	pid="$(cat "$d/pid" 2>/dev/null)" && [[ -n "$pid" && "$(ps -ww -o args= -p "$pid" 2>/dev/null)" == *"_poll $1"* ]]
 }
 
 # Where else a name lives: "name@host" for each linked machine that has a pane by that name.
@@ -487,7 +487,7 @@ case "$cmd" in
 		[[ -d "$d" ]] || die "no link to $2"
 		rm -f "$d/on"
 		pid="$(cat "$d/pid" 2>/dev/null || true)"
-		[[ -n "$pid" && "$(ps -o args= -p "$pid" 2>/dev/null)" == *"_poll $2"* ]] && kill "$pid" 2>/dev/null
+		[[ -n "$pid" && "$(ps -ww -o args= -p "$pid" 2>/dev/null)" == *"_poll $2"* ]] && kill "$pid" 2>/dev/null
 		# Tell the other side, so what it still holds for us is marked NOT DELIVERED there
 		# instead of waiting for a check-in that won't come.
 		echo B | timeout 15 $SSH "${SSH_OPTS[@]}" "$2" "$REMOTE_CMD _sync $(printf %q "$LABEL")" >/dev/null 2>&1 ||

@@ -94,7 +94,7 @@ read_argv() {
 		mapfile -d '' -t ARGV <"/proc/$1/cmdline"
 	else
 		# shellcheck disable=SC2207
-		ARGV=($(ps -o args= -p "$1" 2>/dev/null))
+		ARGV=($(ps -ww -o args= -p "$1" 2>/dev/null))
 	fi
 }
 
