@@ -349,32 +349,50 @@ check "and the other side marks what it held as NOT DELIVERED" "grep -q 'NOT DEL
 echo "a link to a server that takes a password"
 # pwbox is the same machine, behind a fake ssh that refuses BatchMode until a login (an ssh
 # with ControlMaster=yes, its password typed) has left a master open: the marker file.
+# It presents the key named in pw.presented and checks it as ssh would: a login with
+# StrictHostKeyChecking=yes only against its UserKnownHostsFile (without: any key is taken,
+# as a careless login would), a BatchMode call against known_hosts. Each password prompt
+# reached is counted in pw.prompts.
 cat >"$T/bin/pwssh" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>$T/pwssh.log
 m=$T/pw.master
+fp=\$(ssh-keygen -lf "\$(cat $T/pw.presented)" | awk '{print \$2}')
+holds() { [[ -r \$1 ]] && ssh-keygen -lf "\$1" 2>/dev/null | awk '{print \$2}' | grep -qxF "\$fp"; }
 case " \$* " in
 *" -O check "*) [[ -e \$m ]]; exit ;;
 *" -O exit "*) rm -f \$m; exit 0 ;;
 *" -G "*) exit 0 ;;
 *" ControlMaster=yes "*)
+	if [[ " \$* " == *" StrictHostKeyChecking=yes "* ]]; then
+		holds "\$(sed -n 's/.*UserKnownHostsFile=\([^ ]*\).*/\1/p' <<<"\$*")" || { echo 'Host key verification failed.' >&2; exit 255; }
+	fi
+	echo prompt >>$T/pw.prompts
 	IFS= read -rsp 'pwbox password: ' pw; echo
 	[[ \$pw == hunter2 ]] && { touch \$m; exit 0; }
 	echo 'Permission denied, please try again.' >&2; exit 255 ;;
 esac
-[[ -e \$m ]] || { echo 'me@pwbox: Permission denied (publickey,password).' >&2; exit 255; }
+if [[ ! -e \$m ]]; then
+	holds $T/known_hosts || { echo 'Host key verification failed.' >&2; exit 255; }
+	echo 'me@pwbox: Permission denied (publickey,password).' >&2; exit 255
+fi
 exec $T/bin/fakessh "\$@"
 EOF
 chmod +x "$T/bin/pwssh"
+echo "$T/hostkey2.pub" >"$T/pw.presented"
 printf 'pwbox %s\n' "$(cut -d' ' -f1,2 "$T/hostkey2.pub")" >>"$T/known_hosts"
+prompts() { if [[ -f $T/pw.prompts ]]; then wc -l <"$T/pw.prompts"; else echo 0; fi; }
 pw() { AGENT_SAY_SSH=$T/bin/pwssh AGENT_SAY_LOGIN_RETRY=600 say "$@"; }
 pl=$(dirname "$AGENT_SAY_MAILBOX")/links/pwbox
 batch_tries() { grep -c 'BatchMode=yes' "$T/pwssh.log"; }
 out=$(pw link pwbox --yes 2>&1 </dev/null)
 check "off a terminal, it isn't linked and says it needs a login ($out)" "[[ \$out == *'pwbox needs a login'* && ! -e $pl/on ]] && ! pgrep -f 'agent-say _poll pwbox' >/dev/null"
-pw _login pwbox <<<wrong >/dev/null 2>&1
-check "a wrong password opens no login" "! pw _login pwbox --check && [[ ! -e $T/pw.master ]]"
+# The panel logs in with the key you confirmed there; with none confirmed, nothing is asked.
 pw _login pwbox <<<hunter2 >/dev/null 2>&1
+check "with no host key confirmed, no login is tried at all" "[[ \$(prompts) == 0 && ! -e $T/pw.master ]]"
+pw _login pwbox "$fp2 (ED25519)" <<<wrong >/dev/null 2>&1
+check "a wrong password opens no login" "! pw _login pwbox --check && [[ ! -e $T/pw.master && \$(prompts) == 1 ]]"
+pw _login pwbox "$fp2 (ED25519)" <<<hunter2 >/dev/null 2>&1
 check "the right one, typed into ssh, leaves a login open" "pw _login pwbox --check"
 out=$(pw link pwbox --yes 2>&1 </dev/null)
 check "the link is then made over that login, with no prompt ($out)" "[[ \$out == *'linked to pwbox'*'Its panes: codex'* ]]"
@@ -393,6 +411,26 @@ for _ in $(seq 40); do [[ -e $pl/login ]] && break; sleep 0.25; done
 out=$(printf 'hunter2\n' | AGENT_SAY_SSH=$T/bin/pwssh script -qec "$ROOT/bin/agent-say link pwbox" /dev/null 2>&1)
 check "on a terminal, link logs in with ssh's own prompt ($out)" "[[ \$out == *'pwbox password:'*'linked to pwbox'* ]] && pw _login pwbox --check"
 check "a host with a key never got a login: no ssh with ControlMaster=yes" "grep -c ' devbox ' $T/ssh.log >/dev/null && ! grep -q 'ControlMaster=yes' $T/ssh.log"
+# Another computer answering to pwbox, with a key of its own: it never gets to ask for the
+# password, however a login is started, and the link says it's a key problem.
+ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey3"
+echo "$T/hostkey3.pub" >"$T/pw.presented"
+rm -f "$T/pw.master"
+p=$(prompts)
+pw _login pwbox <<<hunter2 >/dev/null 2>&1
+pw _login pwbox "$fp2 (ED25519)" <<<hunter2 >/dev/null 2>&1
+check "a login to a computer with a key you didn't confirm stops before the password ($p prompts)" "[[ \$(prompts) == $p && ! -e $T/pw.master ]]"
+out=$(printf 'hunter2\n' | AGENT_SAY_SSH=$T/bin/pwssh script -qec "$ROOT/bin/agent-say link pwbox" /dev/null 2>&1)
+check "and so does link on a terminal ($out)" "[[ \$(prompts) == $p && \$out != *'password:'* && \$out == *'Host key verification failed'* ]]"
+check "the link shows a host-key error, not 'needs login'" "for _ in \$(seq 40); do grep -q 'Host key verification failed' $pl/error 2>/dev/null && break; sleep 0.25; done; grep -q 'Host key verification failed' $pl/error && [[ ! -e $pl/login ]] && ! say link | grep -q 'needs login'"
+# Its own key back, logged in again; then its known_hosts entry goes missing.
+echo "$T/hostkey2.pub" >"$T/pw.presented"
+pw _login pwbox <<<hunter2 >/dev/null 2>&1
+grep -v '^pwbox ' "$T/known_hosts" >"$T/known_hosts.new" && mv "$T/known_hosts.new" "$T/known_hosts"
+check "a link whose host key went from known_hosts stops on a key error, not 'needs login'" "for _ in \$(seq 40); do grep -q 'host key changed' $pl/error 2>/dev/null && break; sleep 0.25; done; grep -q 'host key changed' $pl/error && [[ ! -e $pl/login ]]"
+p=$(prompts); rm -f "$T/pw.master"
+pw _login pwbox <<<hunter2 >/dev/null 2>&1
+check "and no login is asked for against a key that isn't there" "[[ \$(prompts) == $p && ! -e $T/pw.master ]]"
 pw unlink pwbox >/dev/null 2>&1
 check "unlink closes the login with it" "[[ ! -e $T/pw.master ]] && ! pgrep -f 'agent-say _poll pwbox' >/dev/null"
 "$T/rbin/tmux" kill-server

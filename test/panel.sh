@@ -866,23 +866,35 @@ check "the panel takes the screens it fetched with it" "! ls $st/panel/ 2>/dev/n
 echo "a server that takes a password"
 # pw.example is the same far computer behind a fake ssh that refuses BatchMode until a login
 # (an ssh with ControlMaster=yes, its password typed) has left a master open: the marker file.
-# Other hosts go to the plain fake ssh, as before.
+# Other hosts go to the plain fake ssh, as before. It presents the key named in pw.presented
+# and checks it as ssh would: a login with StrictHostKeyChecking=yes only against its
+# UserKnownHostsFile, a BatchMode call against known_hosts. Password prompts reached are
+# counted in pw.prompts.
 {
 	printf '#!/bin/bash\nT=%q\n' "$T"
 	cat <<'EOF'
 echo "$*" >>"$T/pwssh.log"
 [[ " $* " == *" pw.example "* ]] || exec "$T/fakessh" "$@"
 m=$T/pw.master
+fp=$(ssh-keygen -lf "$(cat "$T/pw.presented")" | awk '{print $2}')
+holds() { [[ -r $1 ]] && ssh-keygen -lf "$1" 2>/dev/null | awk '{print $2}' | grep -qxF "$fp"; }
 case " $* " in
 *" -O check "*) [[ -e $m ]]; exit ;;
 *" -O exit "*) rm -f "$m"; exit 0 ;;
 *" -G "*) exit 0 ;;
 *" ControlMaster=yes "*)
+	if [[ " $* " == *" StrictHostKeyChecking=yes "* ]]; then
+		holds "$(sed -n 's/.*UserKnownHostsFile=\([^ ]*\).*/\1/p' <<<"$*")" || { echo 'Host key verification failed.' >&2; exit 255; }
+	fi
+	echo prompt >>"$T/pw.prompts"
 	IFS= read -rsp 'pw.example password: ' pw; echo
 	[[ $pw == hunter2 ]] && { touch "$m"; exit 0; }
 	echo 'Permission denied, please try again.' >&2; exit 255 ;;
 esac
-[[ -e $m ]] || { echo 'me@pw.example: Permission denied (publickey,password).' >&2; exit 255; }
+if [[ ! -e $m ]]; then
+	holds "$T/known_hosts" || { echo 'Host key verification failed.' >&2; exit 255; }
+	echo 'me@pw.example: Permission denied (publickey,password).' >&2; exit 255
+fi
 cmd=${!#}
 [[ $cmd == *' agent-say _sync '* ]] &&
 	exec env -u TMUX -u TMUX_PANE HOME="$T/rhome" PATH="$T/rbin:$PATH" AGENT_SAY_MAILBOX="$T/rstate/mailbox.md" bash -c "$cmd"
@@ -890,9 +902,14 @@ exec "$T/fakessh" "$@"
 EOF
 } >"$T/pwssh"
 chmod +x "$T/pwssh"
+echo "$T/hostkey.pub" >"$T/pw.presented"
+prompts() { if [[ -f $T/pw.prompts ]]; then wc -l <"$T/pw.prompts"; else echo 0; fi; }
+# ssh-keyscan for pw.example answers with its real key (whoever later answers to its name).
+printf '#!/bin/sh\n[ "$(eval echo \\${$#})" = pw.example ] && echo "pw.example %s"\nexit 0\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >"$T/pwscan"
+chmod +x "$T/pwscan"
 printf 'pw.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >>"$T/known_hosts"
 pwl=$st/links/pw.example
-tm new-window -d -t work -n pwpanel "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n pwpanel "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
 tm new-window -d -t work -n pwssh "bash -c 'exec -a \"ssh pw.example\" sleep 300'"
 pws() { tm capture-pane -p -t work:pwpanel; }
 wait_pw() { for _ in $(seq 1 ${2:-40}); do pws | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
@@ -927,6 +944,32 @@ tm send-keys -t work:pwpanel Enter
 check "and picking it opens the login again" "login_typed hunter2"
 check "after which the link picks up by itself" "wait_pw 'logged in to pw.example' 50 && for _ in \$(seq 1 50); do [[ ! -e $pwl/login ]] && break; sleep 0.2; done; [[ ! -e $pwl/login ]] && wait_pw 'pw.example · linked' 75"
 check "a host with a key (far.example) never got a login" "! grep 'ControlMaster=yes' $T/pwssh.log | grep -vq ' pw.example' && [[ ! -e $st/links/far.example/login ]]"
+# Another computer answers to pw.example, with a key of its own: a key problem, not a login.
+ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey9"
+echo "$T/hostkey9.pub" >"$T/pw.presented"
+p=$(prompts); rm -f "$T/pw.master"
+check "a link answered by another key shows the key error, not 'needs login'" "wait_pw 'pw.example Host key verification failed' 75 && ! pws | grep -q 'pw.example · needs login' && [[ ! -e $pwl/login && \$(prompts) == $p ]]"
+# A first link, pw.example not in known_hosts yet: you confirm the key ssh-keyscan shows, and
+# the login then goes only to a computer holding that key.
+tm send-keys -t work:pwpanel q
+AGENT_SAY_SSH=$T/pwssh "$ROOT/bin/agent-say" unlink pw.example >/dev/null 2>&1
+grep -v '^pw.example ' "$T/known_hosts" >"$T/known_hosts.new" && mv "$T/known_hosts.new" "$T/known_hosts"
+tm kill-window -t work:pwpanel 2>/dev/null
+tm new-window -d -t work -n pwpanel "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+login_win() { tm list-windows -t work -F '#{window_id} #{window_name}' | awk '$2 == "login" && $3 == "pw.example" {print $1}'; }
+link_pw() {
+	wait_pw 'pw.example · ssh in' 50 >/dev/null
+	tm send-keys -t work:pwpanel l; wait_pw 'LINK AGENTS ON' >/dev/null; tm send-keys -t work:pwpanel Enter
+	wait_pw 'HOST KEY OF pw.example' >/dev/null; tm send-keys -t work:pwpanel 2
+}
+link_pw
+check "with another key presented, the login stops before the password" "for _ in \$(seq 1 50); do w=\$(login_win); [[ -n \$w ]] && tm capture-pane -p -t \$w | grep -q 'Press Enter' && break; sleep 0.2; done; tm capture-pane -p -t \$w | grep -q 'Host key verification failed' && [[ \$(prompts) == $p && ! -e $T/pw.master ]]"
+tm send-keys -t "$(login_win)" Enter
+check "and nothing is linked" "wait_pw 'not logged in to pw.example; not linked' 50 && [[ ! -e $pwl/on ]]"
+echo "$T/hostkey.pub" >"$T/pw.presented"
+link_pw
+check "with the key you confirmed, ssh asks for the password" "login_typed hunter2 && [[ \$(prompts) == \$(($p + 1)) ]]"
+check "the link is made, and known_hosts has that key now" "wait_pw 'linked to pw.example' 75 && grep -q '^pw.example ssh-ed25519' $T/known_hosts"
 tm send-keys -t work:pwpanel q
 AGENT_SAY_SSH=$T/pwssh "$ROOT/bin/agent-say" unlink pw.example >/dev/null 2>&1
 tm kill-window -t work:pwssh 2>/dev/null

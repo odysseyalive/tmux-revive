@@ -318,22 +318,67 @@ ssh_to() { # ssh_to HOST REMOTE-COMMAND (stdin passes through)
 # as the master on the same socket, kept until it drops (ControlPersist=yes; the keepalives
 # notice a dead network). Every BatchMode call then rides it with no prompt. agent-say never
 # sees the password: ssh reads it from the terminal itself.
+#
+# A password goes only to a computer holding a key you confirmed: that login's ssh checks the
+# host against a known_hosts file of its own (PIN) with those keys and nothing else, strictly,
+# so anything else is turned away before ssh asks for a password. No key confirmed, no login.
+FP_RE='^SHA256:[A-Za-z0-9+/=]{1,64} \([A-Z0-9-]{1,16}\)$'
+PIN_ALIAS=agent-say-confirmed # the name ssh looks keys up by in PIN, whatever HOST resolves to
 master_up() { $SSH -o "$CONTROL" -O check "$1" >/dev/null 2>&1 </dev/null; }
-ssh_login() { # ssh_login HOST
+# pin_keys HOST FINGERPRINTS: the key lines (type key) of HOST's keys whose fingerprints are
+# given, one per line. They come from known_hosts or, failing that, ssh-keyscan; either way a
+# key is kept only if its fingerprint is one confirmed, so whatever answers can't add its own.
+pin_keys() {
+	local src t k fp got=""
+	kh_find "$1"
+	for src in kh scan; do
+		while read -r _ t k _; do
+			[[ -n $t && -n $k && $t != \#* ]] || continue
+			fp="$(ssh-keygen -lf - <<<"$PIN_ALIAS $t $k" 2>/dev/null | awk '{print $2, $NF}')"
+			[[ -n $fp ]] && grep -qxF -- "$fp" <<<"$2" && { echo "$t $k"; got=1; }
+		done < <(if [[ $src == kh ]]; then
+			for f in "${KH_FILES[@]}"; do [[ -r $f ]] && ssh-keygen -F "$KH_KEY" -f "$f" 2>/dev/null; done | grep -v '^[#@]'
+		else
+			${AGENT_SAY_KEYSCAN:-ssh-keyscan} -T 5 -p "$KH_PORT" -- "$KH_NAME" 2>/dev/null </dev/null | grep -v '^[#@]'
+		fi | sort -u)
+		[[ -n $got ]] && return 0
+	done
+	return 1
+}
+ssh_login() { # ssh_login HOST FINGERPRINTS (one per line: the keys you confirmed for it)
+	local lines pin rc=0
 	[[ "$1" != -* ]] || die "not a host: $1"
 	mkdir -p "$STATE"
 	master_up "$1" && return 0
+	[[ -n ${2:-} ]] || { echo "agent-say: no host key of $1 was confirmed, so it isn't logged into (link it again to see its key)" >&2; return 1; }
+	lines="$(pin_keys "$1" "$2" | sort -u)" ||
+		{ echo "agent-say: none of $1's keys is one you confirmed; not logging in (agent-say link $1 shows its key)" >&2; return 1; }
+	pin="$(mktemp "$STATE/pin.XXXXXX")"
+	sed "s/^/$PIN_ALIAS /" <<<"$lines" >"$pin"
 	$SSH -o BatchMode=no -o ConnectTimeout=10 -o ControlMaster=yes -o "$CONTROL" -o ControlPersist=yes \
-		-o ServerAliveInterval=30 -o ServerAliveCountMax=3 -N -f "$1" || return
+		-o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+		-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$pin" -o GlobalKnownHostsFile=/dev/null \
+		-o HostKeyAlias=$PIN_ALIAS -o CheckHostIP=no -o UpdateHostKeys=no -N -f "$1" || rc=$?
+	rm -f "$pin"
+	((rc == 0)) || return $rc
+	# A first login: the key goes into known_hosts, as ssh's own first login would have put it,
+	# so the link's key checks have it to look at.
+	kh_find "$1"
+	if [[ -z "$(kh_keys)" ]]; then
+		mkdir -p "$(dirname "${KH_FILES[0]}")"
+		sed "s/^/$KH_KEY /" <<<"$lines" >>"${KH_FILES[0]}"
+	fi
 	rm -f "$STATE/links/$1/login"
 }
 # Did ssh fail at logging in, not at reaching the host? needs_login HOST STATUS STDERR-FILE.
-# Both fail with 255; what ssh said tells them apart: a refused login, or a host key it would
-# have asked to accept (one not in known_hosts at all; a changed key is never this).
+# Both fail with 255; what ssh said tells them apart: a refused login, or, for a host never
+# linked, a host key ssh would have asked to accept (none in known_hosts). For a link, a host
+# key ssh didn't take is a key problem, never a login to ask for.
 needs_login() {
 	(($2 == 255)) || return 1
 	grep -qE 'Permission denied|Too many authentication failures' "$3" 2>/dev/null && return 0
 	grep -q 'Host key verification failed' "$3" 2>/dev/null || return 1
+	[[ ! -s "$STATE/links/$1/fingerprint" ]] || return 1
 	kh_find "$1"
 	[[ -z "$(kh_keys)" ]]
 }
@@ -396,8 +441,11 @@ host_keys() {
 }
 # Has the key changed from the one confirmed? Only if one confirmed is gone: ssh adds a host's
 # other keys to known_hosts by itself (UpdateHostKeys), and that is no change of computer.
+# A key was confirmed and none is found now: that is a change too (the entry went from
+# known_hosts), not a reason to trust whatever answers next.
 keys_changed() { # keys_changed CONFIRMED NOW
-	[[ -n $1 && -n $2 ]] || return 1
+	[[ -n $1 ]] || return 1
+	[[ -n $2 ]] || return 0
 	[[ -n "$(grep -vxF -f <(printf '%s\n' "$2") <<<"$1")" ]]
 }
 
@@ -652,7 +700,9 @@ case "$cmd" in
 		# link's ssh connections check known_hosts on their own; this makes you look at it once.
 		keys="$(host_keys "$host" scan)"
 		was="$(cat "$d/fingerprint" 2>/dev/null || true)"
+		pins=$was # the keys a password may go to: the ones confirmed, now or when it was linked
 		if [[ ! -f "$d/fingerprint" ]] || [[ -n $keys && -z $was ]] || keys_changed "$was" "$keys"; then
+			pins=$keys
 			if [[ -n $keys ]]; then
 				echo "$host's host key:"; sed 's/^/  /' <<<"$keys"
 			else
@@ -677,7 +727,7 @@ case "$cmd" in
 			rm -f "$d/check.err"
 			[[ -t 0 ]] || die "$host needs a login (a password, or its host key accepted): run agent-say link $host on a terminal, or press L in the panel"
 			echo "$host asks for a password: ssh asks you for it now, once; the link keeps that connection open."
-			ssh_login "$host" || die "not logged in to $host; not linked"
+			ssh_login "$host" "$pins" || die "not logged in to $host; not linked"
 			rc=0; link_check || rc=$?
 		fi
 		if ((rc)); then
@@ -687,7 +737,8 @@ case "$cmd" in
 		rm -f "$d/check.err"
 		# The key ssh had for it just now, if known_hosts has one by now (a first ssh adds it).
 		kh_find "$host"; now="$(kh_keys)"
-		keys_changed "$now" "$keys" && die "$host's host key changed while linking; not linked (run it again to see the new one)"
+		# (Nothing to compare when no key was found to confirm and you linked it anyway.)
+		[[ -n $keys ]] && keys_changed "$now" "$keys" && die "$host's host key changed while linking; not linked (run it again to see the new one)"
 		printf '%s\n' "${now:-$keys}" | sed '/^$/d' >"$d/fingerprint.new" && mv "$d/fingerprint.new" "$d/fingerprint"
 		case $ro in on) touch "$d/read-only" ;; off) rm -f "$d/read-only" ;; esac
 		if [[ -n $set_allow ]]; then
@@ -724,15 +775,24 @@ case "$cmd" in
 		echo ;;
 	_login)
 		# The panel's L for a host that wants a password, run in a popup over the panel: ssh's own
-		# prompts, typed straight into ssh. --check: is a login open for it?
-		valid_host "${2:-}" || die "usage: agent-say _login <ssh-host> [--check]"
+		# prompts, typed straight into ssh. --check: is a login open for it? The keys a password
+		# may go to: the fingerprints given (the ones you just confirmed in the panel), or else the
+		# one its link recorded. Neither: no login.
+		valid_host "${2:-}" || die "usage: agent-say _login <ssh-host> [--check | 'SHA256:... (TYPE)'...]"
 		[[ ${3:-} == --check ]] && { master_up "$2"; exit; }
-		echo "Logging in to $2 for its link: ssh asks here for what it needs (a password, or to"
-		echo "accept its host key). The link keeps this connection open, so you won't be asked"
-		echo "again until it drops (a reboot, or the network going away)."
+		host=$2 pins=""
+		shift 2
+		for k in "$@"; do
+			[[ $k =~ $FP_RE ]] || die "not a key fingerprint: $k"
+			pins+="$k"$'\n'
+		done
+		[[ -n $pins ]] || pins="$(cat "$STATE/links/$host/fingerprint" 2>/dev/null || true)"
+		echo "Logging in to $host for its link: ssh asks here for its password. The link keeps this"
+		echo "connection open, so you won't be asked again until it drops (a reboot, or the network"
+		echo "going away). Only a computer holding the host key you confirmed gets this far."
 		echo
-		ssh_login "$2" && exit 0
-		[[ -t 0 ]] && { read -r -p "Not logged in to $2. Press Enter to close. " _ || true; }
+		ssh_login "$host" "${pins%$'\n'}" && exit 0
+		[[ -t 0 ]] && { read -r -p "Not logged in to $host. Press Enter to close. " _ || true; }
 		exit 1 ;;
 	_resume-links)
 		# After a reboot (run by tmux-revive when tmux starts): restart every link that was on.

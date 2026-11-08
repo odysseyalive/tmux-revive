@@ -1574,13 +1574,17 @@ read_host_keys() { # read_host_keys HOST -> KEYS: its key fingerprints, as agent
 # login_window HOST: log in to a host that wants a password, once, for its link. ssh runs in a
 # popup over the panel (in a window of its own when no client can show a popup) and asks you
 # itself; the panel and agent-say never see what you type. Only a key you press opens it.
+# login_window HOST [FINGERPRINT...]: the keys you just confirmed; none, the link's own.
 # Returns whether a login is open now.
 login_window() {
 	local h=$1 cmd w i
 	[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+	shift
 	# tmux runs it with the server's environment, not this panel's: say where agent-say keeps
-	# its state, and which ssh it uses.
-	cmd=$(printf '%q ' env AGENT_SAY_MAILBOX="$AMAIL" ${AGENT_SAY_SSH:+AGENT_SAY_SSH="$AGENT_SAY_SSH"} "$ASAY" _login "$h")
+	# its state, which ssh it uses, and where it reads host keys (as for the keys you confirmed).
+	cmd=$(printf '%q ' env AGENT_SAY_MAILBOX="$AMAIL" ${AGENT_SAY_SSH:+AGENT_SAY_SSH="$AGENT_SAY_SSH"} \
+		${AGENT_SAY_KNOWN_HOSTS:+AGENT_SAY_KNOWN_HOSTS="$AGENT_SAY_KNOWN_HOSTS"} \
+		${AGENT_SAY_KEYSCAN:+AGENT_SAY_KEYSCAN="$AGENT_SAY_KEYSCAN"} "$ASAY" _login "$h" "$@")
 	if [[ -n $(tm list-clients -F x 2>/dev/null) ]]; then
 		tm display-popup -E -w 84 -h 12 "$cmd" 2>/dev/null # returns when it closes
 	else
@@ -2015,18 +2019,13 @@ act() {
 		pick "HOST KEY OF $h" "${labels[@]}" && ((PICKED > 0)) || { flash "link cancelled"; return; }
 		flash "linking $h…"; draw
 		out=$(timeout 30 "$ASAY" link "$h" --yes </dev/null 2>&1 | grep -E '^(linked to|agent-say:)' | head -n 1)
-		# A host that wants a password (or its key accepted, by ssh itself): you log in once, in
-		# a popup, and the link is made over that login.
+		# A host that wants a password: you log in once, in a popup, and the link is made over
+		# that login. The password can only go to a computer holding a key you just confirmed
+		# (agent-say's login checks it strictly before ssh asks), so none confirmed, no login.
 		if [[ $out == *"$h needs a login"* ]]; then
+			((${#keys[@]})) || { flash "no host key of $h to confirm, so no password is sent to it; not linked"; return; }
 			flash "logging in to $h…"; draw
-			login_window "$h" || { flash "not logged in to $h; not linked"; return; }
-			# ssh may have just added its key: it must be one you confirmed above.
-			if ((${#keys[@]})); then
-				read_host_keys "$h"
-				for k in "${KEYS[@]}"; do
-					[[ " ${keys[*]} " == *" $k "* ]] || { flash "$h's host key isn't the one you confirmed; not linked"; return; }
-				done
-			fi
+			login_window "$h" "${keys[@]}" || { flash "not logged in to $h; not linked"; return; }
 			flash "linking $h…"; draw
 			out=$(timeout 30 "$ASAY" link "$h" --yes </dev/null 2>&1 | grep -E '^(linked to|agent-say:)' | head -n 1)
 		fi
