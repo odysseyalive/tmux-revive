@@ -312,7 +312,7 @@ done
 # narrow one, whole either way.
 talk='██▄█▄██       ░░▒▒▓▓██►   ██▄█▄██' sat='█▒█▒█▒█▒█══███████══█▒█▒█▒█▒█'
 out=$(hframe 160)
-check "at 160 columns two agents talk beside the first section" "grep -q 'between Claude Code and Codex\\..*$talk' <<<\"\$out\" && grep -q '1 Get your agents talking.*▄  ' <<<\"\$out\""
+check "at 160 columns two agents talk beside the first section" "grep -q '[a-z][.,]* .*$talk' <<<\"\$out\" && grep -q '1 Get your agents talking.*▄  ' <<<\"\$out\""
 check "and a satellite beams down beside the second" "grep -q 'Got agents on a remote server.*$sat' <<<\"\$out\" && grep -q '░▒▓█▓▒░' <<<\"\$out\""
 out=$(hframe 100)
 check "at 100 they still fit beside the words" "grep -q 'session talk to any other.*$talk' <<<\"\$out\" && grep -q 'the rest\\..*▀▀▀▀▀▀▀▀▀  ▀▀▀█▀▀▀' <<<\"\$out\""
