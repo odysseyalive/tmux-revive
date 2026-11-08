@@ -286,7 +286,7 @@ declare -A ART_MEMO=()
 art() { # art WIDTH HEIGHT [still] -> ART rows of the current scene; "still" stops its animation
 	local k rows
 	if [[ ${3:-} == still ]]; then AT=0; else AT=$TICK; fi
-	# The same frame again (answering a question redraws every 0.3 s) is kept, not redrawn.
+	# The same frame again (a redraw that only moved the selection) is kept, not redrawn.
 	k="$SCENE $1 $2 $AT"
 	if [[ -n ${ART_MEMO[$k]+set} ]]; then mapfile -t ART <<<"${ART_MEMO[$k]}"; return; fi
 	canvas "$1" "$2"
@@ -638,8 +638,9 @@ screen_state() { # screen_state PANE -> asking / working / waiting, read off the
 	local -a SL
 	mapfile -t SL < <(tm capture-pane -p -t "$1" 2>/dev/null)
 	lines_state SL
+	echo "$LSTATE"
 }
-lines_state() { # lines_state ARRAY: the same, for a screen already read (a linked computer's peek)
+lines_state() { # lines_state ARRAY -> LSTATE: the same, for a screen already read (a linked computer's peek)
 	local -n L=$1
 	local n=0 i tail="" prompt=0
 	for ((i = ${#L[@]} - 1; i >= 0 && n < 12; i--)); do
@@ -650,9 +651,9 @@ lines_state() { # lines_state ARRAY: the same, for a screen already read (a link
 		if ((n <= 6)) && [[ ${L[i]//$'\xc2\xa0'/ } =~ ^(❯|›|\>)\ ? ]] && ! [[ ${L[i]} =~ ^(❯|›|\>)[[:space:]]+[0-9]+\. ]]; then prompt=1; fi
 	done
 	shopt -s nocasematch
-	if ((!prompt)) && [[ $tail =~ $Q_RE ]]; then echo asking
-	elif [[ $tail =~ $W_RE ]]; then echo working
-	else echo waiting; fi
+	if ((!prompt)) && [[ $tail =~ $Q_RE ]]; then LSTATE=asking
+	elif [[ $tail =~ $W_RE ]]; then LSTATE=working
+	else LSTATE=waiting; fi
 	shopt -u nocasematch
 }
 
@@ -970,6 +971,10 @@ SEL=0 SEL_ID="" PEEK=${REVIVE_PANEL_PEEK:-1} FULL=0 ANSWERING=0 FLASH="" FLASH_T
 # kept from the last frame, unless MSG_OLD says they're due a look (new panes were gathered,
 # or they were hidden). TCOLS and TLINES: the terminal's size, asked again with the panes.
 nav=0 MSG=() SIDE=() MSG_OLD=1 TCOLS="" TLINES=""
+# While answering: the rows above the question kept from its first frame (ATOP, the banner's
+# height ATOP_BH), and the pane's screen as answer() last read it (QL cleaned for drawing,
+# QRAW as it came, QSHOT the same as one string).
+ATOP=() ATOP_BH=3 QL=() QRAW=() QSHOT=""
 SPIN=(▖ ▘ ▝ ▗)
 
 state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
@@ -1129,7 +1134,9 @@ draw_question() { # draw_question LINES
 		keys+=$KC
 	fi
 	sectk "QUESTION · $name" "$keys" 5
-	if [[ -n ${P_HOST[SEL]:-} ]]; then
+	if ((ANSWERING)); then
+		L=("${QL[@]}") # answer() has just read it
+	elif [[ -n ${P_HOST[SEL]:-} ]]; then
 		remote_peek 60
 	elif [[ -n $id ]]; then
 		mapfile -t L < <(tm capture-pane -p -t "$id" 2>/dev/null)
@@ -1263,14 +1270,10 @@ links_saves() { # -> SIDE lines: saves, then links
 	((${#SIDE[@]} > 2)) || SIDE+=("$GRY  no links · ssh to a host and press L$R")
 }
 
-draw() {
-	local cols lines n i LW RW avail peek_h=0 counts w=0 a=0 s=0 l r
-	[[ -n $TCOLS ]] || TCOLS=$(tput cols 2>/dev/null || echo 100) TLINES=$(tput lines 2>/dev/null || echo 40)
-	cols=$TCOLS lines=$TLINES
-	((ONCE)) && cols=${COLUMNS:-$cols} lines=${LINES:-$lines}
-	W=$((cols < 80 ? 80 : cols)) IW=$((W - 4))
-	OUT=()
-	n=${#P_ID[@]}
+# draw_top: draw's rows from the top of the frame down to the CPU graph, and BH, the banner's
+# height. Returns 1 when the ? page has drawn the rest instead.
+draw_top() {
+	local i counts w=0 a=0 s=0
 	for ((i = 0; i < n; i++)); do
 		case ${P_STATE[i]} in working) ((w++)) ;; asking) ((a++)) ;; esac
 		((P_AGENT[i])) && ((s++))
@@ -1279,7 +1282,7 @@ draw() {
 	# Banner: block letters, a little CRT and the board's details. The big one when there's room.
 	rep ═ $((W - 2))
 	line "$FRAME╔$REP╗$R"
-	local BH=3 total=0 BAN=() now
+	local total=0 BAN=() now
 	if ((lines - n >= 30)); then
 		BH=6
 		monitor "$w" "$a" "$s"
@@ -1308,7 +1311,7 @@ draw() {
 	else
 		for ((i = 0; i < BH; i++)); do row "${BAN[i]}"; done
 	fi
-	((HELP)) && { help_frame "$lines" "$BH"; return; } # the ? page takes everything below
+	((HELP)) && { help_frame "$lines" "$BH"; return 1; } # the ? page takes everything below
 	counts="$BYEL$w working$R$GRY · $R$BMAG$a asking$R"
 	((a)) && counts="$BYEL$w working$R$GRY · $R$B$BMAG$BLINK$a asking$R"
 	sect "PANES"
@@ -1320,6 +1323,24 @@ draw() {
 	vlen "$counts"
 	spark $((IW - 8 - VLEN))
 	row "$GRY cpu $R$SPARK  $counts"
+}
+
+draw() {
+	local cols lines n i LW RW avail peek_h=0 l r BH=3
+	[[ -n $TCOLS ]] || TCOLS=$(tput cols 2>/dev/null || echo 100) TLINES=$(tput lines 2>/dev/null || echo 40)
+	cols=$TCOLS lines=$TLINES
+	((ONCE)) && cols=${COLUMNS:-$cols} lines=${LINES:-$lines}
+	W=$((cols < 80 ? 80 : cols)) IW=$((W - 4))
+	OUT=()
+	n=${#P_ID[@]}
+	if ((ANSWERING && ${#ATOP[@]})); then
+		# Answering: nothing above the question can change (no panes are gathered meanwhile),
+		# so those rows are kept from the first frame, and only the question and the bar drawn.
+		OUT=("${ATOP[@]}") BH=$ATOP_BH
+	else
+		draw_top || return
+		((ANSWERING)) && ATOP=("${OUT[@]}") ATOP_BH=$BH
+	fi
 
 	# A question needs every row it can get: the messages step aside until it's answered, and
 	# aren't looked at meanwhile. Moving the selection can't change them, so they're kept.
@@ -1604,36 +1625,70 @@ send_answer() { # send_answer TOKEN...: to the selected pane, here or over the l
 	return 1
 }
 
-# answer: every key goes to the selected pane's question, as if typed in its own console,
-# and the question redraws every 0.3 s to show it react. Ctrl-] (or Ctrl-C) leaves without
-# sending anything; it ends by itself once the pane stops asking. Questions only: a chat
-# with the agent is J, in its own pane.
+# question_look -> QL, QRAW, QSHOT: the selected pane's screen while answering. A pane here
+# is one capture-pane. A linked computer's comes in its peek file, which changes only when a
+# fetch comes back, so while one is still out there's nothing new to read.
+question_look() {
+	local i k="${P_HOST[SEL]:-} ${P_RID[SEL]:-}"
+	local -a L
+	if [[ -n ${P_HOST[SEL]:-} ]]; then
+		[[ -n $QSHOT && -n ${PFETCH_PID[$k]:-} ]] && kill -0 "${PFETCH_PID[$k]}" 2>/dev/null && return
+		remote_peek 60
+		QL=("${L[@]}")
+	else
+		mapfile -t QRAW < <(tm capture-pane -p -t "${P_ID[SEL]}" 2>/dev/null)
+		QL=("${QRAW[@]}")
+		for i in "${!QL[@]}"; do clean "QL[$i]"; done # capture-pane passes C1 characters through
+	fi
+	printf -v QSHOT '%s\n' "${QL[@]}"
+}
+
+# answer: every key goes to the selected pane's question, as if typed in its own console.
+# The question is drawn again when the agent's screen changes: looked at every 40 ms for half
+# a second after a key is sent, to show it react, and every 0.3 s otherwise. Ctrl-] (or
+# Ctrl-C) leaves without sending anything; it ends by itself once the pane stops asking.
+# Questions only: a chat with the agent is J, in its own pane.
 answer() {
 	local h=${P_HOST[SEL]:-} id=${P_ID[SEL]:-} k rest seq txt st got gone=0 why=left pend="" INTR=0 f
+	local shot="" sent=0 skips=0 idle=0 poll=0
 	local -a TOKS AL
 	[[ ${P_STATE[SEL]:-} == asking ]] || return 0
 	[[ -n $h ]] && id=${P_RID[SEL]:-}
 	[[ $id =~ ^%[0-9]+$ ]] || return 0
-	ANSWERING=1 PEEK_EVERY=0 PREV=()
+	ANSWERING=1 PEEK_EVERY=0 PREV=() ATOP=() QL=() QRAW=() QSHOT=""
 	trap 'INTR=1' INT
 	while :; do
-		draw
-		if [[ -n $pend ]]; then
-			k=$pend pend=""
+		# Keys already waiting behind the ones just sent go first, so they reach the agent together
+		# and are drawn once; but no more than three times running, so the view can't freeze.
+		if ((sent && skips < 3)) && { [[ -n $pend ]] || read -t 0; }; then
+			((skips++))
 		else
-			k="" got=1 st=0
-			IFS= read -rsn1 -t 0.3 k || { st=$? got=0; }
-			if ((!got)); then
-				((st > 128 && !INTR)) || break # Ctrl-C, or the input closed
+			skips=0
+			question_look
+			# Drawn only when there's something new to show (a resize empties PREV).
+			if [[ $QSHOT != "$shot" || ${#PREV[@]} == 0 ]]; then draw; shot=$QSHOT; fi
+			if ((idle)); then
 				# Still asking? Twice not, in a row, means answered (one look can catch a redraw).
 				if [[ -n $h ]]; then
 					f="$RDIR/$h.peek-${id#%}" AL=()
 					[[ -f $f ]] && mapfile -t AL < <(tail -n 60 "$f")
-					st=$(lines_state AL)
+					lines_state AL
 				else
-					st=$(screen_state "$id")
+					lines_state QRAW
 				fi
-				if [[ $st == asking ]]; then gone=0; else ((++gone >= 2)) && { why=answered; break; }; fi
+				if [[ $LSTATE == asking ]]; then gone=0; else ((++gone >= 2)) && { why=answered; break; }; fi
+			fi
+		fi
+		sent=0 idle=0
+		if [[ -n $pend ]]; then
+			k=$pend pend=""
+		else
+			k="" got=1 st=0
+			if ((poll)); then IFS= read -rsn1 -t 0.04 k || { st=$? got=0; }
+			else IFS= read -rsn1 -t 0.3 k || { st=$? got=0; }; fi
+			if ((!got)); then
+				((st > 128 && !INTR)) || break # Ctrl-C, or the input closed
+				if ((poll)); then ((poll--)); else idle=1; fi
 				continue
 			fi
 		fi
@@ -1663,9 +1718,11 @@ answer() {
 			TOKS=("C-$k") ;;
 		[[:cntrl:]]) ;;
 		*)
-			# Typed text (a custom answer) goes as it is, with whatever else is already waiting.
+			# Typed text (a custom answer) goes as it is, with whatever else is already waiting. A
+			# digit that starts it goes alone: in a menu it picks a choice, and "2x" sent as one
+			# could be read as something else.
 			txt=$k
-			while ((${#txt} < 256)) && IFS= read -rsn1 -t 0.005 rest; do
+			while [[ $k != [0-9] ]] && ((${#txt} < 256)) && IFS= read -rsn1 -t 0.005 rest; do
 				if [[ -z $rest ]]; then pend=$'\r'; break
 				elif [[ $rest == [[:cntrl:]] ]]; then pend=$rest; break; fi
 				txt+=$rest
@@ -1675,8 +1732,9 @@ answer() {
 		esac
 		((${#TOKS[@]})) || continue
 		send_answer "${TOKS[@]}" || { why=failed; break; }
+		sent=1 poll=12
 	done
-	ANSWERING=0 PEEK_EVERY=$REFRESH PREV=()
+	ANSWERING=0 PEEK_EVERY=$REFRESH PREV=() ATOP=()
 	trap 'exit 0' INT
 	case $why in
 	left) flash "left the question; nothing more was sent" ;;
@@ -1951,7 +2009,7 @@ on_exit restore_term
 # Other computers' screens it fetched go when it closes.
 on_exit 'for f in "${!PEEK_FILES[@]}"; do rm -f "$f" "$f.fail"; done'
 trap 'exit 0' INT TERM
-trap 'printf "%s" "$e[2J"; PREV=() TCOLS=""' WINCH
+trap 'printf "%s" "$e[2J"; PREV=() TCOLS="" ATOP=()' WINCH
 case ${REVIVE_PANEL_SPLASH:-} in
 1) splash ;;
 0) ;;

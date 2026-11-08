@@ -426,6 +426,33 @@ tm send-keys -t work:qpanel Enter
 check "a custom answer arrives exactly as typed" "for _ in \$(seq 1 25); do [[ -s $T/ans2 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans2 2>/dev/null) == 'custom:my custom answér' ]]"
 tm send-keys -t work:qpanel q
 tm kill-window -t work:asker
+# Answering looks at the agent's screen again right after a key is sent, not 0.3 s later; and a
+# digit that starts typed text is sent on its own (in a menu it picks a choice). Seen by the
+# tmux that logs what it's asked.
+tm new-window -d -t work -n asker2 "$T/bin/codex $T/ask.sh $T/ans4"
+tm set-option -p -t work:asker2 @agent asker2
+tm new-window -d -t work -n qshim "env PATH=$T/shim:$PATH REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+sscreen() { tm capture-pane -p -t work:qshim; }
+wait_s() { for _ in $(seq 1 ${2:-40}); do sscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_s 'asker2' >/dev/null
+for _ in $(seq 1 20); do sscreen | grep -q '▶ asker2' && break; tm send-keys -t work:qshim Down; sleep 0.3; done
+wait_s 'QUESTION · asker2' >/dev/null
+tm send-keys -t work:qshim Enter; wait_s 'ANSWERING asker2' >/dev/null
+for _ in 1 2 3 4; do tm send-keys -t work:qshim Down; sleep 0.4; done
+wait_s '❯ 5. Type something.' 15 >/dev/null; sleep 0.5
+caps() { grep -c "capture-pane -p -t $(tm display -p -t work:asker2 '#{pane_id}')\$" "$T/shim.log"; }
+c0=$(caps)
+tm send-keys -t work:qshim -l 'x'; sleep 0.45
+c1=$(caps)
+check "after a key, the agent's screen is looked at every few dozen ms ($((c1 - c0)) looks in 0.45 s)" "(( c1 - c0 >= 6 ))"
+check "and the typed key shows" "wait_s '❯ 5. x' 10"
+tm send-keys -t work:qshim -l '2xyz'; sleep 0.5
+sends() { grep -c -- "send-keys -t $(tm display -p -t work:asker2 '#{pane_id}') -l -- $1\$" "$T/shim.log"; }
+check "a digit typed with text after it is sent on its own" "(( \$(sends 2) == 1 && \$(sends xyz) == 1 ))"
+tm send-keys -t work:qshim Enter
+check "and the answer arrives whole" "for _ in \$(seq 1 25); do [[ -s $T/ans4 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans4 2>/dev/null) == 'custom:x2xyz' ]]"
+tm send-keys -t work:qshim q
+tm kill-window -t work:asker2
 
 echo "ssh links"
 # Which host an ssh command line connects to, as agent-say link takes it.
