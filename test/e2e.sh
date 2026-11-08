@@ -26,7 +26,11 @@ check() {
 		printf '  \033[31mFAIL\033[0m %s\n' "$1"; ((fail++))
 	fi
 }
-cleanup() { t kill-server 2>/dev/null; [[ -n ${KEEP:-} ]] || rm -rf "$T"; }
+cleanup() {
+	t kill-server 2>/dev/null
+	for k in sock2 sock3 sock4; do tmux -S "$T/$k" kill-server 2>/dev/null; done
+	[[ -n ${KEEP:-} ]] || rm -rf "$T"
+}
 trap cleanup EXIT
 
 # A stand-in `claude` that records how it was launched and stays running.
@@ -249,6 +253,143 @@ check "a fresh tmux restores nothing" "[[ \$(tmux list-sessions -F '#{session_na
 check "claude was not relaunched" "[[ \$(wc -l <$T/claude-launches) -eq $launches ]]"
 tmux kill-server
 pkill -f "$T/bin/claude"
+
+# A bare `tmux` hands off to `tmux-revive open`: one session attaches, several
+# get a pick list (or, with no terminal to ask in, the most recent one).
+echo "tmux opens a session, or a pick list"
+calls=$T/tmux-calls
+printf '#!/bin/sh\necho "$*" >>%q\nexec %q -S %q -f %q "$@"\n' "$calls" "$real_tmux" "$T/sock2" "$T/tmux.conf" >"$T/bin/tmux"
+rm -rf "$REVIVE_DIR"
+nsess() { tmux list-sessions 2>/dev/null | wc -l; }
+tmux new-session -d -s solo -c "$T/proj"
+sleep 1
+script -qfc "bash --norc --noprofile -c '. $ROOT/scripts/shell.sh; tmux'" /dev/null >/dev/null 2>&1 &
+spid=$!
+for _ in $(seq 30); do [[ $(tmux list-clients -F x 2>/dev/null) ]] && break; sleep 0.1; done
+out=$(tmux list-sessions -F '#{session_name}:#{session_attached}' 2>&1 | tr '\n' ' ')
+check "bare tmux with one session attaches it, makes none ($out)" "[[ '$out' == 'solo:1 ' ]]"
+kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
+tmux new-session -d -s older -c "$T/proj"
+sleep 1.1
+tmux new-session -d -s newer -c "$T/proj"
+: >"$calls"
+bash --norc --noprofile -c ". $ROOT/scripts/shell.sh; tmux" </dev/null >/dev/null 2>&1
+check "no terminal, several sessions: attaches the most recent, makes none" "grep -qx 'attach-session -t =newer' $calls && [[ \$(nsess) -eq 3 ]]"
+check "other tmux commands pass straight through" "bash --norc --noprofile -c '. $ROOT/scripts/shell.sh; tmux ls' | grep -q '^newer:'"
+
+# A shell keeps the function it sourced; the app behind it is what updates.
+mkdir -p "$T/app"
+printf '#!/bin/sh\necho v1 "$@" >%q\n' "$T/handoff" >"$T/app/tr" && chmod +x "$T/app/tr"
+TMUX_REVIVE_BIN=$T/app/tr bash --norc --noprofile -c ". $ROOT/scripts/shell.sh
+	printf '#!/bin/sh\necho v2 \"\$@\" >%s\n' $T/handoff >$T/app/tr.new && chmod +x $T/app/tr.new && mv $T/app/tr.new $T/app/tr
+	tmux attach -t x"
+check "a shell from before an update runs the new app" "[[ \$(cat $T/handoff) == 'v2 open attach -t x' ]]"
+
+# The pick list, driven through a pane of a second private server.
+mkdir -p "$T/abin"
+cp "$(command -v bash)" "$T/abin/crush"
+printf '#!%s\nwhile :; do sleep 1; done\n' "$T/abin/crush" >"$T/bin/crush"
+chmod +x "$T/bin/crush"
+o() { "$real_tmux" -S "$T/sock3" -f /dev/null "$@"; }
+PICK="env -u TMUX bash --norc --noprofile -c '. $ROOT/scripts/shell.sh; tmux; echo picker-exit-\$?; exec sleep 600'"
+o new-session -d -s outer -x 150 -y 40 "sleep 600"
+screen() { o capture-pane -p -t outer; }
+wait_screen() { for _ in $(seq 50); do screen | grep -q -- "$1" && return 0; sleep 0.1; done; return 1; }
+picker() { o respawn-pane -k -t outer "$PICK"; wait_screen 'enter attach'; }
+row() { screen | sed -n "s/^.[ *]\{0,1\} *\([0-9]\)  $1 .*/\1/p" | head -1; }
+keys() { o send-keys -t outer "$@"; sleep 0.4; }
+client_on() { for _ in $(seq 30); do [[ $(tmux list-clients -F '#{session_name}' 2>/dev/null) == "$1" ]] && return 0; sleep 0.1; done; return 1; }
+
+picker
+check "pick list shows sessions, windows and keys" "screen | grep -q 'solo .* 1 window ' && screen | grep -q 'x close'"
+keys Escape
+check "esc leaves without attaching" "wait_screen picker-exit-0 && [[ -z \$(tmux list-clients 2>/dev/null) ]]"
+
+picker
+keys "$(row older)" x n
+check "x, then n: nothing closed" "tmux has-session -t =older && screen | grep -q 'nothing closed'"
+keys x y
+check "x, then y: that session is closed" "! tmux has-session -t =older 2>/dev/null"
+check "closed is recorded, so it stays closed" "wait_snap '([.sessions[].name] | index(\"older\") | not) and ([.sessions[].name] | index(\"newer\"))'"
+keys q
+
+tmux new-session -d -s m1 -c "$T/proj"
+tmux new-session -d -s m2 -c "$T/proj"
+picker
+keys "$(row m1)" Space
+keys "$(row m2)" Space
+check "space marks rows" "[[ \$(screen | grep -c '^\*') -eq 2 ]]"
+keys x
+check "one confirmation lists every marked session" "screen | grep -Eq 'close (m1, m2|m2, m1)\?'"
+keys y
+check "both marked sessions closed, the rest kept" "! tmux has-session -t =m1 2>/dev/null && ! tmux has-session -t =m2 2>/dev/null && tmux has-session -t =solo"
+
+tmux new-session -d -s ag -c "$T/proj" "$T/bin/crush"
+sleep 0.5
+picker
+check "a row names the agent running in it" "screen | grep -q ' ag .*crush'"
+keys "$(row ag)" x
+check "closing an agent session names the agent and asks for yes" "screen | grep -q 'ends crush in ag. type yes'"
+keys y Enter
+check "y is not enough for an agent session" "tmux has-session -t =ag && screen | grep -q 'nothing closed'"
+keys x yes Enter
+check "yes closes it" "! tmux has-session -t =ag 2>/dev/null"
+keys "$(row solo)" Enter
+check "enter attaches the chosen session" "client_on solo"
+
+picker
+keys n
+check "n makes a new session and attaches it" "client_on \$(tmux list-sessions -F '#{session_created} #{session_name}' | sort -n | tail -1 | cut -d' ' -f2) && [[ \$(nsess) -eq 3 ]]"
+
+tmux new-session -d -s keep -c "$T/proj"
+picker
+keys "$(row keep)" a
+check "a asks before closing every other session" "screen | grep -q 'close .*solo.*\[y/N\]'"
+keys y
+check "a keeps only the chosen one and attaches it" "client_on keep && [[ \$(tmux list-sessions -F '#{session_name}') == keep ]]"
+check "the others are recorded closed" "wait_snap '[.sessions[].name] == [\"keep\"]'"
+tmux new-session -d -s last -c "$T/proj"
+picker
+keys "$(row last)" x y
+check "one left: still waits for enter, attaches nothing" "! tmux has-session -t =last 2>/dev/null && screen | grep -q 'enter attach' && [[ -z \$(tmux list-clients 2>/dev/null) ]]"
+keys x y
+check "none left: says so" "screen | grep -q 'no sessions left'"
+keys Enter
+check "none left: enter starts a fresh one" "for _ in \$(seq 30); do [[ \$(tmux list-clients 2>/dev/null) ]] && break; sleep 0.1; done; [[ \$(nsess) -eq 1 ]] && ! tmux has-session -t =keep 2>/dev/null"
+o kill-server
+tmux kill-server
+
+# The installer loads tmux-revive into a running server, and says so loudly
+# when that fails. All in a sandbox home with tmux on a private socket.
+echo "installer"
+inst() { # inst TMUX-WRAPPER: run install.sh in the sandbox, stdout+stderr to $T/inst.out
+	mkdir -p "$T/ih" "$T/ib"
+	cp "$1" "$T/ib/tmux"
+	env -u REVIVE_DIR -u ZDOTDIR -u XDG_CONFIG_HOME HOME="$T/ih" XDG_DATA_HOME="$T/ih/.local/share" \
+		TMUX_TMPDIR="$T/ih" CODEX_HOME="$T/ih/.codex" REVIVE_SOURCE="$ROOT" PATH="$T/ib:$PATH" \
+		sh "$ROOT/install.sh" >"$T/inst.out" 2>&1
+}
+mkdir -p "$T/ih" && : >"$T/ih/.bashrc"
+printf '#!/bin/sh\nexec %q -S %q -f /dev/null "$@"\n' "$real_tmux" "$T/sock4" >"$T/tmux-ok"
+cat >"$T/tmux-bad" <<'EOF'
+#!/bin/sh
+case $1 in
+run-shell) echo "boom: revive.tmux is broken" >&2; exit 1 ;;
+show-option) exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$T/tmux-ok" "$T/tmux-bad"
+# Started with the sandbox PATH: revive.tmux's own `tmux` calls must reach this server.
+mkdir -p "$T/ib" && cp "$T/tmux-ok" "$T/ib/tmux"
+PATH="$T/ib:$PATH" "$T/tmux-ok" new-session -d -s i
+inst "$T/tmux-ok"; rc=$?
+check "installer loads into the running server" "((rc == 0)) && grep -q 'running tmux server is protected' $T/inst.out && [[ -n \$($T/tmux-ok show -gqv @revive-bash) ]]"
+check "first install: tells open shells to restart" "grep -q 'exec \\\$SHELL -l' $T/inst.out"
+inst "$T/tmux-bad"; rc=$?
+check "a failed load is warned about, with tmux's error and the fix" "((rc == 0)) && grep -q 'did NOT load' $T/inst.out && grep -q 'boom: revive.tmux is broken' $T/inst.out && grep -q 'tmux source-file' $T/inst.out && ! grep -q 'is protected' $T/inst.out"
+check "an update: no restart hint, the hand-off picks it up" "! grep -q 'exec \\\$SHELL -l' $T/inst.out"
+"$T/tmux-ok" kill-server
 
 echo "$pass passed, $fail failed"
 ((fail == 0))

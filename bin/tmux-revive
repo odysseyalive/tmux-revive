@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tmux-revive command line.
 #   tmux-revive                      wake: start tmux, restore, attach
+#   tmux-revive open [attach ARGS]   the same, with a pick list for several sessions
 #   tmux-revive start                start tmux and restore, don't attach
 #   tmux-revive save                 snapshot now
 #   tmux-revive restore [SNAPSHOT]   restore latest (or a named snapshot)
@@ -26,29 +27,211 @@ ROOT="$(cd "$(dirname "$self")/.." && pwd)"
 # shellcheck source=../scripts/common.sh
 source "$ROOT/scripts/common.sh"
 
-case ${1:-wake} in
-wake)
-	# Inside tmux there is nothing to wake; show what's saved instead.
-	[[ -n ${TMUX:-} ]] && exec "$BASH" "$ROOT/scripts/restore.sh" --dry-run
-	# A fresh `tmux` loads the config, which auto-restores and replaces the
-	# empty session it starts with. A live server just needs attaching. Under
-	# the user's own umask: a server started here hands it to every shell.
-	umask "$REVIVE_UMASK"
-	tmux has-session 2>/dev/null && exec tmux attach
-	exec tmux
-	;;
-start)
-	# Start the server after a reboot and wait for the restore, so that a
-	# plain `tmux attach` finds every session (see scripts/shell.sh).
-	server_alive && exit 0
+# start_server: after a reboot, start tmux and wait for the restore, so that
+# a plain `tmux attach` finds every session (see scripts/shell.sh). Nothing
+# saved: nothing to start.
+start_server() {
+	server_alive && return 0
+	local state
 	state=$(revive_dir)/last/state.json
-	[[ -f $state && $(jq '.sessions | length' "$state") != 0 ]] || exit 0
-	tm new-session -d || exit 1 # loads the config, which restores
+	[[ -f $state && $(jq '.sessions | length' "$state") != 0 ]] || return 0
+	tm new-session -d || return 1 # loads the config, which restores
 	for _ in $(seq 150); do
 		[[ $(opt @revive-done '') == 1 ]] && break
 		sleep 0.1
 	done
+}
+
+# tmx ARGS: become tmux, under the user's own umask: a server started here
+# hands it to every shell.
+tmx() {
+	umask "$REVIVE_UMASK"
+	if [[ -n ${REVIVE_SOCKET:-} ]]; then exec tmux -S "$REVIVE_SOCKET" "$@"; fi
+	exec tmux "$@"
+}
+
+agent_kind() { # agent_kind ARGS -> claude/codex/cursor/crush/gemini or nothing (as panel.sh does)
+	case " $1 " in
+	*app-server*) ;;
+	*/claude\ * | " claude "* | *" claude --"*) echo claude ;;
+	*/codex\ * | " codex "*) echo codex ;;
+	*cursor-agent*) echo cursor ;;
+	*/crush\ * | " crush "*) echo crush ;;
+	*/gemini\ * | *" gemini "*) echo gemini ;;
+	esac
+}
+
+# sessions: S_NAME S_WIN S_WHEN S_HOW S_ATT S_AGENTS, most recently used first.
+# Agents come from each pane's process tree, so closing one can say what it ends.
+sessions() {
+	S_NAME=() S_WIN=() S_WHEN=() S_HOW=() S_ATT=() S_AGENTS=()
+	local -A kids args found
+	local pid ppid a sid p q k when how win att name
+	while read -r pid ppid a; do kids[$ppid]+="$pid " args[$pid]=$a; done < <(ps -ww -eo pid=,ppid=,args= 2>/dev/null)
+	while IFS=$'\t' read -r sid p; do
+		q=("$p")
+		while ((${#q[@]})); do
+			p=${q[0]} q=("${q[@]:1}")
+			k=$(agent_kind "${args[$p]:-}")
+			[[ -n $k && " ${found[$sid]:-} " != *" $k "* ]] && found[$sid]=${found[$sid]:+${found[$sid]} }$k
+			# shellcheck disable=SC2206
+			[[ -n ${kids[$p]:-} ]] && q+=(${kids[$p]})
+		done
+	done < <(tm list-panes -a -F $'#{session_id}\t#{pane_pid}' 2>/dev/null)
+	# A tab is whitespace to read, so empty fields would merge: awk fills them first.
+	while IFS=$'\t' read -r when how win att sid name; do
+		S_NAME+=("$name") S_WIN+=("$win") S_ATT+=("$att") S_AGENTS+=("${found[$sid]:-}")
+		S_WHEN+=("$when") S_HOW+=("$how")
+	done < <(tm list-sessions -F $'#{session_last_attached}\t#{session_created}\t#{session_windows}\t#{session_attached}\t#{session_id}\t#{session_name}' 2>/dev/null |
+		awk -F'\t' -v OFS='\t' '{ how = $1 > 0 ? "attached" : "created"; when = $1 > 0 ? $1 : $2; n = $6; for (i = 7; i <= NF; i++) n = n "\t" $i
+			print when, how, $3, $4, $5, n }' | sort -t$'\t' -k1,1nr)
+}
+
+ago() {
+	local s now
+	printf -v now '%(%s)T' -1
+	s=$((now - $1))
+	if ((s < 60)); then echo "just now"
+	elif ((s < 3600)); then echo "$((s / 60))m ago"
+	elif ((s < 86400)); then echo "$((s / 3600))h ago"
+	else echo "$((s / 86400))d ago"; fi
+}
+
+# pick: the pick list. Runs before tmux, in whatever terminal this is, so it
+# keeps to plain ANSI and redraws only its own lines.
+pick() {
+	local sel=0 drawn=0 note="" k r i m n row w names agents ok list
+	local -A mark=()
+	w=$(tput cols 2>/dev/null) || w=80
+	((w > 1)) || w=80
+	# shellcheck disable=SC2329
+	leave() { ((drawn)) && printf '\033[%dA\r\033[J' "$drawn"; printf '\033[?25h'; drawn=0; }
+	trap 'leave; exit 130' INT TERM
+	printf '\033[?25l'
+	draw() {
+		((drawn)) && printf '\033[%dA\r\033[J' "$drawn"
+		drawn=0
+		printf '\033[1mtmux sessions\033[0m\n'; ((drawn++))
+		if ((${#S_NAME[@]} == 0)); then
+			printf '  no sessions left: n or enter starts a new one\n'; ((drawn++))
+		fi
+		for i in "${!S_NAME[@]}"; do
+			m=" "; [[ -n ${mark[$i]:-} ]] && m="*"
+			printf -v row '%s%2d  %-20.20s %3d window%s  %-9s %-9s %s' "$m" $((i + 1)) "${S_NAME[$i]}" \
+				"${S_WIN[$i]}" "$( ((S_WIN[i] == 1)) || echo s)" "${S_HOW[$i]}" "$(ago "${S_WHEN[$i]}")" \
+				"${S_AGENTS[$i]}$( ((S_ATT[i] > 0)) && echo "${S_AGENTS[$i]:+ }(attached)")"
+			row=${row:0:w-1}
+			if ((i == sel)); then printf '\033[7m%s\033[0m\n' "$row"; else printf '%s\n' "$row"; fi
+			((drawn++))
+		done
+		printf '\033[2m%.*s\033[0m\n' $((w - 1)) "arrows/1-9 choose  enter attach  space mark  x close  a close others  n new  esc/q leave"; ((drawn++))
+		[[ -n $note ]] && { printf '%s\n' "$note"; ((drawn++)); }
+		note=""
+	}
+	# confirm I...: ask before closing these sessions. One holding an agent ends
+	# that agent's conversation, so then only a typed "yes" will do.
+	confirm() {
+		names=() agents=()
+		for i; do
+			names+=("${S_NAME[$i]}")
+			[[ -n ${S_AGENTS[$i]} ]] && agents+=("${S_AGENTS[$i]// /, } in ${S_NAME[$i]}")
+		done
+		list=$(printf '%s, ' "${names[@]}")
+		if ((${#agents[@]})); then
+			printf '\033[1;33mclose %s?\033[0m that ends %s. type yes to close: ' "${list%, }" "$(printf '%s; ' "${agents[@]}" | sed 's/; $//')"
+			printf '\033[?25h'
+			IFS= read -r ok || ok=""
+			printf '\033[?25l'
+			((drawn++))
+			[[ $ok == yes ]]
+		else
+			printf '\033[1;33mclose %s?\033[0m [y/N] ' "${list%, }"
+			IFS= read -rsn1 ok || ok=""
+			printf '\n'; ((drawn++))
+			[[ $ok == [yY] ]]
+		fi
+	}
+	# close I...: kill them; tmux-revive's close hook saves without them, so
+	# they stay closed after a restart.
+	close() {
+		for i; do tm kill-session -t "=${S_NAME[$i]}" 2>/dev/null; done
+		mark=()
+		sessions
+		((sel >= ${#S_NAME[@]})) && sel=$((${#S_NAME[@]} - 1))
+		((sel < 0)) && sel=0
+	}
+	while :; do
+		draw
+		IFS= read -rsn1 k || k=q
+		n=${#S_NAME[@]}
+		case $k in
+		$'\e')
+			r=""
+			IFS= read -rsn2 -t 0.05 r
+			case $r in
+			'[A' | OA) ((sel > 0)) && ((sel--)) ;;
+			'[B' | OB) ((sel < n - 1)) && ((sel++)) ;;
+			'') leave; return 1 ;;
+			esac
+			;;
+		k) ((sel > 0)) && ((sel--)) ;;
+		j) ((sel < n - 1)) && ((sel++)) ;;
+		[1-9]) ((k <= n)) && sel=$((k - 1)) ;;
+		q) leave; return 1 ;;
+		n) leave; tmx new-session ;;
+		'')
+			((n)) || { leave; tmx new-session; }
+			leave
+			tmx attach-session -t "=${S_NAME[$sel]}"
+			;;
+		' ')
+			((n)) || continue
+			if [[ -n ${mark[$sel]:-} ]]; then unset "mark[$sel]"; else mark[$sel]=1; fi
+			((sel < n - 1)) && ((sel++))
+			;;
+		x)
+			((n)) || continue
+			if ((${#mark[@]})); then set -- "${!mark[@]}"; else set -- "$sel"; fi
+			if confirm "$@"; then close "$@"; else note="nothing closed"; fi
+			;;
+		a)
+			((n > 1)) || continue
+			set --
+			for i in "${!S_NAME[@]}"; do ((i == sel)) || set -- "$@" "$i"; done
+			r=${S_NAME[$sel]}
+			if confirm "$@"; then
+				close "$@"
+				leave
+				tmx attach-session -t "=$r"
+			fi
+			note="nothing closed"
+			;;
+		esac
+	done
+}
+
+case ${1:-wake} in
+wake | open)
+	(($#)) && shift
+	case ${1-} in
+	"")
+		# Inside tmux there is nothing to open; show what's saved instead.
+		[[ -n ${TMUX:-} ]] && exec "$BASH" "$ROOT/scripts/restore.sh" --dry-run
+		start_server
+		sessions
+		((${#S_NAME[@]})) || tmx new-session -A -s 0
+		# One session, or no terminal to ask in: the most recently used one.
+		if ((${#S_NAME[@]} == 1)) || [[ ! -t 0 || ! -t 1 ]]; then
+			tmx attach-session -t "=${S_NAME[0]}"
+		fi
+		pick
+		exit 0
+		;;
+	a | at | att | atta | attac | attach | attach-session) start_server ;;
+	esac
+	tmx "$@"
 	;;
+start) start_server ;;
 uninstall)
 	inst=$ROOT/install.sh
 	[[ ${2:-} == --purge ]] && exec sh "$inst" --purge
@@ -112,5 +295,5 @@ doctor)
 	DIR=$(revive_dir)
 	[[ -f $DIR/last/state.json ]] && ok "latest snapshot: $(jq -r .saved_at "$DIR/last/state.json")" || bad "no snapshot yet"
 	;;
-*) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+*) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

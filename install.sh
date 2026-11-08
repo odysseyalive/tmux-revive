@@ -373,6 +373,11 @@ main() {
 
 	# ----------------------------------------------------------------- install
 	mkdir -p "$DATA"
+	# Shells already open keep the `tmux` they sourced. From the hand-off
+	# version on it calls the app, so only a first install (or one from before
+	# it) needs them restarted.
+	old_wrapper=1
+	grep -q 'tmux-revive}" open' "$APP/scripts/shell.sh" 2>/dev/null && old_wrapper=0
 	rm -rf "$APP.old"
 	[ -d "$APP" ] && mv "$APP" "$APP.old"
 	mv "$tmp/src" "$APP"
@@ -413,11 +418,26 @@ main() {
 		fi
 	fi
 
-	# Start protecting the running server now; no restart needed.
+	# Start protecting the running server now; no restart needed. Then check it took:
+	# revive.tmux sets @revive-bash first thing, and a run-shell that fails under set -e
+	# would otherwise end the install without a word.
 	if tmux info >/dev/null 2>&1; then
-			tmux run-shell "$(sq "$APP/revive.tmux" | sed 's/#/##/g')"
-		"$BIN/tmux-revive" save >/dev/null 2>&1 || true
-		say "running tmux server is protected, first snapshot taken"
+		prev=$(tmux show-option -gqv @revive-bash 2>/dev/null) || prev=""
+		tmux set-option -gu @revive-bash 2>/dev/null || true
+		if out=$(tmux run-shell "$(sq "$APP/revive.tmux" | sed 's/#/##/g')" 2>&1) &&
+			[ -n "$(tmux show-option -gqv @revive-bash 2>/dev/null)" ]; then
+			"$BIN/tmux-revive" save >/dev/null 2>&1 || true
+			say "running tmux server is protected, first snapshot taken"
+		else
+			[ -z "$prev" ] || tmux set-option -g @revive-bash "$prev" 2>/dev/null || true
+			if [ $wire_config = 1 ]; then fix="tmux source-file $(tmux_conf)"; else fix="tmux run-shell $(sq "$APP/revive.tmux")"; fi
+			warn "tmux-revive did NOT load into the running tmux server; it is not protected yet"
+			[ -z "$out" ] || warn "tmux said: $out"
+			warn "fix: run  $fix  (or restart tmux), then  tmux-revive doctor"
+		fi
+	fi
+	if [ $wire_config = 1 ] && [ $old_wrapper = 1 ] && [ -n "$(shell_rcs)" ]; then
+		say "terminals already open get the new \`tmux\` after:  exec \$SHELL -l"
 	fi
 
 	case ":$PATH:" in *":$BIN:"*) ;; *) warn "$BIN is not on your PATH; add it to use the tmux-revive command" ;; esac

@@ -45,6 +45,12 @@ There's nothing new to learn. Work in tmux the way you always have, detach or
 close the terminal, shut down, and when you come back, type `tmux`. Everything
 reopens.
 
+With one session, `tmux` attaches it. With several, it lists them first: pick
+one with the arrows or its number and press Enter, or press `n` for a new one.
+`x` closes the highlighted session (Space marks several), and `a` closes all
+the others and continues in this one. A session with an agent running in it
+asks you to type `yes`, since closing it ends that conversation.
+
 It saves on its own when you detach or close something, every minute if
 anything changed, and on Linux right before shutdown or sleep.
 
