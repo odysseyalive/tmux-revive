@@ -6,12 +6,20 @@
 # Options (after `sh -s --`):  --uninstall   --purge (uninstall + delete snapshots)
 #                              --no-config   (don't touch tmux.conf, shell rc files,
 #                                             or Claude Code / Codex settings)
-# Environment:  REVIVE_REPO=owner/name   REVIVE_REF=branch|tag
-#               REVIVE_SOURCE=/local/checkout   (install from a directory)
+# Environment:  REVIVE_VERSION=x.y.z  (that signed release; default: the latest one)
+#               REVIVE_REF=main|branch|tag|commit  (follow it instead: not signed, so
+#                                                   it trusts only HTTPS and GitHub)
+#               REVIVE_REPO=owner/name   REVIVE_SOURCE=/local/checkout
 set -eu
 
 REPO=${REVIVE_REPO:-odysseyalive/tmux-revive}
-REF=${REVIVE_REF:-main}
+REF=${REVIVE_REF:-}
+PIN=${REVIVE_VERSION:-}
+# A release is trusted only if its SHA256SUMS is signed by this key. It lives here, not in
+# the release, so a tampered release can't vouch for itself. MAINTAINER: replace this line
+# with the one scripts/release.sh prints.
+ALLOWED_SIGNERS='tmux-revive-release namespaces="tmux-revive-release" REPLACE-WITH-THE-RELEASE-PUBLIC-KEY'
+NS=tmux-revive-release
 DATA=${XDG_DATA_HOME:-$HOME/.local/share}/tmux-revive
 APP=$DATA/app
 BIN=$HOME/.local/bin
@@ -45,6 +53,11 @@ fetch() { # fetch URL FILE
 	else die "need curl or wget"; fi
 }
 
+sha256() {
+	if have sha256sum; then sha256sum "$1" | cut -d' ' -f1
+	else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
 # sq STRING: STRING quoted for sh, so a path with a space or a ' in it survives.
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
@@ -67,6 +80,82 @@ resolve_ref() {
 	is_sha "${sha:-}" && printf '%s' "$sha"
 }
 is_sha() { case $1 in *[!0-9a-f]* | "") return 1 ;; esac; [ ${#1} = 40 ]; }
+is_version() { printf '%s\n' "$1" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; }
+# older A B: A is an older version than B.
+older() {
+	awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, "."); split(b, y, ".")
+		for (i = 1; i <= 3; i++) if (x[i] + 0 != y[i] + 0) exit !(x[i] + 0 < y[i] + 0); exit 1 }'
+}
+
+follow_main() {
+	die "$1
+  To follow main instead (not signed; trusts only HTTPS and GitHub):
+    curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | REVIVE_REF=main sh
+  or, if tmux-revive is installed:  tmux-revive update --main"
+}
+
+# REVIVE_RELEASE_BASE stands in for https://github.com/$REPO/releases, for tests: a local
+# directory laid out the same way. It changes where files come from, never which key is
+# trusted, so a wrong one can only fail the check.
+release_base() {
+	RB=${REVIVE_RELEASE_BASE:-https://github.com/$REPO/releases}
+	case $RB in file:///*) RB=${RB#file://} ;; esac
+	case $RB in
+	*[!A-Za-z0-9._~:/@%+-]*) die "REVIVE_RELEASE_BASE has characters a URL or path shouldn't: $RB" ;;
+	https://?*) ;;
+	/*) [ -d "$RB" ] || die "REVIVE_RELEASE_BASE: no directory $RB" ;;
+	*) die "REVIVE_RELEASE_BASE must be an https:// URL or a local directory: $RB" ;;
+	esac
+	RB=${RB%/}
+}
+# get URL FILE: fetch, or copy when the release base is a local directory.
+get() { case $1 in /*) cp "$1" "$2" 2>/dev/null ;; *) fetch "$1" "$2" 2>/dev/null ;; esac; }
+
+# fetch_release DIR: the signed release PIN (or the latest) unpacked in DIR, its version in
+# VER. Each step that fails stops the install: the signature over SHA256SUMS, then the
+# tarball against SHA256SUMS, then the VERSION inside it.
+fetch_release() {
+	rd=$1/release
+	mkdir -p "$rd"
+	case $ALLOWED_SIGNERS in *REPLACE-WITH*) follow_main "$REPO has no signed releases yet (this installer carries no release key)" ;; esac
+	have ssh-keygen || follow_main "checking a release's signature needs ssh-keygen (OpenSSH 8.1 or later); install OpenSSH and rerun"
+	ssh-keygen '-?' 2>&1 | grep -q -- '-Y verify' ||
+		follow_main "this ssh-keygen is too old to check signatures (it needs -Y verify, OpenSSH 8.1 or later); update OpenSSH and rerun"
+	release_base
+	if [ -n "$PIN" ]; then at=$RB/download/v$PIN; else at=$RB/latest/download; fi
+	if ! get "$at/SHA256SUMS" "$rd/SHA256SUMS"; then
+		[ -z "$PIN" ] || follow_main "no release v$PIN of $REPO (couldn't download $at/SHA256SUMS)"
+		case $RB in https://github.com/*)
+			if have git && tags=$(git ls-remote --tags "https://github.com/$REPO.git" 'refs/tags/v*' 2>/dev/null) && [ -z "$tags" ]; then
+				follow_main "$REPO has no releases yet"
+			fi ;;
+		esac
+		follow_main "couldn't download the latest release of $REPO ($at/SHA256SUMS); no release yet, or offline"
+	fi
+	get "$at/SHA256SUMS.sig" "$rd/SHA256SUMS.sig" ||
+		die "the release has no signature (SHA256SUMS.sig); refusing to install it"
+	printf '%s\n' "$ALLOWED_SIGNERS" >"$rd/allowed_signers"
+	if ! good=$(ssh-keygen -Y verify -f "$rd/allowed_signers" -I "$NS" -n "$NS" -s "$rd/SHA256SUMS.sig" <"$rd/SHA256SUMS" 2>&1); then
+		die "the release's SHA256SUMS is NOT signed by the tmux-revive release key; refusing to install it"
+	fi
+	# Only the tarball's line counts, and there must be exactly one.
+	line=$(grep -E '^[0-9a-f]{64}  tmux-revive-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz$' "$rd/SHA256SUMS") || line=""
+	[ -n "$line" ] && [ "$(printf '%s\n' "$line" | wc -l)" -eq 1 ] || die "the release's SHA256SUMS doesn't name one tarball; refusing"
+	want=${line%% *} file=${line##* }
+	VER=${file#tmux-revive-} VER=${VER%.tar.gz}
+	# A signed but older release served in place of the one asked for is still refused.
+	[ -z "$PIN" ] || [ "$VER" = "$PIN" ] || die "asked for v$PIN, but the signed checksums are for $VER; refusing"
+	if [ -z "$PIN" ] && was=$(cat "$APP/VERSION" 2>/dev/null) && is_version "$was" && older "$VER" "$was"; then
+		die "the latest release ($VER) is older than the installed $was; refusing to go back.
+  To go back on purpose:  tmux-revive update --version $VER"
+	fi
+	say "SHA256SUMS of release v$VER is signed by the release key ($(printf '%s' "$good" | sed -n 's/.* key \(SHA256:[^ ]*\).*/\1/p'))"
+	get "$RB/download/v$VER/$file" "$rd/$file" || die "download failed: $RB/download/v$VER/$file"
+	[ "$(sha256 "$rd/$file")" = "$want" ] || die "$file doesn't match its signed checksum; refusing to install it"
+	mkdir -p "$1/src"
+	tar xzf "$rd/$file" -C "$1/src" --strip-components=1 || die "couldn't unpack $file"
+	[ "$(cat "$1/src/VERSION" 2>/dev/null)" = "$VER" ] || die "$file doesn't hold version $VER; refusing"
+}
 
 # The config tmux actually loads: the first of these that exists.
 tmux_conf() {
@@ -298,13 +387,25 @@ main() {
 		*) die "unknown option: $a" ;;
 		esac
 	done
+	if [ -n "$PIN" ]; then
+		[ -z "$REF" ] || die "REVIVE_VERSION and REVIVE_REF both set; pick one"
+		PIN=${PIN#v}
+		is_version "$PIN" || die "REVIVE_VERSION should look like 1.2.3, not $PIN"
+	fi
+	# Until the maintainer puts the release key in here there are no signed releases to
+	# check, so installs follow main as before (pinned to one commit). Once the key is in,
+	# signed releases are the default. A pinned version needs the key either way.
+	case $ALLOWED_SIGNERS in *REPLACE-WITH*)
+		[ -z "$PIN" ] || die "REVIVE_VERSION needs signed releases, and this installer carries no release key yet"
+		[ -n "$REF" ] || { REF=main; say "no release key yet: following main (pinned to one commit, not signed)"; } ;;
+	esac
 
 	OS=$(uname -s)
 	case $OS in
 	Linux | Darwin) ;;
 	MINGW* | MSYS* | CYGWIN*)
 		die "tmux doesn't run natively on Windows. From PowerShell run:
-    irm https://raw.githubusercontent.com/$REPO/$REF/install.ps1 | iex
+    irm https://raw.githubusercontent.com/$REPO/${REF:-main}/install.ps1 | iex
   (it installs into WSL)" ;;
 	*) warn "untested OS: $OS, trying anyway" ;;
 	esac
@@ -329,9 +430,22 @@ main() {
 	tmp=$(mktemp -d)
 	trap 'rm -rf "$tmp"' EXIT
 	if [ -n "${REVIVE_SOURCE:-}" ]; then
-		say "installing from $REVIVE_SOURCE"
+		# _REVIVE_ORIGIN: set by a release install handing over to the release's own installer.
+		if [ -n "${_REVIVE_ORIGIN:-}" ]; then origin=$_REVIVE_ORIGIN
+		else
+			say "installing from $REVIVE_SOURCE"
+			origin="local copy of $REVIVE_SOURCE"
+			c=$(git -C "$REVIVE_SOURCE" rev-parse HEAD 2>/dev/null) && is_sha "$c" && origin="$origin (commit $c)"
+		fi
 		mkdir -p "$tmp/src"
 		(cd "$REVIVE_SOURCE" && tar cf - --exclude=.git --exclude=.claude --exclude=vendor .) | (cd "$tmp/src" && tar xf -)
+	elif [ -z "$REF" ]; then
+		# The verified release installs itself: its own installer does the setup, as a
+		# download of it would, and this one never trusts anything it didn't check.
+		fetch_release "$tmp"
+		_REVIVE_ORIGIN="release v$VER (signature verified)" REVIVE_SOURCE="$tmp/src" REVIVE_REF="" REVIVE_VERSION="" \
+			sh "$tmp/src/install.sh" "$@"
+		exit
 	else
 		sha=$(resolve_ref) || sha=""
 		if [ -n "$sha" ]; then
@@ -343,6 +457,7 @@ main() {
 			die "download failed: https://github.com/$REPO (ref ${sha:-$REF})"
 		mkdir -p "$tmp/src"
 		tar xzf "$tmp/src.tgz" -C "$tmp/src" --strip-components=1
+		if [ "$REF" = "${sha:-}" ]; then origin="commit $sha (not signed)"; else origin="$REF${sha:+ at commit $sha} (not signed)"; fi
 	fi
 	[ -f "$tmp/src/revive.tmux" ] || die "download doesn't look like tmux-revive"
 
@@ -362,8 +477,7 @@ main() {
 			base="https://github.com/jqlang/jq/releases/download/jq-$JQ_VERSION"
 			fetch "$base/$asset" "$tmp/src/vendor/bin/jq"
 			want=$(jq_sum "$asset")
-			if have sha256sum; then got=$(sha256sum "$tmp/src/vendor/bin/jq" | cut -d' ' -f1)
-			else got=$(shasum -a 256 "$tmp/src/vendor/bin/jq" | cut -d' ' -f1); fi
+			got=$(sha256 "$tmp/src/vendor/bin/jq")
 			[ -n "$want" ] && [ "$want" = "$got" ] || die "jq checksum mismatch, aborting"
 			chmod +x "$tmp/src/vendor/bin/jq"
 		else
@@ -377,6 +491,8 @@ main() {
 	# version on it calls the app, so only a first install (or one from before
 	# it) needs them restarted.
 	old_wrapper=1
+	was=""
+	[ -d "$APP" ] && { was=$(cat "$APP/VERSION" 2>/dev/null) || was="a version from before 1.0.0"; }
 	grep -q 'tmux-revive}" open' "$APP/scripts/shell.sh" 2>/dev/null && old_wrapper=0
 	rm -rf "$APP.old"
 	[ -d "$APP" ] && mv "$APP" "$APP.old"
@@ -386,6 +502,10 @@ main() {
 	mkdir -p "$BIN"
 	ln -sf "$APP/bin/tmux-revive" "$BIN/tmux-revive"
 	ln -sf "$APP/bin/agent-say" "$BIN/agent-say"
+	# One line, for `tmux-revive version`.
+	printf '%s\n' "$origin" >"$APP/INSTALLED"
+	now=$(cat "$APP/VERSION" 2>/dev/null) || now="?"
+	if [ -n "$was" ]; then say "tmux-revive $was -> $now, $origin"; else say "tmux-revive $now, $origin"; fi
 	if [ -n "${sha:-}" ]; then say "installed $REPO commit $sha to $APP"; else say "installed to $APP"; fi
 
 	# ------------------------------------------------------------ tmux config

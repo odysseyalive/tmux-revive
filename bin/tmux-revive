@@ -10,7 +10,10 @@
 #   tmux-revive list                 snapshots, newest first
 #   tmux-revive log                  recent activity
 #   tmux-revive doctor               check the moving parts
-#   tmux-revive update               install the latest version (keeps snapshots)
+#   tmux-revive update               install the latest signed release (keeps snapshots)
+#   tmux-revive update --version X   install signed release X (pin it)
+#   tmux-revive update --main        follow main instead (not signed)
+#   tmux-revive version              the installed version, and where it came from
 #   tmux-revive uninstall [--purge]  remove (--purge also deletes snapshots)
 if ((BASH_VERSINFO[0] < 4)); then
 	for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [[ -x $b ]] && exec "$b" "$0" "$@"; done
@@ -270,12 +273,49 @@ uninstall)
 	[[ ${2:-} == --purge ]] && exec sh "$inst" --purge
 	exec sh "$inst" --uninstall
 	;;
+version)
+	printf 'tmux-revive %s\n' "$(cat "$ROOT/VERSION" 2>/dev/null || echo '(unknown)')"
+	[[ -s $ROOT/INSTALLED ]] && printf 'installed from %s\n' "$(head -n 1 "$ROOT/INSTALLED")"
+	exit 0
+	;;
 update)
-	# Rerun the latest installer: it replaces the app in place and reapplies the
-	# tmux, shell and agent setup. Snapshots are kept. REVIVE_SOURCE=dir updates
-	# from a local checkout instead of downloading.
+	# The installer replaces the app in place and reapplies the tmux, shell and agent
+	# setup. Snapshots are kept. REVIVE_SOURCE=dir updates from a local checkout.
 	shift
-	if [[ -n ${REVIVE_SOURCE:-} ]]; then exec sh "$REVIVE_SOURCE/install.sh" "$@"; fi
+	pin="" main=0 args=()
+	while (($#)); do
+		case $1 in
+		--version)
+			(($# > 1)) || { echo "tmux-revive: --version wants a version like 1.2.3" >&2; exit 2; }
+			pin=$2
+			shift
+			;;
+		--version=*) pin=${1#*=} ;;
+		--main) main=1 ;;
+		*) args+=("$1") ;;
+		esac
+		shift
+	done
+	pin=${pin#v}
+	[[ -z $pin || $pin =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tmux-revive: --version wants a version like 1.2.3" >&2; exit 2; }
+	((main)) && [[ -n $pin ]] && { echo "tmux-revive: --main or --version, not both" >&2; exit 2; }
+	# No release key in the installed installer yet: there's nothing signed to check, so
+	# follow main as before. Once the key is in, the latest signed release is the default.
+	if grep -q 'REPLACE-WITH-THE-RELEASE-PUBLIC-KEY' "$ROOT/install.sh" 2>/dev/null; then
+		[[ -n $pin ]] && { echo "tmux-revive: --version needs signed releases, and this install has no release key yet" >&2; exit 2; }
+		main=1
+	fi
+	if ((main)) || [[ -z $pin && -n ${REVIVE_REF:-} ]]; then to="${REVIVE_REF:-main} (not signed)"
+	elif [[ -n $pin ]]; then to="release $pin"
+	else to="the latest release"; fi
+	echo "tmux-revive: updating from $(cat "$ROOT/VERSION" 2>/dev/null || echo 'a version from before 1.0.0') to $to"
+	if [[ -n ${REVIVE_SOURCE:-} ]]; then exec sh "$REVIVE_SOURCE/install.sh" ${args[@]+"${args[@]}"}; fi
+	# A release is checked by the installer already here: its key is what a new release
+	# has to be signed with. A freshly downloaded installer would vouch for itself.
+	# REVIVE_REF in the environment is the same explicit opt-out as --main.
+	if ((!main)) && [[ -n $pin || -z ${REVIVE_REF:-} ]]; then
+		REVIVE_REF="" REVIVE_VERSION=$pin exec sh "$ROOT/install.sh" ${args[@]+"${args[@]}"}
+	fi
 	repo=${REVIVE_REPO:-odysseyalive/tmux-revive} ref=${REVIVE_REF:-main}
 	# Pin the commit first and hand it on, so the installer fetched here and the app it
 	# downloads are the same version even if main moves in between.
@@ -288,7 +328,7 @@ update)
 	trap 'rm -f "$inst"' EXIT
 	if command -v curl >/dev/null; then curl -fsSL "$url" -o "$inst"; else wget -qO "$inst" "$url"; fi ||
 		{ echo "tmux-revive: download failed: $url" >&2; exit 1; }
-	REVIVE_REF=$ref sh "$inst" "$@"
+	REVIVE_REF=$ref REVIVE_VERSION="" sh "$inst" ${args[@]+"${args[@]}"}
 	;;
 save) "$BASH" "$ROOT/scripts/save.sh" manual ;;
 restore) shift; "$BASH" "$ROOT/scripts/restore.sh" "$@" ;;
@@ -328,5 +368,5 @@ doctor)
 	DIR=$(revive_dir)
 	[[ -f $DIR/last/state.json ]] && ok "latest snapshot: $(jq -r .saved_at "$DIR/last/state.json")" || bad "no snapshot yet"
 	;;
-*) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+*) sed -n '2,/^[^#]/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 2 ;;
 esac

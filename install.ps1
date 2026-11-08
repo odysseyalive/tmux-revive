@@ -34,7 +34,9 @@ $cmd = 'set -f; IFS=; f=$(mktemp) || exit 1; trap ''rm -f -- $f'' EXIT; ' +
        '{ echo download failed: $REVIVE_URL >&2; exit 1; }; IFS='' ''; sh $f $REVIVE_ARGS'
 $saved = @{ WSLENV = $env:WSLENV; REVIVE_URL = $env:REVIVE_URL; REVIVE_REPO = $env:REVIVE_REPO; REVIVE_REF = $env:REVIVE_REF; REVIVE_ARGS = $env:REVIVE_ARGS }
 try {
-    $env:REVIVE_URL = $url; $env:REVIVE_REPO = $repo; $env:REVIVE_REF = $ref
+    # Only a REVIVE_REF you set goes across: left empty, the installer picks signed releases
+    # (or main, until there's a release key) itself.
+    $env:REVIVE_URL = $url; $env:REVIVE_REPO = $repo; $env:REVIVE_REF = if ($saved.REVIVE_REF) { $saved.REVIVE_REF } else { '' }
     $env:WSLENV = (@($env:WSLENV, 'REVIVE_URL/u', 'REVIVE_REPO/u', 'REVIVE_REF/u', 'REVIVE_ARGS/u') | Where-Object { $_ }) -join ':'
     wsl.exe -e sh -c $cmd
     $code = $LASTEXITCODE
