@@ -263,6 +263,15 @@ Want the panel to pop up with a key? This one uses prefix + P:
 set -g @revive-panel-key P
 ```
 
+Besides AI agents, a pane comes back running the program it had open if that
+program is on this list (the default is shown, the panel included). Add your
+own to it, or set it to `:all:` to relaunch anything. It's a list because
+relaunching a build, a `git push` or an `rm` after a reboot would run it again:
+
+```tmux
+set -g @revive-programs 'vim nvim vi man less more tail top htop btop watch ssh mosh journalctl lazygit lazydocker yazi ranger k9s tmux-revive'
+```
+
 Turn off the alert when an agent asks a question, or just its bell:
 
 ```tmux

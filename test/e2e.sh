@@ -47,6 +47,9 @@ t split-window -h -t work:1 -c /tmp 2>/dev/null || t split-window -h -t work -c 
 t send-keys -t work:0.1 'echo marker-from-before-reboot' Enter
 t new-window -t work -n pager -c "$T/proj" "less /etc/hostname"
 t new-session -d -s agent -c "$T/proj"
+# The panel, the way `tmux-revive panel` runs it: bash .../scripts/panel.sh.
+export AGENT_SAY_MAILBOX=$T/mail/mailbox.md AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false REVIVE_PANEL_SPLASH=0
+t new-window -d -t agent -n panel -c "$T/proj" "$ROOT/bin/tmux-revive panel"
 t send-keys -t agent "$T/bin/claude --model opus 'do not resend this prompt'" Enter
 sleep 1
 
@@ -125,6 +128,7 @@ check "claude pane resolved to its session" "jq -e '.. | objects | select(.kind?
 check "prompt argument dropped, --model kept" "jq -e '.. | objects | select(.kind? == \"claude\") | .cmd | (test(\"resend\") | not) and test(\"--model opus\")' $state >/dev/null"
 check "remote control carried over" "jq -e '.. | objects | select(.kind? == \"claude\") | .cmd | test(\"--remote-control demo\")' $state >/dev/null"
 check "pager pane captured as a program" "jq -e '[.. | objects | select(.kind? == \"program\") | .cmd] | any(test(\"less\"))' $state >/dev/null"
+check "panel captured as \`tmux-revive panel\` from its install" "jq -e --arg c \"$ROOT/bin/tmux-revive panel\" '[.. | objects | select(.kind? == \"program\") | .cmd] | index(\$c)' $state >/dev/null"
 check "split pane cwd kept" "jq -e '[.sessions[] | select(.name==\"work\") | .windows[0].panes[].cwd] | index(\"/tmp\")' $state >/dev/null"
 
 if ((AGENTS)); then
@@ -158,6 +162,7 @@ check "layout restored exactly" "[[ \$(t display -p -t work:0 '#{window_layout}'
 check "claude resumed exactly once, in its project" "[[ \$(wc -l <$T/claude-launches) -eq 1 ]] && grep -q '^$T/proj --resume 11111111-2222-3333-4444-555555555555' $T/claude-launches"
 check "scrollback replayed" "t capture-pane -p -t work:0.1 -S -50 | grep -q marker-from-before-reboot"
 check "pager relaunched" "t list-panes -a -F '#{pane_current_command}' | grep -q less"
+check "panel relaunched" "pgrep -f '$ROOT/scripts/panel.sh' >/dev/null"
 
 if ((AGENTS)); then
 	check "codex panes relaunched into their threads" "grep -q 'codexA resume 01aaaaaa-1111' $T/codex-launches && grep -q 'codexB resume 01aaaaaa-2222' $T/codex-launches"

@@ -376,7 +376,8 @@ detect_gemini() {
 }
 
 # Ordinary programs worth relaunching. ":all:" relaunches anything.
-PROGRAMS=" $(opt @revive-programs 'vim nvim vi man less more tail top htop btop watch ssh mosh journalctl lazygit lazydocker yazi ranger k9s') "
+PROGRAMS=" $(opt @revive-programs 'vim nvim vi man less more tail top htop btop watch ssh mosh journalctl lazygit lazydocker yazi ranger k9s tmux-revive') "
+INTERPRETERS=" sh bash zsh dash ksh python python3 node perl ruby "
 
 detect_program() { # foreground job of the pane's tty
 	local shell_pid=$1 fg name
@@ -384,10 +385,22 @@ detect_program() { # foreground job of the pane's tty
 	[[ -z $fg || $fg -le 0 ]] && return 1
 	# The pane's own process is the foreground job: idle if it is a shell,
 	# the program itself if the pane was started as `tmux new-window less`.
-	[[ $fg == "$shell_pid" && " sh bash zsh fish dash ksh tcsh nu " == *" ${COMM[$shell_pid]#-} "* ]] && return 1
+	# A shell running a script (`bash .../panel.sh`) is not idle.
 	read_argv "$fg"
 	((${#ARGV[@]})) || return 1
+	[[ $fg == "$shell_pid" && " sh bash zsh fish dash ksh tcsh nu " == *" ${COMM[$shell_pid]#-} "* &&
+		(-z ${ARGV[1]:-} || ${ARGV[1]} == -*) ]] && return 1
 	name=${ARGV[0]##*/}
+	# A script run through its interpreter goes by the script's name, the way
+	# `tmux-revive panel` runs as `bash .../scripts/panel.sh`.
+	[[ $INTERPRETERS == *" $name "* && -n ${ARGV[1]:-} && ${ARGV[1]} != -* ]] && name=${ARGV[1]##*/}
+	# The panel comes back as `tmux-revive panel` from the install it ran
+	# from, whatever its scripts are called inside.
+	if [[ $name == panel.sh && ${ARGV[1]} == */scripts/panel.sh && -x ${ARGV[1]%/scripts/panel.sh}/bin/tmux-revive ]]; then
+		[[ ${ARGV[2]:-} == --* ]] && return 1 # --once, --rows...: not the live panel
+		name=tmux-revive
+		ARGV=("${ARGV[1]%/scripts/panel.sh}/bin/tmux-revive" panel)
+	fi
 	[[ $PROGRAMS == *" :all: "* || $PROGRAMS == *" $name "* ]] || return 1
 	# The argv as it ran, -S included if vim had one. Adding -S for a
 	# Session.vim that merely sits in the directory would source a file vim
