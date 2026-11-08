@@ -279,10 +279,12 @@ stars() { # stars ROWS ONE-IN-N: sky dust in the top ROWS rows, holding still
 		done
 	done
 }
-twinkle() { # twinkle N ROWS: N stars in the top ROWS rows that take turns shining
+twinkle() { # twinkle N ROWS [over]: N stars in the top ROWS rows that take turns shining
+	# "over": drawn last, over a finished scene, so only where the sky shows through.
 	local k r c
 	for ((k = 0; k < $1; k++)); do
 		rnd; r=$((RV % ($2 > 0 ? $2 : 1))); rnd; c=$((RV % ART_W))
+		[[ -n ${3:-} && ${CH[r * ART_W + c]:- } != [' *·.'] ]] && continue
 		if (((AT + k) % 2)); then put $r $c "*" "$BWHT"; else put $r $c "·" "$GRY"; fi
 	done
 }
@@ -353,64 +355,121 @@ pixel_cell() { # pixel_cell ROW COL TOP BOTTOM
 	else put "$1" "$2" "▀" "$e[${tf};${bb}m"; fi
 }
 
-scene_mountains() { # a snow-capped range under the moon, dark wooded hills in front
-	local W=$ART_W H=$ART_H
-	local PH=$((H * 2)) c r k k2 n v jag=0 win=-1 top bot P
-	local -a pk=() ph=() ps=() far=() near=() tree=() snow=() back=() lit=()
-	stars "$H" 19
-	twinkle 2 $((H / 3))
-	rnd; put 0 $((W / 8 + RV % (W * 3 / 4 + 1))) "●" "$BWHT"
-	# The range: two to four big peaks, each a rough cone, roughened a little column by column.
-	rnd; n=$((2 + RV % 3))
+# Built back to front, as landscape ANSI is: each range further off is paler and bluer, the
+# nearest darkest and most saturated, and the far range takes the colour of the dusk glow.
+# All of it holds still but two stars, so a size drawn once is kept and only those redrawn.
+declare -A MT_CH=() MT_CO=() MT_SEED=()
+scene_mountains() { # great snowy peaks at dusk, far ranges behind, a pine forest in front
+	local W=$ART_W H=$ART_H key="$ART_W $ART_H" i
+	local PH=$((H * 2)) c r k n v y q d s g gu sw top ns sl mr mc my ts
+	local -a cx=() ch=() cl=() cr=() far=() main=() lit=() snow=() back=() wood=() hi=() px=()
+	# Stars in the high sky only; lower down the dusk glow takes over.
+	ns=$((H * 3 / 10 + 1))
+	if [[ -n ${MT_SEED[$key]+set} ]]; then
+		IFS=$'\x1f' read -r -a CH <<<"${MT_CH[$key]}"
+		IFS=$'\x1f' read -r -a CO <<<"${MT_CO[$key]}"
+		SEED=${MT_SEED[$key]}
+		twinkle 2 "$ns" over
+		return
+	fi
+	stars "$ns" 17
+	ts=$SEED; rnd # the twinkling stars come from here, drawn last
+	# The moon, upper left, so the peaks' left faces are the lit ones. Too small for a disc: a ●.
+	mr=$((PH / 14)); rnd; mc=$((W / 12 + RV % (W / 5 + 1))); rnd; my=$((PH - 2 - mr - RV % (PH / 12 + 1)))
+	((mr < 3)) && put $(((PH - 1 - my) / 2)) "$mc" "●" "$BWHT"
+	# The great peaks: two to four tall cones, steeper on one side, with crags on their flanks.
+	rnd; n=$((2 + RV % 2 + W / 90))
 	for ((k = 0; k < n; k++)); do
-		rnd; pk+=($((k * W / n + RV % (W / n + 1))))
-		rnd; ph+=($((PH * 55 / 100 + RV % (PH * 35 / 100 + 1))))
-		rnd; ps+=($((6 + RV % 6))) # tenths of a pixel down per column: steep, not cliffs
+		rnd; cx+=($((k * W / n + W / (2 * n) + RV % (W / (2 * n) + 1) - W / (4 * n))))
+		rnd; ch+=($((PH * 76 / 100 + RV % (PH * 20 / 100 + 1))))
+		rnd; cl+=($(((10 + RV % 10) * PH / 40 + 5))) # tenths of a pixel down per column
+		rnd; cr+=($(((10 + RV % 10) * PH / 40 + 5)))
 	done
-	rnd; P=$((RV % 97))
+	for ((k = 0; k < n * 3; k++)); do
+		rnd; q=$((k % n)) d=$((RV % (W / n + 1) - W / (2 * n)))
+		rnd; cx+=($((cx[q] + d))) ch+=($((ch[q] * (50 + RV % 35) / 100))) cl+=($((cl[q] * 3 / 2))) cr+=($((cr[q] * 3 / 2)))
+	done
+	sl=$((PH * 60 / 100)) s=0 g=0 gu=0 sw=0
 	for ((c = 0; c < W; c++)); do
-		# The peak standing tallest here decides the light: the side toward the moon (left of
-		# its summit) is lit, the other side in shadow.
-		v=0 k=0
-		for ((k2 = 0; k2 < n; k2++)); do
-			r=$((ph[k2] - (c > pk[k2] ? c - pk[k2] : pk[k2] - c) * ps[k2] / 10))
-			((r > v)) && v=$r k=$k2
+		v=0 q=0
+		for ((k = 0; k < ${#cx[@]}; k++)); do
+			d=$((c - cx[k]))
+			if ((d < 0)); then y=$((ch[k] + d * cl[k] / 10)); else y=$((ch[k] - d * cr[k] / 10)); fi
+			((y > v)) && v=$y q=$k
 		done
-		lit+=($((c <= pk[k])))
-		# A dim range further back, for distance.
-		tri $((c + P * 3)) $((W / 4 + 9)) $((PH / 7)); back+=($((PH * 3 / 10 + TRI)))
-		rnd; jag=$((jag + RV % 3 - 1)); ((jag > 2)) && jag=2; ((jag < -2)) && jag=-2
-		v=$((v + jag)); ((v > PH - 1)) && v=$((PH - 1)); ((v < 2)) && v=2
-		far+=("$v")
-		rnd; snow+=($((2 + RV % 3)))
-		# Wooded hills in front, and the ragged tops of their trees.
-		tri $((c + P)) $((W / 3 + 5)) $((PH / 8)); v=$((PH / 7 + TRI))
-		near+=("$v")
-		rnd; tree+=($((v + RV % 3)))
-	done
-	rnd; ((W > 20)) && win=$((W / 5 + RV % (W * 3 / 5)))
-	for ((r = 0; r < H; r++)); do
-		for ((c = 0; c < W; c++)); do
-			mpix $((PH - 1 - 2 * r)) $c; top=$MP
-			mpix $((PH - 2 - 2 * r)) $c; bot=$MP
-			pixel_cell $r $c $top $bot
-		done
-	done
-}
-mpix() { # mpix HEIGHT COL -> MP: the colour of that pixel of the mountain scene
-	local y=$1 c=$2
-	if ((y < near[c])); then
-		if ((c == win && y == near[c] - 3)); then MP=11; else MP=2; fi # one lit window
-	elif ((y < tree[c])); then MP=2
-	elif ((y < far[c])); then
-		# Snow on the high peaks; moonlit side bright, shadow side dim.
-		if ((far[c] - y <= snow[c] && far[c] > PH * 6 / 10)); then
-			((lit[c])) && MP=15 || MP=7
-		else
-			((lit[c])) && MP=12 || MP=4
+		lit+=($((c <= cx[q])))
+		# Ragged ridges: a walk of a pixel or two up and down along the crest.
+		rnd; s=$((s + RV % 5 - 2)); ((s > PH / 14 + 1)) && s=$((PH / 14 + 1)); ((s < -PH / 14 - 1)) && s=$((-PH / 14 - 1))
+		v=$((v + s)); ((v > PH - 1)) && v=$((PH - 1)); ((v < 1)) && v=1
+		main+=("$v")
+		# Snow above a wavering snowline, run down in gullies that narrow as they fall.
+		rnd; sw=$((sw + RV % 3 - 1)); ((sw > PH / 14)) && sw=$((PH / 14)); ((sw < -PH / 14)) && sw=$((-PH / 14))
+		if ((gu)); then g=$((g + 1 + PH / 40)); ((g >= gu)) && gu=0
+		elif ((g > 0)); then g=$((g - 1 - PH / 40)); ((g < 0)) && g=0
+		elif ((RV / 3 % 9 == 0 && v > sl + 2 && lit[c])); then gu=$((PH / 12 + RV / 27 % (PH / 12 + 1)))
 		fi
-	elif ((y < back[c])); then MP=8
-	else MP=-1; fi
+		y=$((sl + sw - g)); ((v > sl - 1 && v - y < 2)) && y=$((v - 2))
+		snow+=("$y")
+		# The far range: two waves laid together, low enough to show between the peaks.
+		tri $((c + W / 3)) $((W / 5 + 7)) $((PH / 7)); v=$((PH * 30 / 100 + TRI))
+		tri $((c * 2 + 5)) $((W / 9 + 5)) $((PH / 12)); far+=($((v + TRI + s / 2)))
+		hi+=($((main[c] > far[c] ? main[c] : far[c])))
+	done
+	# Two treelines of pines: a green one further off, then the forest close by, tall and black.
+	pines back $((PH * 17 / 100 + 1)) 1 $((PH / 10 + 2)) 2
+	pines wood $((PH * 6 / 100 + 1)) 2 $((PH * 16 / 100 + 3)) 3
+	for ((c = 0; c < W; c++)); do
+		top=${hi[c]}; ((my + mr + 1 > top)) && top=$((my + mr + 1))
+		for ((r = 0; r < H; r++)); do
+			px=(-1 -1)
+			((PH - 2 - 2 * r >= top)) || for ((q = 0; q < 2; q++)); do
+				y=$((PH - 1 - 2 * r - q)) v=-1
+				if ((y >= top)); then :
+				elif ((y < wood[c])); then v=0
+				elif ((y < back[c])); then v=2
+				elif ((y < main[c])); then
+					if ((y >= snow[c])); then v=$((lit[c] ? 15 : 7)); else v=$((lit[c] ? 12 : 4)); fi
+				elif ((y < far[c])); then v=5
+				elif ((mr > 2 && (c - mc) * (c - mc) + (y - my) * (y - my) <= mr * mr + mr)); then v=15
+				fi
+				px[q]=$v
+			done
+			if ((px[0] < 0 && px[1] < 0)); then
+				# Dusk: bands of shade toward the horizon, warmer and thicker as they go down,
+				# staggered where one band meets the next.
+				((r < ns)) && continue
+				rnd; y=$((PH - 1 - 2 * r + RV % 3 - 1))
+				if ((y < PH * 52 / 100)); then ((RV % 4)) && put $r $c "░" "$MAG"
+				elif ((y < PH * 62 / 100)); then ((RV % 2)) && put $r $c "░" "$BLU"
+				elif ((RV % 4 == 0)); then put $r $c "░" "$BLU"; fi
+			else
+				pixel_cell $r $c "${px[0]}" "${px[1]}"
+			fi
+		done
+	done
+	((${#MT_SEED[@]} > 3)) && MT_CH=() MT_CO=() MT_SEED=()
+	for ((i = 0; i < W * H; i++)); do CH[i]=${CH[i]-} CO[i]=${CO[i]-}; done
+	printf -v MT_CH["$key"] '%s\x1f' "${CH[@]}"
+	printf -v MT_CO["$key"] '%s\x1f' "${CO[@]}"
+	MT_SEED[$key]=$ts SEED=$ts
+	twinkle 2 "$ns" over
+}
+pines() { # pines ARRAY BASE GAP TALL SLOPE: a treeline's height per column into ARRAY
+	# Each pine is a spire falling SLOPE pixels a column, a shelf of branches on the tall ones,
+	# spaced so their tips stand apart and a row of them reads as forest, not hedge.
+	local -n tl=$1
+	local c x h d a v
+	for ((c = 0; c < W; c++)); do tl[c]=$2; done
+	for ((x = 0; x < W; x += 2 + RV % ($3 + 1))); do
+		rnd; h=$((1 + RV % $4))
+		for ((d = -h / $5; d <= h / $5; d++)); do
+			a=$((d < 0 ? -d : d))
+			v=$((h - $5 * a)); ((h >= 8 && a == 2)) && v=$((h - 2 * $5 + 1)) # a shelf of branches
+			v=$(($2 + v))
+			((x + d >= 0 && x + d < W && v > tl[x + d])) && tl[x + d]=$v
+		done
+		rnd
+	done
 }
 
 scene_space() { # a ringed planet, starfields and a comet crossing over time
