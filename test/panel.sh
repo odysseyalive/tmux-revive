@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T=$(mktemp -d "${TMPDIR:-/tmp}/panel-test.XXXXXX")
 unset TMUX TMUX_PANE
 export REVIVE_DIR=$T/data AGENT_SAY_MAILBOX=$T/mail/mailbox.md REVIVE_PANEL_REFRESH=1 REVIVE_PANEL_SPLASH=0
+# Host keys come from the test's own known_hosts, never yours, and never from ssh-keyscan.
+export AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false
 tm() { tmux -L "revive-panel-test-$$" -f /dev/null "$@"; }
 pass=0 fail=0
 check() {
@@ -15,7 +17,12 @@ check() {
 		printf '  \033[31mFAIL\033[0m %s\n' "$1"; ((fail++))
 	fi
 }
-cleanup() { tm kill-server 2>/dev/null; rm -rf "$T"; }
+cleanup() {
+	tm kill-server 2>/dev/null
+	tmux -L "revive-alert-$$" -f /dev/null kill-server 2>/dev/null
+	[[ -n ${dpid:-} ]] && kill "$dpid" 2>/dev/null
+	rm -rf "$T"
+}
 trap cleanup EXIT
 plain() { sed 's/\x1b\[[0-9;]*m//g'; }
 screen() { tm capture-pane -p -t work:panel; }
@@ -337,10 +344,21 @@ popup_square() {
 check "the popup's edges line up on every row" "popup_square"
 tm send-keys -t work:sshpanel Escape
 check "Esc closes the popup" "wait_ssh 'link cancelled' && ! sshscreen | grep -q 'LINK AGENTS ON'"
+# Linking asks you to confirm the host's key first; No (the first choice, so a bare Enter) links nothing.
+ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey"
+printf 'devbox.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >"$T/known_hosts"
+fp=$(ssh-keygen -lf "$T/hostkey.pub" | awk '{print $2}')
 tm send-keys -t work:sshpanel l; sleep 0.7; tm send-keys -t work:sshpanel Enter
-check "Enter links the chosen host and shows what happened" "wait_ssh \"couldn't run agent-say on devbox.example\""
+check "picking a host shows its key to confirm" "wait_ssh 'HOST KEY OF devbox.example' && wait_ssh 'its key is $fp (ED25519)' && wait_ssh \"No, don't link\""
+tm send-keys -t work:sshpanel Enter
+check "No links nothing" "wait_ssh 'link cancelled' && [[ ! -e $(dirname "$AGENT_SAY_MAILBOX")/links/devbox.example ]]"
+tm send-keys -t work:sshpanel l; sleep 0.7; tm send-keys -t work:sshpanel Enter; wait_ssh 'HOST KEY OF' >/dev/null; tm send-keys -t work:sshpanel 2
+check "Yes links the chosen host and shows what happened" "wait_ssh \"couldn't run agent-say on devbox.example\""
 # Pretend the link is up, then take it down with U.
 st=$(dirname "$AGENT_SAY_MAILBOX"); mkdir -p "$st/links/devbox.example"; touch "$st/links/devbox.example/on"
+# What the link lets that computer do shows beside it.
+touch "$st/links/devbox.example/read-only"; printf 'me\nyou\n' >"$st/links/devbox.example/allow"
+check "LINKS marks a read-only link and its allowlist" "wait_ssh 'devbox.example · read-only · only me,you'"
 check "a linked host is no longer offered" "for _ in \$(seq 1 20); do sshscreen | grep -q 'devbox.example · ssh in' || break; sleep 0.2; done; ! sshscreen | grep -q 'devbox.example · ssh in'"
 tm send-keys -t work:sshpanel u; sleep 0.7
 check "U opens a popup listing the links" "wait_ssh 'UNLINK' && sshscreen | grep -q 'devbox.example  ·'"
@@ -361,10 +379,11 @@ rsock=$(tmux -L "revive-panel-remote-$$" -f /dev/null display -p '#{socket_path}
 # The remote command is the last argument; only the two panel commands are answered, and the
 # peek's id and count go through as plain arguments, never through a shell.
 {
-	printf '#!/bin/bash\nunset TMUX TMUX_PANE\nexport REVIVE_SOCKET=%q REVIVE_DIR=%q\npanel=%q\n' "$rsock" "$T/remote-data" "$ROOT/scripts/panel.sh"
+	printf '#!/bin/bash\nunset TMUX TMUX_PANE\nexport REVIVE_SOCKET=%q REVIVE_DIR=%q REVIVE_VERSION_FILE=%q\npanel=%q T=%q\n' "$rsock" "$T/remote-data" "$T/remote-version" "$ROOT/scripts/panel.sh" "$T"
 	cat <<'EOF'
 cmd=${!#}
 if [[ $cmd =~ \ panel\ --rows$ ]]; then exec bash "$panel" --rows
+elif [[ $cmd == *' tmux-revive update '* ]]; then printf '%s' "$cmd" >"$T/update.cmd"; printf 'downloading\ntmux-revive 9.9.9 installed\n\n'; exit 0
 elif [[ $cmd =~ \ panel\ --peek\ \'([^\']*)\'\ ([^ ]*)$ ]]; then exec bash "$panel" --peek "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 elif [[ $cmd =~ \ panel\ --keys\ \'([^\']*)\'((\ [^ ]+)+)$ ]]; then read -ra k <<<"${BASH_REMATCH[2]}"; exec bash "$panel" --keys "${BASH_REMATCH[1]}" "${k[@]}"
 fi
@@ -374,7 +393,8 @@ EOF
 # An older tmux-revive over there: rows, but no --peek.
 printf '#!/bin/bash\n[[ ${!#} == *--rows ]] && exec %q "$@"\nexit 1\n' "$T/fakessh" >"$T/oldssh"
 printf '#!/bin/sh\nexit 255\n' >"$T/deadssh"
-chmod +x "$T/fakessh" "$T/oldssh" "$T/deadssh"
+printf '#!/bin/sh\nexit 1\n' >"$T/norowssh" # reached, but its tmux-revive has no --rows
+chmod +x "$T/fakessh" "$T/oldssh" "$T/deadssh" "$T/norowssh"
 st=$(dirname "$AGENT_SAY_MAILBOX")
 mkdir -p "$st/links/far.example"; touch "$st/links/far.example/on"; printf 'far-top\nfar-two\n' >"$st/links/far.example/names"
 far() { tm run-shell "AGENT_SAY_SSH=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
@@ -393,6 +413,35 @@ check "a tmux-revive there too old to peek says so" "grep -q 'far-sh' <<<\"\$out
 rm -f "$st/panel/far.example.rows"
 out=$(farsel "$T/deadssh" far-top@far.example | plain)
 check "and an unreachable one has no peek either" "peekbox <<<\"\$out\" | grep -qF 'on far.example: no peek'"
+# Versions: a linked computer's rows say its version, and its heading compares it with this one's.
+echo 1.1.0 >"$T/remote-version"; echo 1.2.0 >"$T/local-version"
+farv() { rm -f "$st/panel/far.example.rows"*; tm run-shell "AGENT_SAY_SSH=$1 REVIVE_VERSION_FILE=$T/${2:-local-version} COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
+out=$(farv "$T/fakessh")
+check "an older linked computer shows its version, out of date" "grep -c 'FAR.EXAMPLE · linked · v1.1.0 · out of date' <<<\"\$out\" >/dev/null && grep -c 'this computer · v1.2.0' <<<\"\$out\" >/dev/null"
+echo 1.2.0 >"$T/remote-version"
+out=$(farv "$T/fakessh")
+check "the same version isn't" "grep -c 'FAR.EXAMPLE · linked · v1.2.0 *║' <<<\"\$out\" >/dev/null"
+echo 1.1.0 >"$T/remote-version"
+out=$(farv "$T/fakessh" no-such-file)
+check "with this computer's version unknown, nothing is called out of date" "grep -c 'FAR.EXAMPLE · linked · v1.1.0 *║' <<<\"\$out\" >/dev/null && ! grep -c 'out of date' <<<\"\$out\" >/dev/null"
+out=$(farv "$T/norowssh")
+check "one that answers no rows is too old to tell" "grep -c 'FAR.EXAMPLE · linked · too old to tell' <<<\"\$out\" >/dev/null && grep -c 'far-two *◌ linked' <<<\"\$out\" >/dev/null"
+out=$(farv "$T/deadssh")
+check "one that can't be reached isn't called old" "grep -c 'FAR.EXAMPLE · linked *║' <<<\"\$out\" >/dev/null"
+printf '#version 1.2.3;touch %s/pwn\n' "$T" >"$T/badver"; head -c 2000 /dev/zero | tr '\0' 9 >>"$T/badver"; printf '\n' >>"$T/badver"
+printf '#!/bin/bash\n%q "$@" | sed 1d | cat %q -\n' "$T/fakessh" "$T/badver" >"$T/badverssh"; chmod +x "$T/badverssh"
+out=$(farv "$T/badverssh")
+check "a version line that isn't one is ignored" "grep -c 'FAR.EXAMPLE · linked · too old to tell' <<<\"\$out\" >/dev/null && grep -c 'far-top' <<<\"\$out\" >/dev/null && ! grep -c '1.2.3' <<<\"\$out\" >/dev/null && [[ ! -e $T/pwn ]]"
+check "--rows says its version first" "[[ \$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data REVIVE_VERSION_FILE=$T/remote-version bash $ROOT/scripts/panel.sh --rows | head -n 1) == '#version 1.1.0' ]]"
+# A panel from before versions reads those rows as before: the version line is skipped.
+mkdir -p "$T/old/scripts"
+if git -C "$ROOT" show d621bda:scripts/panel.sh >"$T/old/scripts/panel.sh" 2>/dev/null; then
+	cp "$ROOT/scripts/common.sh" "$T/old/scripts/"
+	rm -f "$st/panel/far.example.rows"*
+	out=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $T/old/scripts/panel.sh --once" | plain)
+	check "an older panel skips the version line" "grep -c 'far-top *top *▸ running' <<<\"\$out\" >/dev/null && ! grep -c 'version' <<<\"\$out\" >/dev/null"
+fi
+rm -f "$st/panel/far.example.rows"*
 # --peek itself: only a pane id and a line count get through.
 rpanel() { REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data bash "$ROOT/scripts/panel.sh" "$@" 2>/dev/null; }
 # Counted straight from the pipe: a $( ) would strip the blank bottom rows being checked for.
@@ -436,7 +485,7 @@ touch -d '-2 minutes' "$st/panel/far.example.peek-77"
 farsel "$T/fakessh" far-sh@far.example >/dev/null
 check "the cache is private (700, files 600)" "[[ \$(stat -c %a $st/panel) == 700 && \$(stat -c %a $st/panel/far.example.rows) == 600 ]] && ! find $st/panel -type f -perm /077 | grep -c . >/dev/null"
 check "a peek over a minute old is deleted" "[[ ! -e $st/panel/far.example.peek-77 ]]"
-check "and no temporary files are left" "! ls $st/panel | grep -cvE '^far\\.example\\.(rows|peek-[0-9]+(\\.fail)?)$' >/dev/null"
+check "and no temporary files are left" "! ls $st/panel | grep -cvE '^far\\.example\\.(rows(\\.old)?|peek-[0-9]+(\\.fail)?)$' >/dev/null"
 # Bidi overrides and zero-width characters from over there are stripped like controls.
 printf '%%9\x1fbidi\xe2\x80\xae0:0\x1fzw\xe2\x80\x8bname\x1fapp\x1fwaiting\x1ffo\xe2\x81\xa6ld\x1fmain\x1f1\x1f1\x1f1\n' >"$T/bidirows"
 printf '#!/bin/sh\ncat %s\n' "$T/bidirows" >"$T/bidissh"; chmod +x "$T/bidissh"
@@ -445,7 +494,7 @@ out=$(tm run-shell "AGENT_SAY_SSH=$T/bidissh COLUMNS=140 LINES=50 REVIVE_DIR=$RE
 check "bidi overrides and zero-width characters from over there are stripped" "grep -c 'zwname' <<<\"\$out\" >/dev/null && ! grep -c \$'\\u202e\\|\\u200b\\|\\u2066' <<<\"\$out\" >/dev/null"
 # Live: select a pane on the linked computer, and the keys that can't act on it fade.
 rm -f "$st/panel/far.example.rows"
-tm new-window -d -t work -n farpanel "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n farpanel "env AGENT_SAY_SSH=$T/fakessh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
 farscreen() { tm capture-pane -p -t work:farpanel; }
 for _ in $(seq 1 60); do farscreen | grep -q 'far-top' && break; sleep 0.25; done
 for _ in $(seq 1 20); do farscreen | grep -q '▶ far-top' && break; tm send-keys -t work:farpanel Down; sleep 0.4; done
@@ -454,6 +503,15 @@ grey=$'\e[90m[J]ump' lit=$'\e[93mS'
 check "its peek tracks that pane's screen live" "for _ in \$(seq 1 30); do farscreen | sed -n '/PEEK · far-top/,\$p' | grep -c 'Mem' >/dev/null && break; sleep 0.3; done; farscreen | sed -n '/PEEK · far-top/,\$p' | grep -c 'Mem' >/dev/null"
 check "on a linked computer's pane, J and N fade" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\" && bar | grep -qF $'\\e[90m[N]ame'"
 check "while keys that still work stay lit" "bar | grep -qF \"\$lit\""
+# V: update tmux-revive over there, once confirmed, with a fixed command.
+check "on a linked computer's pane, V offers an update" "bar | grep -cF $'\\e[93mV' >/dev/null && farscreen | grep -c 'out of date' >/dev/null"
+tm send-keys -t work:farpanel v
+check "V asks first" "for _ in \$(seq 1 20); do farscreen | grep -c 'Update tmux-revive on far.example?' >/dev/null && break; sleep 0.2; done; farscreen | grep -c 'Yes, update it over ssh' >/dev/null"
+tm send-keys -t work:farpanel Escape
+check "and Esc updates nothing" "for _ in \$(seq 1 20); do farscreen | grep -c 'update cancelled' >/dev/null && break; sleep 0.2; done; farscreen | grep -c 'update cancelled' >/dev/null && [[ ! -e $T/update.cmd ]]"
+tm send-keys -t work:farpanel v; sleep 0.5; tm send-keys -t work:farpanel Enter
+check "yes runs tmux-revive update there and shows how it went" "for _ in \$(seq 1 30); do farscreen | grep -c 'on far.example: tmux-revive 9.9.9 installed' >/dev/null && break; sleep 0.2; done; farscreen | grep -c 'on far.example: tmux-revive 9.9.9 installed' >/dev/null"
+check "with the fixed command, nothing else" "[[ \$(cat $T/update.cmd) == 'PATH=\"\$HOME/.local/bin:\$PATH\" tmux-revive update </dev/null 2>&1' ]]"
 tm send-keys -t work:farpanel 1
 check "back on a pane here, J lights up again" "for _ in \$(seq 1 25); do farscreen | grep -q '\[1\] ▶' && ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; farscreen | grep -q '\[1\] ▶' && ! bar | grep -qF \"\$grey\""
 tm send-keys -t work:farpanel q
@@ -535,6 +593,49 @@ check "git state still shows (branch, dirty)" "grep -qF 'fsmtest*' <<<\"\$bare\"
 check "a repo's core.fsmonitor command never runs" "[[ ! -e $T/fsmonitor-ran ]]"
 check "a repo's hooks never run" "[[ ! -e $T/hook-ran ]]"
 check "a repo's own clean filter never runs" "[[ ! -e $T/filter-ran ]]"
+
+echo "question alerts"
+# daemon.sh on a server of its own says when an agent starts asking, panel or not. A client
+# attached to that server runs in a window here, so its messages and bell can be seen.
+at() { tmux -L "revive-alert-$$" -f /dev/null "$@"; }
+at new-session -d -s asks -x 120 -y 40 "bash --norc --noprofile"
+at send-keys -t asks:0 'echo "Do you want to proceed? (y/n)"' Enter # a shell, not an agent
+at set-option -g display-time 30000
+at set-option -g @revive-shutdown-hook off
+at set-option -g @revive-interval 0
+asock=$(at display -p '#{socket_path}')
+client() { tm kill-window -t work:client 2>/dev/null; tm new-window -d -t work -n client "env -u TMUX tmux -L revive-alert-$$ -f /dev/null attach -t asks"; sleep 0.5; }
+cscreen() { tm capture-pane -p -t work:client; }
+bell() { [[ $(tm display -p -t work:client '#{window_bell_flag}') == 1 ]]; }
+alerts() { local n; n=$(grep -c "question: $1" "$T/adata/revive.log" 2>/dev/null); echo "${n:-0}"; }
+wait_alerts() { for _ in $(seq 1 40); do (($(alerts "$1") >= $2)) && return 0; sleep 0.25; done; return 1; }
+client
+REVIVE_SOCKET=$asock REVIVE_DIR=$T/adata REVIVE_DAEMON_TICK=1 bash "$ROOT/scripts/daemon.sh" </dev/null >/dev/null 2>&1 &
+dpid=$!
+at new-window -d -t asks -n q "$T/bin/codex $T/ask.sh $T/ans4"
+at set-option -p -t asks:q @agent asker4
+check "an agent asking a question is announced on the client" "wait_alerts asker4 1 && for _ in \$(seq 1 20); do cscreen | grep -c 'asker4 (asks:1.0) is asking a question' >/dev/null && break; sleep 0.2; done; cscreen | grep -c 'asker4 (asks:1.0) is asking a question' >/dev/null"
+check "with a bell in the client showing its session" "for _ in \$(seq 1 20); do bell && break; sleep 0.2; done; bell"
+sleep 3
+check "once per question, not on every look" "[[ \$(alerts asker4) == 1 ]]"
+check "--asking lists that pane, as the daemon reads it" "[[ \$(REVIVE_SOCKET=$asock bash $ROOT/scripts/panel.sh --asking) == \$(at display -p -t asks:q '#{pane_id}')\$'\\t'asks:1.0\$'\\t'asker4 ]]"
+# Answered, then asked again: a new question, so a new alert. This time with the bell off.
+at send-keys -t asks:q Enter; sleep 2.5
+at set-option -g @revive-question-bell off
+client
+at respawn-pane -k -t asks:q "$T/bin/codex $T/ask.sh $T/ans5"
+check "the next question is announced again" "wait_alerts asker4 2"
+sleep 1.5
+check "with @revive-question-bell off, no bell" "! bell"
+at send-keys -t asks:q Enter; sleep 2.5
+at set-option -g @revive-question-alert off
+at respawn-pane -k -t asks:q "$T/bin/codex $T/ask.sh $T/ans6"
+sleep 3
+check "with @revive-question-alert off, none at all" "[[ \$(alerts asker4) == 2 ]]"
+check "a pane that isn't an agent is never announced" "[[ \$(grep -c 'question:' $T/adata/revive.log) == 2 ]]"
+kill "$dpid" 2>/dev/null
+tm kill-window -t work:client 2>/dev/null
+at kill-server 2>/dev/null
 
 echo "$pass passed, $fail failed"
 ((fail == 0))

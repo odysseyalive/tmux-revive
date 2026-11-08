@@ -39,6 +39,25 @@ That's it. If tmux is already running, it's protected from now on. The
 installer backs up every file before it touches it, and `tmux-revive uninstall`
 undoes all of it.
 
+### Signed releases
+
+The installer installs the latest release, and only after checking it: the
+release's `SHA256SUMS` must carry a signature from the release key written
+into `install.sh` itself, and the tarball must match it. If anything doesn't
+check out it stops, installs nothing, and says why. It never falls back to
+something unchecked. The check uses `ssh-keygen -Y verify` (OpenSSH 8.1 or
+later).
+
+To install a particular version, pin it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.sh | REVIVE_VERSION=1.0.0 sh
+```
+
+To follow `main` instead, set `REVIVE_REF=main` (or a branch, tag or commit).
+That isn't signed: it trusts HTTPS and the GitHub account, and installs the
+exact commit the branch pointed at.
+
 ## Everyday use
 
 There's nothing new to learn. Work in tmux the way you always have, detach or
@@ -89,6 +108,12 @@ Install the latest version (your saves are kept):
 tmux-revive update
 ```
 
+It shows the version it moves from and to, and checks the new release against
+the key in the copy you already have. `tmux-revive update --version 1.2.3`
+installs that release (going back is allowed only this way), `tmux-revive
+update --main` follows `main` unsigned, and `tmux-revive version` shows what's
+installed and where it came from.
+
 Remove it (add `--purge` to also delete your saves):
 
 ```sh
@@ -117,8 +142,14 @@ its pane, typed answers included, until it has its answer or you press **Ctrl-]*
 a chat with the agent, **J** takes you to its pane.
 
 When a pane ssh's into another computer, the panel spots it and offers to link
-the agents there: **L** links it, **U** unlinks. Once linked, that computer's panes show up
-in the list too, grouped under its name.
+the agents there: **L** links it (after showing you the computer's host key to
+confirm), **U** unlinks. Once linked, that computer's panes show up in the list too,
+grouped under its name, with the version of tmux-revive it runs. If that's older than
+yours, its heading says `out of date`: select one of its panes and press **V** to update
+it over ssh, after a yes.
+
+You don't need the panel open to hear about questions: when any agent starts asking
+one, tmux shows a message naming the pane and rings the bell, once per question.
 
 Every time it opens, one of five pieces of old-school ANSI art fills whatever
 space is left over, sized to your pane.
@@ -176,6 +207,20 @@ asking for a password. You can test that with:
 ssh -o BatchMode=yes devbox true
 ```
 
+The first time, it shows the server's host key fingerprint and asks you to confirm it
+(from a script, add `--yes` once you've checked it). If that key changes later, the
+link stops and `agent-say link` says so, until you link again and confirm the new one.
+
+You can limit what the other computer may do here:
+
+```sh
+agent-say link devbox --read-only        # its messages wait in the mailbox, never typed in
+agent-say link devbox --allow shop-dev   # its messages may reach only these panes
+```
+
+`--read-write` and `--allow-all` undo those, and `agent-say link` on its own lists
+your links with their key and limits.
+
 Then send by name, the same as before:
 
 ```sh
@@ -210,4 +255,11 @@ Want the panel to pop up with a key? This one uses prefix + P:
 
 ```tmux
 set -g @revive-panel-key P
+```
+
+Turn off the alert when an agent asks a question, or just its bell:
+
+```tmux
+set -g @revive-question-alert off
+set -g @revive-question-bell off
 ```

@@ -213,6 +213,11 @@ exec env -u AGENT_SAY_PANE -u AGENT_SAY_LOCAL_ONLY PATH="$T/rbin:\$PATH" XDG_STA
 EOF
 chmod +x "$T/bin/fakessh"
 export AGENT_SAY_SSH=$T/bin/fakessh AGENT_SAY_REMOTE_CMD=$ROOT/bin/agent-say AGENT_SAY_HOST=laptop AGENT_SAY_LINK_INTERVAL=0.3
+# The host keys it checks come from a known_hosts file of the test's own, never ssh-keyscan.
+ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey1" && ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey2"
+printf 'devbox %s\n' "$(cut -d' ' -f1,2 "$T/hostkey1.pub")" >"$T/known_hosts"
+fp1=$(ssh-keygen -lf "$T/hostkey1.pub" | awk '{print $2}') fp2=$(ssh-keygen -lf "$T/hostkey2.pub" | awk '{print $2}')
+export AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false
 there() { "$T/bin/fakessh" devbox "$*"; }
 "$T/rbin/tmux" new-session -d -s r -x 200 -y 50 "$T/bin/crush"
 RC=$("$T/rbin/tmux" display -p -t r '#{pane_id}')
@@ -223,8 +228,10 @@ AGENT_SAY_PANE=$LC say name me >/dev/null
 seen_there() { "$T/rbin/tmux" capture-pane -p -J -t "$RC" -S -100 | grep -qF -- "$1"; }
 wait_seen() { for _ in $(seq 40); do seen "$1" "$2" && return 0; sleep 0.25; done; return 1; }
 
-out=$(say link devbox 2>&1)
-check "link reaches the other machine and lists its panes ($out)" "[[ '$out' == *'Its panes: codex'* ]]"
+out=$(say link devbox 2>&1 </dev/null)
+check "a first link shows the host key and, off a terminal, wants --yes ($fp1)" "[[ \$out == *\"devbox's host key:\"*'$fp1 (ED25519)'*'--yes'* && ! -e \$(dirname $AGENT_SAY_MAILBOX)/links/devbox/on ]]"
+out=$(say link devbox --yes 2>&1 </dev/null)
+check "link reaches the other machine and lists its panes ($out)" "[[ \$out == *'Its panes: codex'* ]]"
 check "the link keeps running in the background" "say link | grep -q '^devbox  running'"
 AGENT_SAY_PANE=$LC say codex "ping from here" >/dev/null
 check "a plain name reaches the pane on the linked machine" "seen_there '[agent-msg from=me@laptop' && seen_there 'ping from here'"
@@ -270,6 +277,42 @@ check "and the link keeps checking in meanwhile" "[[ -n \$(find $T/rstate/agent-
 tmux send-keys -t "$X" C-u
 check "it is delivered once the prompt is empty" "wait_typed codex '[agent-msg from=codex@devbox \$(date -u +%H:%MZ)] after your draft -- To answer, run the shell command: agent-say --from delta codex@devbox \"<your reply>\"' || grep -q 'after your draft' $T/codex.typed"
 check "and only once" "[[ \$(grep -c 'after your draft' $T/codex.typed) -eq 1 ]]"
+
+echo "link trust"
+lk=$(dirname "$AGENT_SAY_MAILBOX")/links/devbox
+mailcount() { local n; n=$(grep -c -- "$1" "$AGENT_SAY_MAILBOX"); echo "${n:-0}"; }
+wait_mail() { for _ in $(seq 40); do (($(mailcount "$1") >= ${2:-1})) && return 0; sleep 0.25; done; return 1; }
+check "the confirmed key is kept with the link" "[[ \$(cat $lk/fingerprint) == '$fp1 (ED25519)' ]]"
+out=$(say link devbox --read-only 2>&1 </dev/null)
+check "changing a link's mode asks nothing again ($out)" "[[ '$out' == *'Read-only'* && '$out' != *'host key'* ]]"
+out=$(say link)
+check "link lists the mode and the key ($out)" "[[ '$out' == 'devbox  running  read-only  key: $fp1 (ED25519)  names: codex '* ]]"
+there "$ROOT/bin/agent-say --from codex me@laptop 'read only please'" >/dev/null
+check "a read-only link's message is held in the mailbox" "wait_mail 'held: read-only link' && grep -A1 'held: read-only link' $AGENT_SAY_MAILBOX | grep -c 'read only please' >/dev/null"
+check "and not typed in" "! seen $LC 'read only please'"
+check "and the other side has it acknowledged, not fetched again" "for _ in \$(seq 20); do [[ -z \$(ls $outbox) ]] && break; sleep 0.2; done; [[ -z \$(ls $outbox) && \$(mailcount 'held: read-only') == 1 ]]"
+check "it may still see the names here" "[[ -n \$(find $T/rstate/agent-say/peers/laptop/names -newermt '-3 seconds') ]] && grep -cx me $T/rstate/agent-say/peers/laptop/names >/dev/null"
+out=$(say link devbox --read-write --allow me,alpha2 2>&1 </dev/null)
+check "an allowlist is set ($out)" "[[ '$out' == *'can reach only: alpha2,me.'* && ! -e $lk/read-only ]]"
+there "$ROOT/bin/agent-say --from codex delta@laptop 'not for delta'" >/dev/null
+there "$ROOT/bin/agent-say --from codex me@laptop 'allowed to me'" >/dev/null
+check "an allowlisted name gets its message" "wait_seen $LC 'allowed to me'"
+check "another name's is NOT DELIVERED, not allowed" "wait_mail 'NOT DELIVERED: not allowed' && ! grep -c 'not for delta' $T/codex.typed >/dev/null"
+check "--allow takes only names a pane can have" "! say link devbox --allow 'x;y' </dev/null 2>/dev/null && ! say link devbox --allow '' </dev/null 2>/dev/null && [[ \$(paste -sd, $lk/allow) == alpha2,me ]]"
+say link devbox --allow-all </dev/null >/dev/null
+check "--allow-all lifts it" "[[ ! -e $lk/allow ]]"
+# The host's key changes (another computer answers to devbox now): the poller stops.
+printf 'devbox %s\n' "$(cut -d' ' -f1,2 "$T/hostkey2.pub")" >"$T/known_hosts"
+check "a changed host key stops the poller" "for _ in \$(seq 40); do pgrep -f 'agent-say _poll devbox' >/dev/null || break; sleep 0.25; done; ! pgrep -f 'agent-say _poll devbox' >/dev/null"
+out=$(say link)
+check "and link says why ($out)" "[[ \$out == *'not running'*'host key changed'* ]]"
+there "$ROOT/bin/agent-say --from codex me@laptop 'while the key is wrong'" >/dev/null
+sleep 1
+check "nothing comes in from it meanwhile" "! seen $LC 'while the key is wrong' && [[ -n \$(ls $outbox) ]]"
+out=$(say link devbox 2>&1 </dev/null)
+check "linking again shows the new key, warns, and wants --yes ($fp2)" "[[ \$out == *'$fp2'*'WARNING'*'$fp1'*'--yes'* ]] && ! pgrep -f 'agent-say _poll devbox' >/dev/null"
+say link devbox --yes </dev/null >/dev/null 2>&1
+check "confirmed, the link runs again and what waited arrives" "wait_seen $LC 'while the key is wrong' && [[ \$(cat $lk/fingerprint) == '$fp2 (ED25519)' ]]"
 
 say _resume-links; say _resume-links; sleep 0.5
 check "starting the link twice runs one poller" "[[ \$(pgrep -fc 'agent-say _poll devbox') -eq 1 ]]"

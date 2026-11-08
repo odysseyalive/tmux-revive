@@ -11,7 +11,12 @@
 #   agent-say <to> -                   send the message read from stdin
 #   agent-say show <id>                one message, by the id its notice gave
 #   agent-say link [ssh-host]          keep a link to tmux on a machine you ssh into: names on
-#                                      either side reach each other, replies come back over it
+#                                      either side reach each other, replies come back over it.
+#                                      The first time, it shows the host's key fingerprint to
+#                                      confirm (--yes when not on a terminal). No host: list links.
+#     --read-only                      its agents may see names here, but nothing they send is
+#                                      typed in: it is held in the mailbox (--read-write undoes it)
+#     --allow name1,name2              what it sends may reach only these panes (--allow-all)
 #   agent-say unlink <ssh-host>        stop that link
 #   agent-say read [n] [name]          last n mailbox entries (default 20), optionally only to <name>
 #
@@ -300,6 +305,7 @@ ssh_to() { # ssh_to HOST REMOTE-COMMAND (stdin passes through)
 # seconds (`agent-say _sync`). Each check-in swaps the pane names on both sides, hands B the
 # messages A delivered (acks), and brings back what B's agents queued for A.
 #   on A: $STATE/links/<host>/{on,pid,names}       B's names, as A last saw them
+#         .../{fingerprint,read-only,allow}        B's host key as you confirmed it; what B may do
 #   on B: $STATE/peers/<label>/{alive,names,outbox/} A's names; messages waiting for A
 peer_alive() { [[ -n "$(find "$STATE/peers/$1/alive" -mmin -1 2>/dev/null)" ]]; } # checked in within a minute
 # The poller holds an flock on links/<host>/lock for as long as it runs. Without flock
@@ -312,6 +318,48 @@ link_running() {
 		return
 	fi
 	pid="$(cat "$d/pid" 2>/dev/null)" && [[ -n "$pid" && "$(ps -ww -o args= -p "$pid" 2>/dev/null)" == *"_poll $1"* ]]
+}
+
+# The host keys ssh checks a host against, as fingerprints ("SHA256:... (ED25519)", sorted),
+# from the known_hosts files ssh itself reads for it. host_keys HOST [scan]: with scan, a host
+# not in them is asked with ssh-keyscan instead, so a first link has something to show.
+kh_find() { # kh_find HOST -> KH_KEY (as known_hosts names it) and KH_FILES
+	local name=$1 port=22 k v f
+	KH_FILES=()
+	while read -r k v; do
+		case $k in
+			hostname) name=$v ;;
+			port) port=$v ;;
+			userknownhostsfile | globalknownhostsfile) for f in $v; do KH_FILES+=("${f/#\~/$HOME}"); done ;;
+		esac
+	done < <(timeout 5 $SSH -G "$1" 2>/dev/null </dev/null)
+	# shellcheck disable=SC2206 # a list of paths, as ssh's own option takes it
+	[[ -n ${AGENT_SAY_KNOWN_HOSTS:-} ]] && KH_FILES=($AGENT_SAY_KNOWN_HOSTS)
+	((${#KH_FILES[@]})) || KH_FILES=("$HOME/.ssh/known_hosts" "$HOME/.ssh/known_hosts2" /etc/ssh/ssh_known_hosts)
+	KH_KEY=$name KH_NAME=$name KH_PORT=$port
+	[[ $port == 22 ]] || KH_KEY="[$name]:$port"
+}
+kh_keys() { # fingerprints for KH_KEY in KH_FILES
+	local f
+	for f in "${KH_FILES[@]}"; do
+		[[ -r $f ]] && ssh-keygen -F "$KH_KEY" -f "$f" 2>/dev/null
+	done | grep -v '^@revoked' | ssh-keygen -lf - 2>/dev/null | awk '{print $2, $NF}' | sort -u || true
+}
+host_keys() {
+	local keys
+	kh_find "$1"
+	keys="$(kh_keys)"
+	if [[ -z $keys && ${2:-} == scan ]]; then
+		keys="$(${AGENT_SAY_KEYSCAN:-ssh-keyscan} -T 5 -p "$KH_PORT" -- "$KH_NAME" 2>/dev/null </dev/null |
+			ssh-keygen -lf - 2>/dev/null | awk '{print $2, $NF}' | sort -u || true)"
+	fi
+	printf '%s' "$keys"
+}
+# Has the key changed from the one confirmed? Only if one confirmed is gone: ssh adds a host's
+# other keys to known_hosts by itself (UpdateHostKeys), and that is no change of computer.
+keys_changed() { # keys_changed CONFIRMED NOW
+	[[ -n $1 && -n $2 ]] || return 1
+	[[ -n "$(grep -vxF -f <(printf '%s\n' "$2") <<<"$1")" ]]
 }
 
 # Where else a name lives: "name@host" for each linked machine that has a pane by that name.
@@ -441,7 +489,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 from=""
 if [[ "${1:-}" == --from ]]; then from="${2:-}"; shift 2 || die "--from needs a value"; fi
 
-cmd="${1:-}"; [[ -n "$cmd" ]] || { sed -n '2,24p' "$0"; exit 1; }
+cmd="${1:-}"; [[ -n "$cmd" ]] || { sed -n '2,29p' "$0"; exit 1; }
 
 case "$cmd" in
 	name)
@@ -523,28 +571,84 @@ case "$cmd" in
 			sed "s|^|-  |; s|\$|@$h  ($how)|" "$d/names"
 		done ;;
 	link)
-		host="${2:-}"
+		host="" yes="" ro="" allow="" set_allow=""
+		shift
+		while (($#)); do
+			case $1 in
+				--yes | -y) yes=1 ;;
+				--read-only) ro=on ;;
+				--read-write) ro=off ;;
+				--allow) allow="${2:-}" set_allow=1; [[ -n $allow ]] || die "--allow needs names: --allow name1,name2"; shift ;;
+				--allow=*) allow="${1#--allow=}" set_allow=1; [[ -n $allow ]] || die "--allow needs names: --allow name1,name2" ;;
+				--allow-all) allow="" set_allow=1 ;;
+				-*) die "unknown option $1 (see: agent-say)" ;;
+				*) [[ -z $host ]] || die "usage: agent-say link [ssh-host] [--yes] [--read-only|--read-write] [--allow name,...|--allow-all]"; host=$1 ;;
+			esac
+			shift
+		done
 		if [[ -z "$host" ]]; then
+			[[ -z $ro$set_allow ]] || die "which link? agent-say link <ssh-host> ${ro:+--read-only}${set_allow:+--allow ...}"
 			for d in "$STATE"/links/*/; do
 				[[ -f "$d/on" ]] || continue
 				h="$(basename "$d")"
 				if link_running "$h"; then st="running"; else st="not running"; fi
 				[[ -s "$d/error" ]] && st+=", last check-in failed: $(cat "$d/error")"
-				echo "$h  $st  names: $(tr '\n' ' ' <"$d/names" 2>/dev/null)"
+				mode="read-write"; [[ -f "$d/read-only" ]] && mode="read-only"
+				[[ -f "$d/allow" ]] && mode+=", only to: $(paste -sd, "$d/allow")"
+				key="$(head -n 1 "$d/fingerprint" 2>/dev/null)"
+				echo "$h  $st  $mode  key: ${key:-not recorded}  names: $(tr '\n' ' ' <"$d/names" 2>/dev/null)"
 			done
 			exit 0
 		fi
 		valid_host "$host" || die "not a host name: $host"
+		if [[ -n $set_allow ]]; then
+			# One name per line in the link's allow file; each must be a name a pane can have.
+			allow="$(tr ',' '\n' <<<"$allow" | sed '/^$/d' | sort -u)"
+			while read -r n; do
+				[[ -z $n ]] || valid_name "$n" || die "'$n' can't be a pane name, so it can't be allowed"
+			done <<<"$allow"
+		fi
 		d="$STATE/links/$host"
+		# The host key, seen and confirmed the first time, and again if it changed since. The
+		# link's ssh connections check known_hosts on their own; this makes you look at it once.
+		keys="$(host_keys "$host" scan)"
+		was="$(cat "$d/fingerprint" 2>/dev/null || true)"
+		if [[ ! -f "$d/fingerprint" ]] || [[ -n $keys && -z $was ]] || keys_changed "$was" "$keys"; then
+			if [[ -n $keys ]]; then
+				echo "$host's host key:"; sed 's/^/  /' <<<"$keys"
+			else
+				echo "$host's host key: none found (not in known_hosts, and ssh-keyscan got no answer)"
+			fi
+			if keys_changed "$was" "$keys"; then
+				echo "agent-say: WARNING: that is not the key $host had when you linked it:" >&2
+				sed 's/^/  /' <<<"$was" >&2
+			fi
+			if [[ -z $yes ]]; then
+				[[ -t 0 ]] || die "not linked: confirm $host's host key above, then run: agent-say link $host --yes"
+				read -r -p "Is that $host's key? Link it? [y/N] " a || a=""
+				[[ $a == [yY]* ]] || die "not linked"
+			fi
+		fi
 		mkdir -p "$d"
 		# Check it works before leaving anything running.
 		ssh_to "$host" "$REMOTE_CMD _sync $(printf %q "$LABEL")" </dev/null | sed -n 's/^N //p' >"$d/names" ||
 			die "couldn't run agent-say on $host over ssh. It needs ssh that logs in without a password prompt, and agent-say installed there (run the tmux-revive installer on $host)."
+		# The key ssh had for it just now, if known_hosts has one by now (a first ssh adds it).
+		kh_find "$host"; now="$(kh_keys)"
+		keys_changed "$now" "$keys" && die "$host's host key changed while linking; not linked (run it again to see the new one)"
+		printf '%s\n' "${now:-$keys}" | sed '/^$/d' >"$d/fingerprint.new" && mv "$d/fingerprint.new" "$d/fingerprint"
+		case $ro in on) touch "$d/read-only" ;; off) rm -f "$d/read-only" ;; esac
+		if [[ -n $set_allow ]]; then
+			if [[ -n $allow ]]; then printf '%s\n' "$allow" >"$d/allow.new" && mv "$d/allow.new" "$d/allow"; else rm -f "$d/allow"; fi
+		fi
+		was_on=""; [[ -f "$d/on" ]] && was_on=1
 		touch "$d/on"
 		rm -f "$d/error"
 		start_poller "$host"
 		echo "linked to $host as '$LABEL'. Its panes: $(tr '\n' ' ' <"$d/names")"
-		echo "Agents on either side can now use plain names; name@$host or name@$LABEL picks a side." ;;
+		[[ -f "$d/read-only" ]] && echo "Read-only: what its agents send here is held in the mailbox (agent-say read), not typed in."
+		[[ -f "$d/allow" ]] && echo "What it sends can reach only: $(paste -sd, "$d/allow")."
+		[[ -n $was_on ]] || echo "Agents on either side can now use plain names; name@$host or name@$LABEL picks a side." ;;
 	unlink)
 		[[ -n "${2:-}" ]] || die "usage: agent-say unlink <ssh-host>"
 		valid_host "$2" || die "not a host name: $2" # it becomes a path we rm -rf
@@ -559,6 +663,11 @@ case "$cmd" in
 			echo "agent-say: couldn't tell $2; messages it holds for here wait until you link again" >&2
 		rm -rf "$d"
 		echo "unlinked $2" ;;
+	_host-keys)
+		# For the panel, which asks you to confirm a key before it links: what link would show.
+		valid_host "${2:-}" || die "usage: agent-say _host-keys <ssh-host>"
+		host_keys "$2" scan
+		echo ;;
 	_resume-links)
 		# After a reboot (run by tmux-revive when tmux starts): restart every link that was on.
 		for d in "$STATE"/links/*/; do
@@ -575,7 +684,21 @@ case "$cmd" in
 		fi
 		echo $$ >"$d/pid"
 		touch "$d/acks"
+		# The host key confirmed at link time. Looked at again whenever a known_hosts file
+		# changes: a different key there means a different computer answers to that name, so
+		# the link stops until you look at it (agent-say link HOST). A link from before keys
+		# were kept takes the key it has now.
+		kh_find "$host"
+		[[ -f "$d/fingerprint" ]] || { kh_keys >"$d/fingerprint.new" && mv "$d/fingerprint.new" "$d/fingerprint"; }
+		rm -f "$d/keycheck"
 		while [[ -f "$d/on" ]]; do
+			if [[ ! -e "$d/keycheck" || -n "$(find "${KH_FILES[@]}" -newer "$d/keycheck" 2>/dev/null)" ]]; then
+				touch "$d/keycheck"
+				if keys_changed "$(cat "$d/fingerprint")" "$(kh_keys)"; then
+					echo "stopped: $host's host key changed since you linked it; if that's expected, see the new one with: agent-say link $host" >"$d/error"
+					break
+				fi
+			fi
 			if ! tmux list-sessions >/dev/null 2>&1; then
 				# No tmux here: nothing to deliver to. tmux-revive restarts the link with tmux.
 				((++fails >= 3)) && break
@@ -605,6 +728,15 @@ case "$cmd" in
 					else
 						# Reply address: the name you ssh to, which may differ from its hostname.
 						mfrom="$mfrom@$host"
+					fi
+					# What this link may do, read for each message so a change applies at once.
+					if [[ -n "$why" ]]; then
+						:
+					elif [[ -f "$d/read-only" ]]; then
+						mail "[$mfrom -> $to $(date -u +%FT%TZ)] #$id (held: read-only link)" "$text"
+					elif [[ -f "$d/allow" ]] && ! grep -qxF -- "$to" "$d/allow"; then
+						why="not allowed: this link may only reach $(paste -sd, "$d/allow")"
+					else
 						rc=0
 						printf '%s' "$text" | "$0" --from "$mfrom" _deliver "$to" >/dev/null 2>"$d/deliver.err" || rc=$?
 						# Someone typing there, or the like: delivered here once the pane is free.

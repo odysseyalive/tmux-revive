@@ -8,6 +8,7 @@
 #   panel.sh --rows     this computer's panes as rows for another computer's panel (over a link)
 #   panel.sh --peek %ID N   the last N lines of that pane's screen, for another computer's peek
 #   panel.sh --keys %ID KEY...   keys for a question on that pane, sent from another computer's panel
+#   panel.sh --asking   the panes whose agent is asking a question now: id, place, name (daemon.sh)
 #
 # REVIVE_PANEL_POPUP=1 (set by @revive-panel-key) closes the panel after a jump, since a popup
 # would otherwise sit on top of the pane you jumped to.
@@ -19,9 +20,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # this too; it's said again here because the cache holds what's on other computers' screens.
 umask 077
 
-ONCE=0 ROWS=0 PEEKMODE=0 KEYSMODE=0
+ONCE=0 ROWS=0 PEEKMODE=0 KEYSMODE=0 ASKMODE=0
 [[ ${1:-} == --once ]] && ONCE=1
 [[ ${1:-} == --rows ]] && ROWS=1
+[[ ${1:-} == --asking ]] && ASKMODE=1
 if [[ ${1:-} == --peek ]]; then
 	# Asked for by another computer: nothing but a pane id and a line count gets through.
 	[[ ${2:-} =~ ^%[0-9]+$ && ${3:-} =~ ^[1-9][0-9]?$ ]] && (($3 <= 60)) ||
@@ -45,6 +47,22 @@ DIR=$(revive_dir)
 REFRESH=${REVIVE_PANEL_REFRESH:-2}
 CLK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 HOST=$(hostname -s 2>/dev/null || uname -n)
+# This tmux-revive's version (the installer puts VERSION next to it), or nothing if unknown.
+# Linked computers report theirs in --rows, and one older than this is shown out of date.
+VER_RE='^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$'
+VERSION=$(head -n 1 "${REVIVE_VERSION_FILE:-$REVIVE_ROOT/VERSION}" 2>/dev/null | head -c 32)
+[[ $VERSION =~ $VER_RE ]] || VERSION=""
+ver_lt() { # ver_lt A B: is version A older than B?
+	local -a a b
+	local i
+	IFS=. read -ra a <<<"$1"
+	IFS=. read -ra b <<<"$2"
+	for i in 0 1 2; do
+		((10#${a[i]} < 10#${b[i]})) && return 0
+		((10#${a[i]} > 10#${b[i]})) && return 1
+	done
+	return 1
+}
 
 # ------------------------------------------------------------------ colours
 e=$'\e'
@@ -673,7 +691,9 @@ RDIR="$ASTATE/panel"
 REMOTE_ROWS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --rows'
 REMOTE_PEEK_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --peek'
 REMOTE_KEYS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --keys'
-declare -A RFETCH_T=() RFETCH_PID=() PFETCH_T=() PFETCH_PID=() PEEK_FILES=()
+# A fixed command line: nothing from this panel or that computer goes into it.
+REMOTE_UPDATE_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive update </dev/null 2>&1'
+declare -A RFETCH_T=() RFETCH_PID=() PFETCH_T=() PFETCH_PID=() PEEK_FILES=() RVER=()
 PEEK_EVERY=$REFRESH # seconds between asks for a linked pane's screen; none while answering
 cache_dir() { # $RDIR, for this user only (an older panel made it with the default umask)
 	[[ -d $RDIR ]] || mkdir -p "$RDIR"
@@ -681,7 +701,7 @@ cache_dir() { # $RDIR, for this user only (an older panel made it with the defau
 }
 remote_run() { # remote_run HOST COMMAND: run it on that computer over the link's ssh connection
 	# shellcheck disable=SC2086 # AGENT_SAY_SSH may carry its own arguments, as in agent-say
-	timeout 8 ${AGENT_SAY_SSH:-ssh} -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto \
+	timeout "${RTIMEOUT:-8}" ${AGENT_SAY_SSH:-ssh} -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto \
 		-o "ControlPath=$ASTATE/ssh-%C" -o ControlPersist=120 "$1" "$2" </dev/null 2>/dev/null
 }
 fetch_rows() { remote_run "$1" "$REMOTE_ROWS_CMD"; }
@@ -692,7 +712,10 @@ rows_get() {
 	t=$(mktemp "$2.XXXXXX") || return
 	fetch_rows "$1" | head -c 262144 >"$t"
 	st=${PIPESTATUS[0]}
-	if ((st == 0 || st == 141)); then mv -f "$t" "$2"; else rm -f "$t"; fi # 141: cut off by head
+	if ((st == 0 || st == 141)); then mv -f "$t" "$2"; rm -f "$2.old"; return; fi # 141: cut off by head
+	rm -f "$t"
+	# Reached (ssh and timeout fail with 255 and 124), but no rows: a tmux-revive too old for them.
+	((st == 124 || st == 255)) || : >"$2.old"
 }
 remote_fetch() { # remote_fetch HOST [now]
 	local h=$1 f="$RDIR/$1.rows"
@@ -751,7 +774,7 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 	fi
 }
 remote_panes() {
-	local d h f id loc name app st folder git cpu mem agent got S=$'\x1f'
+	local d h f id loc name app st folder git cpu mem agent got v S=$'\x1f'
 	P_GROUPS=0
 	# Other computers' screens are kept no longer than they're shown: a minute at most.
 	[[ -d $RDIR ]] && find "$RDIR" -maxdepth 1 \( -name '*.peek-*' -o -name '*.answered-*' \) -mmin +1 -delete 2>/dev/null
@@ -760,10 +783,17 @@ remote_panes() {
 		h=$(basename "$d")
 		[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
 		if ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
-		f="$RDIR/$h.rows" got=0
+		f="$RDIR/$h.rows" got=0 RVER[$h]=""
 		# Rows a minute old or newer; older means that computer stopped answering.
 		if [[ -s $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
+			RVER[$h]=old # unless it says which version it is
 			while IFS=$S read -r id loc name app st folder git cpu mem agent; do
+				# Its version, on a line of its own (an older panel's check below skips it).
+				if [[ ${id:0:40} =~ ^\#version\ (.*)$ && -z $loc ]]; then
+					v=${BASH_REMATCH[1]}
+					[[ $v =~ $VER_RE ]] && RVER[$h]=$v
+					continue
+				fi
 				# Only a complete row from a pane: a %id first and the agent flag last.
 				[[ $id =~ ^%[0-9]+$ && $agent =~ ^[01]$ ]] || continue
 				# Cut before cleaning, so a huge field costs nothing to look at.
@@ -783,6 +813,7 @@ remote_panes() {
 		fi
 		if ((!got)); then
 			# Names only, from the link.
+			[[ -e $f.old ]] && RVER[$h]=old
 			st=linked
 			[[ -s $f || ! -s $d/error ]] || st=unreachable
 			while IFS= read -r name; do
@@ -846,7 +877,7 @@ state_cell() { # coloured status, 18 characters wide
 }
 
 draw_panes() {
-	local i n=${#P_ID[@]} name key folder git cells mark wide=$((IW >= 100)) extra NW=15 FW=15
+	local i n=${#P_ID[@]} name key folder git cells mark wide=$((IW >= 100)) extra NW=15 FW=15 v
 	# Spare width goes to the name and folder columns.
 	if ((wide)); then
 		extra=$((IW - 99))
@@ -867,9 +898,19 @@ draw_panes() {
 		if ((P_GROUPS)) && [[ ${P_HOST[i]} != "$group" ]]; then
 			group=${P_HOST[i]}
 			if [[ -z $group ]]; then
-				row "$BLU▓▒░$R $B$BWHT${HOST^^}$R $GRY· this computer$R"
+				row "$BLU▓▒░$R $B$BWHT${HOST^^}$R $GRY· this computer${VERSION:+ · v$VERSION}$R"
 			else
-				row "$BLU▓▒░$R $B$BWHT${group^^}$R $GRY· linked$R"
+				# Its tmux-revive's version, from its rows: out of date next to this one, or too old
+				# to say (it answers no rows, or rows without a version).
+				v=${RVER[$group]:-}
+				case $v in
+				"") v="" ;;
+				old) v=" $GRY·$R ${BYEL}too old to tell$R" ;;
+				*)
+					if [[ -n $VERSION ]] && ver_lt "$v" "$VERSION"; then v=" $GRY· v$v ·$R $B${BYEL}out of date$R"
+					else v=" $GRY· v$v$R"; fi ;;
+				esac
+				row "$BLU▓▒░$R $B$BWHT${group^^}$R $GRY· linked$R$v"
 			fi
 		fi
 		name=${P_NAME[i]:-${P_LOC[i]}}
@@ -961,6 +1002,8 @@ messages() { # -> MSG lines for the message center
 			when=${when:11:5}
 			if [[ $rest == *"NOT DELIVERED"* ]]; then
 				MSG+=("$GRY$when$R $BRED✗$R $BWHT$from$R$GRY→$R$BWHT$to$R $BRED${b}$R")
+			elif [[ $rest == " (held: read-only link)" ]]; then
+				MSG+=("$GRY$when$R $BYEL⏸$R $BWHT$from$R$GRY→$R$BWHT$to$R ${BYEL}held ·$R $GRY$b$R")
 			else
 				MSG+=("$GRY$when$R $BGRN✉$R $BWHT$from$R$GRY→$R$BWHT$to$R $GRY$b$R")
 			fi
@@ -973,7 +1016,7 @@ messages() { # -> MSG lines for the message center
 
 links_saves() { # -> SIDE lines: saves, then links
 	SIDE=()
-	local last at reason n iv d h pid names err
+	local last at reason n iv d h pid names err mode al
 	last=$(cd -P "$DIR/last" 2>/dev/null && pwd)
 	n=$(find "$DIR/snapshots" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
 	iv=$(opt @revive-interval 60)
@@ -991,12 +1034,20 @@ links_saves() { # -> SIDE lines: saves, then links
 		clean h err
 		pid=$(cat "$d/pid" 2>/dev/null)
 		names=$(grep -c . "$d/names" 2>/dev/null)
+		# What the link lets that computer do here (agent-say link HOST --read-only / --allow).
+		mode=""
+		[[ -f $d/read-only ]] && mode+=" $BYEL· read-only$R"
+		if [[ -f $d/allow ]]; then
+			al=$(head -c 200 "$d/allow" | paste -sd, -)
+			clean al
+			mode+=" $BYEL· only ${al:0:40}$R"
+		fi
 		if [[ -n $pid ]] && [[ $(ps -ww -o args= -p "$pid" 2>/dev/null) == *"_poll $h"* ]] && [[ ! -s $d/error ]]; then
-			SIDE+=("$BGRN●$R $BWHT$h$R $GRY· linked · ${names:-0} names$R")
+			SIDE+=("$BGRN●$R $BWHT$h$R$mode $GRY· linked · ${names:-0} names$R")
 		elif [[ -s $d/error ]]; then
-			SIDE+=("$BRED●$R $BWHT$h$R $BRED$err$R")
+			SIDE+=("$BRED●$R $BWHT$h$R$mode $BRED$err$R")
 		else
-			SIDE+=("$BRED●$R $BWHT$h$R $GRY· not running$R")
+			SIDE+=("$BRED●$R $BWHT$h$R$mode $GRY· not running$R")
 		fi
 	done
 	for d in "$ASTATE"/peers/*/; do
@@ -1133,7 +1184,10 @@ draw() {
 		off+="J "
 		for j in "${!P_SSH[@]}"; do [[ ${P_SSH[j]} == "$rh" ]] && { off=${off/J /}; break; }; done
 	fi
-	for c in "J:ump" "M:essage" "N:ame" "L:ink" "U:nlink" "P:eek" "A:rt" "S:ave" "Q:uit"; do
+	local cs=("J:ump" "M:essage" "N:ame" "L:ink" "U:nlink")
+	[[ -n $rh ]] && cs+=("V: update") # tmux-revive on that computer
+	cs+=("P:eek" "A:rt" "S:ave" "Q:uit")
+	for c in "${cs[@]}"; do
 		if [[ $off == *" ${c%%:*} "* ]]; then
 			k+="$GRY[${c%%:*}]${c#*:}$R  "
 		else
@@ -1237,6 +1291,7 @@ pick() {
 	rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80)
 	w=$((${#hint} + 6))
 	for i in "${items[@]}"; do ((${#i} + 10 > w)) && w=$((${#i} + 10)); done
+	((${#title} + 12 > w)) && w=$((${#title} + 12))
 	((w > cols - 4)) && w=$((cols - 4))
 	h=$((${#items[@]} + 5))
 	top=$(((rows - h) / 2)) left=$(((cols - w) / 2))
@@ -1481,8 +1536,24 @@ act() {
 			h=$REPLY
 			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { flash "not a host name: $h"; return; }
 		fi
+		# Its host key first, to confirm (agent-say asks the same on a terminal): say no, and
+		# nothing is linked. No is first, so Enter alone doesn't trust a key.
+		flash "reading $h's host key…"; draw
+		local -a keys=()
+		local k
+		while IFS= read -r k; do
+			[[ $k =~ ^SHA256:[A-Za-z0-9+/=]{1,64}\ \([A-Z0-9-]{1,16}\)$ ]] && keys+=("$k")
+		done < <(timeout 20 "$ASAY" _host-keys "$h" </dev/null 2>/dev/null | head -n 8)
+		PREV=()
+		if ((${#keys[@]})); then
+			labels=("No, don't link $h")
+			for k in "${keys[@]}"; do labels+=("Yes, link: its key is $k"); done
+		else
+			labels=("No, don't link $h" "Yes, link (no key found in known_hosts or by ssh-keyscan)")
+		fi
+		pick "HOST KEY OF $h" "${labels[@]}" && ((PICKED > 0)) || { flash "link cancelled"; return; }
 		flash "linking $h…"; draw
-		out=$(timeout 30 "$ASAY" link "$h" 2>&1 | head -n 1)
+		out=$(timeout 30 "$ASAY" link "$h" --yes </dev/null 2>&1 | grep -E '^(linked to|agent-say:)' | head -n 1)
 		clean out
 		flash "${out#agent-say: }" ;;
 	u | U | d | D)
@@ -1499,7 +1570,25 @@ act() {
 		flash "unlinking $h…"; draw
 		out=$(timeout 30 "$ASAY" unlink "$h" 2>&1 | tail -n 1)
 		clean out
+		[[ -d $ASTATE/links/$h ]] || rm -f "$RDIR/$h.rows" "$RDIR/$h.rows.old" # what it kept of that computer
 		flash "${out#agent-say: }" ;;
+	v | V)
+		# Update tmux-revive on the selected pane's linked computer, over the link's ssh.
+		local h=${P_HOST[SEL]:-} last st
+		[[ -n $h ]] || { flash "V updates a linked computer: select one of its panes"; return; }
+		[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return
+		pick "Update tmux-revive on $h?" "Yes, update it over ssh" "No" && ((PICKED == 0)) || { flash "update cancelled"; return; }
+		flash "updating tmux-revive on $h…"; draw
+		out=$(RTIMEOUT=300 remote_run "$h" "$REMOTE_UPDATE_CMD" | tail -c 4096)
+		st=$?
+		last=$(grep -v '^[[:space:]]*$' <<<"$out" | tail -n 1)
+		clean last
+		last=${last:0:120}
+		if ((st == 0)); then flash "on $h: ${last:-updated}"
+		elif ((st == 124 || st == 255)); then flash "on $h: couldn't be reached to update"
+		else flash "on $h: update failed${last:+: $last}"; fi
+		RFETCH_T[$h]=0 # and ask it for its rows, and so its version, again
+		;;
 	p | P) PEEK=$((!PEEK)) ;;
 	x | X) if ((FULL)); then FULL=0; else FULL=1 PEEK=1; fi ;; # the peek over the whole art, and back
 	c | C) FULL=0 ;;
@@ -1571,10 +1660,31 @@ if ((KEYSMODE)); then
 	keys_send "$@" && echo sent
 	exit
 fi
+if ((ASKMODE)); then
+	# For daemon.sh's question alerts: the agent panes whose screen reads as asking, by the
+	# same look the panel takes (screen_state), without the panel's git and CPU work.
+	while read -r pid ppid args; do PCHILD[$ppid]+="$pid " PARGS[$pid]=$args; done < <(ps -ww -eo pid=,ppid=,args= 2>/dev/null)
+	while IFS=$'\t' read -r id loc ppid0 name; do
+		q=("$ppid0") kind=""
+		while ((${#q[@]})) && [[ -z $kind ]]; do
+			p=${q[0]} q=("${q[@]:1}")
+			kind=$(agent_kind "${PARGS[$p]:-}")
+			# shellcheck disable=SC2206
+			[[ -n ${PCHILD[$p]:-} ]] && q+=(${PCHILD[$p]})
+		done
+		[[ -n $kind && $(screen_state "$id") == asking ]] || continue
+		clean loc name
+		printf '%s\t%s\t%s\n' "$id" "$loc" "$name" # place before name: a name may be empty
+	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{@agent}' 2>/dev/null)
+	exit 0
+fi
 if ((ROWS)); then
 	gather
 	sleep 0.3 # CPU is measured between two looks
 	gather
+	# First, its version on a line of its own: a panel that doesn't know the line skips it,
+	# since a row must start with a pane id.
+	[[ -n $VERSION ]] && printf '#version %s\n' "$VERSION"
 	for i in "${!P_ID[@]}"; do
 		[[ ${P_STATE[i]} == self ]] && continue
 		folder=${P_DIR[i]##*/}
