@@ -131,11 +131,12 @@ set_block() {
 	fi
 	[ -f "$sf" ] || : >"$sf" || return 1
 	st=$(mktemp "$sf.revive.XXXXXX") || return 1
-	# cp -p first so the new file keeps the old one's permissions. The blank line set before
-	# the block goes with it, so an update or uninstall doesn't leave blank lines piling up.
+	# cp -p first so the new file keeps the old one's permissions. Every blank line just above
+	# the block goes with it, and blank lines left at the very end, so the one blank line put
+	# back before it can't pile up (older versions left one more on each update).
 	if cp -p "$sf" "$st" &&
-		awk -v b="$2" -v e="$3" 'skip { if ($0 == e) skip = 0; next } $0 == b { skip = 1; gap = 0; next }
-			$0 == "" { if (gap) print ""; gap = 1; next } { if (gap) print ""; gap = 0; print } END { if (gap) print "" }' "$sf" >"$st" &&
+		awk -v b="$2" -v e="$3" 'skip { if ($0 == e) skip = 0; next } $0 == b { skip = 1; nb = 0; next }
+			$0 == "" { nb++; next } { while (nb > 0) { print ""; nb-- } print }' "$sf" >"$st" &&
 		{ [ -z "${4:-}" ] || {
 			[ -n "$(tail -n 1 "$st")" ] && printf '\n'
 			printf '%s\n%s\n%s\n' "$2" "$4" "$3"
