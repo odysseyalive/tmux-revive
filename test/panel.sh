@@ -673,7 +673,58 @@ check "here: a linked agent working with no record shows WORKING" "grep -q 'cl-n
 check "here: one whose record says busy shows WORKING" "grep -q 'cl-busy *claude *. WORKING' <<<\"\$out\""
 check "here: one whose record says idle shows WAITING ON YOU" "grep -q 'cl-idle *claude *◆ WAITING ON YOU' <<<\"\$out\""
 check "here: one asking a question shows NEEDS ANSWER" "grep -q 'cl-ask *claude *? NEEDS ANSWER' <<<\"\$out\""
-for w in cl-none cl-busy cl-idle cl-ask; do far_tm kill-window -t far:$w; done
+# Their CPU and context left, drawn as this computer's own are. A busy pane there; a Claude
+# Code whose record names its transcript; and three with no record to be found, as over a
+# link's ssh: one whose config folder is in its own environment and whose session is the
+# folder it holds open under the temporary claude-UID/, one found from its working folder
+# alone, and one sharing that folder with another, which can't be told apart and shows a dash.
+turn() { printf '{"type":"assistant","message":{"model":"claude-haiku-4-5","usage":{"input_tokens":%s}}}\n' "$1"; }
+far_tm new-window -d -t far -n spin "bash --norc -c 'while :; do :; done'"
+far_tm set-option -p -t far:spin @agent far-spin
+mkdir -p "$T/rhome/.claude/projects/-w"
+turn 100000 >"$T/rhome/.claude/projects/-w/s-cl-idle.jsonl" # cl-idle's record names s-cl-idle: 50% left
+fsid=0b1e2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d
+mkdir -p "$T/tmpc/claude-1000/-x/$fsid/tasks" "$T/rcfg/projects/-x" "$T/cwd-one" "$T/cwd-two"
+: >"$T/tmpc/claude-1000/-x/$fsid/tasks/t"
+turn 150000 >"$T/rcfg/projects/-x/$fsid.jsonl" # 25% left
+far_tm new-window -d -t far -n cl-fd -e CLAUDE_CONFIG_DIR="$T/rcfg" "$T/bin/claude -c 'exec 3<$T/tmpc/claude-1000/-x/$fsid/tasks/t; sleep 300; :'"
+far_tm set-option -p -t far:cl-fd @agent cl-fd
+far_tm new-window -d -t far -n cl-cwd -c "$T/cwd-one" "$T/bin/claude -c 'sleep 300; :'"
+far_tm set-option -p -t far:cl-cwd @agent cl-cwd
+far_tm new-window -d -t far -n cl-two -c "$T/cwd-two" "$T/bin/claude -c 'sleep 300; :'"
+far_tm new-window -d -t far -n cl-two2 -c "$T/cwd-two" "$T/bin/claude -c 'sleep 300; :'"
+far_tm set-option -p -t far:cl-two @agent cl-two
+sleep 1.1 # transcripts written after their Claude Code started
+slug=${T//[^A-Za-z0-9]/-}
+mkdir -p "$T/rhome/.claude/projects/$slug-cwd-one" "$T/rhome/.claude/projects/$slug-cwd-two"
+turn 20000 >"$T/rhome/.claude/projects/$slug-cwd-one/a.jsonl" # 90% left
+turn 20000 >"$T/rhome/.claude/projects/$slug-cwd-two/b.jsonl"
+rm -f "$st/panel/ticks" # no earlier ask to measure from: two looks
+rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
+rcpu() { awk -F $'\x1f' -v n="$2" '$3 == n {print $8}' <<<"$1"; }
+rctx() { grep -B1 $'\x1f'"$2"$'\x1f' <<<"$1" | sed -n 's/^#ctx %[0-9]* \([0-9]*\)$/\1/p'; }
+check "--rows there: a busy pane's CPU, from two looks ($(rcpu "$rows" far-spin)%)" "(( \$(rcpu \"\$rows\" far-spin) >= 10 ))"
+check "--rows there: context left from a record's transcript ($(rctx "$rows" cl-idle))" "[[ \$(rctx \"\$rows\" cl-idle) == 50 ]]"
+check "--rows there: with no record, from its config folder and the session folder it holds open ($(rctx "$rows" cl-fd))" "[[ \$(rctx \"\$rows\" cl-fd) == 25 ]]"
+check "--rows there: with no record, from its working folder ($(rctx "$rows" cl-cwd))" "[[ \$(rctx \"\$rows\" cl-cwd) == 90 ]]"
+check "--rows there: not from a working folder another Claude Code shares" "[[ -z \$(rctx \"\$rows\" cl-two) ]] && grep -q $'\x1fcl-two\x1f' <<<\"\$rows\""
+# Asked again a little later, it measures since the last ask, kept over there, in one look.
+sleep 1.2
+rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
+check "--rows asked again measures since the last ask, kept there ($(rcpu "$rows" far-spin)%)" "(( \$(rcpu \"\$rows\" far-spin) >= 10 )) && grep -q '^%[0-9]*:[0-9]* [0-9]*\$' $st/panel/ticks && [[ \$(stat -c %a $st/panel/ticks) == 600 ]]"
+rm -f "$st/panel/far.example.rows"
+for c in 80 120 160 200; do
+	out=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=$c LINES=60 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+	check "at $c columns a linked busy pane shows its CPU, a linked Claude Code its CTX LEFT, rows exactly $c wide" "grep 'far-spin ' <<<\"\$out\" | grep -q '[░▒▓█][░▒▓█·]* *[1-9][0-9]*%' && grep -q 'cl-idle .*M  [█▓▒░·]\{5\}  50% ║\$' <<<\"\$out\" && grep -q 'cl-fd .* 25% ║\$' <<<\"\$out\" && grep -q 'cl-cwd .* 90% ║\$' <<<\"\$out\" && grep -q 'cl-two .*·····    – ║\$' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
+done
+# Rows in the older form (no version, no context lines) still draw their CPU and memory.
+printf '%%5\x1f0:1.0\x1fold-cl\x1fclaude\x1fwaiting\x1fw\x1fmain\x1f42\x1f2097152\x1f1\n' >"$T/oldrows"
+printf '#!/bin/sh\ncat %s\n' "$T/oldrows" >"$T/oldrowssh"; chmod +x "$T/oldrowssh"
+rm -f "$st/panel/far.example.rows"
+out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=120 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+check "an older row still draws: its CPU meter, percent and memory, a dash for context" "grep -q 'old-cl .*██░··   42%    2.0G  ·····    – ║\$' <<<\"\$out\""
+rm -f "$st/panel/far.example.rows"
+for w in cl-none cl-busy cl-idle cl-ask spin cl-fd cl-cwd cl-two cl-two2; do far_tm kill-window -t far:$w; done
 rm -rf "$T/rhome/.claude" "$st/panel/far.example.rows"*
 farsel() { tm run-shell "AGENT_SAY_SSH=$1 REVIVE_PANEL_SEL=$2 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
 peekbox() { sed -n '/PEEK · /,/ART · \|MESSAGES/p'; }
@@ -759,7 +810,7 @@ touch -d '-2 minutes' "$st/panel/far.example.peek-77"
 farsel "$T/fakessh" far-sh@far.example >/dev/null
 check "the cache is private (700, files 600)" "[[ \$(stat -c %a $st/panel) == 700 && \$(stat -c %a $st/panel/far.example.rows) == 600 ]] && ! find $st/panel -type f -perm /077 | grep -c . >/dev/null"
 check "a peek over a minute old is deleted" "[[ ! -e $st/panel/far.example.peek-77 ]]"
-check "and no temporary files are left" "! ls $st/panel | grep -cvE '^far\\.example\\.(rows(\\.old)?|peek-[0-9]+(\\.fail)?)$' >/dev/null"
+check "and no temporary files are left" "! ls $st/panel | grep -cvE '^(ticks|far\\.example\\.(rows(\\.old)?|peek-[0-9]+(\\.fail)?))$' >/dev/null"
 # Bidi overrides and zero-width characters from over there are stripped like controls.
 printf '%%9\x1fbidi\xe2\x80\xae0:0\x1fzw\xe2\x80\x8bname\x1fapp\x1fwaiting\x1ffo\xe2\x81\xa6ld\x1fmain\x1f1\x1f1\x1f1\n' >"$T/bidirows"
 printf '#!/bin/sh\ncat %s\n' "$T/bidirows" >"$T/bidissh"; chmod +x "$T/bidissh"

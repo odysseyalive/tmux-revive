@@ -680,6 +680,65 @@ codex_ctx_file() { # a rollout file -> percent left
 			| "\(.info.last_token_usage.total_tokens) \(.info.model_context_window)"' 2>/dev/null | tail -n 1)
 	ctx_pct "${u:-}" "${w:-}"
 }
+# Claude Code with no session record to be found (an older Claude Code, or one whose config
+# is somewhere this panel's environment doesn't say, as over a link's ssh): its transcript is
+# looked for from the process itself. Its config folder from its own environment; the session
+# from the folder it keeps open under the temporary claude-UID/ (named for the session), or
+# failing that, the newest transcript for its working folder written since it started, if no
+# other Claude Code works there. Looked for again every 30 s (a /clear starts a new session).
+declare -A CL_TR=() CL_TR_T=()
+UUID_RE='/claude-[0-9]+/[^/]+/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(/|$)'
+claude_transcript() { # claude_transcript PID -> TRANSCRIPT, or nothing
+	local pid=$1 e d f sid="" cwd slug p c n=0
+	local -a dirs=()
+	TRANSCRIPT=""
+	if [[ -n ${CL_TR_T[$pid]:-} ]] && ((SECONDS - CL_TR_T[$pid] < 30)); then
+		[[ -f ${CL_TR[$pid]} ]] && TRANSCRIPT=${CL_TR[$pid]}
+		return 0
+	fi
+	CL_TR[$pid]="" CL_TR_T[$pid]=$SECONDS
+	[[ -d /proc/$pid ]] || return 0 # Linux: macOS keeps no such files to read
+	while IFS= read -r -d '' e; do
+		case $e in
+		CLAUDE_CONFIG_DIR=/*) dirs=("${e#*=}" "${dirs[@]}") ;;
+		HOME=/*) dirs+=("${e#*=}/.claude") ;;
+		esac
+	done <"/proc/$pid/environ" 2>/dev/null
+	dirs+=("$HOME"/.claude ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR"})
+	while IFS= read -r f; do
+		[[ $f =~ $UUID_RE ]] && { sid=${BASH_REMATCH[1]}; break; }
+	done < <(find "/proc/$pid/fd" -maxdepth 1 -lname '*/claude-*' -printf '%l\n' 2>/dev/null)
+	if [[ -n $sid ]]; then
+		for d in "${dirs[@]}"; do
+			for f in "$d"/projects/*/"$sid".jsonl; do
+				[[ -f $f ]] && { CL_TR[$pid]=$f TRANSCRIPT=$f; return 0; }
+			done
+		done
+		return 0
+	fi
+	cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null)
+	[[ -n $cwd ]] || return 0
+	# Another Claude Code in the same folder could own the newest transcript there.
+	for p in "${!PARGS[@]}"; do
+		[[ $p == "$pid" ]] && continue
+		case " ${PARGS[$p]} " in *app-server*) continue ;; */claude\ * | " claude "* | *" claude --"*) ;; *) continue ;; esac
+		c=$(readlink "/proc/$p/cwd" 2>/dev/null)
+		[[ $c == "$cwd" ]] && return 0
+	done
+	slug=${cwd//[^A-Za-z0-9]/-}
+	f=""
+	for d in "${dirs[@]}"; do
+		for p in "$d/projects/$slug"/*.jsonl; do
+			[[ -f $p && $p -nt /proc/$pid ]] || continue
+			[[ -z $f || $p -nt $f ]] && f=$p
+			((n++))
+		done
+		[[ -n $f ]] && break
+	done
+	# Only one written since it started; with more, which is its own can't be told.
+	((n == 1)) && CL_TR[$pid]=$f TRANSCRIPT=$f
+	return 0
+}
 ctx_left() { # ctx_left KIND AGENT_PID PID... -> CTX: percent of its context window left, or nothing
 	local kind=$1 apid=$2 f sid p
 	shift 2
@@ -687,7 +746,11 @@ ctx_left() { # ctx_left KIND AGENT_PID PID... -> CTX: percent of its context win
 	case $kind in
 	claude)
 		claude_record "$apid"
-		[[ -n $RECORD ]] || return 0
+		if [[ -z $RECORD ]]; then
+			claude_transcript "$apid"
+			[[ -n $TRANSCRIPT ]] && ctx_cached "$TRANSCRIPT" claude_ctx_file
+			return 0
+		fi
 		sid=$(jq -r '.sessionId // empty' "$RECORD" 2>/dev/null)
 		[[ $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
 		for f in "${RECORD%/sessions/*}"/projects/*/"$sid".jsonl; do
@@ -748,11 +811,13 @@ git_info() { # git_info DIR -> "branch" or "branch*" (uncommitted changes), cach
 }
 
 tree_ticks() { # tree_ticks PID...: CPU ticks used so far by these processes (Linux)
+	# Their children's that have ended count too (cutime, cstime), so a command an agent ran
+	# between two looks still shows, where it would drop out of the tree uncounted.
 	local p l f t=0
 	for p in "$@"; do
 		read -r l 2>/dev/null <"/proc/$p/stat" || continue # gone since ps ran
 		read -ra f <<<"${l##*) }"
-		t=$((t + f[11] + f[12]))
+		t=$((t + f[11] + f[12] + f[13] + f[14]))
 	done
 	echo "$t"
 }
@@ -781,7 +846,8 @@ ssh_dest() {
 }
 linked() { [[ -f $ASTATE/links/$1/on ]]; }
 gather() {
-	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh ctx
+	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh ctx k
+	local -A tnow=()
 	PCHILD=() PARGS=() PRSS=() PCPU=() PPAR=() PUID=() INPANE=()
 	while read -r pid ppid uid rss pcpu args; do
 		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu PPAR[$pid]=$ppid PUID[$pid]=$uid
@@ -805,11 +871,12 @@ gather() {
 		if [[ -r /proc/$ppid0/stat ]]; then
 			t=$(tree_ticks "${tree[@]}")
 			cpu=0
-			if [[ -n $T_PREV && -n ${TICKS_PREV[$id]:-} ]]; then
+			# Kept by pane and its process: a pane id tmux gives out again is another pane.
+			if [[ -n $T_PREV && -n ${TICKS_PREV[$id:$ppid0]:-} ]]; then
 				dt=$(awk -v a="$now" -v b="$T_PREV" 'BEGIN{printf "%.3f", a-b}')
-				cpu=$(awk -v d=$((t - TICKS_PREV[$id])) -v c="$CLK" -v s="$dt" 'BEGIN{v = s > 0 ? d / c / s * 100 : 0; if (v < 0) v = 0; printf "%d", v + 0.5}')
+				cpu=$(awk -v d=$((t - TICKS_PREV[$id:$ppid0])) -v c="$CLK" -v s="$dt" 'BEGIN{v = s > 0 ? d / c / s * 100 : 0; if (v < 0) v = 0; printf "%d", v + 0.5}')
 			fi
-			TICKS_PREV[$id]=$t
+			tnow[$id:$ppid0]=$t
 		else
 			cpu=0
 			for p in "${tree[@]}"; do cpu=$(awk -v a="$cpu" -v b="${PCPU[$p]:-0}" 'BEGIN{printf "%d", a + b + 0.5}'); done
@@ -846,9 +913,39 @@ gather() {
 		P_ID+=("$id") P_LOC+=("$loc") P_NAME+=("$name") P_STATE+=("$st")
 		P_DIR+=("$path") P_GIT+=("$(git_info "$path")") P_CPU+=("$cpu") P_MEM+=("$mem") P_CTX+=("$ctx")
 	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
+	# Only the panes there now: a closed pane's count goes with it.
+	TICKS_PREV=()
+	for k in "${!tnow[@]}"; do TICKS_PREV[$k]=${tnow[$k]}; done
 	T_PREV=$now
 	outside_ssh
 	((ROWS)) || remote_panes
+}
+
+# The CPU counts --rows keeps between asks: the time of its look, then a "%pane:pid ticks" line
+# for each pane. Used only when that time is from 1 to 60 s ago by this computer's clock.
+rows_ticks_load() { # rows_ticks_load FILE -> T_PREV, TICKS_PREV
+	local now=${EPOCHREALTIME:-} t="" k v age
+	T_PREV="" TICKS_PREV=()
+	[[ -n $now && -f $1 ]] || return 0
+	{
+		read -r t
+		while read -r k v; do
+			[[ $k =~ ^%[0-9]{1,9}:[0-9]{1,10}$ && $v =~ ^[0-9]{1,15}$ ]] && TICKS_PREV[$k]=$v
+		done
+	} <"$1" 2>/dev/null
+	[[ $t =~ ^[0-9]{1,12}[.,][0-9]+$ ]] || { TICKS_PREV=(); return 0; }
+	age=$((${now%[.,]*} - ${t%[.,]*}))
+	if ((age >= 1 && age <= 60)); then T_PREV=$t; else TICKS_PREV=(); fi
+}
+rows_ticks_save() { # rows_ticks_save FILE: through a temporary file, as two asks may overlap
+	local t k
+	[[ -n ${EPOCHREALTIME:-} ]] || return 0
+	cache_dir
+	t=$(mktemp "$1.XXXXXX" 2>/dev/null) || return 0
+	{
+		printf '%s\n' "$T_PREV"
+		for k in "${!TICKS_PREV[@]}"; do printf '%s %s\n' "$k" "${TICKS_PREV[$k]}"; done
+	} >"$t" && mv -f "$t" "$1"
 }
 
 # ------------------------------------------------------------------ other computers
@@ -970,8 +1067,9 @@ remote_panes() {
 	local d h f id loc name app st folder git cpu mem agent got v wp lg S=$'\x1f'
 	local -A rctx
 	P_GROUPS=0
-	# Other computers' screens are kept no longer than they're shown: a minute at most.
-	[[ -d $RDIR ]] && find "$RDIR" -maxdepth 1 \( -name '*.peek-*' -o -name '*.answered-*' \) -mmin +1 -delete 2>/dev/null
+	# Other computers' screens are kept no longer than they're shown: a minute at most. So are
+	# the temporary files of an ask cut off by the panel closing.
+	[[ -d $RDIR ]] && find "$RDIR" -maxdepth 1 \( -name '*.peek-*' -o -name '*.answered-*' -o -name '*.rows.??????' \) -mmin +1 -delete 2>/dev/null
 	for d in "$ASTATE"/links/*/; do
 		[[ -f $d/on ]] || continue
 		h=$(basename "$d")
@@ -2191,9 +2289,14 @@ if ((ASKMODE)); then
 	exit 0
 fi
 if ((ROWS)); then
+	# CPU is measured between two looks. The look the last ask took, kept here, is the first
+	# when it's from 1 to 60 s ago: then the CPU is over the time since (a panel asks every
+	# 10 s), as this computer's own panel measures it between frames. Otherwise two looks 0.3 s
+	# apart, in which an agent waiting at 1 or 2% rounds to nothing.
+	rows_ticks_load "$RDIR/ticks"
+	[[ -n $T_PREV ]] || { gather; sleep 0.3; }
 	gather
-	sleep 0.3 # CPU is measured between two looks
-	gather
+	rows_ticks_save "$RDIR/ticks"
 	# First, its version on a line of its own: a panel that doesn't know the line skips it,
 	# since a row must start with a pane id.
 	[[ -n $VERSION ]] && printf '#version %s\n' "$VERSION"
