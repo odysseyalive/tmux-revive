@@ -963,21 +963,29 @@ state_cell() { # coloured status, 18 characters wide
 }
 
 draw_panes() {
-	local i n=${#P_ID[@]} name key folder git cells mark wide=$((IW >= 111)) extra NW=15 FW=15 v
-	# Spare width goes to the name and folder columns. The narrowest panel takes the name down
-	# to 10 to keep CTX LEFT.
-	if ((wide)); then
-		extra=$((IW - 111))
-		NW=$((15 + (extra / 2 > 14 ? 14 : extra / 2)))
-		FW=$((15 + (extra - NW + 15 > 20 ? 20 : extra - NW + 15)))
-	else
-		extra=$((IW - 81))
-		NW=$((15 + (extra > 14 ? 14 : extra)))
-	fi
+	local i n=${#P_ID[@]} name key folder git cells mark wide=1 NW=10 FW=10 GW v
+	# Worked out again on every frame, so a resized terminal gets them too. The name and folder
+	# are as wide as their longest (10 to 29 and 10 to 35); GIT has the rest of the row, so
+	# CTX LEFT ends at the panel's right edge. The rest of the row is fixed: the key 6, APP 10,
+	# STATE 18, CPU and MEM 19, CTX LEFT 12, and a space after the name, folder and GIT.
+	for ((i = 0; i < n; i++)); do
+		name=${P_NAME[i]:-${P_LOC[i]}} folder=${P_DIR[i]/#$HOME/\~} folder=${folder##*/}
+		((${#name} > NW)) && NW=${#name}
+		((${#folder} > FW)) && FW=${#folder}
+	done
+	((NW > 29)) && NW=29
+	((FW > 35)) && FW=35
+	GW=$((IW - 68 - NW - FW))
+	# A narrow panel cuts GIT first, down to 13, then the folder and the name, down to 10. Too
+	# narrow for that, the folder and GIT go and the name has their room: the narrowest panel
+	# takes the name down to 10 to keep CTX LEFT.
+	v=$((13 - GW < FW - 10 ? 13 - GW : FW - 10)); ((v > 0)) && FW=$((FW - v)) GW=$((GW + v))
+	v=$((13 - GW < NW - 10 ? 13 - GW : NW - 10)); ((v > 0)) && NW=$((NW - v)) GW=$((GW + v))
+	((GW < 13)) && wide=0 NW=$((IW - 66))
 	# Built from the same widths as the rows below, so the columns line up.
 	local hdr="$(fld ' #' 6)$(fld NAME $((NW + 1)))$(fld APP 10)$(fld STATE 18)"
-	((wide)) && hdr+="$(fld FOLDER $((FW + 1)))$(fld GIT 14)"
-	hdr+="$(fld CPU 13)   MEM  CTX LEFT"
+	((wide)) && hdr+="$(fld FOLDER $((FW + 1)))$(fld GIT $((GW + 1)))"
+	hdr+="$(fld CPU 13)   MEM  $(fld 'CTX LEFT' 10)"
 	row "$GRY$hdr$R"
 	local group="-"
 	for ((i = 0; i < n; i++)); do
@@ -1013,7 +1021,7 @@ draw_panes() {
 		cells+="$(state_cell "${P_STATE[i]}")"
 		if ((wide)); then
 			cells+="$BBLU$(fld "$folder" "$FW")$R "
-			if [[ $git == *\* ]]; then cells+="$BYEL$(fld "$git" 13)$R "; else cells+="$GRN$(fld "$git" 13)$R "; fi
+			if [[ $git == *\* ]]; then cells+="$BYEL$(fld "$git" "$GW")$R "; else cells+="$GRN$(fld "$git" "$GW")$R "; fi
 		fi
 		# Names-only rows from a link have nothing measured: leave CPU and memory blank.
 		if [[ ${P_STATE[i]} != linked && ${P_STATE[i]} != unreachable ]]; then

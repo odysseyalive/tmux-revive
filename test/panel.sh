@@ -229,6 +229,14 @@ check "an agent with no record shows a dash" "[[ \$(grep -c 'claude .*·····
 check "a shell shows nothing there" "grep 'bash *· shell' <<<\"\$out\" | grep -qv '–\\|%.*%'"
 out=$(cframe 80)
 check "it stays in the narrowest panel" "grep -q 'codex .* 20% *║' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
+# The columns fill the row at any width: CTX LEFT ends at the panel's right edge, no row is
+# wider than the panel, and GIT has whatever room is spare.
+for c in 80 120 160 200; do
+	out=$(cframe "$c")
+	check "at $c columns CTX LEFT ends at the right edge, and no row is wider" "grep -q 'codex .* 20% ║\$' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
+done
+gitw() { cframe "$1" | awk '/ NAME .* GIT /{print index($0, " CPU") - index($0, " GIT"); exit}'; }
+check "a panel 70 columns wider gives GIT all 70 ($(gitw 130) -> $(gitw 200))" "[[ -n \$(gitw 130) ]] && (( \$(gitw 200) == \$(gitw 130) + 70 ))"
 echo '{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":500000}}}' >>"$H/.claude/projects/-w/s-1.jsonl"
 out=$(cframe)
 check "a Claude 5 model has a million-token window (500k: 50% left)" "grep -q 'claude .* 50%' <<<\"\$out\""
