@@ -863,6 +863,74 @@ check "then its peek comes back" "wait_fq 'PEEK · far-ask' 100 && ! fq | grep -
 tm send-keys -t work:farq q; sleep 0.5
 check "the panel takes the screens it fetched with it" "! ls $st/panel/ 2>/dev/null | grep -c 'peek-' >/dev/null"
 
+echo "a server that takes a password"
+# pw.example is the same far computer behind a fake ssh that refuses BatchMode until a login
+# (an ssh with ControlMaster=yes, its password typed) has left a master open: the marker file.
+# Other hosts go to the plain fake ssh, as before.
+{
+	printf '#!/bin/bash\nT=%q\n' "$T"
+	cat <<'EOF'
+echo "$*" >>"$T/pwssh.log"
+[[ " $* " == *" pw.example "* ]] || exec "$T/fakessh" "$@"
+m=$T/pw.master
+case " $* " in
+*" -O check "*) [[ -e $m ]]; exit ;;
+*" -O exit "*) rm -f "$m"; exit 0 ;;
+*" -G "*) exit 0 ;;
+*" ControlMaster=yes "*)
+	IFS= read -rsp 'pw.example password: ' pw; echo
+	[[ $pw == hunter2 ]] && { touch "$m"; exit 0; }
+	echo 'Permission denied, please try again.' >&2; exit 255 ;;
+esac
+[[ -e $m ]] || { echo 'me@pw.example: Permission denied (publickey,password).' >&2; exit 255; }
+cmd=${!#}
+[[ $cmd == *' agent-say _sync '* ]] &&
+	exec env -u TMUX -u TMUX_PANE HOME="$T/rhome" PATH="$T/rbin:$PATH" AGENT_SAY_MAILBOX="$T/rstate/mailbox.md" bash -c "$cmd"
+exec "$T/fakessh" "$@"
+EOF
+} >"$T/pwssh"
+chmod +x "$T/pwssh"
+printf 'pw.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >>"$T/known_hosts"
+pwl=$st/links/pw.example
+tm new-window -d -t work -n pwpanel "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n pwssh "bash -c 'exec -a \"ssh pw.example\" sleep 300'"
+pws() { tm capture-pane -p -t work:pwpanel; }
+wait_pw() { for _ in $(seq 1 ${2:-40}); do pws | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+# The login window (no client is attached here to show a popup): type into ssh's prompt there.
+login_typed() {
+	local w=""
+	for _ in $(seq 1 50); do
+		w=$(tm list-windows -t work -F '#{window_id} #{window_name}' | awk '$2 == "login" && $3 == "pw.example" {print $1}')
+		[[ -n $w ]] && tm capture-pane -p -t "$w" | grep -q 'pw.example password:' && break
+		sleep 0.2
+	done
+	[[ -n $w ]] || return 1
+	tm send-keys -t "$w" -l "$1"; tm send-keys -t "$w" Enter
+}
+wait_pw 'C O N T R O L' >/dev/null
+wait_pw 'pw.example · ssh in' >/dev/null
+tm send-keys -t work:pwpanel l; wait_pw 'LINK AGENTS ON' >/dev/null; tm send-keys -t work:pwpanel Enter
+wait_pw 'HOST KEY OF pw.example' >/dev/null; tm send-keys -t work:pwpanel 2
+check "L on a host that wants a password opens a login, where ssh asks for it" "login_typed hunter2"
+check "and once it's typed, the link is made" "wait_pw 'linked to pw.example' 75 && [[ -e $pwl/on && -e $T/pw.master ]]"
+check "the poller and the panel's calls over it ask nothing more" "wait_pw 'far-top' 75 && [[ \$(grep -c 'ControlMaster=yes' $T/pwssh.log) == 1 ]]"
+check "LINKS shows it linked" "wait_pw 'pw.example · linked' 50"
+rm -f "$T/pw.master" # the login dropped: a reboot over there, or the network gone a while
+check "a dropped login shows as needing one" "wait_pw 'pw.example · needs login · [L]og in' 75 && wait_pw 'pw.example needs login · L to type its password'"
+check "its panes too, not as unreachable" "wait_pw 'needs login · L' 50 && ! pws | grep -q 'unreachable'"
+pw_tries() { grep -c 'BatchMode=yes.* pw.example ' "$T/pwssh.log"; }
+n=$(pw_tries); sleep 3
+check "nothing is tried over ssh meanwhile, and no login opens by itself" "[[ \$(pw_tries) == $n ]] &&[[ \$(grep -c 'ControlMaster=yes' $T/pwssh.log) == 1 ]] && ! tm list-windows -t work -F '#{window_name}' | grep -q '^login'"
+tm send-keys -t work:pwpanel l; wait_pw 'needs login: type its password' >/dev/null
+check "L offers it first, to log in again" "pws | grep -q '1 *pw.example  · needs login: type its password'"
+tm send-keys -t work:pwpanel Enter
+check "and picking it opens the login again" "login_typed hunter2"
+check "after which the link picks up by itself" "wait_pw 'logged in to pw.example' 50 && for _ in \$(seq 1 50); do [[ ! -e $pwl/login ]] && break; sleep 0.2; done; [[ ! -e $pwl/login ]] && wait_pw 'pw.example · linked' 75"
+check "a host with a key (far.example) never got a login" "! grep 'ControlMaster=yes' $T/pwssh.log | grep -vq ' pw.example' && [[ ! -e $st/links/far.example/login ]]"
+tm send-keys -t work:pwpanel q
+AGENT_SAY_SSH=$T/pwssh "$ROOT/bin/agent-say" unlink pw.example >/dev/null 2>&1
+tm kill-window -t work:pwssh 2>/dev/null
+
 rm -rf "$st/links/far.example" "$st/panel"
 tmux -L "revive-panel-remote-$$" -f /dev/null kill-server 2>/dev/null
 

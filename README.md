@@ -151,7 +151,7 @@ a chat with the agent, **J** takes you to its pane.
 
 When a pane ssh's into another computer, the panel spots it and offers to link
 the agents there: **L** links it (after showing you the computer's host key to
-confirm), **U** unlinks. Once linked, that computer's panes show up in the list too,
+confirm, and a popup for its password if it takes one), **U** unlinks. Once linked, that computer's panes show up in the list too,
 grouped under its name, with the version of tmux-revive it runs. If that's older than
 yours, its heading says `out of date`: select one of its panes and press **V** to update
 it over ssh, after a yes. **N** names one of its panes the same way, over ssh.
@@ -212,12 +212,13 @@ the same name you'd type after `ssh`:
 agent-say link devbox
 ```
 
-The server needs `agent-say` installed too, and ssh has to log in without
-asking for a password. You can test that with:
-
-```sh
-ssh -o BatchMode=yes devbox true
-```
+The server needs `agent-say` installed too. With an ssh key, the link logs in on
+its own. A server that only takes a password works as well: ssh asks you for it
+once (in a small popup when you press **L** in the panel), and the link keeps that
+connection open. tmux-revive never sees or stores the password. If the connection
+drops (that server reboots, or the network goes away for a while), the panel
+marks the link `needs login` and **L** asks for the password again. Nothing logs
+in again by itself.
 
 The first time, it shows the server's host key fingerprint and asks you to confirm it
 (from a script, add `--yes` once you've checked it). If that key changes later, the

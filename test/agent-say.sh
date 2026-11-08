@@ -219,7 +219,8 @@ printf '#!/bin/sh\nexec %q -S %q -f /dev/null "$@"\n' "$real_tmux" "$T/rsock" >"
 chmod +x "$T/rbin/tmux"
 cat >"$T/bin/fakessh" <<EOF
 #!/usr/bin/env bash
-while [[ \$1 == -* ]]; do case \$1 in -o | -p | -i) shift 2 ;; *) shift ;; esac; done
+echo "\$*" >>$T/ssh.log
+while [[ \$1 == -* ]]; do case \$1 in -O) [[ \$2 == check ]] && exit 255; exit 0 ;; -o | -p | -i) shift 2 ;; *) shift ;; esac; done
 shift # the host
 exec env -u AGENT_SAY_PANE -u AGENT_SAY_LOCAL_ONLY PATH="$T/rbin:\$PATH" XDG_STATE_HOME=$T/rstate \\
 	AGENT_SAY_MAILBOX=$T/rstate/agent-say/mailbox.md AGENT_SAY_HOST=devbox-1 TMPDIR=$T/rtmp HOME=$T/rhome \\
@@ -344,6 +345,56 @@ say unlink devbox >/dev/null
 sleep 0.5
 check "unlink stops it" "! pgrep -f 'agent-say _poll devbox' >/dev/null"
 check "and the other side marks what it held as NOT DELIVERED" "grep -q 'NOT DELIVERED: laptop unlinked' $T/rstate/agent-say/mailbox.md && [[ -z \$(ls $outbox) ]]"
+
+echo "a link to a server that takes a password"
+# pwbox is the same machine, behind a fake ssh that refuses BatchMode until a login (an ssh
+# with ControlMaster=yes, its password typed) has left a master open: the marker file.
+cat >"$T/bin/pwssh" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>$T/pwssh.log
+m=$T/pw.master
+case " \$* " in
+*" -O check "*) [[ -e \$m ]]; exit ;;
+*" -O exit "*) rm -f \$m; exit 0 ;;
+*" -G "*) exit 0 ;;
+*" ControlMaster=yes "*)
+	IFS= read -rsp 'pwbox password: ' pw; echo
+	[[ \$pw == hunter2 ]] && { touch \$m; exit 0; }
+	echo 'Permission denied, please try again.' >&2; exit 255 ;;
+esac
+[[ -e \$m ]] || { echo 'me@pwbox: Permission denied (publickey,password).' >&2; exit 255; }
+exec $T/bin/fakessh "\$@"
+EOF
+chmod +x "$T/bin/pwssh"
+printf 'pwbox %s\n' "$(cut -d' ' -f1,2 "$T/hostkey2.pub")" >>"$T/known_hosts"
+pw() { AGENT_SAY_SSH=$T/bin/pwssh AGENT_SAY_LOGIN_RETRY=600 say "$@"; }
+pl=$(dirname "$AGENT_SAY_MAILBOX")/links/pwbox
+batch_tries() { grep -c 'BatchMode=yes' "$T/pwssh.log"; }
+out=$(pw link pwbox --yes 2>&1 </dev/null)
+check "off a terminal, it isn't linked and says it needs a login ($out)" "[[ \$out == *'pwbox needs a login'* && ! -e $pl/on ]] && ! pgrep -f 'agent-say _poll pwbox' >/dev/null"
+pw _login pwbox <<<wrong >/dev/null 2>&1
+check "a wrong password opens no login" "! pw _login pwbox --check && [[ ! -e $T/pw.master ]]"
+pw _login pwbox <<<hunter2 >/dev/null 2>&1
+check "the right one, typed into ssh, leaves a login open" "pw _login pwbox --check"
+out=$(pw link pwbox --yes 2>&1 </dev/null)
+check "the link is then made over that login, with no prompt ($out)" "[[ \$out == *'linked to pwbox'*'Its panes: codex'* ]]"
+there "$ROOT/bin/agent-say --from codex me@laptop 'over the password link'" >/dev/null
+check "and its poller brings messages over it" "wait_seen $LC 'over the password link'"
+rm -f "$T/pw.master" # the login dropped: a reboot over there, or the network gone a while
+check "a dropped login shows as needing one, not as a failure to reach it" "for _ in \$(seq 40); do [[ -e $pl/login ]] && break; sleep 0.25; done; [[ -e $pl/login ]] && say link | grep -q '^pwbox  running.*needs login: pwbox asks for a password'"
+n=$(batch_tries); sleep 3
+check "while it waits for a login it doesn't keep trying ssh ($n tries)" "[[ \$(batch_tries) == $n ]]"
+pw _login pwbox <<<hunter2 >/dev/null 2>&1
+there "$ROOT/bin/agent-say --from codex me@laptop 'after logging in again'" >/dev/null
+check "logged in again, the link picks up by itself" "wait_seen $LC 'after logging in again' && [[ ! -e $pl/login ]]"
+# On a terminal, link asks for the password itself, through ssh (script gives it a terminal).
+rm -f "$T/pw.master"
+for _ in $(seq 40); do [[ -e $pl/login ]] && break; sleep 0.25; done
+out=$(printf 'hunter2\n' | AGENT_SAY_SSH=$T/bin/pwssh script -qec "$ROOT/bin/agent-say link pwbox" /dev/null 2>&1)
+check "on a terminal, link logs in with ssh's own prompt ($out)" "[[ \$out == *'pwbox password:'*'linked to pwbox'* ]] && pw _login pwbox --check"
+check "a host with a key never got a login: no ssh with ControlMaster=yes" "grep -c ' devbox ' $T/ssh.log >/dev/null && ! grep -q 'ControlMaster=yes' $T/ssh.log"
+pw unlink pwbox >/dev/null 2>&1
+check "unlink closes the login with it" "[[ ! -e $T/pw.master ]] && ! pgrep -f 'agent-say _poll pwbox' >/dev/null"
 "$T/rbin/tmux" kill-server
 
 echo "$pass passed, $fail failed"

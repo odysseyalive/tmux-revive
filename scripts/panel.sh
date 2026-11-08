@@ -874,6 +874,10 @@ cache_dir() { # $RDIR, for this user only (an older panel made it with the defau
 	[[ -n $(find "$RDIR" -maxdepth 0 -perm 700 2>/dev/null) ]] || chmod 700 "$RDIR" 2>/dev/null
 }
 remote_run() { # remote_run HOST COMMAND: run it on that computer over the link's ssh connection
+	# The same socket as agent-say's link (its CONTROL), so a login opened for the link (a host
+	# that wants a password) carries these too. While the link waits for one, nothing is tried:
+	# each try would be a refused login in that host's log.
+	[[ -f $ASTATE/links/$1/login ]] && return 255
 	# shellcheck disable=SC2086 # AGENT_SAY_SSH may carry its own arguments, as in agent-say
 	timeout "${RTIMEOUT:-8}" ${AGENT_SAY_SSH:-ssh} -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto \
 		-o "ControlPath=$ASTATE/ssh-%C" -o ControlPersist=120 "$1" "$2" </dev/null 2>/dev/null
@@ -932,6 +936,7 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 	local h=${P_HOST[SEL]} id=${P_RID[SEL]:-} n=$1 f l
 	L=("" "  on $h: no peek (update tmux-revive there)")
 	[[ ${P_STATE[SEL]:-} == unreachable ]] && L=("" "  on $h: can't be reached to peek")
+	[[ ${P_STATE[SEL]:-} == login ]] && L=("" "  on $h: needs login · press L to type its password")
 	[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $id =~ ^%[0-9]+$ ]] || return 0
 	((n > 60)) && n=60
 	f="$RDIR/$h.peek-${id#%}"
@@ -948,7 +953,7 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 	fi
 }
 remote_panes() {
-	local d h f id loc name app st folder git cpu mem agent got v wp S=$'\x1f'
+	local d h f id loc name app st folder git cpu mem agent got v wp lg S=$'\x1f'
 	local -A rctx
 	P_GROUPS=0
 	# Other computers' screens are kept no longer than they're shown: a minute at most.
@@ -957,10 +962,13 @@ remote_panes() {
 		[[ -f $d/on ]] || continue
 		h=$(basename "$d")
 		[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
-		if ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
+		# A link waiting for its login (press L) shows its names, marked so, and isn't asked.
+		lg=0
+		[[ -f $d/login ]] && lg=1
+		if ((lg)); then :; elif ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
 		f="$RDIR/$h.rows" got=0 RVER[$h]="" rctx=()
 		# Rows a minute old or newer; older means that computer stopped answering.
-		if [[ -s $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
+		if ((!lg)) && [[ -s $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
 			RVER[$h]=old # unless it says which version it is
 			while IFS=$S read -r id loc name app st folder git cpu mem agent; do
 				# Its version, on a line of its own (an older panel's check below skips it).
@@ -999,6 +1007,7 @@ remote_panes() {
 			[[ -e $f.old ]] && RVER[$h]=old
 			st=linked
 			[[ -s $f || ! -s $d/error ]] || st=unreachable
+			((lg)) && st=login
 			while IFS= read -r name; do
 				[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || continue
 				P_ID+=("$name@$h") P_LOC+=("") P_NAME+=("$name") P_APP+=("") P_STATE+=("$st") P_DIR+=("")
@@ -1063,6 +1072,7 @@ state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
 	self) CELL="$BBLU✦ this panel      $R" ;;
 	linked) CELL="$GRY◌ linked          $R" ;;
 	unreachable) CELL="$BRED◌ unreachable     $R" ;;
+	login) CELL="$BYEL◌ needs login · L $R" ;;
 	*) CELL="$CYN▸ running         $R" ;;
 	esac
 }
@@ -1149,7 +1159,7 @@ draw_panes() {
 			if [[ $git == *\* ]]; then cells+="$BYEL$FLD$R "; else cells+="$GRN$FLD$R "; fi
 		fi
 		# Names-only rows from a link have nothing measured: leave CPU and memory blank.
-		if [[ ${P_STATE[i]} != linked && ${P_STATE[i]} != unreachable ]]; then
+		if [[ ${P_STATE[i]} != linked && ${P_STATE[i]} != unreachable && ${P_STATE[i]} != login ]]; then
 			meter "${P_CPU[i]}"
 			human "${P_MEM[i]}"
 			printf -v num '%4s%%  %6s' "${P_CPU[i]}" "$HUMAN"
@@ -1323,6 +1333,8 @@ links_saves() { # -> SIDE lines: saves, then links
 		fi
 		if [[ -n $pid ]] && [[ $(ps -ww -o args= -p "$pid" 2>/dev/null) == *"_poll $h"* ]] && [[ ! -s $d/error ]]; then
 			SIDE+=("$BGRN●$R $BWHT$h$R$mode $GRY· linked · ${names:-0} names$R")
+		elif [[ -f $d/login ]]; then
+			SIDE+=("$BYEL●$R $BWHT$h$R$mode $BYEL· needs login ·$R $BBLU[$B${BYEL}L$R$BBLU]$R${BWHT}og in$R")
 		elif [[ -s $d/error ]]; then
 			SIDE+=("$BRED●$R $BWHT$h$R$mode $BRED$err$R")
 		else
@@ -1550,6 +1562,38 @@ trim_colored() { # trim_colored TEXT WIDTH -> TRIM: cut to WIDTH visible charact
 
 # ------------------------------------------------------------------ actions
 flash() { FLASH=$1 FLASH_T=$SECONDS; clean FLASH; } # agent-say's reply can quote anything
+
+read_host_keys() { # read_host_keys HOST -> KEYS: its key fingerprints, as agent-say link would show them
+	local k
+	KEYS=()
+	while IFS= read -r k; do
+		[[ $k =~ ^SHA256:[A-Za-z0-9+/=]{1,64}\ \([A-Z0-9-]{1,16}\)$ ]] && KEYS+=("$k")
+	done < <(timeout 20 "$ASAY" _host-keys "$1" </dev/null 2>/dev/null | head -n 8)
+}
+
+# login_window HOST: log in to a host that wants a password, once, for its link. ssh runs in a
+# popup over the panel (in a window of its own when no client can show a popup) and asks you
+# itself; the panel and agent-say never see what you type. Only a key you press opens it.
+# Returns whether a login is open now.
+login_window() {
+	local h=$1 cmd w i
+	[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+	# tmux runs it with the server's environment, not this panel's: say where agent-say keeps
+	# its state, and which ssh it uses.
+	cmd=$(printf '%q ' env AGENT_SAY_MAILBOX="$AMAIL" ${AGENT_SAY_SSH:+AGENT_SAY_SSH="$AGENT_SAY_SSH"} "$ASAY" _login "$h")
+	if [[ -n $(tm list-clients -F x 2>/dev/null) ]]; then
+		tm display-popup -E -w 84 -h 12 "$cmd" 2>/dev/null # returns when it closes
+	else
+		# Until that window closes (ten minutes at most; sshd gives up on a login sooner).
+		w=$(tm new-window -P -F '#{window_id}' -n "login $h" "$cmd") || return 1
+		for ((i = 0; i < 2000; i++)); do
+			tm list-windows -a -F '#{window_id}' 2>/dev/null | grep -qxF -- "$w" || break
+			sleep 0.3
+		done
+	fi
+	PREV=()
+	"$ASAY" _login "$h" --check
+}
 
 ask() { # ask PROMPT -> REPLY on the bottom line. Enter accepts; Esc, Ctrl-C or an empty line backs out (returns 1)
 	local rows cols k rest show room ok=1
@@ -1919,8 +1963,15 @@ act() {
 		out=$(AGENT_SAY_PANE=$id "$ASAY" name "$REPLY" 2>&1 | head -n 1)
 		flash "${out#agent-say: }" ;;
 	l | L)
-		# Every ssh host not linked yet, the selected pane's first, then "other host...".
-		local hosts=() labels=() seen=" " h i j
+		# Links waiting for their login first, then every ssh host not linked yet (the selected
+		# pane's first), then "other host...".
+		local hosts=() labels=() seen=" " h i j d
+		for d in "$ASTATE"/links/*/; do
+			[[ -f $d/on && -f $d/login ]] || continue
+			h=$(basename "$d")
+			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
+			seen+="$h " hosts+=("$h") labels+=("$h  · needs login: type its password")
+		done
 		for j in -1 "${!P_SSH[@]}"; do
 			((j < 0)) && i=$SEL || i=$j
 			h=${P_SSH[i]:-}
@@ -1940,14 +1991,20 @@ act() {
 			h=$REPLY
 			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { flash "not a host name: $h"; return; }
 		fi
+		# A link whose login dropped: its key was confirmed when it was linked (and the link
+		# checks it still), so only the login is asked for.
+		if linked "$h" && [[ -f $ASTATE/links/$h/login ]]; then
+			flash "logging in to $h…"; draw
+			if login_window "$h"; then flash "logged in to $h; its link picks up again"; else flash "not logged in to $h"; fi
+			return
+		fi
 		# Its host key first, to confirm (agent-say asks the same on a terminal): say no, and
 		# nothing is linked. No is first, so Enter alone doesn't trust a key.
 		flash "reading $h's host key…"; draw
-		local -a keys=()
+		local -a keys
 		local k
-		while IFS= read -r k; do
-			[[ $k =~ ^SHA256:[A-Za-z0-9+/=]{1,64}\ \([A-Z0-9-]{1,16}\)$ ]] && keys+=("$k")
-		done < <(timeout 20 "$ASAY" _host-keys "$h" </dev/null 2>/dev/null | head -n 8)
+		read_host_keys "$h"
+		keys=("${KEYS[@]}")
 		PREV=()
 		if ((${#keys[@]})); then
 			labels=("No, don't link $h")
@@ -1958,6 +2015,21 @@ act() {
 		pick "HOST KEY OF $h" "${labels[@]}" && ((PICKED > 0)) || { flash "link cancelled"; return; }
 		flash "linking $h…"; draw
 		out=$(timeout 30 "$ASAY" link "$h" --yes </dev/null 2>&1 | grep -E '^(linked to|agent-say:)' | head -n 1)
+		# A host that wants a password (or its key accepted, by ssh itself): you log in once, in
+		# a popup, and the link is made over that login.
+		if [[ $out == *"$h needs a login"* ]]; then
+			flash "logging in to $h…"; draw
+			login_window "$h" || { flash "not logged in to $h; not linked"; return; }
+			# ssh may have just added its key: it must be one you confirmed above.
+			if ((${#keys[@]})); then
+				read_host_keys "$h"
+				for k in "${KEYS[@]}"; do
+					[[ " ${keys[*]} " == *" $k "* ]] || { flash "$h's host key isn't the one you confirmed; not linked"; return; }
+				done
+			fi
+			flash "linking $h…"; draw
+			out=$(timeout 30 "$ASAY" link "$h" --yes </dev/null 2>&1 | grep -E '^(linked to|agent-say:)' | head -n 1)
+		fi
 		clean out
 		flash "${out#agent-say: }" ;;
 	u | U | d | D)
@@ -2151,7 +2223,7 @@ case ${REVIVE_PANEL_SPLASH:-} in
 esac
 PREV=() # after the splash: paint the whole panel
 
-declare -A SSH_SEEN=()
+declare -A SSH_SEEN=() LOGIN_SEEN=()
 # keys KEY: act on KEY and on any keys already waiting behind it (a held arrow), so that they
 # are drawn once. Keys that only move the selection set nav.
 keys() {
@@ -2182,6 +2254,17 @@ while :; do
 			[[ -n $h && -z ${SSH_SEEN[$h]:-} ]] || continue
 			SSH_SEEN[$h]=1
 			linked "$h" || flash "new ssh: $h · L links it"
+		done
+		# A link whose login dropped (a reboot over there, the network gone): said once.
+		for d in "$ASTATE"/links/*/; do
+			h=$(basename "$d")
+			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
+			if [[ -f $d/on && -f $d/login ]]; then
+				[[ -n ${LOGIN_SEEN[$h]:-} ]] || flash "$h needs login · L to type its password"
+				LOGIN_SEEN[$h]=1
+			else
+				LOGIN_SEEN[$h]=""
+			fi
 		done
 		TCOLS="" MSG_OLD=1 # looked at again along with the panes
 	fi
