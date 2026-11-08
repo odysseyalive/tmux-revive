@@ -7,6 +7,7 @@
 #   panel.sh --once     draw one frame to stdout and exit (tests, a quick look)
 #   panel.sh --rows     this computer's panes as rows for another computer's panel (over a link)
 #   panel.sh --peek %ID N   the last N lines of that pane's screen, for another computer's peek
+#   panel.sh --keys %ID KEY...   keys for a question on that pane, sent from another computer's panel
 #
 # REVIVE_PANEL_POPUP=1 (set by @revive-panel-key) closes the panel after a jump, since a popup
 # would otherwise sit on top of the pane you jumped to.
@@ -14,7 +15,11 @@ set -uo pipefail
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-ONCE=0 ROWS=0 PEEKMODE=0
+# Everything it keeps (other computers' rows and screens) is for this user only. common.sh sets
+# this too; it's said again here because the cache holds what's on other computers' screens.
+umask 077
+
+ONCE=0 ROWS=0 PEEKMODE=0 KEYSMODE=0
 [[ ${1:-} == --once ]] && ONCE=1
 [[ ${1:-} == --rows ]] && ROWS=1
 if [[ ${1:-} == --peek ]]; then
@@ -23,6 +28,8 @@ if [[ ${1:-} == --peek ]]; then
 		{ echo "usage: panel.sh --peek %PANE LINES (1-60)" >&2; exit 2; }
 	PEEKMODE=1 PEEK_ID=$2 PEEK_N=$3
 fi
+# --keys is checked key by key once key_ok is defined, before anything is sent.
+[[ ${1:-} == --keys ]] && KEYSMODE=1
 
 # Widths below are counted in characters, which needs a UTF-8 locale.
 if [[ $(locale charmap 2>/dev/null) != UTF-8 ]]; then
@@ -65,11 +72,14 @@ padv() { # padv TEXT WIDTH: a coloured string padded (or cut) to WIDTH visible c
 # Folder and pane names, process names, mail from linked machines and ssh errors can carry
 # escape sequences (an OSC 52 clipboard write, a faked screen). clean drops C0, DEL and C1
 # controls from the named variables, so only the panel's own colour codes reach the terminal.
-C1=""
+# Bidi overrides and zero-width characters go too (U+200B-200F, U+202A-202E, U+2066-2069):
+# they would make a name read differently from what it is, or hide text in plain sight.
+C1="" ZW=""
 for i in {128..159}; do printf -v c '\\xc2\\x%x' "$i"; printf -v c "$c"; C1+=$c; done # UTF-8 bytes
+for c in 80{8b,8c,8d,8e,8f,aa,ab,ac,ad,ae} 81{a6,a7,a8,a9}; do printf -v c '\\xe2\\x%s\\x%s' "${c:0:2}" "${c:2}"; printf -v c "$c"; ZW+=$c; done
 clean() { # clean VAR...
 	local -n _v
-	for _v; do _v=${_v//[[:cntrl:]]/} _v=${_v//[$C1]/}; done
+	for _v; do _v=${_v//[[:cntrl:]]/} _v=${_v//[$C1]/} _v=${_v//[$ZW]/}; done
 }
 OUT=()
 line() { OUT+=("$1"); }
@@ -81,7 +91,14 @@ row() { # row CONTENT: one line inside the frame, cut or padded to the inner wid
 }
 # A section title on a solid blue band that fades into the black on both sides: shading as
 # a short transition between two colours, the way the artpack groups used it.
-tab() { printf '%s' "$BLU░▒▓$BGBLU$B$BWHT $1 $R$BLU▓▒░$R"; }
+# A question waiting on you gets the band in magenta, the colour of the asking state.
+tab() { local c=${2:-4}; printf '%s' "$e[3${c}m░▒▓$e[4${c}m$B$BWHT $1 $R$e[3${c}m▓▒░$R"; } # tab TITLE [COLOUR 0-7]
+sectk() { # sectk TITLE KEYS [COLOUR]: a divider with a title, and the keys for that section at its right end
+	local t="$FRAME╠═$(tab "$1" "${3:-4}")" a
+	vlen "$t"; a=$VLEN
+	vlen "$2"
+	line "$t$FRAME$(rep ═ $((W - 5 - a - VLEN)))$R $2 $FRAME══╣$R"
+}
 sect() { # sect TITLE [RIGHT-TITLE SPLIT-AT]: a divider carrying section titles
 	local t="$FRAME╠═$(tab "$1")"
 	if [[ -n ${2:-} ]]; then
@@ -229,12 +246,19 @@ twinkle() { # twinkle N ROWS: N stars in the top ROWS rows that take turns shini
 		if (((AT + k) % 2)); then put $r $c "*" "$BWHT"; else put $r $c "·" "$GRY"; fi
 	done
 }
+declare -A ART_MEMO=()
 art() { # art WIDTH HEIGHT [still] -> ART rows of the current scene; "still" stops its animation
-	canvas "$1" "$2"
+	local k
 	if [[ ${3:-} == still ]]; then AT=0; else AT=$TICK; fi
+	# The same frame again (answering a question redraws every 0.3 s) is kept, not redrawn.
+	k="$SCENE $1 $2 $AT"
+	if [[ -n ${ART_MEMO[$k]+set} ]]; then mapfile -t ART <<<"${ART_MEMO[$k]}"; return; fi
+	canvas "$1" "$2"
 	SEED=$((7919 * (SCENE + 1)))
 	((ART_W > 0 && ART_H > 0)) && "scene_${SCENES[SCENE]}"
 	emit
+	((${#ART_MEMO[@]} > 6)) && ART_MEMO=()
+	ART_MEMO[$k]=$(printf '%s\n' "${ART[@]}")
 }
 
 scene_city() { # towers with lit windows under the stars; one star and two windows change
@@ -472,13 +496,15 @@ human() { # KB -> 412M / 1.2G
 }
 
 # ------------------------------------------------------------------ gathering
-declare -A PCHILD PARGS PRSS PCPU PPAR INPANE TICKS_PREV GIT GIT_T
+declare -A PCHILD PARGS PRSS PCPU PPAR PUID INPANE TICKS_PREV GIT GIT_T
 X_SSH=() X_WHERE=()
 T_PREV=""
 SHELLS=" sh bash zsh fish dash ksh tcsh csh nu "
 # An agent asking you something: a permission prompt or a multiple-choice question.
 Q_RE='do you want to|would you like to|allow (once|always)|\(y/n\)|\[y/n\]|enter to select|esc to cancel|trust (this|the) folder|yes, proceed|press enter to continue'
 W_RE='esc to interrupt|ctrl\+c to interrupt'
+# The line a question's dialog starts under: a horizontal rule, or the top of a box.
+RULE_RE='^[[:space:]]*[╭┌]?[─━═╌┄-]{8,}'
 
 agent_kind() { # agent_kind ARGS -> claude/codex/cursor/crush/gemini or nothing (as agent-say does)
 	case " $1 " in
@@ -499,9 +525,13 @@ claude_status() { # Claude Code's own idle/busy, from its session record
 }
 
 screen_state() { # screen_state PANE -> asking / working / waiting, read off the bottom of the screen
-	local -a L
+	local -a SL
+	mapfile -t SL < <(tm capture-pane -p -t "$1" 2>/dev/null)
+	lines_state SL
+}
+lines_state() { # lines_state ARRAY: the same, for a screen already read (a linked computer's peek)
+	local -n L=$1
 	local n=0 i tail="" prompt=0
-	mapfile -t L < <(tm capture-pane -p -t "$1" 2>/dev/null)
 	for ((i = ${#L[@]} - 1; i >= 0 && n < 12; i--)); do
 		[[ ${L[i]} =~ ^[[:space:]]*$ ]] && continue
 		((n++))
@@ -514,6 +544,32 @@ screen_state() { # screen_state PANE -> asking / working / waiting, read off the
 	elif [[ $tail =~ $W_RE ]]; then echo working
 	else echo waiting; fi
 	shopt -u nocasematch
+}
+
+# question_block: the question at the bottom of the screen in L -> QB. It starts at the rule
+# (or box top) above the question's own line, else at the blank row above it, and runs to the
+# last row that isn't blank: the dialog alone, not the history scrolled above it.
+question_block() {
+	local i n=0 q=-1 end=-1 top=-1
+	QB=()
+	for ((i = ${#L[@]} - 1; i >= 0; i--)); do [[ ${L[i]} =~ ^[[:space:]]*$ ]] || { end=$i; break; }; done
+	((end >= 0)) || return 0
+	# The question's top line: the highest one that reads like a question, in the same rows
+	# screen_state looked at to call it asking.
+	shopt -s nocasematch
+	for ((i = end; i >= 0 && n < 12; i--)); do
+		[[ ${L[i]} =~ ^[[:space:]]*$ ]] && continue
+		((n++))
+		[[ ${L[i]} =~ $Q_RE ]] && q=$i
+	done
+	shopt -u nocasematch
+	((q < 0)) && q=$end
+	for ((i = q - 1; i >= 0 && i >= q - 30; i--)); do [[ ${L[i]} =~ $RULE_RE ]] && { top=$i; break; }; done
+	if ((top < 0)); then
+		top=0
+		for ((i = q - 1; i >= 0; i--)); do [[ ${L[i]} =~ ^[[:space:]]*$ ]] && { top=$((i + 1)); break; }; done
+	fi
+	QB=("${L[@]:top:end-top+1}")
 }
 
 # git in a pane's folder, which may be anyone's repo: its config must not get to run a
@@ -572,10 +628,10 @@ ssh_dest() {
 linked() { [[ -f $ASTATE/links/$1/on ]]; }
 gather() {
 	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh
-	PCHILD=() PARGS=() PRSS=() PCPU=() PPAR=() INPANE=()
-	while read -r pid ppid rss pcpu args; do
-		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu PPAR[$pid]=$ppid
-	done < <(ps -ww -eo pid=,ppid=,rss=,pcpu=,args= 2>/dev/null) # -ww: never cut to $COLUMNS
+	PCHILD=() PARGS=() PRSS=() PCPU=() PPAR=() PUID=() INPANE=()
+	while read -r pid ppid uid rss pcpu args; do
+		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu PPAR[$pid]=$ppid PUID[$pid]=$uid
+	done < <(ps -ww -eo pid=,ppid=,uid=,rss=,pcpu=,args= 2>/dev/null) # -ww: never cut to $COLUMNS
 	now=${EPOCHREALTIME:-$SECONDS}
 	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=() P_HOST=() P_RID=()
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
@@ -643,47 +699,61 @@ gather() {
 RDIR="$ASTATE/panel"
 REMOTE_ROWS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --rows'
 REMOTE_PEEK_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --peek'
-declare -A RFETCH_T=() RFETCH_PID=() PFETCH_T=() PFETCH_PID=()
+REMOTE_KEYS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --keys'
+declare -A RFETCH_T=() RFETCH_PID=() PFETCH_T=() PFETCH_PID=() PEEK_FILES=()
+PEEK_EVERY=$REFRESH # seconds between asks for a linked pane's screen; none while answering
+cache_dir() { # $RDIR, for this user only (an older panel made it with the default umask)
+	[[ -d $RDIR ]] || mkdir -p "$RDIR"
+	[[ -n $(find "$RDIR" -maxdepth 0 -perm 700 2>/dev/null) ]] || chmod 700 "$RDIR" 2>/dev/null
+}
 remote_run() { # remote_run HOST COMMAND: run it on that computer over the link's ssh connection
 	# shellcheck disable=SC2086 # AGENT_SAY_SSH may carry its own arguments, as in agent-say
 	timeout 8 ${AGENT_SAY_SSH:-ssh} -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto \
 		-o "ControlPath=$ASTATE/ssh-%C" -o ControlPersist=120 "$1" "$2" </dev/null 2>/dev/null
 }
 fetch_rows() { remote_run "$1" "$REMOTE_ROWS_CMD"; }
+# rows_get HOST FILE: the rows into FILE, through a temporary file of its own (two panels may
+# be asking at once). Capped in bytes: one endless line from over there must not freeze this.
+rows_get() {
+	local t st
+	t=$(mktemp "$2.XXXXXX") || return
+	fetch_rows "$1" | head -c 262144 >"$t"
+	st=${PIPESTATUS[0]}
+	if ((st == 0 || st == 141)); then mv -f "$t" "$2"; else rm -f "$t"; fi # 141: cut off by head
+}
 remote_fetch() { # remote_fetch HOST [now]
 	local h=$1 f="$RDIR/$1.rows"
-	mkdir -p "$RDIR"
-	if [[ ${2:-} == now ]]; then
-		if fetch_rows "$h" >"$f.new"; then mv -f "$f.new" "$f"; else rm -f "$f.new"; fi
-		return
-	fi
+	cache_dir
+	if [[ ${2:-} == now ]]; then rows_get "$h" "$f"; return; fi
 	[[ -n ${RFETCH_PID[$h]:-} ]] && kill -0 "${RFETCH_PID[$h]}" 2>/dev/null && return
 	[[ -n ${RFETCH_T[$h]:-} ]] && ((SECONDS - RFETCH_T[$h] < 10)) && return
 	RFETCH_T[$h]=$SECONDS
-	(if fetch_rows "$h" >"$f.new"; then mv -f "$f.new" "$f"; else rm -f "$f.new"; fi) &
+	rows_get "$h" "$f" &
 	RFETCH_PID[$h]=$!
 }
 # The peek at a pane on a linked computer: its screen, asked for like the rows (in the
 # background, no more than once a refresh) and kept in $RDIR/HOST.peek-ID. A failed ask
 # (unreachable, or a tmux-revive there too old to answer) leaves HOST.peek-ID.fail instead.
 peek_get() { # peek_get HOST %ID LINES FILE
-	local st
+	local st t
 	# The id and count are checked before they go into a command line run over there.
 	[[ $2 =~ ^%[0-9]+$ && $3 =~ ^[0-9]{1,2}$ ]] || return 1
-	remote_run "$1" "$REMOTE_PEEK_CMD '$2' $3" | head -c 65536 >"$4.new"
+	t=$(mktemp "$4.XXXXXX") || return 1
+	remote_run "$1" "$REMOTE_PEEK_CMD '$2' $3" | head -c 65536 >"$t"
 	st=${PIPESTATUS[0]}
 	if ((st == 0 || st == 141)); then # 141: more than head would take, cut off
-		mv -f "$4.new" "$4"; rm -f "$4.fail"
+		mv -f "$t" "$4"; rm -f "$4.fail"
 	else
-		rm -f "$4.new" "$4"; : >"$4.fail"
+		rm -f "$t" "$4"; : >"$4.fail"
 	fi
 }
 peek_fetch() { # peek_fetch HOST %ID LINES FILE [now]
 	local k="$1 $2"
-	mkdir -p "$RDIR"
+	cache_dir
+	PEEK_FILES[$4]=1
 	if [[ ${5:-} == now ]]; then peek_get "$1" "$2" "$3" "$4"; return; fi
 	[[ -n ${PFETCH_PID[$k]:-} ]] && kill -0 "${PFETCH_PID[$k]}" 2>/dev/null && return
-	[[ -n ${PFETCH_T[$k]:-} ]] && ((SECONDS - PFETCH_T[$k] < REFRESH)) && return
+	[[ -n ${PFETCH_T[$k]:-} ]] && ((SECONDS - PFETCH_T[$k] < PEEK_EVERY)) && return
 	PFETCH_T[$k]=$SECONDS
 	peek_get "$1" "$2" "$3" "$4" &
 	PFETCH_PID[$k]=$!
@@ -710,6 +780,8 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 remote_panes() {
 	local d h f id loc name app st folder git cpu mem agent got S=$'\x1f'
 	P_GROUPS=0
+	# Other computers' screens are kept no longer than they're shown: a minute at most.
+	[[ -d $RDIR ]] && find "$RDIR" -maxdepth 1 \( -name '*.peek-*' -o -name '*.answered-*' \) -mmin +1 -delete 2>/dev/null
 	for d in "$ASTATE"/links/*/; do
 		[[ -f $d/on ]] || continue
 		h=$(basename "$d")
@@ -721,9 +793,12 @@ remote_panes() {
 			while IFS=$S read -r id loc name app st folder git cpu mem agent; do
 				# Only a complete row from a pane: a %id first and the agent flag last.
 				[[ $id =~ ^%[0-9]+$ && $agent =~ ^[01]$ ]] || continue
+				# Cut before cleaning, so a huge field costs nothing to look at.
+				loc=${loc:0:64} name=${name:0:64} app=${app:0:64} st=${st:0:16} folder=${folder:0:256} git=${git:0:128}
 				clean loc name app st folder git
 				[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || name=""
 				case $st in asking | working | waiting | shell | program) ;; *) st=program ;; esac
+				[[ $st == asking && $f -ot $RDIR/$h.answered-${id#%} ]] && st=waiting # answered from here since
 				[[ $cpu =~ ^[0-9]{1,4}$ ]] || cpu=0
 				[[ $mem =~ ^[0-9]{1,10}$ ]] || mem=0
 				[[ $agent == 1 ]] || agent=0
@@ -742,7 +817,7 @@ remote_panes() {
 				P_ID+=("$name@$h") P_LOC+=("") P_NAME+=("$name") P_APP+=("") P_STATE+=("$st") P_DIR+=("")
 				P_GIT+=("") P_CPU+=(0) P_MEM+=(0) P_AGENT+=(0) P_SSH+=("") P_HOST+=("$h") P_RID+=("")
 				got=1
-			done < <(head -n 200 "$d/names" 2>/dev/null)
+			done < <(head -c 65536 "$d/names" 2>/dev/null | head -n 200)
 		fi
 		((got)) && ((P_GROUPS++))
 	done
@@ -752,12 +827,13 @@ remote_panes() {
 
 # ssh sessions in terminals outside tmux (a kitty tab, another window): their hosts can be
 # linked too. Only someone's own interactive ssh counts: not the ones git, scp, sftp or
-# rsync start for themselves, and not agent-say's own link connections.
+# rsync start for themselves, and not agent-say's own link connections. Only your own ssh:
+# anyone on this computer can start a process whose command line says "ssh evil.example".
 outside_ssh() {
 	local pid a h up where c
 	X_SSH=() X_WHERE=()
 	for pid in "${!PARGS[@]}"; do
-		[[ -n ${INPANE[$pid]:-} ]] && continue
+		[[ -n ${INPANE[$pid]:-} || ${PUID[$pid]:-} != "$UID" ]] && continue
 		a=${PARGS[$pid]}
 		h=$(ssh_dest "$a")
 		[[ -n $h ]] || continue
@@ -780,7 +856,7 @@ outside_ssh() {
 }
 
 # ------------------------------------------------------------------ sections
-SEL=0 SEL_ID="" PEEK=1 FLASH="" FLASH_T=0 TICK=0
+SEL=0 SEL_ID="" PEEK=${REVIVE_PANEL_PEEK:-1} FULL=0 ANSWERING=0 FLASH="" FLASH_T=0 TICK=0
 SPIN=(▖ ▘ ▝ ▗)
 
 state_cell() { # coloured status, 18 characters wide
@@ -847,21 +923,56 @@ draw_panes() {
 	((n)) || row "$GRY  no tmux panes found$R"
 }
 
-draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen
-	local -a L=()
-	local id=${P_ID[SEL]:-} i end start shown=0
-	sect "PEEK · ${P_NAME[SEL]:-${P_LOC[SEL]:-}}"
+kc() { printf '%s' "$BBLU[$B$BYEL$1$R$BBLU]$R$BWHT$2$R"; } # kc KEY LABEL: a key as the command bar shows it
+draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or the question it's asking
+	local -a L=() QB=()
+	local id=${P_ID[SEL]:-} i end start shown=0 keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}}
+	if [[ ${P_STATE[SEL]:-} == asking ]]; then
+		draw_question "$1"
+		return
+	fi
+	if ((FULL)); then keys="$(kc x " back")  $(kc c " collapse")"; else keys=$(kc x " full view"); fi
+	sectk "PEEK · $name" "$keys"
 	if [[ -n ${P_HOST[SEL]:-} ]]; then
 		remote_peek "$1"
 	elif [[ -n $id ]]; then
 		mapfile -t L < <(tm capture-pane -p -t "$id" 2>/dev/null)
+		for i in "${!L[@]}"; do clean "L[$i]"; done # capture-pane passes C1 characters through
 	fi
-	# The last lines on its screen, trailing blank rows aside.
-	for ((end = ${#L[@]} - 1; end >= 0; end--)); do [[ ${L[end]} =~ ^[[:space:]]*$ ]] || break; done
+	# The bottom of its screen, row for row: the box's last line is the pane's last line,
+	# blank or not, and it reads upward from there. A screen shorter than the box is padded
+	# above, so the bottoms still line up.
+	end=$((${#L[@]} - 1))
 	start=$((end - $1 + 1))
 	((start < 0)) && start=0
-	for ((i = start; i <= end; i++, shown++)); do row "$GRY│$R $DIM$(fld "${L[i]}" $((IW - 2)))$R"; done
-	for ((; shown < $1; shown++)); do row "$GRY│$R"; done
+	for ((shown = end - start + 1; shown < $1; shown++)); do row "$GRY│$R"; done
+	for ((i = start; i <= end; i++)); do row "$GRY│$R $DIM$(fld "${L[i]}" $((IW - 2)))$R"; done
+}
+
+# The question the selected pane is asking, in place of its peek: only the dialog at the
+# bottom of its screen, bright, from the top of the box down. Enter answers it from here (keys
+# go to the pane until Ctrl-]); a chat with the agent is J, in the pane itself.
+draw_question() { # draw_question LINES
+	local id=${P_ID[SEL]:-} i start keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}}
+	if ((ANSWERING)); then
+		keys="$B${BMAG}keys go to $name$R  $(kc "Ctrl-]" " leaves")"
+	else
+		keys="$(kc ⏎ " answer")  $(kc J " open the chat")  "
+		if ((FULL)); then keys+="$(kc x " back")"; else keys+=$(kc x " full view"); fi
+	fi
+	sectk "QUESTION · $name" "$keys" 5
+	if [[ -n ${P_HOST[SEL]:-} ]]; then
+		remote_peek 60
+	elif [[ -n $id ]]; then
+		mapfile -t L < <(tm capture-pane -p -t "$id" 2>/dev/null)
+		for i in "${!L[@]}"; do clean "L[$i]"; done
+	fi
+	question_block
+	# Taller than the box: its bottom, where the choices are.
+	start=$((${#QB[@]} - $1))
+	((start < 0)) && start=0
+	for ((i = start; i < ${#QB[@]}; i++)); do row "$BMAG│$R $BWHT$(fld "${QB[i]}" $((IW - 2)))$R"; done
+	for ((i = ${#QB[@]} - start; i < $1; i++)); do row "$BMAG│$R"; done
 }
 
 messages() { # -> MSG lines for the message center
@@ -991,13 +1102,24 @@ draw() {
 	links_saves
 	local bottom=$(( ${#MSG[@]} > ${#SIDE[@]} ? ${#MSG[@]} : ${#SIDE[@]} ))
 	# Fixed rows: frame 2, banner, section bars 3, column header 1, totals 1, keys 1. The peek
-	# takes up to 14 of the rest and the scene the remainder, so the panel fills its pane.
+	# matters more than the artwork: it takes about two thirds of the rest (14 rows or more
+	# when they're there) and the scene the others, unless that leaves the scene too little to
+	# be worth drawing. X gives the peek all of it. With no peek (P hides it, or nothing to
+	# peek at) the scene fills the space, so the panel fills its pane. A question shows even
+	# with the peek hidden: it's waiting on you.
 	avail=$((lines - BH - 8 - n - P_GROUPS - bottom))
 	# No peek at the panel's own pane: it would only show itself.
-	if ((PEEK && n && avail >= 4)) && [[ ${P_STATE[SEL]:-} != self ]]; then
-		peek_h=$((avail - 1 > 14 ? 14 : avail - 1))
-		avail=$((avail - peek_h - 1))
-		draw_peek "$peek_h"
+	local show=0
+	if ((n && avail >= 4)) && [[ ${P_STATE[SEL]:-} != self ]]; then
+		((PEEK)) || [[ ${P_STATE[SEL]:-} == asking ]] && show=1
+	fi
+	if ((show)); then
+		# Rows with its title: 15 is the 14 it always had.
+		peek_h=$((avail * 2 / 3))
+		((peek_h < 15)) && peek_h=15
+		((peek_h > avail || avail - peek_h < 4 || FULL)) && peek_h=$avail
+		avail=$((avail - peek_h))
+		draw_peek $((peek_h - 1))
 	fi
 	if ((avail >= 3)); then
 		sect "ART · ${TITLES[SCENE]}"
@@ -1022,6 +1144,7 @@ draw() {
 
 	# Command bar.
 	local k=""
+	((!ANSWERING)) && [[ ${P_STATE[SEL]:-} == asking ]] && k="$B$BMAG[⏎]$R$B$BWHT answer$R  "
 	# Keys that can't act on the selected pane are faded: on a linked computer's pane there's
 	# nothing to rename here, and nothing to jump to unless a pane here is ssh'd there.
 	local off=" " rh=${P_HOST[SEL]:-} j
@@ -1041,6 +1164,8 @@ draw() {
 	vlen "$k"
 	((VLEN + 15 <= IW)) && k+="$GRY↑↓ 1-9 select$R"
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
+	# While answering every key goes to the agent, so the bar says that and how to stop.
+	((ANSWERING)) && k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Ctrl-]$R$BMAG leaves without sending anything$R"
 	line "$FRAME╠$(rep ═ $((W - 2)))╣$R"
 	row "$k"
 	local sig="$BLU▓▒░$R$GRY tmux-revive bbs · est. 2026 $R$BLU░▒▓$R"
@@ -1181,6 +1306,140 @@ pick() {
 	done
 }
 
+# ------------------------------------------------------------------ answering a question
+# Keys for a question, as they travel: tmux key names from a short list, or literal text as
+# lit:HEX. Hex, so no shell on the way, here or on a linked computer, can read anything into
+# it. Checked before a command line is built from them, and again where they're sent.
+KEY_RE='^(Up|Down|Left|Right|Home|End|PPage|NPage|IC|DC|Enter|Escape|Tab|BTab|BSpace|Space|C-[a-z])$'
+key_ok() { # key_ok TOKEN: may it be sent? A lit: token's text -> LIT (64 characters at most)
+	local h=${1#lit:} i esc="" t
+	LIT=""
+	[[ $1 =~ $KEY_RE ]] && return 0
+	[[ $1 == lit:* && $h =~ ^([0-9a-f]{2}){1,192}$ ]] || return 1
+	for ((i = 0; i < ${#h}; i += 2)); do
+		[[ ${h:i:2} =~ ^([01].|7f)$ ]] && return 1 # no C0 controls (NUL least of all), no DEL
+		esc+="\\x${h:i:2}"
+	done
+	printf -v LIT '%b' "$esc"
+	t=$LIT
+	clean t # and no C1 controls, bidi overrides or zero-width characters
+	[[ -n $LIT && $t == "$LIT" && ${#LIT} -le 64 ]]
+}
+lit_tokens() { # lit_tokens TEXT -> TOKS+=: typed text as lit: tokens, 32 characters each
+	local t=$1 x
+	while [[ -n $t ]]; do
+		x=$(printf '%s' "${t:0:32}" | od -An -v -tx1 | tr -d ' \n')
+		TOKS+=("lit:$x") t=${t:32}
+	done
+}
+keys_send() { # keys_send %ID TOKEN...: to a pane on this computer, every token checked first
+	local id=$1 k
+	shift
+	for k; do key_ok "$k" || return 2; done
+	for k; do
+		key_ok "$k"
+		if [[ $k == lit:* ]]; then tm send-keys -t "$id" -l -- "$LIT" || return 1
+		else tm send-keys -t "$id" "$k" || return 1; fi
+	done
+}
+pane_here() { grep -qxF -- "$1" <<<"$(tm list-panes -a -F '#{pane_id}' 2>/dev/null)"; }
+send_answer() { # send_answer TOKEN...: to the selected pane, here or over the link
+	local h=${P_HOST[SEL]:-} id=${P_RID[SEL]:-} out st k
+	if [[ -z $h ]]; then keys_send "${P_ID[SEL]}" "$@" && return; flash "the keys didn't reach that pane"; return 1; fi
+	[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $id =~ ^%[0-9]+$ ]] || return 1
+	for k; do key_ok "$k" || return 1; done
+	out=$(remote_run "$h" "$REMOTE_KEYS_CMD '$id' $*")
+	st=$?
+	[[ $out == sent ]] && return 0
+	if ((st == 124 || st == 255)); then flash "on $h: can't be reached to answer"
+	elif ((st == 0 || st == 1)) && [[ -z $out ]]; then flash "on $h: can't answer from here (update tmux-revive there)"
+	else flash "on $h: the keys didn't get through"; fi
+	return 1
+}
+
+# answer: every key goes to the selected pane's question, as if typed in its own console,
+# and the question redraws every 0.3 s to show it react. Ctrl-] (or Ctrl-C) leaves without
+# sending anything; it ends by itself once the pane stops asking. Questions only: a chat
+# with the agent is J, in its own pane.
+answer() {
+	local h=${P_HOST[SEL]:-} id=${P_ID[SEL]:-} k rest seq txt st got gone=0 why=left pend="" INTR=0 f
+	local -a TOKS AL
+	[[ ${P_STATE[SEL]:-} == asking ]] || return 0
+	[[ -n $h ]] && id=${P_RID[SEL]:-}
+	[[ $id =~ ^%[0-9]+$ ]] || return 0
+	ANSWERING=1 PEEK_EVERY=0 PREV=()
+	trap 'INTR=1' INT
+	while :; do
+		draw
+		if [[ -n $pend ]]; then
+			k=$pend pend=""
+		else
+			k="" got=1 st=0
+			IFS= read -rsn1 -t 0.3 k || { st=$? got=0; }
+			if ((!got)); then
+				((st > 128 && !INTR)) || break # Ctrl-C, or the input closed
+				# Still asking? Twice not, in a row, means answered (one look can catch a redraw).
+				if [[ -n $h ]]; then
+					f="$RDIR/$h.peek-${id#%}" AL=()
+					[[ -f $f ]] && mapfile -t AL < <(tail -n 60 "$f")
+					st=$(lines_state AL)
+				else
+					st=$(screen_state "$id")
+				fi
+				if [[ $st == asking ]]; then gone=0; else ((++gone >= 2)) && { why=answered; break; }; fi
+				continue
+			fi
+		fi
+		TOKS=()
+		case $k in
+		$'\x1d') break ;;                    # Ctrl-]
+		"" | $'\r' | $'\n') TOKS=(Enter) ;;
+		$'\t') TOKS=(Tab) ;;
+		$'\x7f' | $'\b') TOKS=(BSpace) ;;
+		$'\e')
+			# A lone Esc is Escape; the arrows and the like arrive as sequences.
+			rest="" seq=""
+			IFS= read -rsn1 -t 0.03 rest
+			case $rest in
+			"") TOKS=(Escape) ;;
+			'[') while IFS= read -rsn1 -t 0.03 rest; do seq+=$rest; [[ $rest == [@-~] || ${#seq} -gt 8 ]] && break; done ;;
+			O) IFS= read -rsn1 -t 0.03 seq ;;
+			esac
+			case $seq in
+			A) TOKS=(Up) ;; B) TOKS=(Down) ;; C) TOKS=(Right) ;; D) TOKS=(Left) ;;
+			H | 1~ | 7~) TOKS=(Home) ;; F | 4~ | 8~) TOKS=(End) ;; Z) TOKS=(BTab) ;;
+			2~) TOKS=(IC) ;; 3~) TOKS=(DC) ;; 5~) TOKS=(PPage) ;; 6~) TOKS=(NPage) ;;
+			esac ;;
+		[$'\x01'-$'\x1a'])
+			printf -v st '%d' "'$k"
+			printf -v k "\\x$(printf %x $((st + 96)))"
+			TOKS=("C-$k") ;;
+		[[:cntrl:]]) ;;
+		*)
+			# Typed text (a custom answer) goes as it is, with whatever else is already waiting.
+			txt=$k
+			while ((${#txt} < 256)) && IFS= read -rsn1 -t 0.005 rest; do
+				if [[ -z $rest ]]; then pend=$'\r'; break
+				elif [[ $rest == [[:cntrl:]] ]]; then pend=$rest; break; fi
+				txt+=$rest
+			done
+			clean txt
+			lit_tokens "$txt" ;;
+		esac
+		((${#TOKS[@]})) || continue
+		send_answer "${TOKS[@]}" || { why=failed; break; }
+	done
+	ANSWERING=0 PEEK_EVERY=$REFRESH PREV=()
+	trap 'exit 0' INT
+	case $why in
+	left) flash "left the question; nothing more was sent" ;;
+	answered)
+		flash "${P_NAME[SEL]:-${P_LOC[SEL]:-the pane}} has its answer"
+		# Rows from over there asked for before this still say asking: they don't count now.
+		[[ -n $h ]] && { : >"$RDIR/$h.answered-${id#%}"; RFETCH_T[$h]=0; } ;;
+	esac
+}
+
 PREV=()
 act() {
 	# A key may draw over the panel (popup, prompt) and return early: repaint it whole. Keys
@@ -1262,6 +1521,9 @@ act() {
 		clean out
 		flash "${out#agent-say: }" ;;
 	p | P) PEEK=$((!PEEK)) ;;
+	x | X) if ((FULL)); then FULL=0; else FULL=1 PEEK=1; fi ;; # the peek over the whole art, and back
+	c | C) FULL=0 ;;
+	enter) [[ ${P_STATE[SEL]:-} == asking ]] && answer ;;
 	a | A)
 		SCENE=$(((SCENE + 1) % ${#SCENES[@]}))
 		flash "art: ${TITLES[SCENE]}" ;;
@@ -1306,9 +1568,10 @@ splash() {
 
 # ------------------------------------------------------------------ main
 if ((PEEKMODE)); then
-	out=$(tm capture-pane -p -t "$PEEK_ID" 2>/dev/null) || exit 1
-	mapfile -t L <<<"$out"
-	for ((end = ${#L[@]} - 1; end >= 0; end--)); do [[ ${L[end]} =~ ^[[:space:]]*$ ]] || break; done
+	# The pane's bottom rows exactly, blank ones included (a $( ) would drop those).
+	pane_here "$PEEK_ID" || exit 1 # no such pane
+	mapfile -t L < <(tm capture-pane -p -t "$PEEK_ID" 2>/dev/null)
+	end=$((${#L[@]} - 1))
 	start=$((end - PEEK_N + 1))
 	((start < 0)) && start=0
 	for ((i = start; i <= end; i++)); do
@@ -1317,6 +1580,16 @@ if ((PEEKMODE)); then
 		printf '%s\n' "$l"
 	done
 	exit 0
+fi
+if ((KEYSMODE)); then
+	# Asked for by another computer's panel: a pane id, then keys from the short list only.
+	shift
+	[[ ${1:-} =~ ^%[0-9]+$ ]] && (($# >= 2 && $# <= 17)) ||
+		{ echo "usage: panel.sh --keys %PANE KEY... (1-16 keys)" >&2; exit 2; }
+	for k in "${@:2}"; do key_ok "$k" || { echo "panel.sh --keys: not a key it sends" >&2; exit 2; }; done
+	pane_here "$1" || exit 1
+	keys_send "$@" && echo sent
+	exit
 fi
 if ((ROWS)); then
 	gather
@@ -1348,6 +1621,8 @@ printf '%s' "$e[?1049h$e[?25l$e[2J"
 STTY_SAVED=$(stty -g 2>/dev/null)
 stty -echo -icanon 2>/dev/null
 on_exit restore_term
+# Other computers' screens it fetched go when it closes.
+on_exit 'for f in "${!PEEK_FILES[@]}"; do rm -f "$f" "$f.fail"; done'
 trap 'exit 0' INT TERM
 trap 'printf "%s" "$e[2J"; PREV=()' WINCH
 case ${REVIVE_PANEL_SPLASH:-} in
@@ -1385,6 +1660,7 @@ while :; do
 	fi
 	# Take this key and any already waiting (a held arrow), then draw once.
 	while :; do
+		[[ -z $key || $key == $'\r' ]] && key=enter # read stops at the newline Enter sends
 		if [[ $key == "$e" ]]; then
 			rest=""
 			IFS= read -rsn2 -t 0.05 rest || true

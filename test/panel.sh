@@ -27,7 +27,7 @@ sleep 0.5
 
 echo "one frame"
 # Inside the private server, so the panel reads its panes, not yours.
-frame() { tm run-shell "COLUMNS=$1 LINES=${2:-40} REVIVE_PANEL_ART=${3:-} REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
+frame() { tm run-shell "REVIVE_PANEL_PEEK=0 COLUMNS=$1 LINES=${2:-40} REVIVE_PANEL_ART=${3:-} REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
 for size in "80 24" "100 40" "130 40" "200 60"; do
 	read -r c l <<<"$size"
 	shape=$(frame "$c" "$l" | awk '{w[length]=1; n++} END{for (k in w) printf "%s ", k; print "x " n}')
@@ -39,7 +39,7 @@ for a in city mountains space circuit grid; do
 done
 # Calm artwork: from one frame to the next only a few cells of the art band change, and the
 # scene beside the banner holds still.
-artband() { tm run-shell "REVIVE_PANEL_TICK=$2 REVIVE_PANEL_ART=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
+artband() { tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_TICK=$2 REVIVE_PANEL_ART=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
 cat >"$T/calm.py" <<'PY'
 import re, sys
 T, top = sys.argv[1], int(sys.argv[2])
@@ -112,6 +112,25 @@ check "the command keys are listed" "grep -qF '[J]ump  [M]essage  [N]ame  [L]ink
 narrow_ok() { local i f; for i in 1 2 3; do f=$(frame 80); grep -q 'top *▸ running' <<<"$f" && return 0; done; printf '%s\n' "$f" | grep -E '\[[0-9]\]' >&2; return 1; }
 check "a narrow terminal still finds programs (ps not cut to COLUMNS)" "narrow_ok"
 
+echo "peek"
+# A pane whose screen ends in a blank row, under a numbered line: the peek box's bottom rows
+# must be the pane's bottom rows, and it gets the room the artwork would have had.
+tm new-window -d -t work -n numbers "seq -f 'row-%g' 1 200; sleep 300"
+sleep 0.7
+nid=$(tm display -p -t work:numbers '#{pane_id}')
+pane_tail=$(tm capture-pane -p -t "$nid" | tail -2 | sed 's/[[:space:]]*$//' | tr '\n' '|')
+peek=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+box_tail=$(awk '/PEEK · /{on=1; next} on && /MESSAGES|ART · /{exit} on' <<<"$peek" | tail -2 | sed 's/^║ │ \{0,1\}//; s/[[:space:]]*║$//; s/[[:space:]]*$//' | tr '\n' '|')
+check "the peek's bottom rows are the pane's bottom rows ($pane_tail)" "[[ '$box_tail' == '$pane_tail' ]]"
+# The peek gets about two thirds of the free rows, the artwork the rest.
+prows=$(awk '/PEEK · /{on=1; next} on && /ART · |MESSAGES/{exit} on' <<<"$peek" | wc -l)
+arows=$(awk '/ART · /{on=1; next} on && /MESSAGES/{exit} on' <<<"$peek" | wc -l)
+check "the peek takes two thirds of the space, the artwork the rest ($prows, $arows)" "(( prows >= 14 && arows >= 3 && prows >= 2 * arows - 2 && prows <= 2 * arows + 4 ))"
+check "the peek's title offers the full view" "grep -q 'PEEK · .*\[x\] full view' <<<\"\$peek\""
+small=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=100 LINES=34 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+check "with too little left for the artwork, the peek takes it all" "grep -q 'PEEK · ' <<<\"\$small\" && ! grep -q 'ART · ' <<<\"\$small\" && [[ \$(wc -l <<<\"\$small\") == 34 ]]"
+tm kill-window -t work:numbers
+
 echo "keys"
 tm new-window -d -t work -n panel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
 wait_screen 'C O N T R O L'
@@ -125,6 +144,17 @@ check "N renames the selected pane" "named top-watch && wait_screen '▶ top-wat
 tm send-keys -t work:panel s
 check "S saves" "wait_screen '(manual)'"
 check "the peek box shows the selected pane" "screen | grep -q 'PEEK · top-watch'"
+# x: the peek over the whole artwork; x again or c back. Every row is repainted right.
+# Counted with grep -c, never grep -q at the end of a pipe (pipefail: a closed pipe fails it).
+seen() { local n; n=$(screen | grep -cF -- "$1"); [[ $n == "${2:-1}" ]]; }
+whole() { local s; s=$(screen); [[ ${s%%$'\n'*} == ╔* && ${s##*$'\n'} == *╝ ]] && seen 'PEEK · ' && seen 'MESSAGES'; }
+tm send-keys -t work:panel x
+check "x gives the peek the artwork's space too" "wait_screen '[x] back' && seen '[c] collapse' && seen 'ART · ' 0 && whole"
+tm send-keys -t work:panel c
+check "c collapses it back, artwork and all" "wait_screen '[x] full view' && wait_screen 'ART · ' && whole"
+tm send-keys -t work:panel x; wait_screen '[x] back' >/dev/null
+tm send-keys -t work:panel x
+check "and x again snaps it back too" "wait_screen '[x] full view' && seen 'ART · ' && whole"
 tm send-keys -t work:panel p; sleep 1.5
 check "P hides the peek box" "! screen | grep -q 'PEEK'"
 tm send-keys -t work:panel Down
@@ -153,6 +183,84 @@ check "A switches the artwork ($before)" "for _ in \$(seq 1 20); do after=\$(scr
 tm send-keys -t work:panel q; sleep 1
 check "Q quits" "! tm list-windows -F '#{window_name}' | grep -qx panel"
 
+echo "questions"
+# A stand-in agent (a copy of bash named codex) asking a question the way Claude Code draws
+# one. Every key it reads is logged to OUT.keys; the answer it got goes to OUT.
+mkdir -p "$T/bin" && cp "$(command -v bash)" "$T/bin/codex"
+cat >"$T/ask.sh" <<'ASK'
+# A stand-in agent asking a question, as Claude Code draws one: history above, a rule, the
+# question and its choices. Every key it reads goes to OUT.keys; the answer to OUT.
+out=$1 sel=1
+opts=("Yes" "No" "Type something")
+stty -icanon -echo
+show() {
+	clear
+	for i in $(seq 1 30); do echo "history line $i"; done
+	echo; printf '─%.0s' {1..50}; echo
+	echo " Bash command"; echo; echo "   rm -rf build"; echo
+	echo " Do you want to proceed?"
+	for i in 1 2 3; do if ((i == sel)); then echo " ❯ $i. ${opts[i-1]}"; else echo "   $i. ${opts[i-1]}"; fi; done
+	echo; echo " Esc to cancel"
+}
+while :; do
+	show
+	IFS= read -rsn1 k
+	if [[ $k == $'\e' ]]; then IFS= read -rsn2 -t 0.2 r; k+=$r; fi
+	printf '%q\n' "$k" >>"$out.keys"
+	case $k in
+	$'\e[A') ((sel > 1)) && ((sel--)) ;;
+	$'\e[B') ((sel < 3)) && ((sel++)) ;;
+	"") break ;;
+	esac
+done
+if ((sel == 3)); then
+	clear; stty icanon echo
+	printf '%s\n' "history" "" " Type your answer (Esc to cancel):"
+	IFS= read -r line
+	printf 'custom:%s\n' "$line" >"$out"
+else
+	printf 'picked:%s\n' "$sel" >"$out"
+fi
+clear; echo "all done"; sleep 300
+ASK
+tm new-window -d -t work -n asker "$T/bin/codex $T/ask.sh $T/ans1"
+tm set-option -p -t work:asker @agent asker
+tm new-window -d -t work -n qpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+qscreen() { tm capture-pane -p -t work:qpanel; }
+wait_q() { for _ in $(seq 1 ${2:-40}); do qscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+qhas() { local n; n=$(qscreen | grep -cF -- "$1"); ((n > 0)); }
+qbox() { qscreen | sed -n '/QUESTION · /,/ART · \|MESSAGES/p'; }
+wait_q 'asker'
+for _ in $(seq 1 20); do qscreen | grep -q '▶ asker' && break; tm send-keys -t work:qpanel Down; sleep 0.3; done
+check "a pane asking a question shows its question in place of the peek" "wait_q 'QUESTION · asker' && qbox | grep -c 'Do you want to proceed?' >/dev/null && qbox | grep -c '❯ 1. Yes' >/dev/null && qbox | grep -c 'rm -rf build' >/dev/null"
+check "only the dialog, not the history above it" "(( \$(qbox | grep -c 'history line') == 0 ))"
+check "Enter offers to answer it, J the chat" "qhas '[⏎] answer' && qhas '[J] open the chat'"
+tm send-keys -t work:qpanel Enter
+check "Enter starts answering, and says how to leave" "wait_q 'ANSWERING asker' && qhas 'Ctrl-] leaves'"
+tm send-keys -t work:qpanel C-]
+check "Ctrl-] leaves without sending anything" "wait_q 'left the question' && ! qhas 'ANSWERING' && [[ ! -s $T/ans1.keys && ! -e $T/ans1 ]]"
+tm send-keys -t work:qpanel Enter; wait_q 'ANSWERING asker' >/dev/null
+tm send-keys -t work:qpanel Down
+check "keys reach the question, and the view follows it" "wait_q '❯ 2. No' 15"
+tm send-keys -t work:qpanel Enter
+check "Enter answers it (Down, Enter: choice 2)" "for _ in \$(seq 1 25); do [[ -s $T/ans1 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans1 2>/dev/null) == picked:2 ]]"
+check "answered, the view goes back to the peek" "wait_q 'PEEK · asker' 30 && ! qhas 'ANSWERING' && ! qhas 'QUESTION'"
+# A custom answer: the free-text choice, typed text with spaces and an accent, a typo fixed.
+tm respawn-pane -k -t work:asker "$T/bin/codex $T/ask.sh $T/ans2"
+wait_q 'QUESTION · asker' 30 >/dev/null
+tm send-keys -t work:qpanel Enter; wait_q 'ANSWERING asker' >/dev/null
+tm send-keys -t work:qpanel Down; sleep 0.4; tm send-keys -t work:qpanel Down; sleep 0.4
+tm send-keys -t work:qpanel Enter
+wait_q 'Type your answer' 15 >/dev/null
+tm send-keys -t work:qpanel -l 'my custom answér'; sleep 0.3
+tm send-keys -t work:qpanel -l 'X'; sleep 0.3
+check "typed text shows in the question as it's typed" "wait_q 'my custom answérX' 15"
+tm send-keys -t work:qpanel BSpace; sleep 0.3
+tm send-keys -t work:qpanel Enter
+check "a custom answer arrives exactly as typed" "for _ in \$(seq 1 25); do [[ -s $T/ans2 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans2 2>/dev/null) == 'custom:my custom answér' ]]"
+tm send-keys -t work:qpanel q
+tm kill-window -t work:asker
+
 echo "ssh links"
 # Which host an ssh command line connects to, as agent-say link takes it.
 dest() { bash -c 'source <(sed -n "/^ssh_dest() {/,/^}/p" "$1"); ssh_dest "$2"' _ "$ROOT/scripts/panel.sh" "$1"; }
@@ -172,6 +280,17 @@ out=$(frame 140 45)
 check "an ssh session outside tmux is offered for linking" "grep -q 'outside.example · ssh in' <<<\"\$out\""
 check "agent-say's own, git's and sftp's ssh aren't" "! grep -qE 'linkpoll.example|gitfetch.example|sftpcopy.example' <<<\"\$out\""
 kill $o1 $o2 $o3 $o4 2>/dev/null; wait $o1 $o2 $o3 $o4 2>/dev/null
+# Someone else's process saying "ssh evil.example" (even with a parent named kitty) is not
+# yours to link. A ps that adds one of theirs and one of yours, as if they were running.
+mkdir -p "$T/fakeps"
+{
+	printf '#!/bin/bash\n%q "$@"; st=$?\n' "$(command -v ps)"
+	printf '[[ $* == *uid=* ]] && printf "%%s\\n" " 999990 1 %s 0 0.0 kitty" " 999991 999990 %s 0 0.0 ssh evil.example" " 999992 1 %s 0 0.0 ssh mine.example"\n' $((UID + 4242)) $((UID + 4242)) "$UID"
+	printf 'exit $st\n'
+} >"$T/fakeps/ps"
+chmod +x "$T/fakeps/ps"
+out=$(tm run-shell "PATH=$T/fakeps:\$PATH REVIVE_PANEL_PEEK=0 COLUMNS=140 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+check "only your own ssh outside tmux is offered, not another user's" "grep -c 'mine.example · ssh in' <<<\"\$out\" >/dev/null && ! grep -c 'evil.example' <<<\"\$out\" >/dev/null"
 
 tm new-window -d -t work -n sshpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=false REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
 sshscreen() { tm capture-pane -p -t work:sshpanel; }
@@ -229,6 +348,7 @@ rsock=$(tmux -L "revive-panel-remote-$$" -f /dev/null display -p '#{socket_path}
 cmd=${!#}
 if [[ $cmd =~ \ panel\ --rows$ ]]; then exec bash "$panel" --rows
 elif [[ $cmd =~ \ panel\ --peek\ \'([^\']*)\'\ ([^ ]*)$ ]]; then exec bash "$panel" --peek "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+elif [[ $cmd =~ \ panel\ --keys\ \'([^\']*)\'((\ [^ ]+)+)$ ]]; then read -ra k <<<"${BASH_REMATCH[2]}"; exec bash "$panel" --keys "${BASH_REMATCH[1]}" "${k[@]}"
 fi
 exit 127
 EOF
@@ -257,7 +377,10 @@ out=$(farsel "$T/deadssh" far-top@far.example | plain)
 check "and an unreachable one has no peek either" "peekbox <<<\"\$out\" | grep -qF 'on far.example: no peek'"
 # --peek itself: only a pane id and a line count get through.
 rpanel() { REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data bash "$ROOT/scripts/panel.sh" "$@" 2>/dev/null; }
-check "--peek prints the pane's last lines" "rpanel --peek \"\$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.0 '#{pane_id}')\" 3 | grep -q '^far-marker-42$'"
+# Counted straight from the pipe: a $( ) would strip the blank bottom rows being checked for.
+farid=$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.0 '#{pane_id}')
+farh=$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.0 '#{pane_height}')
+check "--peek prints the pane's bottom rows, blank ones too ($farh rows)" "(( \$(rpanel --peek $farid 60 | grep -c '^far-marker-42$') == 1 )) && [[ \$(rpanel --peek $farid 60 | wc -l) -eq $farh ]]"
 check "--peek turns away a bad pane id or count" "! rpanel --peek 'far:0.0' 3 && ! rpanel --peek '%0;touch $T/pwn' 3 && ! rpanel --peek %0 0 && ! rpanel --peek %0 61 && ! rpanel --peek %0 && [[ ! -e $T/pwn ]]"
 check "--peek at a pane that isn't there fails" "! rpanel --peek %999 5"
 rm -f "$st/panel/far.example.rows"
@@ -283,7 +406,25 @@ rm -f "$st/panel/far.example.rows" "$st/panel/far.example.peek-"*
 out=$(farsel "$T/hostilessh" evil@far.example)
 bare=$(sed 's/\x1b\[[0-9;]*m//g' <<<"$out")
 check "a peek from the other side is cleaned" "peekbox <<<\"\$bare\" | grep -qF 'top]52;c;aGk=[2Jbottom31m-end' && ! LC_ALL=C grep -q '[[:cntrl:]]' <<<\"\$bare\""
-check "and capped: no line past the frame, no more lines than the box" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$bare\") == 1 ]] && (( \$(peekbox <<<\"\$bare\" | grep -c '│') <= 14 )) && [[ \$(stat -c %s $st/panel/far.example.peek-9 2>/dev/null || echo 0) -le 65536 ]]"
+check "and capped: no line past the frame, no more lines than the box" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$bare\") == 1 ]] && (( \$(peekbox <<<\"\$bare\" | grep -c '│') <= 60 )) && [[ \$(stat -c %s $st/panel/far.example.peek-9 2>/dev/null || echo 0) -le 65536 ]]"
+# Rows from over there are capped in bytes too: an endless line can't freeze the panel.
+printf '#!/bin/bash\nif [[ ${!#} == *--rows* ]]; then head -c 20000000 /dev/zero | tr "\\\\0" A; echo; cat %q; fi\n' "$T/hostile" >"$T/hugessh"; chmod +x "$T/hugessh"
+rm -f "$st/panel/far.example.rows"
+s0=$SECONDS
+out=$(tm run-shell "AGENT_SAY_SSH=$T/hugessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+check "a huge reply from over there is cut to 256 KB ($((SECONDS - s0)) s)" "grep -c 'FAR.EXAMPLE' <<<\"\$out\" >/dev/null && (( \$(stat -c %s $st/panel/far.example.rows) <= 262144 && SECONDS - s0 < 30 ))"
+# What's kept from other computers is yours alone; old screens go; no temporary files stay.
+touch -d '-2 minutes' "$st/panel/far.example.peek-77"
+farsel "$T/fakessh" far-sh@far.example >/dev/null
+check "the cache is private (700, files 600)" "[[ \$(stat -c %a $st/panel) == 700 && \$(stat -c %a $st/panel/far.example.rows) == 600 ]] && ! find $st/panel -type f -perm /077 | grep -c . >/dev/null"
+check "a peek over a minute old is deleted" "[[ ! -e $st/panel/far.example.peek-77 ]]"
+check "and no temporary files are left" "! ls $st/panel | grep -cvE '^far\\.example\\.(rows|peek-[0-9]+(\\.fail)?)$' >/dev/null"
+# Bidi overrides and zero-width characters from over there are stripped like controls.
+printf '%%9\x1fbidi\xe2\x80\xae0:0\x1fzw\xe2\x80\x8bname\x1fapp\x1fwaiting\x1ffo\xe2\x81\xa6ld\x1fmain\x1f1\x1f1\x1f1\n' >"$T/bidirows"
+printf '#!/bin/sh\ncat %s\n' "$T/bidirows" >"$T/bidissh"; chmod +x "$T/bidissh"
+rm -f "$st/panel/far.example.rows"
+out=$(tm run-shell "AGENT_SAY_SSH=$T/bidissh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+check "bidi overrides and zero-width characters from over there are stripped" "grep -c 'zwname' <<<\"\$out\" >/dev/null && ! grep -c \$'\\u202e\\|\\u200b\\|\\u2066' <<<\"\$out\" >/dev/null"
 # Live: select a pane on the linked computer, and the keys that can't act on it fade.
 rm -f "$st/panel/far.example.rows"
 tm new-window -d -t work -n farpanel "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
@@ -292,12 +433,39 @@ for _ in $(seq 1 60); do farscreen | grep -q 'far-top' && break; sleep 0.25; don
 for _ in $(seq 1 20); do farscreen | grep -q '▶ far-top' && break; tm send-keys -t work:farpanel Down; sleep 0.4; done
 bar() { tm capture-pane -e -p -t work:farpanel | grep -F 'ump' | tail -1; }
 grey=$'\e[90m[J]ump' lit=$'\e[93mS'
-check "its peek tracks that pane's screen live" "for _ in \$(seq 1 30); do farscreen | sed -n '/PEEK · far-top/,\$p' | grep -q 'load average' && break; sleep 0.3; done; farscreen | sed -n '/PEEK · far-top/,\$p' | grep -q 'load average'"
+check "its peek tracks that pane's screen live" "for _ in \$(seq 1 30); do farscreen | sed -n '/PEEK · far-top/,\$p' | grep -c 'Mem' >/dev/null && break; sleep 0.3; done; farscreen | sed -n '/PEEK · far-top/,\$p' | grep -c 'Mem' >/dev/null"
 check "on a linked computer's pane, J and N fade" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\" && bar | grep -qF $'\\e[90m[N]ame'"
 check "while keys that still work stay lit" "bar | grep -qF \"\$lit\""
 tm send-keys -t work:farpanel 1
 check "back on a pane here, J lights up again" "for _ in \$(seq 1 25); do farscreen | grep -q '\[1\] ▶' && ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; farscreen | grep -q '\[1\] ▶' && ! bar | grep -qF \"\$grey\""
 tm send-keys -t work:farpanel q
+
+# --keys: a pane id, then key names from a short list or lit:HEX text, nothing else.
+hex() { printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n'; }
+check "--keys types into a pane over there" "[[ \$(rpanel --keys $farid lit:\$(hex 'echo keys-$((6 * 7))') Enter) == sent ]] && for _ in \$(seq 1 20); do tmux -L revive-panel-remote-$$ -f /dev/null capture-pane -p -t $farid | grep -c '^keys-42' >/dev/null && break; sleep 0.2; done && (( \$(tmux -L revive-panel-remote-$$ -f /dev/null capture-pane -p -t $farid | grep -c '^keys-42') >= 1 ))"
+check "--keys turns away a bad pane id" "! rpanel --keys 'far:0.0' Enter && ! rpanel --keys '%0;touch $T/pwn' Enter && ! rpanel --keys %999 Enter && ! rpanel --keys $farid && [[ ! -e $T/pwn ]]"
+check "--keys turns away keys not on its list" "! rpanel --keys $farid 'Enter;touch $T/pwn' && ! rpanel --keys $farid F1 && ! rpanel --keys $farid 'send-keys' && ! rpanel --keys $farid '\$(touch $T/pwn)' && [[ ! -e $T/pwn ]]"
+check "--keys text: no control characters, bidi overrides or endless text" "! rpanel --keys $farid lit:0a && ! rpanel --keys $farid lit:\$(hex \$'a\\e[2J') && ! rpanel --keys $farid lit:c29b && ! rpanel --keys $farid lit:\$(hex \$'\\u202e') && ! rpanel --keys $farid lit:00 && ! rpanel --keys $farid lit:\$(hex \$(printf 'a%.0s' {1..65})) && ! rpanel --keys $farid lit:4"
+
+# A question on the linked computer, answered from here over the link.
+tmux -L "revive-panel-remote-$$" -f /dev/null new-window -d -t far -n ask "$T/bin/codex $T/ask.sh $T/ans3"
+tmux -L "revive-panel-remote-$$" -f /dev/null set-option -p -t far:ask @agent far-ask
+sleep 0.5
+rm -f "$st/panel/far.example.rows" "$st/panel/"*.peek-*
+tm new-window -d -t work -n farq "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+fq() { tm capture-pane -p -t work:farq; }
+wait_fq() { for _ in $(seq 1 ${2:-50}); do fq | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_fq 'far-ask' 60 >/dev/null
+for _ in $(seq 1 25); do fq | grep -q '▶ far-ask' && break; tm send-keys -t work:farq Down; sleep 0.4; done
+check "a linked computer's question shows here" "wait_fq 'QUESTION · far-ask' && wait_fq 'Do you want to proceed?'"
+tm send-keys -t work:farq Enter; wait_fq 'ANSWERING far-ask' >/dev/null
+tm send-keys -t work:farq Down
+check "and its dialog follows the keys sent over the link" "wait_fq '❯ 2. No'"
+tm send-keys -t work:farq Enter
+check "and is answered from here" "for _ in \$(seq 1 40); do [[ -s $T/ans3 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans3 2>/dev/null) == picked:2 ]]"
+check "then its peek comes back" "wait_fq 'PEEK · far-ask' 100 && ! fq | grep -c 'ANSWERING' >/dev/null"
+tm send-keys -t work:farq q; sleep 0.5
+check "the panel takes the screens it fetched with it" "! ls $st/panel/ 2>/dev/null | grep -c 'peek-' >/dev/null"
 
 rm -rf "$st/links/far.example" "$st/panel"
 tmux -L "revive-panel-remote-$$" -f /dev/null kill-server 2>/dev/null
@@ -317,6 +485,7 @@ evil="$T/evil"$'\e]52;c;cHduZWQ=\a\e[2Jdir'
 mkdir -p "$evil"
 mkdir -p "$T/mail"
 printf '## [mallory -> panel 2026-11-07T10:00:00Z] #1\nhi\e]52;c;cHduZWQ=\athere\n\n' >>"$AGENT_SAY_MAILBOX"
+printf '## [mallory -> panel 2026-11-07T10:01:00Z] #2\nrlo\xe2\x80\xaegnp.exe zero\xe2\x80\x8bwidth\n\n' >>"$AGENT_SAY_MAILBOX"
 git init -q -b fsmtest "$T/fsm"
 echo x >"$T/fsm/f" && git -C "$T/fsm" add f && git -C "$T/fsm" -c user.name=t -c user.email=t@t commit -q -m f
 git -C "$T/fsm" config core.fsmonitor "touch $T/fsmonitor-ran; false"
@@ -342,6 +511,7 @@ check "the folder name shows, its escape sequence doesn't" "grep -qF 'evil]52;c;
 check "a pane name's escape is stripped" "grep -qF 'bad]0;xname' <<<\"\$bare\""
 check "a link's error (remote ssh stderr) is stripped" "grep -qF 'ssh: ]52;c;eA==down' <<<\"\$bare\""
 check "a mailbox body's OSC 52 is stripped" "grep -qF 'hi]52;c;cHduZWQ=there' <<<\"\$bare\""
+check "and its bidi override and zero-width space" "grep -qF 'rlognp.exe zerowidth' <<<\"\$bare\""
 check "the only escapes in a frame are the panel's own colours" "! LC_ALL=C grep -q '[[:cntrl:]]' <<<\"\$bare\""
 check "git state still shows (branch, dirty)" "grep -qF 'fsmtest*' <<<\"\$bare\""
 check "a repo's core.fsmonitor command never runs" "[[ ! -e $T/fsmonitor-ran ]]"

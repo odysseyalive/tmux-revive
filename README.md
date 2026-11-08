@@ -109,7 +109,12 @@ tmux-revive panel
 Pick a pane by its number or with the arrow keys, then press a letter. **J**
 jumps to it, **M** messages it, **N** names it, and **P** shows or hides a
 quick peek at its screen. **A** swaps the artwork, **S** saves right now, and
-**Q** quits.
+**Q** quits. **X** spreads the peek over the artwork too, and **X** or **C** puts it back.
+
+When the selected agent is asking a question, the peek shows the question instead.
+Press **Enter** to answer it right there: your keys go to the agent as if you were in
+its pane, typed answers included, until it has its answer or you press **Ctrl-]**. For
+a chat with the agent, **J** takes you to its pane.
 
 When a pane ssh's into another computer, the panel spots it and offers to link
 the agents there: **L** links it, **U** unlinks. Once linked, that computer's panes show up
