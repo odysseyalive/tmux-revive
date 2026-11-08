@@ -18,7 +18,7 @@ PIN=${REVIVE_VERSION:-}
 # A release is trusted only if its SHA256SUMS is signed by this key. It lives here, not in
 # the release, so a tampered release can't vouch for itself. MAINTAINER: replace this line
 # with the one scripts/release.sh prints.
-ALLOWED_SIGNERS='tmux-revive-release namespaces="tmux-revive-release" REPLACE-WITH-THE-RELEASE-PUBLIC-KEY'
+ALLOWED_SIGNERS='tmux-revive-release namespaces="tmux-revive-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHlQN1SbvYuWguOE8a9T1gueu5KvWBHsGANOXiMhBVjC'
 NS=tmux-revive-release
 DATA=${XDG_DATA_HOME:-$HOME/.local/share}/tmux-revive
 APP=$DATA/app

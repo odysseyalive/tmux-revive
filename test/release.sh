@@ -130,9 +130,10 @@ check "no release yet: says so, and how to follow main" "((rc != 0)) && said 'no
 inst env REVIVE_VERSION=9.9.9 sh "$T/repo/install.sh" --no-config; rc=$?
 check "a pinned version that doesn't exist is refused" "((rc != 0)) && said 'no release v9.9.9' && [[ ! -e $APP ]]"
 # Until the maintainer puts the release key in, installs follow main as before, and say so.
-inst sh "$ROOT/install.sh" --no-config; rc=$?
+sed "s|^ALLOWED_SIGNERS=.*|ALLOWED_SIGNERS='tmux-revive-release namespaces=\"tmux-revive-release\" REPLACE-WITH-THE-RELEASE-PUBLIC-KEY'|" "$ROOT/install.sh" >"$T/nokey-install.sh"
+inst sh "$T/nokey-install.sh" --no-config; rc=$?
 check "an installer without a release key yet follows main, and says so" "said 'no release key yet: following main'"
-inst env REVIVE_VERSION=1.0.0 sh "$ROOT/install.sh" --no-config; rc=$?
+inst env REVIVE_VERSION=1.0.0 sh "$T/nokey-install.sh" --no-config; rc=$?
 check "but a pinned version needs the key" "((rc != 0)) && said 'needs signed releases'"
 fresh
 for b in http://example.com/x relative/dir "$T/nope"; do
