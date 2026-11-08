@@ -752,8 +752,9 @@ tree_ticks() { # tree_ticks PID...: CPU ticks used so far by these processes (Li
 	echo "$t"
 }
 
-# One record per pane, in these parallel arrays. P_RID is a linked computer's own pane id.
-P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=()
+# One record per pane, in these parallel arrays. P_RID is a linked computer's own pane id,
+# P_WP the pane's window.pane as tmux's status bar numbers it (empty when not known).
+P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=()
 P_GROUPS=0
 # ssh_dest ARGS -> the host an `ssh ...` command line connects to, as agent-say link takes it
 # (no user@, no port), or nothing. Options that take a value are skipped with their value.
@@ -781,7 +782,7 @@ gather() {
 		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu PPAR[$pid]=$ppid PUID[$pid]=$uid
 	done < <(ps -ww -eo pid=,ppid=,uid=,rss=,pcpu=,args= 2>/dev/null) # -ww: never cut to $COLUMNS
 	now=${EPOCHREALTIME:-$SECONDS}
-	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=()
+	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=()
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
 		clean loc cmd path name
 		# The pane's process tree, breadth-first, and the first agent in it.
@@ -832,7 +833,8 @@ gather() {
 				[[ -n $ssh ]] && break
 			done
 		fi
-		P_SSH+=("$ssh") P_HOST+=("") P_RID+=("")
+		# window.pane from the place: tmux allows no : or . in a session name.
+		P_SSH+=("$ssh") P_HOST+=("") P_RID+=("") P_WP+=("${loc##*:}")
 		P_ID+=("$id") P_LOC+=("$loc") P_NAME+=("$name") P_STATE+=("$st")
 		P_DIR+=("$path") P_GIT+=("$(git_info "$path")") P_CPU+=("$cpu") P_MEM+=("$mem") P_CTX+=("$ctx")
 	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
@@ -937,7 +939,7 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 	fi
 }
 remote_panes() {
-	local d h f id loc name app st folder git cpu mem agent got v S=$'\x1f'
+	local d h f id loc name app st folder git cpu mem agent got v wp S=$'\x1f'
 	local -A rctx
 	P_GROUPS=0
 	# Other computers' screens are kept no longer than they're shown: a minute at most.
@@ -974,9 +976,12 @@ remote_panes() {
 				[[ $cpu =~ ^[0-9]{1,4}$ ]] || cpu=0
 				[[ $mem =~ ^[0-9]{1,10}$ ]] || mem=0
 				[[ $agent == 1 ]] || agent=0
+				# Its window.pane there, from its whole place (P_LOC keeps only 20 characters of it).
+				wp=${loc##*:}
+				[[ $wp =~ ^[0-9]{1,4}\.[0-9]{1,4}$ ]] || wp=""
 				P_ID+=("${name:+$name@$h}") P_LOC+=("${loc:0:20}") P_NAME+=("$name") P_APP+=("${app:0:12}")
 				P_STATE+=("$st") P_DIR+=("${folder:0:40}") P_GIT+=("${git:0:30}") P_CPU+=("$cpu") P_MEM+=("$mem")
-				P_CTX+=("${rctx[$id]:-}") P_AGENT+=("$agent") P_SSH+=("") P_HOST+=("$h") P_RID+=("$id")
+				P_CTX+=("${rctx[$id]:-}") P_AGENT+=("$agent") P_SSH+=("") P_HOST+=("$h") P_RID+=("$id") P_WP+=("$wp")
 				got=1
 			done < <(head -n 200 "$f")
 		fi
@@ -988,7 +993,7 @@ remote_panes() {
 			while IFS= read -r name; do
 				[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || continue
 				P_ID+=("$name@$h") P_LOC+=("") P_NAME+=("$name") P_APP+=("") P_STATE+=("$st") P_DIR+=("")
-				P_GIT+=("") P_CPU+=(0) P_MEM+=(0) P_CTX+=("") P_AGENT+=(0) P_SSH+=("") P_HOST+=("$h") P_RID+=("")
+				P_GIT+=("") P_CPU+=(0) P_MEM+=(0) P_CTX+=("") P_AGENT+=(0) P_SSH+=("") P_HOST+=("$h") P_RID+=("") P_WP+=("")
 				got=1
 			done < <(head -c 65536 "$d/names" 2>/dev/null | head -n 200)
 		fi
@@ -1054,28 +1059,34 @@ state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
 }
 
 draw_panes() {
-	local i n=${#P_ID[@]} name key folder git cells mark wide=1 NW=10 FW=10 GW v
+	local i n=${#P_ID[@]} name key folder git cells mark wide=1 NW=10 FW=10 GW v KW=3 pad
+	local -a lab=()
 	# Worked out again on every frame, so a resized terminal gets them too. The name and folder
 	# are as wide as their longest (10 to 29 and 10 to 35); GIT has the rest of the row, so
-	# CTX LEFT ends at the panel's right edge. The rest of the row is fixed: the key 6, APP 10,
-	# STATE 18, CPU and MEM 19, CTX LEFT 12, and a space after the name, folder and GIT.
+	# CTX LEFT ends at the panel's right edge. The rest of the row is fixed: the # cell (its
+	# widest label, the mark and two spaces: 6 for [1]), APP 10, STATE 18, CPU and MEM 19,
+	# CTX LEFT 12, and a space after the name, folder and GIT.
+	# The # label: the pane's window.pane (3.1), or where that isn't known (a linked computer
+	# that only gave its pane names) the row's count, 1 to 9.
 	for ((i = 0; i < n; i++)); do
 		name=${P_NAME[i]:-${P_LOC[i]}} folder=${P_DIR[i]/#$HOME/\~} folder=${folder##*/}
 		((${#name} > NW)) && NW=${#name}
 		((${#folder} > FW)) && FW=${#folder}
+		if [[ -n ${P_WP[i]:-} ]]; then lab[i]=${P_WP[i]}; elif ((i < 9)); then lab[i]=$((i + 1)); else lab[i]=""; fi
+		((${#lab[i]} + 2 > KW)) && KW=$((${#lab[i]} + 2))
 	done
 	((NW > 29)) && NW=29
 	((FW > 35)) && FW=35
-	GW=$((IW - 68 - NW - FW))
+	GW=$((IW - 65 - KW - NW - FW))
 	# A narrow panel cuts GIT first, down to 13, then the folder and the name, down to 10. Too
 	# narrow for that, the folder and GIT go and the name has their room: the narrowest panel
 	# takes the name down to 10 to keep CTX LEFT.
 	v=$((13 - GW < FW - 10 ? 13 - GW : FW - 10)); ((v > 0)) && FW=$((FW - v)) GW=$((GW + v))
 	v=$((13 - GW < NW - 10 ? 13 - GW : NW - 10)); ((v > 0)) && NW=$((NW - v)) GW=$((GW + v))
-	((GW < 13)) && wide=0 NW=$((IW - 66))
+	((GW < 13)) && wide=0 NW=$((IW - 63 - KW))
 	# Built from the same widths as the rows below, so the columns line up.
 	local hdr num
-	fld ' #' 6; hdr=$FLD
+	fld ' #' $((KW + 3)); hdr=$FLD
 	fld NAME $((NW + 1)); hdr+=$FLD
 	fld APP 10; hdr+=$FLD
 	fld STATE 18; hdr+=$FLD
@@ -1108,7 +1119,8 @@ draw_panes() {
 			fi
 		fi
 		name=${P_NAME[i]:-${P_LOC[i]}}
-		if ((i < 9)); then key="$BBLU[$BWHT$B$((i + 1))$R$BBLU]$R"; else key="$GRY · $R"; fi
+		printf -v pad '%*s' $((KW - ${#lab[i]} - 2)) ''
+		if [[ -n ${lab[i]} ]]; then key="$BBLU[$BWHT$B${lab[i]}$R$BBLU]$R$pad"; else key="$GRY ·$R$pad"; fi
 		folder=${P_DIR[i]/#$HOME/\~}
 		folder=${folder##*/}
 		git=${P_GIT[i]}
@@ -1482,7 +1494,7 @@ draw() {
 		fi
 	done
 	vlen "$k"
-	((VLEN + 15 <= IW)) && k+="$GRY↑↓ 1-9 select$R"
+	((VLEN + 15 <= IW)) && k+="$GRY↑↓ 0-9 select$R"
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	# While answering every key goes to the agent, so the bar says that and how to stop.
 	((ANSWERING)) && k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Tab$R$BMAG back to the panes ·$R $B${BYEL}Ctrl-]$R$BMAG leaves$R"
@@ -1813,7 +1825,7 @@ PREV=()
 act() {
 	# A key may draw over the panel (popup, prompt) and return early: repaint it whole. Keys
 	# that only move the selection don't, so they keep the line-by-line redraw.
-	case $1 in up | down | [1-9]) ;; *) PREV=() ;; esac
+	case $1 in up | down | [0-9]) ;; *) PREV=() ;; esac
 	local id=${P_ID[SEL]:-} name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} out
 	case $1 in
 	j | J)
@@ -1953,7 +1965,15 @@ act() {
 		if "$BASH" "$REVIVE_ROOT/scripts/save.sh" manual >/dev/null 2>&1; then flash "saved"; else flash "save failed (see: tmux-revive log)"; fi ;;
 	q | Q) exit 0 ;;
 	'?') help_view ;; # quoted: a bare ? would match every key
-	[1-9]) (($1 - 1 < ${#P_ID[@]})) && SEL=$(($1 - 1)) ;;
+	# A digit N goes to window N, as the # column and tmux's status bar number it: the first pane
+	# on this computer, top of the list down, whose window is N (with several sessions, the
+	# first session listed that has one). None there: the selection stays. Windows 10 and up,
+	# and linked computers' panes, are reached with the arrows.
+	[0-9])
+		local w
+		for w in "${!P_ID[@]}"; do
+			[[ -z ${P_HOST[w]} && ${P_WP[w]%%.*} == "$1" ]] && { SEL=$w; break; }
+		done ;;
 	# The list goes round: up from the first pane is the last, down from the last the first.
 	up) ((${#P_ID[@]})) && SEL=$(((SEL - 1 + ${#P_ID[@]}) % ${#P_ID[@]})) ;;
 	down) ((${#P_ID[@]})) && SEL=$(((SEL + 1) % ${#P_ID[@]})) ;;
@@ -2093,7 +2113,7 @@ keys() {
 			case $rest in '[A') key=up ;; '[B') key=down ;; *) key="" ;; esac
 		fi
 		case $key in
-		up | down | [1-9]) act "$key"; nav=1 ;;
+		up | down | [0-9]) act "$key"; nav=1 ;;
 		"") ;;
 		*) act "$key"; nav=0; break ;;
 		esac

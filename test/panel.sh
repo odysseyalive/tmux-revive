@@ -168,8 +168,18 @@ echo "keys"
 tm new-window -d -t work -n panel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
 wait_screen 'C O N T R O L'
 check "it labels its own pane" "screen | grep -q 'panel *✦ this panel'"
-tm send-keys -t work:panel 2
-check "a number selects that pane" "wait_screen '[2] ▶'"
+# Counted with grep -c, never grep -q at the end of a pipe (pipefail: a closed pipe fails it).
+seen() { local n; n=$(screen | grep -cF -- "$1"); [[ $n == "${2:-1}" ]]; }
+# The # cell is the pane's window.pane, as tmux's status bar numbers it: two panes in window
+# 0 (the shell and top), the panel alone in window 1.
+check "the # cell shows each pane's window.pane" "screen | grep -q '\[0\.0\] .*bash *· shell' && screen | grep -q '\[0\.1\] .*top *▸ running' && screen | grep -q '\[1\.0\] .*panel *✦ this panel'"
+tm send-keys -t work:panel 1
+check "a digit selects the first pane in that window" "wait_screen '[1.0] ▶'"
+tm send-keys -t work:panel 0
+check "in a window of two, the first of them" "wait_screen '[0.0] ▶'"
+tm send-keys -t work:panel 7; sleep 0.5
+check "a window with no panes leaves the selection where it was" "wait_screen '[0.0] ▶' && seen '] ▶'"
+tm send-keys -t work:panel Down; wait_screen '[0.1] ▶' >/dev/null
 tm send-keys -t work:panel n; sleep 0.5
 tm send-keys -t work:panel 'top-watch' Enter
 named() { for _ in $(seq 1 30); do tm list-panes -a -F '#{@agent}' | grep -qx "$1" && return 0; sleep 0.2; done; return 1; }
@@ -178,8 +188,6 @@ tm send-keys -t work:panel s
 check "S saves" "wait_screen '(manual)'"
 check "the peek box shows the selected pane" "screen | grep -q 'PEEK · top-watch'"
 # x: the peek over the whole artwork; x again or c back. Every row is repainted right.
-# Counted with grep -c, never grep -q at the end of a pipe (pipefail: a closed pipe fails it).
-seen() { local n; n=$(screen | grep -cF -- "$1"); [[ $n == "${2:-1}" ]]; }
 whole() { local s; s=$(screen); [[ ${s%%$'\n'*} == ╔* && ${s##*$'\n'} == *╝ ]] && seen 'PEEK · ' && seen 'MESSAGES'; }
 tm send-keys -t work:panel x
 check "x gives the peek the artwork's space too" "wait_screen '[x] back' && seen '[c] collapse' && seen 'ART · ' 0 && whole"
@@ -191,18 +199,18 @@ check "and x again snaps it back too" "wait_screen '[x] full view' && seen 'ART 
 tm send-keys -t work:panel p; sleep 1.5
 check "P hides the peek box" "! screen | grep -q 'PEEK'"
 tm send-keys -t work:panel Down
-check "the arrow keys move the selection" "wait_screen '[3] ▶'"
+check "the arrow keys move the selection" "wait_screen '[1.0] ▶'"
 # The list goes round: Down past the last pane comes back to the first, Up past the first to the last.
 tm send-keys -t work:panel Down
-check "Down from the last pane selects the first" "wait_screen '[1] ▶'"
-tm send-keys -t work:panel 1; wait_screen '[1] ▶' >/dev/null
+check "Down from the last pane selects the first" "wait_screen '[0.0] ▶'"
+tm send-keys -t work:panel 0; wait_screen '[0.0] ▶' >/dev/null
 tm send-keys -t work:panel Up
-check "Up from the first pane selects the last" "wait_screen '[3] ▶' && seen '[4]' 0"
+check "Up from the first pane selects the last" "wait_screen '[1.0] ▶' && seen '] ▶' && seen '[1.1]' 0"
 # Held arrows: quick to follow, nothing echoed, nothing scrolled.
 tm send-keys -t work:panel Up Up
 quick() { local s=$EPOCHREALTIME; tm send-keys -t work:panel Down; for _ in $(seq 1 40); do screen | grep -qF "[$1] ▶" && break; sleep 0.05; done; awk -v a=$s -v b=$EPOCHREALTIME 'BEGIN{exit !(b - a < 1.0)}'; }
-wait_screen '[1] ▶' >/dev/null
-check "an arrow key moves the selection within a second" "quick 2"
+wait_screen '[0.0] ▶' >/dev/null
+check "an arrow key moves the selection within a second" "quick 0.1"
 for _ in 1 2 3 4 5 6; do tm send-keys -t work:panel Down Up; done; sleep 1.5
 check "held arrows echo nothing onto the screen" "! screen | grep -qF '^['"
 check "and the frame never scrolls" "screen | head -1 | grep -q '^╔'"
@@ -231,11 +239,11 @@ nscreen() { tm capture-pane -p -t work:navp; }
 wait_n() { for _ in $(seq 1 30); do nscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 looks() { grep -c 'show-option -gqv @revive-interval' "$T/shim.log" 2>/dev/null; }
 wait_n 'C O N T R O L' >/dev/null; sleep 0.5
-tm send-keys -t work:navp 1; wait_n '[1] ▶' >/dev/null; sleep 0.3
+tm send-keys -t work:navp 0; wait_n '[0.0] ▶' >/dev/null; sleep 0.3
 l0=$(looks)
-tm send-keys -t work:navp Down; wait_n '[2] ▶' >/dev/null
-tm send-keys -t work:navp Down; wait_n '[3] ▶' >/dev/null
-tm send-keys -t work:navp Up; wait_n '[2] ▶' >/dev/null; sleep 0.3
+tm send-keys -t work:navp Down; wait_n '[0.1] ▶' >/dev/null
+tm send-keys -t work:navp Down; wait_n '[1.0] ▶' >/dev/null
+tm send-keys -t work:navp Up; wait_n '[0.1] ▶' >/dev/null; sleep 0.3
 l1=$(looks)
 check "an arrow redraws without looking at the links and saves again ($l0, $l1)" "(( l0 >= 1 && l1 == l0 ))"
 tm send-keys -t work:navp a
@@ -363,6 +371,15 @@ for c in 80 120 160 200; do
 	out=$(cframe "$c")
 	check "at $c columns CTX LEFT ends at the right edge, and no row is wider" "grep -q 'codex .* 20% ║\$' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
 done
+# A two-digit window widens the # column to its label, and every row still fits exactly, the
+# names still in one column under NAME.
+tm new-window -d -t work:12 -n twelve "sleep 300"; sleep 0.5
+namecol() { awk '/ NAME /{print index($0, " NAME ") + 1} /\[12\.0\]/{print index($0, "work:12")}' <<<"$1" | sort -u | wc -l; }
+for c in 80 120 160 200; do
+	out=$(cframe "$c")
+	check "at $c columns a [12.0] label fits, its name under NAME, every row exactly $c wide" "grep -q '║ \[12\.0\] ' <<<\"\$out\" && [[ \$(namecol \"\$out\") == 1 ]] && grep -q 'codex .* 20% ║\$' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
+done
+tm kill-window -t work:twelve
 gitw() { cframe "$1" | awk '/ NAME .* GIT /{print index($0, " CPU") - index($0, " GIT"); exit}'; }
 check "a panel 70 columns wider gives GIT all 70 ($(gitw 130) -> $(gitw 200))" "[[ -n \$(gitw 130) ]] && (( \$(gitw 200) == \$(gitw 130) + 70 ))"
 echo '{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":500000}}}' >>"$H/.claude/projects/-w/s-1.jsonl"
@@ -622,6 +639,7 @@ far() { tm run-shell "AGENT_SAY_SSH=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_D
 out=$(far "$T/fakessh")
 check "panes are grouped by computer" "grep -q 'this computer' <<<\"\$out\" && grep -q 'FAR.EXAMPLE · linked' <<<\"\$out\""
 check "a linked computer's panes show with their state" "grep -q 'far-top *top *▸ running' <<<\"\$out\""
+check "numbered by their window.pane over there" "grep -q '\[0\.1\] *far-top ' <<<\"\$out\" && grep -q '\[0\.0\] *far-sh ' <<<\"\$out\""
 check "and its shell panes too" "grep -A3 'FAR.EXAMPLE' <<<\"\$out\" | grep -q 'bash *· shell'"
 check "the whole frame still fits" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
 farsel() { tm run-shell "AGENT_SAY_SSH=$1 REVIVE_PANEL_SEL=$2 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
@@ -647,6 +665,8 @@ out=$(farv "$T/fakessh" no-such-file)
 check "with this computer's version unknown, nothing is called out of date" "grep -c 'FAR.EXAMPLE · linked · v1.1.0 *║' <<<\"\$out\" >/dev/null && ! grep -c 'out of date' <<<\"\$out\" >/dev/null"
 out=$(farv "$T/norowssh")
 check "one that answers no rows is too old to tell" "grep -c 'FAR.EXAMPLE · linked · too old to tell' <<<\"\$out\" >/dev/null && grep -c 'far-two *◌ linked' <<<\"\$out\" >/dev/null"
+# Its pane names alone carry no window.pane: those rows are counted instead.
+check "and its names-only rows are numbered by their count" "grep -q '║ \[[1-9]\] *far-two ' <<<\"\$out\" && ! grep -q '\[[0-9]*\.[0-9]*\] *far-two' <<<\"\$out\""
 out=$(farv "$T/deadssh")
 check "one that can't be reached isn't called old" "grep -c 'FAR.EXAMPLE · linked *║' <<<\"\$out\" >/dev/null"
 printf '#version 1.2.3;touch %s/pwn\n' "$T" >"$T/badver"; head -c 2000 /dev/zero | tr '\0' 9 >>"$T/badver"; printf '\n' >>"$T/badver"
@@ -751,8 +771,8 @@ touch "$st/links/far.example/read-only"
 rename_far far-top
 check "on a read-only link too, as V and answering are" "wait_far \"on far.example: pane $rtop is now 'far-top'\" && wait_far '▶ far-top' 40"
 rm -f "$st/links/far.example/read-only"
-tm send-keys -t work:farpanel 1
-check "back on a pane here, J lights up again" "for _ in \$(seq 1 25); do farscreen | grep -q '\[1\] ▶' && ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; farscreen | grep -q '\[1\] ▶' && ! bar | grep -qF \"\$grey\""
+tm send-keys -t work:farpanel 0
+check "back on a pane here, J lights up again" "for _ in \$(seq 1 25); do farscreen | grep -q '\[0\.0\] ▶' && ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; farscreen | grep -q '\[0\.0\] ▶' && ! bar | grep -qF \"\$grey\""
 tm send-keys -t work:farpanel q
 
 # --keys: a pane id, then key names from a short list or lit:HEX text, nothing else.

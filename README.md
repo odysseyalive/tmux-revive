@@ -137,7 +137,9 @@ window size, so the panel takes a million tokens for models that have one and
 tmux-revive panel
 ```
 
-Pick a pane by its number or with the arrow keys, then press a letter. **J**
+Each pane is numbered the way tmux's status bar numbers it, window then pane:
+`[3.1]` is pane 1 in window 3. Press a window's number to go to its first pane,
+or pick any pane with the arrow keys, then press a letter. **J**
 jumps to it, **M** messages it, **N** names it, and **P** shows or hides a
 quick peek at its screen. **A** swaps the artwork, **S** saves right now, and
 **Q** quits. **X** spreads the peek over the artwork too, and **X** or **C** puts it back.
