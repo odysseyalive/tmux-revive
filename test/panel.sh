@@ -623,6 +623,7 @@ if [[ $cmd =~ \ panel\ --rows$ ]]; then exec bash "$panel" --rows
 elif [[ $cmd == *' tmux-revive update '* ]]; then printf '%s' "$cmd" >"$T/update.cmd"; printf 'downloading\ntmux-revive 9.9.9 installed\n\n'; exit 0
 elif [[ $cmd == AGENT_SAY_PANE=* ]]; then printf '%s' "$cmd" >"$T/name.cmd"; HOME=$T/rhome PATH=$T/rbin:$PATH AGENT_SAY_MAILBOX=$T/rstate/mailbox.md exec bash -c "$cmd"
 elif [[ $cmd =~ \ panel\ --peek\ \'([^\']*)\'\ ([^ ]*)$ ]]; then exec bash "$panel" --peek "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+elif [[ $cmd =~ \ panel\ --show\ \'([^\']*)\'$ ]]; then printf '%s' "$cmd" >"$T/show.cmd"; exec bash "$panel" --show "${BASH_REMATCH[1]}"
 elif [[ $cmd =~ \ panel\ --keys\ \'([^\']*)\'((\ [^ ]+)+)$ ]]; then read -ra k <<<"${BASH_REMATCH[2]}"; exec bash "$panel" --keys "${BASH_REMATCH[1]}" "${k[@]}"
 fi
 exit 127
@@ -770,14 +771,42 @@ check "and one agent-say there turns away is refused there" "wait_far \"on far.e
 touch "$st/links/far.example/read-only"
 rename_far far-top
 check "on a read-only link too, as V and answering are" "wait_far \"on far.example: pane $rtop is now 'far-top'\" && wait_far '▶ far-top' 40"
-rm -f "$st/links/far.example/read-only"
+# J: the pane here that's ssh'd there is focused, and tmux over there shows the pane too.
+rt() { tmux -L "revive-panel-remote-$$" -f /dev/null "$@"; }
+rt new-window -d -t far -n elsewhere "bash --norc --noprofile"; rt select-window -t far:elsewhere
+tm new-window -d -t work -n farssh "bash -c 'exec -a \"ssh far.example\" sleep 300'"
+check "with a pane here ssh'd there, J lights up" "for _ in \$(seq 1 25); do ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; ! bar | grep -qF \"\$grey\""
+tm send-keys -t work:farpanel j
+check "J focuses the pane ssh'd there (on a read-only link too)" "wait_far '(ssh to far.example)' && [[ \$(tm display -p -t work '#{window_name}') == farssh ]]"
+check "and tmux over there shows the selected pane" "[[ \$(rt display -p -t far '#{window_index} #{pane_id}') == '0 $rtop' ]]"
+check "with the fixed command and its id, nothing else" "[[ \$(cat $T/show.cmd) == \"PATH=\\\"\\\$HOME/.local/bin:\\\$PATH\\\" tmux-revive panel --show '$rtop'\" ]]"
+rm -f "$st/links/far.example/read-only" "$T/show.cmd"
+# ssh'd there from a terminal outside tmux: tmux over there still shows the pane.
+tm kill-window -t work:farssh; rt select-window -t far:elsewhere
+bash -c 'exec -a "ssh far.example" sleep 60' & xssh=$!; sleep 2.5
+tm send-keys -t work:farpanel j
+check "with the ssh in a terminal outside tmux, J shows the pane over there and says so" "wait_far 'showing far-top on far.example; its terminal' && wait_far 'is outside tmux' && [[ \$(rt display -p -t far '#{window_index} #{pane_id}') == '0 $rtop' ]]"
+kill "$xssh" 2>/dev/null; wait "$xssh" 2>/dev/null
+rm -f "$T/show.cmd"; rt kill-window -t far:elsewhere
 tm send-keys -t work:farpanel 0
 check "back on a pane here, J lights up again" "for _ in \$(seq 1 25); do farscreen | grep -q '\[0\.0\] ▶' && ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; farscreen | grep -q '\[0\.0\] ▶' && ! bar | grep -qF \"\$grey\""
 tm send-keys -t work:farpanel q
+# A row from the link's names alone has no pane id over there: J only jumps here, as before.
+printf '#!/bin/bash\nprintf "%%s\\n" "${!#}" >>%q\nexit 1\n' "$T/ssh.log" >"$T/logssh"; chmod +x "$T/logssh"
+sleep 0.5; rm -f "$st/panel/far.example.rows"*
+tm new-window -d -t work -n farssh "bash -c 'exec -a \"ssh far.example\" sleep 300'"
+tm new-window -d -t work -n farnames "env AGENT_SAY_SSH=$T/logssh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+fn() { tm capture-pane -p -t work:farnames; }
+for _ in $(seq 1 60); do fn | grep -q 'far-two *◌ linked' && break; sleep 0.25; done
+for _ in $(seq 1 25); do fn | grep -q '▶ far-two' && break; tm send-keys -t work:farnames Down; sleep 0.4; done
+tm select-window -t work:farnames; tm send-keys -t work:farnames j
+check "J on a names-only row jumps to the pane ssh'd there, and asks nothing over there" "for _ in \$(seq 1 30); do fn | grep -c '(ssh to far.example)' >/dev/null && break; sleep 0.2; done; fn | grep -c '(ssh to far.example)' >/dev/null && [[ \$(tm display -p -t work '#{window_name}') == farssh ]] && ! grep -c -- '--show' $T/ssh.log >/dev/null && [[ ! -e $T/show.cmd ]]"
+tm send-keys -t work:farnames q; tm kill-window -t work:farssh
 
 # --keys: a pane id, then key names from a short list or lit:HEX text, nothing else.
 hex() { printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n'; }
 check "--keys types into a pane over there" "[[ \$(rpanel --keys $farid lit:\$(hex 'echo keys-$((6 * 7))') Enter) == sent ]] && for _ in \$(seq 1 20); do tmux -L revive-panel-remote-$$ -f /dev/null capture-pane -p -t $farid | grep -c '^keys-42' >/dev/null && break; sleep 0.2; done && (( \$(tmux -L revive-panel-remote-$$ -f /dev/null capture-pane -p -t $farid | grep -c '^keys-42') >= 1 ))"
+check "--show turns away a bad pane id" "! rpanel --show 'far:0.0' && ! rpanel --show '%0;touch $T/pwn' && ! rpanel --show %999 && ! rpanel --show && ! rpanel --show $farid x && [[ ! -e $T/pwn ]]"
 check "--keys turns away a bad pane id" "! rpanel --keys 'far:0.0' Enter && ! rpanel --keys '%0;touch $T/pwn' Enter && ! rpanel --keys %999 Enter && ! rpanel --keys $farid && [[ ! -e $T/pwn ]]"
 check "--keys turns away keys not on its list" "! rpanel --keys $farid 'Enter;touch $T/pwn' && ! rpanel --keys $farid F1 && ! rpanel --keys $farid 'send-keys' && ! rpanel --keys $farid '\$(touch $T/pwn)' && [[ ! -e $T/pwn ]]"
 check "--keys text: no control characters, bidi overrides or endless text" "! rpanel --keys $farid lit:0a && ! rpanel --keys $farid lit:\$(hex \$'a\\e[2J') && ! rpanel --keys $farid lit:c29b && ! rpanel --keys $farid lit:\$(hex \$'\\u202e') && ! rpanel --keys $farid lit:00 && ! rpanel --keys $farid lit:\$(hex \$(printf 'a%.0s' {1..65})) && ! rpanel --keys $farid lit:4"

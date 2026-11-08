@@ -155,6 +155,10 @@ confirm), **U** unlinks. Once linked, that computer's panes show up in the list 
 grouped under its name, with the version of tmux-revive it runs. If that's older than
 yours, its heading says `out of date`: select one of its panes and press **V** to update
 it over ssh, after a yes. **N** names one of its panes the same way, over ssh.
+**J** on one of its panes jumps to your pane that's ssh'd into that computer, and
+has tmux over there switch to the pane you picked. If your ssh runs in a terminal
+outside tmux, the panel can't focus that terminal, but tmux over there still switches.
+That takes an up-to-date tmux-revive over there, which **V** sees to.
 
 You don't need the panel open to hear about questions: when any agent starts asking
 one, tmux shows a message naming the pane and rings the bell, once per question.

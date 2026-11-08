@@ -8,6 +8,7 @@
 #   panel.sh --rows     this computer's panes as rows for another computer's panel (over a link)
 #   panel.sh --peek %ID N   the last N lines of that pane's screen, for another computer's peek
 #   panel.sh --keys %ID KEY...   keys for a question on that pane, sent from another computer's panel
+#   panel.sh --show %ID  that pane shown in tmux here (its window and pane), for another computer's J
 #   panel.sh --asking   the panes whose agent is asking a question now: id, place, name (daemon.sh)
 #
 # REVIVE_PANEL_POPUP=1 (set by @revive-panel-key) closes the panel after a jump, since a popup
@@ -22,7 +23,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/help.sh" # the ? page
 # this too; it's said again here because the cache holds what's on other computers' screens.
 umask 077
 
-ONCE=0 ROWS=0 PEEKMODE=0 KEYSMODE=0 ASKMODE=0
+ONCE=0 ROWS=0 PEEKMODE=0 KEYSMODE=0 SHOWMODE=0 ASKMODE=0
 [[ ${1:-} == --once ]] && ONCE=1
 [[ ${1:-} == --rows ]] && ROWS=1
 [[ ${1:-} == --asking ]] && ASKMODE=1
@@ -34,6 +35,7 @@ if [[ ${1:-} == --peek ]]; then
 fi
 # --keys is checked key by key once key_ok is defined, before anything is sent.
 [[ ${1:-} == --keys ]] && KEYSMODE=1
+[[ ${1:-} == --show ]] && SHOWMODE=1
 
 # Widths below are counted in characters, which needs a UTF-8 locale.
 if [[ $(locale charmap 2>/dev/null) != UTF-8 ]]; then
@@ -853,6 +855,7 @@ RDIR="$ASTATE/panel"
 REMOTE_ROWS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --rows'
 REMOTE_PEEK_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --peek'
 REMOTE_KEYS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --keys'
+REMOTE_SHOW_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --show'
 # A fixed command line: nothing from this panel or that computer goes into it.
 REMOTE_UPDATE_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive update </dev/null 2>&1'
 # agent-say name there, for the pane AGENT_SAY_PANE gives. The pane id and the name are
@@ -1475,13 +1478,16 @@ draw() {
 	((!ANSWERING)) && [[ ${P_STATE[SEL]:-} == asking ]] && k="$B$BMAG[Tab]$R$B$BWHT answer$R  "
 	# Keys that can't act on the selected pane are faded: on a linked computer's pane, nothing
 	# to rename unless its rows say which pane it is, and nothing to jump to unless a pane
-	# here is ssh'd there.
+	# here is ssh'd there (or, for a pane its rows name, a terminal outside tmux is).
 	local off=" " rh=${P_HOST[SEL]:-} j
 	if [[ -n $rh ]]; then
 		[[ -n ${P_RID[SEL]:-} ]] || off+="N "
 		[[ -n ${P_NAME[SEL]:-} ]] || off+="M "
 		off+="J "
 		for j in "${!P_SSH[@]}"; do [[ ${P_SSH[j]} == "$rh" ]] && { off=${off/J /}; break; }; done
+		if [[ -n ${P_RID[SEL]:-} ]]; then
+			for j in "${!X_SSH[@]}"; do [[ ${X_SSH[j]} == "$rh" ]] && { off=${off/J /}; break; }; done
+		fi
 	fi
 	local cs=("J:ump" "M:essage" "N:ame" "L:ink" "U:nlink")
 	[[ -n $rh ]] && cs+=("V: update") # tmux-revive on that computer
@@ -1699,6 +1705,19 @@ send_answer() { # send_answer TOKEN...: to the selected pane, here or over the l
 	else flash "on $h: the keys didn't get through"; fi
 	return 1
 }
+# remote_show HOST %ID: that pane shown in tmux over there (its window and pane selected),
+# by the fixed command REMOTE_SHOW_CMD and the checked id. If it can't be, SHOWN says why.
+remote_show() {
+	local out st
+	SHOWN="can't show it from here"
+	[[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $2 =~ ^%[0-9]+$ ]] || return 1
+	out=$(remote_run "$1" "$REMOTE_SHOW_CMD '$2'" | head -c 64)
+	st=${PIPESTATUS[0]}
+	[[ $out == shown ]] && return 0
+	if [[ -z $out ]] && ((st == 124 || st == 255)); then SHOWN="can't be reached to show it"
+	else SHOWN="couldn't show it in tmux there (update tmux-revive there?)"; fi
+	return 1
+}
 
 # question_look -> QL, QRAW, QSHOT: the selected pane's screen while answering. A pane here
 # is one capture-pane. A linked computer's comes in its peek file, which changes only when a
@@ -1829,25 +1848,39 @@ act() {
 	local id=${P_ID[SEL]:-} name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} out
 	case $1 in
 	j | J)
-		if [[ -n ${P_HOST[SEL]:-} ]]; then
-			# Not a pane here: go to the pane that's ssh'd into that computer, if there is one.
-			local h=${P_HOST[SEL]} j
+		local h=${P_HOST[SEL]:-} rid=${P_RID[SEL]:-} loc=${P_LOC[SEL]:-} where="" there="" j
+		if [[ -n $h ]]; then
+			# Not a pane here: go to the pane that's ssh'd into that computer, if there is one,
+			# and show this pane in tmux over there, if its rows say which pane it is.
+			there="${P_NAME[SEL]:-${P_LOC[SEL]:-that pane}} on $h"
 			id=""
-			for j in "${!P_SSH[@]}"; do [[ ${P_SSH[j]} == "$h" ]] && { id=${P_ID[j]}; name="${P_NAME[j]:-${P_LOC[j]}} (ssh to $h)"; break; }; done
-			[[ -n $id ]] || { flash "${P_NAME[SEL]:-that pane} is on $h, and no pane here is ssh'd there"; return; }
+			for j in "${!P_SSH[@]}"; do [[ ${P_SSH[j]} == "$h" ]] && { id=${P_ID[j]} loc=${P_LOC[j]}; name="${P_NAME[j]:-${P_LOC[j]}} (ssh to $h)"; break; }; done
+			if [[ -z $id ]]; then
+				# ssh'd there from a terminal outside tmux: that can't be focused from here, but
+				# tmux over there can still show the pane.
+				for j in "${!X_SSH[@]}"; do [[ ${X_SSH[j]} == "$h" ]] && { where=${X_WHERE[j]}; break; }; done
+				[[ -n $where && -n $rid ]] || { flash "${P_NAME[SEL]:-that pane} is on $h, and no pane here is ssh'd there"; return; }
+				flash "showing $there…"; draw
+				if remote_show "$h" "$rid"; then flash "showing $there; its terminal ($where) is outside tmux"
+				else flash "on $h: $SHOWN"; fi
+				return
+			fi
 		fi
 		[[ -n $id ]] || return
 		if [[ -n ${TMUX:-} ]]; then
 			tm switch-client -t "$id" 2>/dev/null
 			tm select-window -t "$id" 2>/dev/null
 			tm select-pane -t "$id" 2>/dev/null
+			# Then that computer's tmux, before a popup closes.
+			if [[ -n $rid ]] && ! remote_show "$h" "$rid"; then name+="; on $h: $SHOWN"; fi
 			[[ -n ${REVIVE_PANEL_POPUP:-} ]] && exit 0
 			flash "jumped to $name"
 		else
 			tm select-window -t "$id" 2>/dev/null
 			tm select-pane -t "$id" 2>/dev/null
+			[[ -n $rid ]] && remote_show "$h" "$rid"
 			restore_term
-			exec tmux attach -t "${P_LOC[SEL]%%:*}"
+			exec tmux attach -t "${loc%%:*}"
 		fi ;;
 	m | M)
 		[[ -n $id ]] || { [[ -n ${P_HOST[SEL]:-} ]] && flash "that pane has no name; name it on ${P_HOST[SEL]} to message it"; return; }
@@ -2034,6 +2067,18 @@ if ((KEYSMODE)); then
 	pane_here "$1" || exit 1
 	keys_send "$@" && echo sent
 	exit
+fi
+if ((SHOWMODE)); then
+	# Asked for by another computer's J: a pane id, nothing else. Its window and pane are
+	# selected, so a client on that session (or one attached later) shows it, and the client
+	# used last is switched to it: from over ssh there's no telling which client is whose.
+	# No client at all is fine too.
+	[[ ${2:-} =~ ^%[0-9]+$ && $# == 2 ]] || { echo "usage: panel.sh --show %PANE" >&2; exit 2; }
+	pane_here "$2" || exit 1
+	tm select-window -t "$2" && tm select-pane -t "$2" || exit 1
+	tm switch-client -t "$2" 2>/dev/null
+	echo shown
+	exit 0
 fi
 if ((ASKMODE)); then
 	# For daemon.sh's question alerts: the agent panes whose screen reads as asking, by the
