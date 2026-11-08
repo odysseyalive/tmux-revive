@@ -925,8 +925,21 @@ draw() {
 
 	# Command bar.
 	local k=""
+	# Keys that can't act on the selected pane are faded: on a linked computer's pane there's
+	# nothing to rename here, and nothing to jump to unless a pane here is ssh'd there.
+	local off=" " rh=${P_HOST[SEL]:-} j
+	if [[ -n $rh ]]; then
+		off+="N "
+		[[ -n ${P_NAME[SEL]:-} ]] || off+="M "
+		off+="J "
+		for j in "${!P_SSH[@]}"; do [[ ${P_SSH[j]} == "$rh" ]] && { off=${off/J /}; break; }; done
+	fi
 	for c in "J:ump" "M:essage" "N:ame" "L:ink" "U:nlink" "P:eek" "A:rt" "S:ave" "Q:uit"; do
-		k+="$BBLU[$B$BYEL${c%%:*}$R$BBLU]$R$BWHT${c#*:}$R  "
+		if [[ $off == *" ${c%%:*} "* ]]; then
+			k+="$GRY[${c%%:*}]${c#*:}$R  "
+		else
+			k+="$BBLU[$B$BYEL${c%%:*}$R$BBLU]$R$BWHT${c#*:}$R  "
+		fi
 	done
 	vlen "$k"
 	((VLEN + 15 <= IW)) && k+="$GRY↑↓ 1-9 select$R"

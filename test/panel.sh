@@ -169,6 +169,20 @@ printf '#!/bin/sh\ncat %s\n' "$T/hostile" >"$T/hostilessh"; chmod +x "$T/hostile
 rm -f "$st/panel/far.example.rows"
 out=$(tm run-shell "AGENT_SAY_SSH=$T/hostilessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
 check "rows from the other side are cleaned and checked" "grep -q 'evil' <<<\"\$out\" && ! grep -q \$'\\e]52' <<<\"\$out\" && ! grep -q 'pwned' <<<\"\$out\" && ! grep -q 'not a row' <<<\"\$out\""
+# Live: select a pane on the linked computer, and the keys that can't act on it fade.
+rm -f "$st/panel/far.example.rows"
+tm new-window -d -t work -n farpanel "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+farscreen() { tm capture-pane -p -t work:farpanel; }
+for _ in $(seq 1 60); do farscreen | grep -q 'far-top' && break; sleep 0.25; done
+for _ in $(seq 1 20); do farscreen | grep -q '▶ far-top' && break; tm send-keys -t work:farpanel Down; sleep 0.4; done
+bar() { tm capture-pane -e -p -t work:farpanel | grep -F 'ump' | tail -1; }
+grey=$'\e[90m[J]ump' lit=$'\e[93mS'
+check "on a linked computer's pane, J and N fade" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\" && bar | grep -qF $'\\e[90m[N]ame'"
+check "while keys that still work stay lit" "bar | grep -qF \"\$lit\""
+tm send-keys -t work:farpanel 1
+check "back on a pane here, J lights up again" "for _ in \$(seq 1 25); do farscreen | grep -q '\[1\] ▶' && ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; farscreen | grep -q '\[1\] ▶' && ! bar | grep -qF \"\$grey\""
+tm send-keys -t work:farpanel q
+
 rm -rf "$st/links/far.example" "$st/panel"
 tmux -L "revive-panel-remote-$$" -f /dev/null kill-server 2>/dev/null
 
