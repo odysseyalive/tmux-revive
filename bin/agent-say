@@ -152,7 +152,10 @@ input_empty() {
 }
 
 # Is the agent waiting for input, with nothing on screen asking a question? Its screen must
-# hold still, show no "working" or approval prompt, and Claude Code must report itself idle.
+# hold still and its prompt be empty. Claude Code says for itself: its record reads "idle"
+# only when it is neither working nor showing a dialog ("waiting"). The others are judged by
+# what is on screen, no "working" or approval prompt; that reading can't tell a dialog from
+# the agent's own reply asking "would you like to ...?", so it is not used for Claude Code.
 agent_idle() { # agent_idle PANE KIND PID PREVIOUS-SCREEN -> prints the screen; 0 when idle
 	local screen f
 	screen="$(tmux capture-pane -p -t "$1" 2>/dev/null)" || return 2
@@ -163,6 +166,7 @@ agent_idle() { # agent_idle PANE KIND PID PREVIOUS-SCREEN -> prints the screen; 
 	fi
 	[[ "$screen" == "$4" ]] || return 1
 	input_empty "$1" || return 1
+	[[ $2 == claude ]] && return 0
 	! grep -v '^[[:space:]]*$' <<<"$screen" | tail -n 15 | grep -qiE \
 		'esc to (interrupt|cancel)|ctrl\+c to (interrupt|cancel)|yes, proceed|do you want to|would you like to|allow (once|always)|\(y/n\)|\[y/n\]|trust (this|the) folder'
 }

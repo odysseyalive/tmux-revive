@@ -153,6 +153,20 @@ printf '{"pid":%s,"name":"auto-1","nameSource":"derived","status":"idle"}' "$cpi
 check "/rename typed once claude is idle" "wait_typed claude '/rename gamma'"
 check "the pane lock was released" "[[ -z \$(find $T/locks -maxdepth 1 -name 'agent-say-*.lock') ]]"
 
+# Claude's last reply often ends in a question. That is its own prose, not a dialog: its record
+# says idle, so the rename still goes in.
+tmux send-keys -t "$C" -l 'Would you like to work on something? Do you want to proceed (y/n)'
+tmux send-keys -t "$C" Enter
+sleep 0.3
+AGENT_SAY_PANE=$C say name epsilon >/dev/null 2>&1
+check "/rename typed while claude's reply on screen asks a question" "wait_typed claude '/rename epsilon'"
+printf '{"pid":%s,"name":"auto-1","nameSource":"derived","status":"waiting","waitingFor":"permission"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
+AGENT_SAY_PANE=$C say name zeta >/dev/null 2>&1
+sleep 3
+check "nothing typed while claude shows a dialog (record says waiting)" "! typed claude '/rename zeta'"
+printf '{"pid":%s,"name":"auto-1","nameSource":"derived","status":"idle"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
+check "and typed once that dialog is gone" "wait_typed claude '/rename zeta'"
+
 printf '{"pid":%s,"name":"from-claude","nameSource":"user","status":"idle"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
 out=$(AGENT_SAY_PANE=$C say name 2>&1)
 check "no name given: the claude session's own name is used" "[[ \$(tmux display -p -t $C '#{@agent}') == from-claude ]]"
