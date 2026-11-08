@@ -10,6 +10,10 @@
 ;                      row sit side by side.
 ;   .button K Label    a button inside a box: K is the key that presses it
 ;   `text`             inside any line: shown like a command
+;   .art NAME          a picture for the section, on the line under its = Title. It sits
+;                      to the right of the section on a wide panel, above the words on a
+;                      narrower one, and is left out when there's no room. The pictures
+;                      are drawn in help.sh: talk, satellite.
 ;
 ; Every other line is ordinary text. Lines next to each other join into one paragraph, and a
 ; blank line starts a new one.
@@ -18,11 +22,13 @@
 .tag Turn your computer off and on, type tmux, and it's all back. Your AI agents too.
 
 = Get your agents talking
+.art talk
 I like my agents working together. Revive lets any AI session talk to any other, even across different Claude accounts, or between Claude Code and Codex.
 1. Select a session's pane here and press N to name it, say shop-dev.
 2. In any other session, just mention it by name: "Ask shop-dev to run the tests and tell me what fails."
 
 = Talk to your servers too
+.art satellite
 Got agents on a remote server? I wanted mine right here with the rest.
 1. Open another terminal and ssh into the server. It has to log in with a key.
 2. Install tmux-revive there too, then start tmux.

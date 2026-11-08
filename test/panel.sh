@@ -279,7 +279,19 @@ for c in 60 80 100 160; do
 	out=$(hframe $c)
 	w=$((c < 80 ? 80 : c)) # the panel is never narrower than 80
 	check "the help page fits $c columns ($(awk '{w[length]=1} END{for (k in w) printf "%s ", k}' <<<"$out"))" "grep -q 'Claude Workforce' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$w ' ]]"
+	# Fitting by being cut short doesn't count: nothing on the page itself ends in a …
+	check "and none of its lines is cut short at $c" "! sed -n '/HELP · HOW TO USE/,\$p' <<<\"\$out\" | grep -q '…'"
 done
+# The pictures .art puts by the sections: beside the words on a wide page, above them on a
+# narrow one, whole either way.
+talk='██▄█▄██       ░░▒▒▓▓██►   ██▄█▄██' sat='█▒█▒█▒█▒█══███████══█▒█▒█▒█▒█'
+out=$(hframe 160)
+check "at 160 columns two agents talk beside the first section" "grep -q 'between Claude Code and Codex\\..*$talk' <<<\"\$out\" && grep -q '1 Get your agents talking.*▄  ' <<<\"\$out\""
+check "and a satellite beams down beside the second" "grep -q 'Got agents on a remote server.*$sat' <<<\"\$out\" && grep -q '░▒▓█▓▒░' <<<\"\$out\""
+out=$(hframe 100)
+check "at 100 they still fit beside the words" "grep -q 'session talk to any other.*$talk' <<<\"\$out\" && grep -q 'the rest\\..*▀▀▀▀▀▀▀▀▀  ▀▀▀█▀▀▀' <<<\"\$out\""
+out=$(hframe 80)
+check "at 80 they go above the words instead" "grep -q '^║  $talk  *║\$' <<<\"\$out\" && grep -q '^║   $sat  *║\$' <<<\"\$out\" && ! grep -q 'Got agents.*█▒█' <<<\"\$out\""
 # A few suggestions to get going, not a reference: the keys are on the panel already.
 out=$(hframe 160)
 check "it has no key reference or column list" "! grep -qiE 'key reference|What the columns mean|Remember the old BBS|^║ +\\[[^]]+\\] {2,}[A-Z]' <<<\"\$out\" && grep -q 'shop-dev' <<<\"\$out\" && grep -q 'press L' <<<\"\$out\""

@@ -133,11 +133,97 @@ hflush() {
 	HPEND=()
 }
 
+# The pictures .art puts by a section. HART_NAME is the picture's rows, every row the same
+# width, and HART_NAME_ink paints them: a letter under each cell for its colour (see hart).
+# Drawn the artpack way: solid blocks first, half blocks for the curves and the small parts,
+# shades only as a short step from one colour to the next. Foreground colours only, and no
+# black or white, so the page's own background shows through the gaps on a dark terminal
+# or a light one, and the eyes and mouths are holes, not paint.
+HART_talk=( # two agents talking: a message each way, trailing off where it came from
+	"   ▄                         ▄   "
+	" ▄▄█▄▄                     ▄▄█▄▄ "
+	"██▄█▄██       ░░▒▒▓▓██►   ██▄█▄██"
+	"██▀▀▀██   ◄██▓▓▒▒░░       ██▀▀▀██"
+	" ▀▀▀▀▀                     ▀▀▀▀▀ "
+)
+HART_talk_ink=(
+	"   Y                         Y   "
+	" CCkCC                     MMkMM "
+	"CCCCCCC       CCCCCCCCC   MMMMMMM"
+	"CCCCCCC   MMMMMMMMM       MMMMMMM"
+	" ccccc                     mmmmm "
+)
+HART_satellite=( # a satellite beaming down to the curve of the earth
+	" ▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄ "
+	" █▒█▒█▒█▒█══███████══█▒█▒█▒█▒█ "
+	" ▀▀▀▀▀▀▀▀▀  ▀▀▀█▀▀▀  ▀▀▀▀▀▀▀▀▀ "
+	"            ▄▄███▄▄            "
+	"       ▄▄▄▄▄░▒▓█▓▒░▄▄▄▄▄       "
+	" ▄▄▄▄▄▄█████████████████▄▄▄▄▄▄ "
+)
+HART_satellite_ink=(
+	" BBBBBBBBB  YYYrYyy  BBBBBBBBB "
+	" BbBbBbBbBkkYYYYYyykkBbBbBbBbB "
+	" bbbbbbbbb  yyykyyy  bbbbbbbbb "
+	"            kkkkkkk            "
+	"       cccccCCCCCCCccccc       "
+	" ccccccbGGbbbGGGbbbbbGGbcccccc "
+)
+# hart NAME: the picture HART_NAME, painted, for the section it follows the title of. Beside
+# the section's text when the page is wide enough for both (hart_close puts it there), above
+# the text when it's only wide enough for the picture, and left out when it isn't, or in a box.
+hart() {
+	[[ $1 =~ ^[a-z]+$ ]] && declare -p "HART_$1" "HART_$1_ink" >/dev/null 2>&1 || return 0
+	((HBOX)) && return 0
+	local -n g=HART_$1 p=HART_$1_ink
+	local -A pal=([b]=$BLU [B]=$BBLU [c]=$CYN [C]=$BCYN [m]=$MAG [M]=$BMAG [y]=$YEL [Y]=$BYEL
+		[g]=$GRN [G]=$BGRN [r]=$BRED [k]=$GRY)
+	local i j c last s w=${#g[0]}
+	local -a rows=()
+	for i in "${!g[@]}"; do
+		s="" last=" "
+		for ((j = 0; j < w; j++)); do
+			c=${p[i]:j:1}
+			[[ $c == "$last" ]] || { s+=$R${pal[$c]:-}; last=$c; }
+			s+=${g[i]:j:1}
+		done
+		rows+=("$s$R")
+	done
+	if ((HW - w - 4 >= 44)); then # the text keeps 44 columns beside it
+		HART=("${rows[@]}") HARTW=$w HART_AT=${#HROWS[@]}
+		((HHEAD_AT == HART_AT - 1)) && HART_AT=$HHEAD_AT # level with the title
+	elif ((w < HW)); then
+		for s in "${rows[@]}"; do HROWS+=(" $s"); done
+		HROWS+=("") HBLANK=1
+	fi
+}
+# hart_close: the picture hart held back, set beside the rows of its section. The text there
+# was wrapped narrower to leave it room, and the title's rule stops short of it. A picture
+# taller than its section gets rows of its own, and the blank row that ends the section stays
+# clear of it.
+hart_close() {
+	((HARTW)) || return 0
+	local i n=${#HART[@]} tw=$((HW - HARTW - 2)) blank=$HBLANK
+	((blank)) && unset 'HROWS[-1]'
+	while ((${#HROWS[@]} < HART_AT + n)); do HROWS+=(""); done
+	for ((i = 0; i < n; i++)); do
+		if ((HART_AT + i == HHEAD_AT)); then
+			vlen "$HHEAD"
+			hrule $((tw - VLEN))
+			PADV=$HHEAD$RULE
+		else padv "${HROWS[HART_AT + i]}" "$tw"; fi
+		HROWS[HART_AT + i]="$PADV  ${HART[i]}"
+	done
+	((blank)) && HROWS+=("")
+	HART=() HARTW=0
+}
+
 # help_build WIDTH -> HROWS: help.txt drawn for a page WIDTH characters wide
 help_build() {
 	local ln k t i c tw pad
 	local -a tags=() big sun
 	HW=$1 HROWS=() HBOX=0 HBLANK=1 HPARA="" HBC=$BMAG HB=() HPEND=() HPEND_END=() HBN=0
+	HART=() HARTW=0 HHEAD_AT=-1 HHEAD=""
 	HSIDE=$((HW >= 110)) HBW=$HW
 	((HSIDE)) && HBW=$(((HW - 2) / 2))
 	local boxes=0 heads=0 bcol=(5 6) hcol=(4 4 4) # every title on blue: the easiest to read
@@ -180,22 +266,27 @@ help_build() {
 	while IFS= read -r ln || [[ -n $ln ]]; do
 		clean ln
 		HCW=$((HBOX ? HBW - 5 : HW - 2))
+		# Text that starts beside a picture is wrapped to leave it room; under it, it isn't.
+		((HARTW && ${#HROWS[@]} < HART_AT + ${#HART[@]})) && HCW=$((HCW - HARTW - 2))
 		case $ln in
 		\;* | .tag\ *) continue ;;
 		"") hpara; ((HBLANK)) || hpush "" ;;
+		.art\ *) hpara; hart "${ln#.art }" ;;
 		"= "*)
 			hpara
+			hart_close
 			hflush
 			((HBLANK)) || HROWS+=("")
 			heads=$((heads + 1))
 			tab "$heads ${ln#= }" "${hcol[(heads - 1) % 3]}"
-			t=" $TAB "
+			t=" $TAB " HHEAD=" $TAB " HHEAD_AT=${#HROWS[@]}
 			vlen "$t"
 			hrule $((HW - VLEN))
 			HROWS+=("$t$RULE")
 			HBLANK=0 ;;
 		.box\ *)
 			hpara
+			hart_close
 			((HBLANK || ${#HPEND[@]})) || HROWS+=("")
 			c=${bcol[boxes % 2]} boxes=$((boxes + 1))
 			HBC=$'\e'"[9${c}m"
@@ -238,6 +329,7 @@ help_build() {
 		esac
 	done <"$HELP_FILE"
 	hpara
+	hart_close
 	((HBOX)) && hbox_close
 	hflush
 	HELP_W=$HW
