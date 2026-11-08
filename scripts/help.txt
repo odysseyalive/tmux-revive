@@ -15,29 +15,29 @@
 ; blank line starts a new one.
 
 .tag C H E A T   S H E E T
-.tag Turn your computer off and on, type tmux, and it's all back. AI agents too.
+.tag Turn your computer off and on, type tmux, and it's all back. Your AI agents too.
 
 = Get started
-- Pick a pane with its number or the arrow keys. J jumps you there.
-- An agent asking you something? Press Tab and answer it right here.
-- Press S to save every pane right now.
+- Pick a pane by its number or the arrow keys. J jumps you there.
+- Agent asking you something? Press Tab and answer it from here.
+- S saves every pane, right now.
 
 = Two AI sessions talking
 1. Name one of them. In Claude Code, type `! agent-say name shop-dev`, or select its pane here and press N.
-2. In the other session, just ask: "Use agent-say to tell shop-dev the tests pass."
+2. In the other one, just ask: "Use agent-say to tell shop-dev the tests pass."
 
-= Linking servers
+= Linking a server
 1. Open another terminal window.
-2. ssh into the remote machine. It has to log in with a key.
+2. ssh into the server. It has to log in with a key.
 3. Make sure tmux-revive is installed there:
 $ curl -fsSL https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.sh | sh
 4. Start `tmux`.
-5. In your control panel, press L to link it.
+5. Back in this panel, press L to link it.
 
-Now you can detach tmux there and close that terminal window. The server stays linked.
+Now you can detach tmux and close that window. The server stays linked.
 
 .box Tame Your AI
-Get more done. Claude Workforce tracks several jobs at once, and its blueprints work in auto mode.
+Get more done. Claude Workforce tracks several jobs at once, and its blueprints work in auto mode too.
 .button i Install Claude Workforce
 github.com/odysseyalive/claude-workforce
 .end
