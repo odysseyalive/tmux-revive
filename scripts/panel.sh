@@ -15,6 +15,8 @@
 set -uo pipefail
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+# shellcheck source=help.sh
+source "$(dirname "${BASH_SOURCE[0]}")/help.sh" # the ? page
 
 # Everything it keeps (other computers' rows and screens) is for this user only. common.sh sets
 # this too; it's said again here because the cache holds what's on other computers' screens.
@@ -1250,6 +1252,7 @@ draw() {
 	else
 		for ((i = 0; i < BH; i++)); do row "${BAN[i]}"; done
 	fi
+	((HELP)) && { help_frame "$lines" "$BH"; return; } # the ? page takes everything below
 	counts="$BYEL$w working$R$GRY · $R$BMAG$a asking$R"
 	((a)) && counts="$BYEL$w working$R$GRY · $R$B$BMAG$BLINK$a asking$R"
 	sect "PANES"
@@ -1324,7 +1327,7 @@ draw() {
 	fi
 	local cs=("J:ump" "M:essage" "N:ame" "L:ink" "U:nlink")
 	[[ -n $rh ]] && cs+=("V: update") # tmux-revive on that computer
-	cs+=("P:eek" "A:rt" "S:ave" "Q:uit")
+	cs+=("P:eek" "A:rt" "S:ave" "Q:uit" "?: help")
 	for c in "${cs[@]}"; do
 		if [[ $off == *" ${c%%:*} "* ]]; then
 			k+="$GRY[${c%%:*}]${c#*:}$R  "
@@ -1756,6 +1759,7 @@ act() {
 	s | S)
 		if "$BASH" "$REVIVE_ROOT/scripts/save.sh" manual >/dev/null 2>&1; then flash "saved"; else flash "save failed (see: tmux-revive log)"; fi ;;
 	q | Q) exit 0 ;;
+	'?') help_view ;; # quoted: a bare ? would match every key
 	[1-9]) (($1 - 1 < ${#P_ID[@]})) && SEL=$(($1 - 1)) ;;
 	# The list goes round: up from the first pane is the last, down from the last the first.
 	up) ((${#P_ID[@]})) && SEL=$(((SEL - 1 + ${#P_ID[@]}) % ${#P_ID[@]})) ;;

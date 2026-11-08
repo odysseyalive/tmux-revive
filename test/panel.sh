@@ -196,6 +196,68 @@ check "A switches the artwork ($before)" "for _ in \$(seq 1 20); do after=\$(scr
 tm send-keys -t work:panel q; sleep 1
 check "Q quits" "! tm list-windows -F '#{window_name}' | grep -qx panel"
 
+echo "help"
+# Its own panel, with a stand-in browser opener and a stand-in installer: nothing here opens a
+# browser or fetches anything.
+mkdir -p "$T/stub"
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >%s/opened\n' "$T" >"$T/stub/xdg-open"
+chmod +x "$T/stub/xdg-open"
+# The installer runs in a new tmux window, which takes the server's environment: the stand-in
+# goes there too, so even if the panel failed to pass it along, the real one wouldn't run.
+tm set-environment -g REVIVE_WORKFORCE_INSTALL_CMD "touch $T/installed"
+tm new-window -d -t work -n helpw "env PATH=$T/stub:$PATH REVIVE_WORKFORCE_INSTALL_CMD='touch $T/installed' REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+hscreen() { tm capture-pane -p -t work:helpw; }
+hwait() { for _ in $(seq 1 30); do hscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+hgone() { for _ in $(seq 1 30); do hscreen | grep -qF -- "$1" || return 0; sleep 0.2; done; return 1; }
+hpos() { hscreen | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1; } # the bar's "first-last of all"
+hwhole() { local s; s=$(hscreen); [[ ${s%%$'\n'*} == ╔* && ${s##*$'\n'} == *╝ ]]; }
+hwait 'C O N T R O L'
+check "the command bar offers ? for help" "hscreen | grep -qF '[?] help'"
+tm send-keys -t work:helpw '?'
+check "? opens the help page, with its banner" "hwait 'THE REVIVE CHEAT SHEET' && hscreen | grep -q 'HELP · HOW TO USE REVIVE'"
+check "in place of the pane list, under the panel's banner" "! hscreen | grep -q '✦ this panel\|PANES\|MESSAGES' &&hscreen | grep -q 'C O N T R O L' && hwhole"
+p0=$(hpos)
+check "it says how much of the page shows ($p0)" "[[ '$p0' == 1-* ]] && [[ \${p0##* } -gt \${p0%% *} ]]"
+tm send-keys -t work:helpw Down
+check "Down scrolls a line" "hwait '▲ 2-'"
+tm send-keys -t work:helpw NPage; sleep 0.5
+p1=$(hpos)
+check "PgDn scrolls a page ($p1)" "(( \${p1%%-*} > 10 )) && hwhole"
+tm send-keys -t work:helpw End; sleep 0.5
+p2=$(hpos) last=${p2#*-} last=${last%% *}
+check "End shows the bottom: the ads ($p2)" "[[ $last == \${p2##* } ]] && hscreen | grep -q 'playwright-mcp'"
+tm send-keys -t work:helpw Home
+check "Home goes back to the top" "hwait ' 1-' && hscreen | grep -q 'THE REVIVE CHEAT SHEET'"
+tm send-keys -t work:helpw i
+check "i asks before installing, showing what it would run" "hwait 'yes, run it' && hscreen | grep -q 'touch $T/installed'"
+tm send-keys -t work:helpw n
+check "n says no, and nothing runs" "hwait 'install cancelled' && sleep 1 && [[ ! -e $T/installed ]] && ! tm list-windows -F '#{window_name}' | grep -qx workforce"
+check "and the help page stays open" "hscreen | grep -q 'HELP · HOW TO USE' && ! hscreen | grep -q 'yes, run it'"
+tm send-keys -t work:helpw i; hwait 'yes, run it' >/dev/null
+tm send-keys -t work:helpw y
+installed() { for _ in $(seq 1 30); do [[ -e $T/installed ]] && return 0; sleep 0.2; done; return 1; }
+check "y runs the installer in a new tmux window" "installed && tm list-windows -F '#{window_name}' | grep -qx workforce"
+tm kill-window -t work:workforce 2>/dev/null
+tm send-keys -t work:helpw o
+opened() { for _ in $(seq 1 30); do [[ -s $T/opened ]] && return 0; sleep 0.2; done; return 1; }
+check "o opens playwright-mcp's page in the browser" "opened && [[ \$(cat $T/opened) == https://github.com/odysseyalive/playwright-mcp ]]"
+tm resize-window -t work:helpw -x 90 -y 30; sleep 1.5
+check "a resize redraws it to the new size" "hwhole && [[ \$(hscreen | head -1 | awk '{print length}') == 90 && \$(hscreen | wc -l) == 30 ]] && hscreen | grep -q 'HELP · HOW TO USE'"
+tm resize-window -t work:helpw -x 130 -y 40; sleep 0.5
+tm send-keys -t work:helpw x
+check "x closes it, back to the panes" "hgone 'HELP · HOW TO USE' && hwait 'PANES' && hscreen | grep -q 'this panel'"
+tm send-keys -t work:helpw '?'; hwait 'HELP · HOW TO USE' >/dev/null
+tm send-keys -t work:helpw Escape
+check "Esc closes it too" "hgone 'HELP · HOW TO USE' && hwait 'PANES'"
+tm send-keys -t work:helpw q; sleep 1
+# The page drawn by itself at a few widths: every line fills the frame exactly.
+hframe() { tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=$1 LINES=200 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
+for c in 60 80 100 160; do
+	out=$(hframe $c)
+	w=$((c < 80 ? 80 : c)) # the panel is never narrower than 80
+	check "the help page fits $c columns ($(awk '{w[length]=1} END{for (k in w) printf "%s ", k}' <<<"$out"))" "grep -q 'Claude Workforce' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$w ' ]]"
+done
+
 echo "context left"
 # Stand-in agents (copies of bash named claude and codex) with the records the real ones keep:
 # Claude Code's session record and transcript, and a Codex rollout file held open.

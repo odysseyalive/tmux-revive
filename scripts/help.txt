@@ -1,0 +1,120 @@
+; The cheat sheet the control panel shows when you press ?. Edit the words freely: the panel
+; wraps them to fit. Lines starting with ; are notes like this one and never show.
+;
+;   .tag text          a line beside the HELP letters at the top (up to three)
+;   = Title            a section heading
+;   [K] text           a key and what it does
+;   <NAME> text        a column (or any other term) and what it means
+;   - text             a bullet point
+;   1. text            a numbered step
+;   $ command          a command to type, shown as is (never wrapped at spaces)
+;   .box Title         starts a boxed ad; .end closes it
+;   .button K Label    a button inside a box: K is the key that presses it
+;   `text`             inside any line: shown like a command
+;
+; Every other line is ordinary text. Lines next to each other join into one paragraph, and a
+; blank line starts a new one.
+
+.tag THE REVIVE CHEAT SHEET
+.tag Everything this panel does, on one page.
+.tag Press ? any time to come back here.
+
+= The panel
+
+Remember the old BBS screens? This is a live one for every tmux pane. Each pane gets a row. You can see what it runs, and whether its AI agent is working, waiting on you, or stuck on a question.
+
+Pick a pane by its number or with the arrow keys, then press a letter.
+
+[1-9] Select that pane.
+[↑↓] Move the selection up and down.
+[J] Jump to the pane. For a pane on a linked computer, J goes to the pane that's ssh'd there.
+[M] Send the pane a message with agent-say.
+[N] Name the pane. Other agents reach it by that name.
+[L] Link a computer you ssh into. There's more on that below.
+[U] Unlink a computer.
+[V] Update tmux-revive on a linked computer. Select one of its panes first.
+[P] Show or hide the peek, a live look at the selected pane's screen.
+[X] Spread the peek over the artwork. X or C puts it back.
+[Tab] Answer the question an agent is asking, right from here. Enter works too. Your keys go to the agent until it has its answer, or until you press Ctrl-].
+[A] Swap the artwork.
+[S] Save every pane right now.
+[?] Open this page. Esc or X closes it.
+[Q] Quit the panel.
+
+The columns:
+
+<#> The number that selects the pane.
+<NAME> The pane's name, or where it lives (session:window.pane) if it has none.
+<APP> What runs there. Agents show up bright.
+<STATE> WORKING, WAITING ON YOU, NEEDS ANSWER, running, or shell. Linked computers can also show linked or unreachable.
+<FOLDER> The folder the pane is in. Wide panels only.
+<GIT> The git branch there. A * means uncommitted changes. Wide panels only.
+<CPU> A meter and a number for how hard it's working.
+<MEM> The memory it uses.
+<CTX LEFT> How much of the agent's context window is still free. Green, then yellow at 40%, then red at 15%. A dash means the panel can't read it for that agent.
+
+Under the list you get a CPU graph, the peek, a piece of ANSI art, the latest agent messages, your links and your saves.
+
+= Two AI sessions talking
+
+First, name one of them. In Claude Code, type this into its prompt:
+
+$ ! agent-say name shop-dev
+
+Or select its pane here and press N.
+
+Then go to the other session and ask in plain words, using that name:
+
+- "Use agent-say to tell shop-dev the tests pass now."
+- "Ask shop-dev to review parser.py and tell you what breaks."
+
+The message gets typed into shop-dev's pane, and the reply finds its way back on its own. You can send one yourself from any shell, too:
+
+$ agent-say shop-dev "run the tests and tell me what fails"
+
+Pick a name that won't get mixed up with what the agents are talking about. `shop-dev` is clearer than `tests`. `agent-say list` shows every name.
+
+= Linking servers
+
+Got agents on a server too? Link it, and agents on both computers can talk by name.
+
+1. Open another terminal window.
+2. ssh into the remote machine.
+3. Make sure tmux-revive is installed there. If it isn't, run this on the server:
+
+$ curl -fsSL https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.sh | sh
+
+4. Start tmux on the server with `tmux`.
+5. Come back to this control panel and press L. Pick the server, check its host key, and say yes.
+
+Its panes show up here, under the server's name.
+
+Now the good part. You can detach tmux on the server and close that terminal window. The server stays linked. Your computer checks in with it every couple of seconds over its own ssh connection, and tmux keeps running on the server after you detach.
+
+One catch: ssh has to log in without asking for a password, with a key. Test it with `ssh -o BatchMode=yes yourserver true`.
+
+.box Claude Workforce
+Your AI says the tests passed. Did it run them? Claude Workforce makes it prove it.
+
+It gives Claude Code a staff of agents, each with a job and a check that proves its work. Its hooks stop Claude from claiming anything it hasn't checked.
+
+One command installs it, and the same command updates it later:
+
+$ bash -c "$(curl -fsSL https://raw.githubusercontent.com/odysseyalive/claude-workforce/main/install)"
+
+.button i Install Claude Workforce
+
+Press i and the panel asks first, then runs the installer for your system in a new tmux window. On Windows, use this in PowerShell instead:
+
+$ irm https://raw.githubusercontent.com/odysseyalive/claude-workforce/main/install.ps1 | iex
+
+github.com/odysseyalive/claude-workforce
+.end
+
+.box playwright-mcp
+Give every Claude Code project a real browser. Pages come back with their citations attached, logins stick around for debugging, and the full Playwright toolset sits underneath.
+
+.button o Open it on GitHub
+
+github.com/odysseyalive/playwright-mcp
+.end
