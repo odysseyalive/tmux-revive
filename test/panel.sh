@@ -33,10 +33,76 @@ for size in "80 24" "100 40" "130 40" "200 60"; do
 	shape=$(frame "$c" "$l" | awk '{w[length]=1; n++} END{for (k in w) printf "%s ", k; print "x " n}')
 	check "it fills a ${c}x$l pane exactly ($shape)" "[[ '$shape' == '$c x $l' ]]"
 done
-for a in city mountains ocean space circuit rain grid; do
+for a in city mountains space circuit grid; do
 	out=$(frame 120 45 "$a")
 	check "the $a artwork draws and fits" "grep -q 'ART · ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
 done
+# Calm artwork: from one frame to the next only a few cells of the art band change, and the
+# scene beside the banner holds still.
+artband() { tm run-shell "REVIVE_PANEL_TICK=$2 REVIVE_PANEL_ART=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
+cat >"$T/calm.py" <<'PY'
+import re, sys
+T, top = sys.argv[1], int(sys.argv[2])
+def grid(lines):
+    rows = []
+    for line in lines:
+        row, col = [], ''
+        for m in re.finditer(r'(\x1b\[[0-9;]*m)|(.)', line):
+            if m.group(1): col = m.group(1)
+            else: row.append((m.group(2), col))
+        rows.append(row)
+    return rows
+def plain(line): return re.sub(r'\x1b\[[0-9;]*m', '', line)
+frames = [open(f'{T}/f{t}', encoding='utf-8').read().split('\n') for t in range(4)]
+bands, tails = [], []
+for f in frames:
+    i = next(n for n, l in enumerate(f) if 'ART · ' in plain(l))
+    j = next(n for n, l in enumerate(f) if 'MESSAGES' in plain(l))
+    bands.append(grid(f[i + 1:j]))
+    tails.append([plain(l)[100:] for l in f[1:7]])  # the scene beside the banner
+worst = max(sum(u != v for p, q in zip(a, b) for u, v in zip(p, q)) for a, b in zip(bands, bands[1:]))
+still = all(t == tails[0] for t in tails)
+print(f'worst={worst} banner_still={still}', file=sys.stderr)
+sys.exit(0 if worst <= top and still else 1)
+PY
+calm() { # calm SCENE MAX
+	local t
+	for t in 0 1 2 3; do artband "$1" $t >"$T/f$t"; done
+	python3 "$T/calm.py" "$T" "$2" 2>>"$T/calm.log"
+}
+check "night city: only a star and two windows change" "calm city 6"
+check "mountains: only two stars change" "calm mountains 4"
+check "circuit board: only three LEDs change" "calm circuit 6"
+# Two clouds sliding a column as a whole touch every edge of their puffs at once.
+check "neon grid: only two clouds drift" "calm grid 40"
+check "deep space: the comet and two stars" "calm space 16"
+cat >"$T/sun.py" <<'PY'
+import re, sys
+rows = [re.sub(r'\x1b\[[0-9;]*m', '', l) for l in sys.stdin.read().split('\n')]
+band = rows[next(i for i, r in enumerate(rows) if 'ART · ' in r) + 1:]
+hz = next(i for i, r in enumerate(band) if r.count('─') > 40)
+sky = band[:hz]
+# Each sun row between its own edges; a striped gap row uses the edges of the row above it
+# (the sun narrows upward, so that span lies inside the gap).
+top = next(i for i, r in enumerate(sky) if '█' in r)
+span, bad = None, False
+for r in sky[top:]:
+    if '█' in r:
+        span = (r.index('█'), r.rindex('█'))
+    a, b = span
+    bad |= any(ch in '*·.' for ch in r[a:b + 1])
+sys.exit(1 if bad else 0)
+PY
+cat >"$T/dusk.py" <<'PY'
+import re, sys
+rows = [re.sub(r'\x1b\[[0-9;]*m', '', l) for l in sys.stdin.read().split('\n')]
+band = rows[next(i for i, r in enumerate(rows) if 'ART · ' in r) + 1:]
+hz = next(i for i, r in enumerate(band) if r.count('─') > 40)
+sky = ''.join(r[2:-2] for r in band[:hz])
+sys.exit(0 if not any(ch in sky for ch in '*·.') and ('▀' in sky or '▄' in sky) else 1)
+PY
+check "the sunset sky has clouds, not stars" "artband grid 1 | python3 $T/dusk.py && artband grid 5 | python3 $T/dusk.py"
+check "and nothing shows through the sun" "artband grid 1 | python3 $T/sun.py"
 out=$(frame 130)
 check "a shell pane shows as a shell" "grep -q 'bash *· shell' <<<\"\$out\""
 check "a program shows as running" "grep -q 'top *▸ running' <<<\"\$out\""

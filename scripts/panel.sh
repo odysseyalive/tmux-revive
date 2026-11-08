@@ -176,8 +176,9 @@ CPU_HIST=()
 # ------------------------------------------------------------------ artwork
 # Scenes drawn to whatever space is free, so the panel fills its pane at any size. One is
 # picked at random when the panel opens (REVIVE_PANEL_ART=<name> picks one), A cycles them.
-SCENES=(city mountains ocean space circuit rain grid)
-TITLES=("night city" "mountains" "moonlit sea" "deep space" "circuit board" "digital rain" "neon grid")
+# Each scene moves in two or three places at most, so the panel stays calm to look at.
+SCENES=(city mountains space circuit grid)
+TITLES=("night city" "mountains" "deep space" "circuit board" "neon grid")
 SCENE=$((RANDOM % ${#SCENES[@]}))
 for i in "${!SCENES[@]}"; do [[ ${SCENES[i]} == "${REVIVE_PANEL_ART:-}" ]] && SCENE=$i; done
 BGBLK="$e[40m" BGGRY="$e[100m"
@@ -202,29 +203,39 @@ emit() { # -> ART rows, switching colour only where it changes
 		ART+=("$out$R")
 	done
 }
-stars() { # stars ROWS ONE-IN-N: sky dust in the top ROWS rows; a few twinkle
+stars() { # stars ROWS ONE-IN-N: sky dust in the top ROWS rows, holding still
 	local r c
 	for ((r = 0; r < $1; r++)); do
 		for ((c = 0; c < ART_W; c++)); do
 			rnd
 			((RV % $2)) && continue
-			if (((RV / 7 + TICK) % 9 == 0)); then put $r $c "*" "$BWHT"
+			if ((RV / 7 % 9 == 0)); then put $r $c "*" "$BWHT"
 			elif ((RV % 3 == 0)); then put $r $c "·" "$GRY"
 			else put $r $c "." "$BLU"; fi
 		done
 	done
 }
-art() { # art WIDTH HEIGHT -> ART rows of the current scene
+twinkle() { # twinkle N ROWS: N stars in the top ROWS rows that take turns shining
+	local k r c
+	for ((k = 0; k < $1; k++)); do
+		rnd; r=$((RV % ($2 > 0 ? $2 : 1))); rnd; c=$((RV % ART_W))
+		if (((AT + k) % 2)); then put $r $c "*" "$BWHT"; else put $r $c "·" "$GRY"; fi
+	done
+}
+art() { # art WIDTH HEIGHT [still] -> ART rows of the current scene; "still" stops its animation
 	canvas "$1" "$2"
+	if [[ ${3:-} == still ]]; then AT=0; else AT=$TICK; fi
 	SEED=$((7919 * (SCENE + 1)))
 	((ART_W > 0 && ART_H > 0)) && "scene_${SCENES[SCENE]}"
 	emit
 }
 
-scene_city() { # towers with lit windows under the stars, a few lights going on and off
+scene_city() { # towers with lit windows under the stars; one star and two windows change
 	local W=$ART_W H=$ART_H
-	local x=0 bw bh top body r c lit
+	local x=0 bw bh top body r c lit k i
+	local -a wr=() wc=() wb=()
 	stars "$H" 23
+	twinkle 1 $((H / 2))
 	put $((H > 4)) $((W * 4 / 5)) "●" "$BYEL"
 	while ((x < W)); do
 		rnd; bw=$((3 + RV % 6))
@@ -237,12 +248,17 @@ scene_city() { # towers with lit windows under the stars, a few lights going on 
 				rnd; lit=0
 				if (((c - x) % 2)); then
 					((RV % 3 == 0)) && lit=1
-					(((c * 31 + r * 17 + TICK) % 23 == 0)) && lit=$((!lit))
+					wr+=("$r") wc+=("$c") wb+=("$body")
 				fi
 				if ((lit)); then put $r $c "▪" "$body$BYEL"; else put $r $c " " "$body"; fi
 			done
 		done
 		rnd; x=$((x + bw + RV % 2))
+	done
+	# Two windows somewhere in town, one light on while the other is off.
+	for ((k = 0; k < 2 && ${#wr[@]}; k++)); do
+		rnd; i=$((RV % ${#wr[@]}))
+		if (((AT + k) % 2)); then put "${wr[i]}" "${wc[i]}" "▪" "${wb[i]}$BYEL"; else put "${wr[i]}" "${wc[i]}" " " "${wb[i]}"; fi
 	done
 }
 
@@ -253,61 +269,62 @@ tri() { # tri X PERIOD AMPLITUDE -> TRI: a triangle wave from 0 up to AMPLITUDE 
 	TRI=$(((x < h ? x : per - x) * $3 / h))
 }
 
-ridge() { # ridge C -> HB HF: the far and near ridge heights at column C
-	tri $(($1 + P1)) $((ART_W / 4 + 8)) $((ART_H * 3 / 5)); HB=$((ART_H / 4 + TRI))
-	tri $(($1 + P2)) 9 1; HB=$((HB + TRI))
-	((HB > ART_H - 1)) && HB=$((ART_H - 1))
-	tri $(($1 + P3)) $((ART_W / 7 + 6)) $((ART_H / 4)); HF=$((1 + TRI))
+# Three ridges, far to near. Each height is a sum of triangle waves whose lengths don't line
+# up, so the peaks never repeat.
+ridges() { # ridges C -> HF HM HN at column C
+	# Far peaks reach highest, the middle ridge rises well into them, the near hills stay low.
+	tri $(($1 + P1)) $((ART_W / 3 + 11)) $((ART_H / 2)); HF=$((ART_H / 3 + TRI))
+	tri $(($1 + P4)) 13 1; HF=$((HF + TRI))
+	((HF > ART_H - 1)) && HF=$((ART_H - 1))
+	tri $(($1 + P2)) $((ART_W / 5 + 7)) $((ART_H * 2 / 5)); HM=$((ART_H / 4 + TRI))
+	tri $(($1 + P5)) 7 1; HM=$((HM + TRI))
+	tri $(($1 + P3)) $((ART_W / 8 + 5)) $((ART_H / 4)); HN=$((1 + ART_H / 8 + TRI))
+	tri $1 5 1; HN=$((HN + TRI))
+}
+slope() { # slope LEFT HERE RIGHT -> TOP: ▟ climbing, ▙ falling, ▲ a summit, ▄ flat
+	if (($3 > $2 && $1 <= $2)); then TOP="▟"; elif (($1 > $2 && $3 <= $2)); then TOP="▙"
+	elif (($1 < $2 && $3 < $2)); then TOP="▲"; else TOP="▄"; fi
 }
 
-scene_mountains() { # two ridges of peaks, snow on the high ones, a moon over them
+scene_mountains() { # three ridges, snow on the high peaks, pines, a lit cabin and a moon
 	local W=$ART_W H=$ART_H
-	local c r hb hf lb rb lf rf top
-	rnd; P1=$((RV % 97)); rnd; P2=$((RV % 13)); rnd; P3=$((RV % 61))
+	local c r lf lm ln hf hm hn rf rm rn cab=-1
+	rnd; P1=$((RV % 97)); rnd; P2=$((RV % 53)); rnd; P3=$((RV % 61)); rnd; P4=$((RV % 13)); rnd; P5=$((RV % 7))
 	stars "$H" 19
-	put 0 $((W / 6)) "●" "$BWHT"
+	twinkle 2 $((H / 3))
+	rnd; put 0 $((W / 8 + RV % (W * 3 / 4 + 1))) "●" "$BWHT"
+	rnd; ((W > 30)) && cab=$((W / 4 + RV % (W / 2)))
 	for ((c = 0; c < W; c++)); do
-		ridge $((c - 1)); lb=$HB lf=$HF
-		ridge $((c + 1)); rb=$HB rf=$HF
-		ridge $c; hb=$HB hf=$HF
-		# The top cell follows the slope: ▟ climbing, ▙ falling, ▲ a summit.
-		if ((rb > hb && lb <= hb)); then top="▟"; elif ((lb > hb && rb <= hb)); then top="▙"
-		elif ((lb < hb && rb < hb)); then top="▲"; else top="▄"; fi
-		for ((r = H - hb; r < H; r++)); do
-			if ((r == H - hb)); then
-				if ((hb >= H * 2 / 3)); then put $r $c "$top" "$BWHT"; else put $r $c "$top" "$BBLU"; fi
-			else
-				put $r $c "▒" "$BBLU"
-			fi
-		done
-		if ((rf > hf && lf <= hf)); then top="▟"; elif ((lf > hf && rf <= hf)); then top="▙"
-		elif ((lf < hf && rf < hf)); then top="▲"; else top="▄"; fi
+		ridges $((c - 1)); lf=$HF lm=$HM ln=$HN
+		ridges $((c + 1)); rf=$HF rm=$HM rn=$HN
+		ridges $c; hf=$HF hm=$HM hn=$HN
+		# Far ridge: pale, snow-capped where it's high.
+		slope $lf $hf $rf
 		for ((r = H - hf; r < H; r++)); do
-			if ((r == H - hf)); then put $r $c "$top" "$BLU"; else put $r $c "█" "$BLU"; fi
+			if ((r == H - hf)); then
+				# Snow on the tips of the tallest peaks only.
+				if ((hf >= H * 3 / 4)); then put $r $c "$TOP" "$BWHT"; else put $r $c "$TOP" "$GRY"; fi
+			else put $r $c "▒" "$GRY"; fi
 		done
-	done
-}
-
-scene_ocean() { # a moon on the horizon, its light trailing across moving water
-	local W=$ART_W H=$ART_H
-	local hz=$((H * 2 / 5)) mc=$((W * 7 / 10)) r c d waves=("~" "∼" "-" "≈" "~")
-	((hz < 1)) && hz=1
-	stars "$hz" 15
-	put $((hz > 1 ? hz - 2 : 0)) $mc "●" "$BWHT"
-	for ((c = 0; c < W; c++)); do put $hz $c "▁" "$BLU"; done
-	for ((r = hz + 1; r < H; r++)); do
-		for ((c = 0; c < W; c++)); do
-			d=$((c > mc ? c - mc : mc - c))
-			if ((d <= (r - hz) + 1 && (c + r + TICK) % 3)); then
-				put $r $c "═" "$BYEL"
-			else
-				rnd
-				((RV % 3)) && continue
-				if (((r - hz) % 2)); then put $r $c "${waves[(c + r * 3 + TICK) % 5]}" "$BBLU"
-				else put $r $c "${waves[(c + r * 3 + TICK) % 5]}" "$CYN"; fi
-			fi
+		# Middle ridge.
+		slope $lm $hm $rm
+		for ((r = H - hm; r < H; r++)); do
+			if ((r == H - hm)); then put $r $c "$TOP" "$BBLU"; else put $r $c "▒" "$BBLU"; fi
 		done
+		# Near ridge, with pines along its top here and there.
+		slope $ln $hn $rn
+		for ((r = H - hn; r < H; r++)); do
+			if ((r == H - hn)); then put $r $c "$TOP" "$BLU"; else put $r $c "█" "$BLU"; fi
+		done
+		rnd
+		((RV % 3 == 0 && c != cab && c != cab + 1)) && put $((H - hn - 1)) $c "▲" "$GRN"
 	done
+	# A cabin on the near ridge, its window lit.
+	if ((cab >= 0)); then
+		ridges $cab
+		put $((H - HN - 1)) $cab "▄" "$YEL"
+		put $((H - HN - 1)) $((cab + 1)) "▪" "$BYEL"
+	fi
 }
 
 scene_space() { # a ringed planet, starfields and a comet crossing over time
@@ -315,6 +332,7 @@ scene_space() { # a ringed planet, starfields and a comet crossing over time
 	local pr=$((H / 2)) pc=$((W / 4)) rad r c dx dy cx cr k tail=("=" "-" "-" "·" "·")
 	rad=$((H * 2 / 5)); ((rad < 1)) && rad=1
 	stars "$H" 11
+	twinkle 2 "$H"
 	for ((r = pr - rad; r <= pr + rad; r++)); do
 		for ((c = pc - 2 * rad; c <= pc + 2 * rad; c++)); do
 			dx=$((c - pc)) dy=$(((r - pr) * 2))
@@ -326,16 +344,17 @@ scene_space() { # a ringed planet, starfields and a comet crossing over time
 		dx=$((c - pc)); ((dx < 0)) && dx=$((-dx))
 		((dx > 2 * rad - 1)) && put $pr $c "─" "$BYEL"
 	done
-	cr=$((H / 4)) cx=$((TICK * 3 % (W + 12) - 6))
+	cr=$((H / 4)) cx=$((AT * 3 % (W + 12) - 6))
 	put $cr $cx "*" "$BWHT"
 	for ((k = 1; k <= 5; k++)); do
 		if ((k <= 2)); then put $cr $((cx - k)) "${tail[k - 1]}" "$BCYN"; else put $cr $((cx - k)) "${tail[k - 1]}" "$BLU"; fi
 	done
 }
 
-scene_circuit() { # traces turning corners, chips and blinking LEDs
+scene_circuit() { # traces turning corners, chips and three blinking LEDs
 	local W=$ART_W H=$ART_H
-	local n k r c len vl i led
+	local n k r c len vl i blink=0
+	local -a lr=() lc=()
 	n=$((W * H / 28 + 1))
 	for ((k = 0; k < n; k++)); do
 		rnd; r=$((RV % H)); rnd; c=$((RV % W)); rnd; len=$((3 + RV % 12)); rnd; vl=$((RV % (H / 2 + 1)))
@@ -345,8 +364,8 @@ scene_circuit() { # traces turning corners, chips and blinking LEDs
 			put $r $((c + len)) "┐" "$GRN"
 			for ((i = 1; i < vl; i++)); do put $((r + i)) $((c + len)) "│" "$GRN"; done
 		fi
-		if (((k + TICK) % 4 == 0)); then led="$BRED"; else led="$BGRN"; fi
-		put $((r + (vl ? vl : 0))) $((c + len)) "◆" "$led"
+		put $((r + (vl ? vl : 0))) $((c + len)) "◆" "$BGRN"
+		lr+=($((r + (vl ? vl : 0)))) lc+=($((c + len)))
 	done
 	for ((k = 0; k < 2 && H >= 3; k++)); do
 		rnd; r=$((1 + RV % (H - 2))); rnd; c=$((RV % W))
@@ -356,39 +375,50 @@ scene_circuit() { # traces turning corners, chips and blinking LEDs
 			put $((r + 1)) $((c + i)) "┴" "$GRY"
 		done
 	done
-}
-
-scene_rain() { # columns of falling code, bright at the head and fading behind
-	local W=$ART_W H=$ART_H
-	local g="01001101#%&*+=<>" c k r off len head
-	for ((c = 0; c < W; c += 2)); do
-		rnd; off=$((RV % (H * 2 + 1))); rnd; len=$((3 + RV % 7))
-		head=$(((TICK * 2 + off) % (H + len)))
-		for ((k = 0; k < len; k++)); do
-			r=$((head - k))
-			((r < 0 || r >= H)) && continue
-			rnd
-			if ((k == 0)); then put $r $c "${g:RV % ${#g}:1}" "$BWHT"
-			elif ((k < 3)); then put $r $c "${g:RV % ${#g}:1}" "$BGRN"
-			elif ((k < 5)); then put $r $c "${g:RV % ${#g}:1}" "$GRN"
-			else put $r $c "${g:RV % ${#g}:1}" "$GRY"; fi
-		done
+	# Three LEDs that ended up on the board blink; the rest stay lit.
+	for ((k = 0; k < ${#lr[@]} && blink < 3; k++)); do
+		r=${lr[k]} c=${lc[k]}
+		((r >= 0 && r < H && c >= 0 && c < W)) || continue
+		if (((blink + AT) % 2)); then put $r $c "◆" "$BGRN"; else put $r $c "◆" "$BRED"; fi
+		((blink++))
 	done
 }
 
-scene_grid() { # a striped sun setting behind a neon floor that runs to the horizon
+
+cloud() { # cloud ROW COL WIDTH COLOUR: a thin streak, puffs along its top, flat underneath
+	local i
+	for ((i = 0; i < $3; i++)); do
+		rnd
+		((i > 1 && i < $3 - 2 && RV % 3)) && put "$1" $(($2 + i)) "▄" "$4"
+		put $(($1 + 1)) $(($2 + i)) "▀" "$4"
+	done
+}
+
+scene_grid() { # a striped sun setting behind a neon floor, streaks of cloud in a dusk sky
 	local W=$ART_W H=$ART_H
 	local hz=$((H / 2)) cx=$((W / 2)) sr r c d dx dy k x col
 	((hz < 1)) && hz=1
 	sr=$hz; ((sr > W / 5)) && sr=$((W / 5)); ((sr < 1)) && sr=1
-	stars "$hz" 21
+	# Clouds first, so the sun sits in front of them and its stripes stay whole. The first
+	# two drift slowly, as a whole; the rest hold still. Near the sun they catch its light.
+	local n k cr cc cw ccol
+	n=$((W / 25 + 2))
+	for ((k = 0; k < n && hz >= 3; k++)); do
+		rnd; cr=$((RV % (hz - 2))); rnd; cw=$((8 + RV % 14)); rnd; cc=$((RV % (W + cw) - cw))
+		((k < 2)) && cc=$(((cc + AT / 2 + cw) % (W + cw) - cw)) # a column every other frame
+		dx=$((cc + cw / 2 - cx)); ((dx < 0)) && dx=$((-dx))
+		if ((dx < 3 * sr)); then ccol=$BMAG; elif ((dx < 6 * sr)); then ccol=$MAG; else ccol=$GRY; fi
+		cloud "$cr" "$cc" "$cw" "$ccol"
+	done
 	for ((r = hz - sr; r < hz; r++)); do
 		dy=$(((hz - r) * 2))
-		(((hz - r) <= sr / 2 && (hz - r) % 2 == 1)) && continue # the stripes
 		if ((r < hz - sr * 2 / 3)); then col=$BYEL; elif ((r < hz - sr / 3)); then col=$BRED; else col=$BMAG; fi
+		# The stripes are gaps in the sun, cleared so nothing behind shows through them.
+		(((hz - r) <= sr / 2 && (hz - r) % 2 == 1)) && col=""
 		for ((c = cx - 2 * sr; c <= cx + 2 * sr; c++)); do
 			dx=$((c - cx))
-			((dx * dx + dy * dy <= 4 * sr * sr)) && put $r $c "█" "$col"
+			((dx * dx + dy * dy <= 4 * sr * sr)) || continue
+			if [[ -n $col ]]; then put $r $c "█" "$col"; else put $r $c " " ""; fi
 		done
 	done
 	for ((c = 0; c < W; c++)); do put $hz $c "─" "$BMAG"; done
@@ -874,7 +904,7 @@ draw() {
 	vlen "${BAN[0]}"
 	local tw=$((IW - VLEN - 1))
 	if ((tw >= 8)); then
-		art "$tw" "$BH"
+		art "$tw" "$BH" still # beside the banner the scene holds still
 		for ((i = 0; i < BH; i++)); do row "${BAN[i]} ${ART[i]}"; done
 	else
 		for ((i = 0; i < BH; i++)); do row "${BAN[i]}"; done
@@ -1206,6 +1236,7 @@ if ((ROWS)); then
 	exit 0
 fi
 if ((ONCE)); then
+	TICK=${REVIVE_PANEL_TICK:-0} # tests draw particular frames of the artwork
 	gather
 	sleep 0.5 # CPU is measured between two looks
 	gather

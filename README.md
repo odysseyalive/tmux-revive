@@ -109,7 +109,7 @@ When a pane ssh's into another computer, the panel spots it and offers to link
 the agents there: **L** links it, **U** unlinks. Once linked, that computer's panes show up
 in the list too, grouped under its name.
 
-Every time it opens, one of seven pieces of old-school ANSI art fills whatever
+Every time it opens, one of five pieces of old-school ANSI art fills whatever
 space is left over, sized to your pane.
 
 ## Agents talking to each other
