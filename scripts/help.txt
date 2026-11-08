@@ -30,7 +30,7 @@ I like my agents working together. Revive lets any AI session talk to any other,
 = Talk to your servers too
 .art satellite
 Got agents on a remote server? I wanted mine right here with the rest.
-1. Open another terminal and ssh into the server. It has to log in with a key.
+1. Open another terminal and ssh into the server.
 2. Install tmux-revive there too, then start tmux.
 3. Back in this panel, press L to link it.
 
