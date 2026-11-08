@@ -477,7 +477,9 @@ scene_grid() { # a striped sun setting behind a neon floor, streaks of cloud in 
 		dy=$(((hz - r) * 2))
 		if ((r < hz - sr * 2 / 3)); then col=$BYEL; elif ((r < hz - sr / 3)); then col=$BRED; else col=$BMAG; fi
 		# The stripes are gaps in the sun, cleared so nothing behind shows through them.
-		(((hz - r) <= sr / 2 && (hz - r) % 2 == 1)) && col=""
+		# The row on the horizon is never a gap, so the sun sits on it; a sun too small for
+		# stripes (the banner's) has none.
+		((sr >= 4 && hz - r >= 2 && (hz - r) <= sr / 2 + 1 && (hz - r) % 2 == 0)) && col=""
 		for ((c = cx - 2 * sr; c <= cx + 2 * sr; c++)); do
 			dx=$((c - cx))
 			((dx * dx + dy * dy <= 4 * sr * sr)) || continue
