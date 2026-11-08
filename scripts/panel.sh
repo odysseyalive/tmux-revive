@@ -504,7 +504,6 @@ SHELLS=" sh bash zsh fish dash ksh tcsh csh nu "
 Q_RE='do you want to|would you like to|allow (once|always)|\(y/n\)|\[y/n\]|enter to select|esc to cancel|trust (this|the) folder|yes, proceed|press enter to continue'
 W_RE='esc to interrupt|ctrl\+c to interrupt'
 # The line a question's dialog starts under: a horizontal rule, or the top of a box.
-RULE_RE='^[[:space:]]*[╭┌]?[─━═╌┄-]{8,}'
 
 agent_kind() { # agent_kind ARGS -> claude/codex/cursor/crush/gemini or nothing (as agent-say does)
 	case " $1 " in
@@ -544,32 +543,6 @@ lines_state() { # lines_state ARRAY: the same, for a screen already read (a link
 	elif [[ $tail =~ $W_RE ]]; then echo working
 	else echo waiting; fi
 	shopt -u nocasematch
-}
-
-# question_block: the question at the bottom of the screen in L -> QB. It starts at the rule
-# (or box top) above the question's own line, else at the blank row above it, and runs to the
-# last row that isn't blank: the dialog alone, not the history scrolled above it.
-question_block() {
-	local i n=0 q=-1 end=-1 top=-1
-	QB=()
-	for ((i = ${#L[@]} - 1; i >= 0; i--)); do [[ ${L[i]} =~ ^[[:space:]]*$ ]] || { end=$i; break; }; done
-	((end >= 0)) || return 0
-	# The question's top line: the highest one that reads like a question, in the same rows
-	# screen_state looked at to call it asking.
-	shopt -s nocasematch
-	for ((i = end; i >= 0 && n < 12; i--)); do
-		[[ ${L[i]} =~ ^[[:space:]]*$ ]] && continue
-		((n++))
-		[[ ${L[i]} =~ $Q_RE ]] && q=$i
-	done
-	shopt -u nocasematch
-	((q < 0)) && q=$end
-	for ((i = q - 1; i >= 0 && i >= q - 30; i--)); do [[ ${L[i]} =~ $RULE_RE ]] && { top=$i; break; }; done
-	if ((top < 0)); then
-		top=0
-		for ((i = q - 1; i >= 0; i--)); do [[ ${L[i]} =~ ^[[:space:]]*$ ]] && { top=$((i + 1)); break; }; done
-	fi
-	QB=("${L[@]:top:end-top+1}")
 }
 
 # git in a pane's folder, which may be anyone's repo: its config must not get to run a
@@ -925,7 +898,7 @@ draw_panes() {
 
 kc() { printf '%s' "$BBLU[$B$BYEL$1$R$BBLU]$R$BWHT$2$R"; } # kc KEY LABEL: a key as the command bar shows it
 draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or the question it's asking
-	local -a L=() QB=()
+	local -a L=()
 	local id=${P_ID[SEL]:-} i end start shown=0 keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}}
 	if [[ ${P_STATE[SEL]:-} == asking ]]; then
 		draw_question "$1"
@@ -955,9 +928,9 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 draw_question() { # draw_question LINES
 	local id=${P_ID[SEL]:-} i start keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}}
 	if ((ANSWERING)); then
-		keys="$B${BMAG}keys go to $name$R  $(kc "Ctrl-]" " leaves")"
+		keys="$B${BMAG}keys go to $name$R  $(kc Tab " back to panes")  $(kc "Ctrl-]" " leaves")"
 	else
-		keys="$(kc ⏎ " answer")  $(kc J " open the chat")  "
+		keys="$(kc Tab " answer")  $(kc J " open the chat")  "
 		if ((FULL)); then keys+="$(kc x " back")"; else keys+=$(kc x " full view"); fi
 	fi
 	sectk "QUESTION · $name" "$keys" 5
@@ -967,12 +940,14 @@ draw_question() { # draw_question LINES
 		mapfile -t L < <(tm capture-pane -p -t "$id" 2>/dev/null)
 		for i in "${!L[@]}"; do clean "L[$i]"; done
 	fi
-	question_block
-	# Taller than the box: its bottom, where the choices are.
-	start=$((${#QB[@]} - $1))
+	# The dialog sits at the bottom of the agent's screen, so show that bottom row for row,
+	# exactly like the peek: the question, every choice and the footer, nothing cut out.
+	# (Cutting it at a rule lost the question: Claude Code draws one between its choices.)
+	local end=$((${#L[@]} - 1)) shown
+	start=$((end - $1 + 1))
 	((start < 0)) && start=0
-	for ((i = start; i < ${#QB[@]}; i++)); do row "$BMAG│$R $BWHT$(fld "${QB[i]}" $((IW - 2)))$R"; done
-	for ((i = ${#QB[@]} - start; i < $1; i++)); do row "$BMAG│$R"; done
+	for ((shown = end - start + 1; shown < $1; shown++)); do row "$BMAG│$R"; done
+	for ((i = start; i <= end; i++)); do row "$BMAG│$R $BWHT$(fld "${L[i]}" $((IW - 2)))$R"; done
 }
 
 messages() { # -> MSG lines for the message center
@@ -1100,7 +1075,9 @@ draw() {
 
 	messages
 	links_saves
-	local bottom=$(( ${#MSG[@]} > ${#SIDE[@]} ? ${#MSG[@]} : ${#SIDE[@]} ))
+	local bottom=$(( ${#MSG[@]} > ${#SIDE[@]} ? ${#MSG[@]} : ${#SIDE[@]} )) msgs=1
+	# A question needs every row it can get: the messages step aside until it's answered.
+	if [[ ${P_STATE[SEL]:-} == asking && ${P_STATE[SEL]:-} != self ]]; then msgs=0 bottom=-1; fi
 	# Fixed rows: frame 2, banner, section bars 3, column header 1, totals 1, keys 1. The peek
 	# matters more than the artwork: it takes about two thirds of the rest (14 rows or more
 	# when they're there) and the scene the others, unless that leaves the scene too little to
@@ -1117,7 +1094,9 @@ draw() {
 		# Rows with its title: 15 is the 14 it always had.
 		peek_h=$((avail * 2 / 3))
 		((peek_h < 15)) && peek_h=15
+		# A question takes all the room: its top (the question itself) must not be cut off.
 		((peek_h > avail || avail - peek_h < 4 || FULL)) && peek_h=$avail
+		[[ ${P_STATE[SEL]:-} == asking ]] && peek_h=$avail
 		avail=$((avail - peek_h))
 		draw_peek $((peek_h - 1))
 	fi
@@ -1130,7 +1109,7 @@ draw() {
 	for ((; avail > 0; avail--)); do row ""; done
 
 	LW=$(((IW - 3) * 3 / 5)) RW=$((IW - 3 - LW))
-	sect "MESSAGES" "LINKS · SAVES" "$((LW + 1))"
+	((msgs)) && sect "MESSAGES" "LINKS · SAVES" "$((LW + 1))"
 	for ((i = 0; i < bottom; i++)); do
 		l=${MSG[i]:-} r=${SIDE[i]:-}
 		vlen "$l"
@@ -1144,7 +1123,7 @@ draw() {
 
 	# Command bar.
 	local k=""
-	((!ANSWERING)) && [[ ${P_STATE[SEL]:-} == asking ]] && k="$B$BMAG[⏎]$R$B$BWHT answer$R  "
+	((!ANSWERING)) && [[ ${P_STATE[SEL]:-} == asking ]] && k="$B$BMAG[Tab]$R$B$BWHT answer$R  "
 	# Keys that can't act on the selected pane are faded: on a linked computer's pane there's
 	# nothing to rename here, and nothing to jump to unless a pane here is ssh'd there.
 	local off=" " rh=${P_HOST[SEL]:-} j
@@ -1165,7 +1144,7 @@ draw() {
 	((VLEN + 15 <= IW)) && k+="$GRY↑↓ 1-9 select$R"
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	# While answering every key goes to the agent, so the bar says that and how to stop.
-	((ANSWERING)) && k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Ctrl-]$R$BMAG leaves without sending anything$R"
+	((ANSWERING)) && k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Tab$R$BMAG back to the panes ·$R $B${BYEL}Ctrl-]$R$BMAG leaves$R"
 	line "$FRAME╠$(rep ═ $((W - 2)))╣$R"
 	row "$k"
 	local sig="$BLU▓▒░$R$GRY tmux-revive bbs · est. 2026 $R$BLU░▒▓$R"
@@ -1394,7 +1373,7 @@ answer() {
 		case $k in
 		$'\x1d') break ;;                    # Ctrl-]
 		"" | $'\r' | $'\n') TOKS=(Enter) ;;
-		$'\t') TOKS=(Tab) ;;
+		$'\t') why=tab; break ;;            # Tab: focus back to the panes
 		$'\x7f' | $'\b') TOKS=(BSpace) ;;
 		$'\e')
 			# A lone Esc is Escape; the arrows and the like arrive as sequences.
@@ -1433,6 +1412,7 @@ answer() {
 	trap 'exit 0' INT
 	case $why in
 	left) flash "left the question; nothing more was sent" ;;
+	tab) flash "back to the panes · Tab returns to the question" ;;
 	answered)
 		flash "${P_NAME[SEL]:-${P_LOC[SEL]:-the pane}} has its answer"
 		# Rows from over there asked for before this still say asking: they don't count now.
@@ -1523,7 +1503,7 @@ act() {
 	p | P) PEEK=$((!PEEK)) ;;
 	x | X) if ((FULL)); then FULL=0; else FULL=1 PEEK=1; fi ;; # the peek over the whole art, and back
 	c | C) FULL=0 ;;
-	enter) [[ ${P_STATE[SEL]:-} == asking ]] && answer ;;
+	enter | $'\t') [[ ${P_STATE[SEL]:-} == asking ]] && answer ;; # Tab: focus to the question
 	a | A)
 		SCENE=$(((SCENE + 1) % ${#SCENES[@]}))
 		flash "art: ${TITLES[SCENE]}" ;;

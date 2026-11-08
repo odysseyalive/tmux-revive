@@ -190,17 +190,24 @@ mkdir -p "$T/bin" && cp "$(command -v bash)" "$T/bin/codex"
 cat >"$T/ask.sh" <<'ASK'
 # A stand-in agent asking a question, as Claude Code draws one: history above, a rule, the
 # question and its choices. Every key it reads goes to OUT.keys; the answer to OUT.
-out=$1 sel=1
-opts=("Yes" "No" "Type something")
+out=$1 sel=1 n=6 typed=""
+opts=("Yes" "No" "Maybe" "Later" "Type something." "Chat about this")
 stty -icanon -echo
 show() {
 	clear
 	for i in $(seq 1 30); do echo "history line $i"; done
+	# Claude Code's real layout: a rule, the header and question, choices 1-5, ANOTHER rule
+	# before the last choice, then the footer. (A rule inside the dialog broke the old view.)
 	echo; printf '─%.0s' {1..50}; echo
-	echo " Bash command"; echo; echo "   rm -rf build"; echo
-	echo " Do you want to proceed?"
-	for i in 1 2 3; do if ((i == sel)); then echo " ❯ $i. ${opts[i-1]}"; else echo "   $i. ${opts[i-1]}"; fi; done
-	echo; echo " Esc to cancel"
+	echo " ☐ Cleanup"; echo; echo " Bash command:   rm -rf build"; echo " Do you want to proceed?"; echo
+	for i in 1 2 3 4 5 6; do
+		((i == 6)) && { printf '─%.0s' {1..50}; echo; }
+		label=${opts[i-1]}
+		((i == 5)) && [[ -n $typed ]] && label=$typed # typing on the free-text choice fills it in
+		if ((i == sel)); then echo " ❯ $i. $label"; else echo "   $i. $label"; fi
+		((i < 5)) && echo "      what choosing ${opts[i-1]} does"
+	done
+	echo; echo " Enter to select · ↑/↓ to navigate · Esc to cancel"
 }
 while :; do
 	show
@@ -209,15 +216,14 @@ while :; do
 	printf '%q\n' "$k" >>"$out.keys"
 	case $k in
 	$'\e[A') ((sel > 1)) && ((sel--)) ;;
-	$'\e[B') ((sel < 3)) && ((sel++)) ;;
+	$'\e[B') ((sel < n)) && ((sel++)) ;;
 	"") break ;;
+	$'\x7f' | $'\b') ((sel == 5)) && typed=${typed%?} ;;
+	*) ((sel == 5)) && [[ $k != $'\e'* ]] && typed+=$k ;; # as in Claude Code: type right in the dialog
 	esac
 done
-if ((sel == 3)); then
-	clear; stty icanon echo
-	printf '%s\n' "history" "" " Type your answer (Esc to cancel):"
-	IFS= read -r line
-	printf 'custom:%s\n' "$line" >"$out"
+if ((sel == 5)); then
+	printf 'custom:%s\n' "$typed" >"$out"
 else
 	printf 'picked:%s\n' "$sel" >"$out"
 fi
@@ -232,9 +238,22 @@ qhas() { local n; n=$(qscreen | grep -cF -- "$1"); ((n > 0)); }
 qbox() { qscreen | sed -n '/QUESTION · /,/ART · \|MESSAGES/p'; }
 wait_q 'asker'
 for _ in $(seq 1 20); do qscreen | grep -q '▶ asker' && break; tm send-keys -t work:qpanel Down; sleep 0.3; done
-check "a pane asking a question shows its question in place of the peek" "wait_q 'QUESTION · asker' && qbox | grep -c 'Do you want to proceed?' >/dev/null && qbox | grep -c '❯ 1. Yes' >/dev/null && qbox | grep -c 'rm -rf build' >/dev/null"
-check "only the dialog, not the history above it" "(( \$(qbox | grep -c 'history line') == 0 ))"
-check "Enter offers to answer it, J the chat" "qhas '[⏎] answer' && qhas '[J] open the chat'"
+check "a pane asking a question shows its question in place of the peek" "wait_q 'QUESTION · asker'"
+# All of it, as in Claude Code: the question, the first and the last choice, and the footer,
+# with the rule between choices 5 and 6 not cutting anything off.
+for want in 'Do you want to proceed?' 'rm -rf build' '❯ 1. Yes' '5. Type something.' '6. Chat about this' 'Enter to select'; do
+	check "the question view shows: $want" "(( \$(qbox | grep -cF -- '$want') > 0 ))"
+done
+lastrow() { tm capture-pane -p -t work:asker | tail -1 | sed 's/[[:space:]]*$//'; }
+boxrow() { qbox | grep '│' | tail -1 | sed 's/^║[^│]*│ \{0,1\}//; s/[[:space:]]*║$//; s/[[:space:]]*$//'; }
+check "its last row is the agent's last row" "[[ \"\$(boxrow)\" == \"\$(lastrow)\" ]]"
+check "Tab offers to answer it, J the chat" "qhas '[Tab] answer' && qhas '[J] open the chat'"
+check "the messages step aside while a question shows" "! qhas 'MESSAGES'"
+# Tab moves the focus into the question and back to the panes.
+tm send-keys -t work:qpanel Tab
+check "Tab moves the focus into the question" "wait_q 'ANSWERING asker' && qhas 'Tab back to the panes'"
+tm send-keys -t work:qpanel Tab
+check "and Tab brings it back to the panes, sending nothing" "wait_q 'Tab returns to the question' && ! qhas 'ANSWERING' && [[ ! -s $T/ans1.keys ]]"
 tm send-keys -t work:qpanel Enter
 check "Enter starts answering, and says how to leave" "wait_q 'ANSWERING asker' && qhas 'Ctrl-] leaves'"
 tm send-keys -t work:qpanel C-]
@@ -249,9 +268,8 @@ check "answered, the view goes back to the peek" "wait_q 'PEEK · asker' 30 && !
 tm respawn-pane -k -t work:asker "$T/bin/codex $T/ask.sh $T/ans2"
 wait_q 'QUESTION · asker' 30 >/dev/null
 tm send-keys -t work:qpanel Enter; wait_q 'ANSWERING asker' >/dev/null
-tm send-keys -t work:qpanel Down; sleep 0.4; tm send-keys -t work:qpanel Down; sleep 0.4
-tm send-keys -t work:qpanel Enter
-wait_q 'Type your answer' 15 >/dev/null
+for _ in 1 2 3 4; do tm send-keys -t work:qpanel Down; sleep 0.4; done
+wait_q '❯ 5. Type something.' 15 >/dev/null
 tm send-keys -t work:qpanel -l 'my custom answér'; sleep 0.3
 tm send-keys -t work:qpanel -l 'X'; sleep 0.3
 check "typed text shows in the question as it's typed" "wait_q 'my custom answérX' 15"
