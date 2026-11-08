@@ -854,9 +854,16 @@ wait_fq() { for _ in $(seq 1 ${2:-50}); do fq | grep -qF -- "$1" && return 0; sl
 wait_fq 'far-ask' 60 >/dev/null
 for _ in $(seq 1 25); do fq | grep -q '▶ far-ask' && break; tm send-keys -t work:farq Down; sleep 0.4; done
 check "a linked computer's question shows here" "wait_fq 'QUESTION · far-ask' && wait_fq 'Do you want to proceed?'"
+# Its highlighted choice sits on a band here too, before answering, once Enter starts it, and
+# after a key moves it over the link.
+fqcolor() { tm capture-pane -e -p -t work:farq | grep -F -- "$1" | head -1; }
+wait_fqband() { for _ in $(seq 1 ${2:-50}); do [[ $(fqcolor "$1") == *'44'* ]] && return 0; sleep 0.2; done; return 1; }
+check "a linked computer's highlighted choice sits on a band" "wait_fqband '❯ 1. Yes'"
 tm send-keys -t work:farq Enter; wait_fq 'ANSWERING far-ask' >/dev/null
+check "answering it, the highlighted choice is still on its band" "wait_fqband '❯ 1. Yes'"
 tm send-keys -t work:farq Down
 check "and its dialog follows the keys sent over the link" "wait_fq '❯ 2. No'"
+check "the band moves with the highlighted choice" "wait_fqband '❯ 2. No' && [[ \$(fqcolor '1. Yes') != *'44'* ]]"
 tm send-keys -t work:farq Enter
 check "and is answered from here" "for _ in \$(seq 1 40); do [[ -s $T/ans3 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans3 2>/dev/null) == picked:2 ]]"
 check "then its peek comes back" "wait_fq 'PEEK · far-ask' 100 && ! fq | grep -c 'ANSWERING' >/dev/null"
@@ -973,6 +980,37 @@ check "the link is made, and known_hosts has that key now" "wait_pw 'linked to p
 tm send-keys -t work:pwpanel q
 AGENT_SAY_SSH=$T/pwssh "$ROOT/bin/agent-say" unlink pw.example >/dev/null 2>&1
 tm kill-window -t work:pwssh 2>/dev/null
+# A slow link: each screen comes back 4 s after it was taken. A key sent while one is on its
+# way must not wait for that old screen and only then ask again (8 s): it asks at once.
+{
+	printf '#!/bin/bash\nfake=%q log=%q\n' "$T/fakessh" "$T/slowpeeks"
+	cat <<'EOF'
+[[ ${!#} == *' panel --peek '* ]] || exec "$fake" "$@"
+echo >>"$log"
+o=$(mktemp) || exit 1
+"$fake" "$@" >"$o"; st=$?
+sleep 4; cat "$o"; rm -f "$o"
+exit $st
+EOF
+} >"$T/slowssh"
+chmod +x "$T/slowssh"
+tmux -L "revive-panel-remote-$$" -f /dev/null new-window -d -t far -n slow "$T/bin/codex $T/ask.sh $T/ans7"
+tmux -L "revive-panel-remote-$$" -f /dev/null set-option -p -t far:slow @agent far-slow
+rm -f "$st/panel/far.example.rows" "$st/panel/"*.peek-*
+tm new-window -d -t work -n farq "env AGENT_SAY_SSH=$T/slowssh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+wait_fq 'far-slow' 60 >/dev/null
+for _ in $(seq 1 25); do fq | grep -q '▶ far-slow' && break; tm send-keys -t work:farq Down; sleep 0.4; done
+wait_fqband '❯ 1. Yes' 75 >/dev/null
+tm send-keys -t work:farq Enter; wait_fq 'ANSWERING far-slow' >/dev/null
+# Down just after a look has set off, so that look comes back with the screen before the key.
+n=$(wc -l <"$T/slowpeeks")
+for _ in $(seq 1 100); do (($(wc -l <"$T/slowpeeks") > n)) && break; sleep 0.05; done
+tm send-keys -t work:farq Down
+# Within 7 s of the key: one screen asked for after it (4 s and the asking), not two (8 s).
+band_within() { local end=$((${EPOCHREALTIME/./} + $1 * 1000000)); while ((${EPOCHREALTIME/./} < end)); do [[ $(fqcolor "$2") == *'44'* ]] && return 0; sleep 0.1; done; return 1; }
+check "on a slow link, the band follows a key without waiting out the screen already coming" "band_within 7 '❯ 2. No'"
+tm send-keys -t work:farq C-]; sleep 0.3; tm send-keys -t work:farq q; sleep 5
+check "the screen it didn't wait for is thrown away, not left behind" "! ls $st/panel/ | grep -cE 'peek-[0-9]+\\.' >/dev/null"
 
 rm -rf "$st/links/far.example" "$st/panel"
 tmux -L "revive-panel-remote-$$" -f /dev/null kill-server 2>/dev/null

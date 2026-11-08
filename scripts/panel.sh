@@ -913,6 +913,7 @@ peek_get() { # peek_get HOST %ID LINES FILE
 	# The id and count are checked before they go into a command line run over there.
 	[[ $2 =~ ^%[0-9]+$ && $3 =~ ^[0-9]{1,2}$ ]] || return 1
 	t=$(mktemp "$4.XXXXXX") || return 1
+	PEEK_TMP=$t # for peek_drop
 	remote_run "$1" "$REMOTE_PEEK_CMD '$2' $3" | head -c 65536 >"$t"
 	st=${PIPESTATUS[0]}
 	if ((st == 0 || st == 141)); then # 141: more than head would take, cut off
@@ -929,8 +930,21 @@ peek_fetch() { # peek_fetch HOST %ID LINES FILE [now]
 	[[ -n ${PFETCH_PID[$k]:-} ]] && kill -0 "${PFETCH_PID[$k]}" 2>/dev/null && return
 	[[ -n ${PFETCH_T[$k]:-} ]] && ((SECONDS - PFETCH_T[$k] < PEEK_EVERY)) && return
 	PFETCH_T[$k]=$SECONDS
-	peek_get "$1" "$2" "$3" "$4" &
+	# Told to stop (peek_drop), or hung up on (the panel quit), it still finishes asking (a trap
+	# waits for that), then throws the screen away instead of putting it in place.
+	(
+		trap 'rm -f "${PEEK_TMP:-}"; exit 0' TERM HUP
+		peek_get "$1" "$2" "$3" "$4"
+	) &
 	PFETCH_PID[$k]=$!
+}
+# peek_drop HOST %ID: a key was just sent there, so the screen being asked for now (asked
+# before the key landed) is out of date. It's dropped and the next look asks again at once;
+# waiting for it and only then asking left the choice a whole ask behind the keys.
+peek_drop() {
+	local k="$1 $2"
+	[[ -n ${PFETCH_PID[$k]:-} ]] && kill "${PFETCH_PID[$k]}" 2>/dev/null
+	PFETCH_PID[$k]="" PFETCH_T[$k]=""
 }
 remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or why it can't be shown
 	local h=${P_HOST[SEL]} id=${P_RID[SEL]:-} n=$1 f l
@@ -1880,6 +1894,7 @@ answer() {
 		esac
 		((${#TOKS[@]})) || continue
 		send_answer "${TOKS[@]}" || { why=failed; break; }
+		[[ -n $h ]] && peek_drop "$h" "$id"
 		sent=1 poll=12
 	done
 	ANSWERING=0 PEEK_EVERY=$REFRESH PREV=() ATOP=()
