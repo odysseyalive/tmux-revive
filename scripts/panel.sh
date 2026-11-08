@@ -6,6 +6,7 @@
 #   panel.sh            run it (redraws every couple of seconds)
 #   panel.sh --once     draw one frame to stdout and exit (tests, a quick look)
 #   panel.sh --rows     this computer's panes as rows for another computer's panel (over a link)
+#   panel.sh --peek %ID N   the last N lines of that pane's screen, for another computer's peek
 #
 # REVIVE_PANEL_POPUP=1 (set by @revive-panel-key) closes the panel after a jump, since a popup
 # would otherwise sit on top of the pane you jumped to.
@@ -13,9 +14,15 @@ set -uo pipefail
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-ONCE=0 ROWS=0
+ONCE=0 ROWS=0 PEEKMODE=0
 [[ ${1:-} == --once ]] && ONCE=1
 [[ ${1:-} == --rows ]] && ROWS=1
+if [[ ${1:-} == --peek ]]; then
+	# Asked for by another computer: nothing but a pane id and a line count gets through.
+	[[ ${2:-} =~ ^%[0-9]+$ && ${3:-} =~ ^[1-9][0-9]?$ ]] && (($3 <= 60)) ||
+		{ echo "usage: panel.sh --peek %PANE LINES (1-60)" >&2; exit 2; }
+	PEEKMODE=1 PEEK_ID=$2 PEEK_N=$3
+fi
 
 # Widths below are counted in characters, which needs a UTF-8 locale.
 if [[ $(locale charmap 2>/dev/null) != UTF-8 ]]; then
@@ -541,8 +548,8 @@ tree_ticks() { # tree_ticks PID...: CPU ticks used so far by these processes (Li
 	echo "$t"
 }
 
-# One record per pane, in these parallel arrays.
-P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=() P_HOST=()
+# One record per pane, in these parallel arrays. P_RID is a linked computer's own pane id.
+P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=() P_HOST=() P_RID=()
 P_GROUPS=0
 # ssh_dest ARGS -> the host an `ssh ...` command line connects to, as agent-say link takes it
 # (no user@, no port), or nothing. Options that take a value are skipped with their value.
@@ -570,7 +577,7 @@ gather() {
 		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu PPAR[$pid]=$ppid
 	done < <(ps -ww -eo pid=,ppid=,rss=,pcpu=,args= 2>/dev/null) # -ww: never cut to $COLUMNS
 	now=${EPOCHREALTIME:-$SECONDS}
-	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=() P_HOST=()
+	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=() P_HOST=() P_RID=()
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
 		clean loc cmd path name
 		# The pane's process tree, breadth-first, and the first agent in it.
@@ -618,7 +625,7 @@ gather() {
 				[[ -n $ssh ]] && break
 			done
 		fi
-		P_SSH+=("$ssh") P_HOST+=("")
+		P_SSH+=("$ssh") P_HOST+=("") P_RID+=("")
 		P_ID+=("$id") P_LOC+=("$loc") P_NAME+=("$name") P_STATE+=("$st")
 		P_DIR+=("$path") P_GIT+=("$(git_info "$path")") P_CPU+=("$cpu") P_MEM+=("$mem")
 	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
@@ -635,12 +642,14 @@ gather() {
 # the link already keeps) are shown instead.
 RDIR="$ASTATE/panel"
 REMOTE_ROWS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --rows'
-declare -A RFETCH_T=() RFETCH_PID=()
-fetch_rows() {
+REMOTE_PEEK_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --peek'
+declare -A RFETCH_T=() RFETCH_PID=() PFETCH_T=() PFETCH_PID=()
+remote_run() { # remote_run HOST COMMAND: run it on that computer over the link's ssh connection
 	# shellcheck disable=SC2086 # AGENT_SAY_SSH may carry its own arguments, as in agent-say
 	timeout 8 ${AGENT_SAY_SSH:-ssh} -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto \
-		-o "ControlPath=$ASTATE/ssh-%C" -o ControlPersist=120 "$1" "$REMOTE_ROWS_CMD" </dev/null 2>/dev/null
+		-o "ControlPath=$ASTATE/ssh-%C" -o ControlPersist=120 "$1" "$2" </dev/null 2>/dev/null
 }
+fetch_rows() { remote_run "$1" "$REMOTE_ROWS_CMD"; }
 remote_fetch() { # remote_fetch HOST [now]
 	local h=$1 f="$RDIR/$1.rows"
 	mkdir -p "$RDIR"
@@ -653,6 +662,50 @@ remote_fetch() { # remote_fetch HOST [now]
 	RFETCH_T[$h]=$SECONDS
 	(if fetch_rows "$h" >"$f.new"; then mv -f "$f.new" "$f"; else rm -f "$f.new"; fi) &
 	RFETCH_PID[$h]=$!
+}
+# The peek at a pane on a linked computer: its screen, asked for like the rows (in the
+# background, no more than once a refresh) and kept in $RDIR/HOST.peek-ID. A failed ask
+# (unreachable, or a tmux-revive there too old to answer) leaves HOST.peek-ID.fail instead.
+peek_get() { # peek_get HOST %ID LINES FILE
+	local st
+	# The id and count are checked before they go into a command line run over there.
+	[[ $2 =~ ^%[0-9]+$ && $3 =~ ^[0-9]{1,2}$ ]] || return 1
+	remote_run "$1" "$REMOTE_PEEK_CMD '$2' $3" | head -c 65536 >"$4.new"
+	st=${PIPESTATUS[0]}
+	if ((st == 0 || st == 141)); then # 141: more than head would take, cut off
+		mv -f "$4.new" "$4"; rm -f "$4.fail"
+	else
+		rm -f "$4.new" "$4"; : >"$4.fail"
+	fi
+}
+peek_fetch() { # peek_fetch HOST %ID LINES FILE [now]
+	local k="$1 $2"
+	mkdir -p "$RDIR"
+	if [[ ${5:-} == now ]]; then peek_get "$1" "$2" "$3" "$4"; return; fi
+	[[ -n ${PFETCH_PID[$k]:-} ]] && kill -0 "${PFETCH_PID[$k]}" 2>/dev/null && return
+	[[ -n ${PFETCH_T[$k]:-} ]] && ((SECONDS - PFETCH_T[$k] < REFRESH)) && return
+	PFETCH_T[$k]=$SECONDS
+	peek_get "$1" "$2" "$3" "$4" &
+	PFETCH_PID[$k]=$!
+}
+remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or why it can't be shown
+	local h=${P_HOST[SEL]} id=${P_RID[SEL]:-} n=$1 f l
+	L=("" "  on $h: no peek (update tmux-revive there)")
+	[[ ${P_STATE[SEL]:-} == unreachable ]] && L=("" "  on $h: can't be reached to peek")
+	[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $id =~ ^%[0-9]+$ ]] || return 0
+	((n > 60)) && n=60
+	f="$RDIR/$h.peek-${id#%}"
+	if ((ONCE)); then peek_fetch "$h" "$id" "$n" "$f" now; else peek_fetch "$h" "$id" "$n" "$f"; fi
+	if [[ -f $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
+		# Untrusted like the rows: control characters out, and only so many lines, so wide.
+		L=()
+		while IFS= read -r l || [[ -n $l ]]; do
+			clean l
+			L+=("${l:0:500}")
+		done < <(tail -n "$n" "$f")
+	elif [[ ! -e $f.fail ]]; then
+		L=("" "  on $h: asking for its screen...")
+	fi
 }
 remote_panes() {
 	local d h f id loc name app st folder git cpu mem agent got S=$'\x1f'
@@ -676,7 +729,7 @@ remote_panes() {
 				[[ $agent == 1 ]] || agent=0
 				P_ID+=("${name:+$name@$h}") P_LOC+=("${loc:0:20}") P_NAME+=("$name") P_APP+=("${app:0:12}")
 				P_STATE+=("$st") P_DIR+=("${folder:0:40}") P_GIT+=("${git:0:30}") P_CPU+=("$cpu") P_MEM+=("$mem")
-				P_AGENT+=("$agent") P_SSH+=("") P_HOST+=("$h")
+				P_AGENT+=("$agent") P_SSH+=("") P_HOST+=("$h") P_RID+=("$id")
 				got=1
 			done < <(head -n 200 "$f")
 		fi
@@ -687,7 +740,7 @@ remote_panes() {
 			while IFS= read -r name; do
 				[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || continue
 				P_ID+=("$name@$h") P_LOC+=("") P_NAME+=("$name") P_APP+=("") P_STATE+=("$st") P_DIR+=("")
-				P_GIT+=("") P_CPU+=(0) P_MEM+=(0) P_AGENT+=(0) P_SSH+=("") P_HOST+=("$h")
+				P_GIT+=("") P_CPU+=(0) P_MEM+=(0) P_AGENT+=(0) P_SSH+=("") P_HOST+=("$h") P_RID+=("")
 				got=1
 			done < <(head -n 200 "$d/names" 2>/dev/null)
 		fi
@@ -799,7 +852,7 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen
 	local id=${P_ID[SEL]:-} i end start shown=0
 	sect "PEEK · ${P_NAME[SEL]:-${P_LOC[SEL]:-}}"
 	if [[ -n ${P_HOST[SEL]:-} ]]; then
-		L=("" "  on ${P_HOST[SEL]}: open the panel there to peek at it")
+		remote_peek "$1"
 	elif [[ -n $id ]]; then
 		mapfile -t L < <(tm capture-pane -p -t "$id" 2>/dev/null)
 	fi
@@ -1247,6 +1300,19 @@ splash() {
 }
 
 # ------------------------------------------------------------------ main
+if ((PEEKMODE)); then
+	out=$(tm capture-pane -p -t "$PEEK_ID" 2>/dev/null) || exit 1
+	mapfile -t L <<<"$out"
+	for ((end = ${#L[@]} - 1; end >= 0; end--)); do [[ ${L[end]} =~ ^[[:space:]]*$ ]] || break; done
+	start=$((end - PEEK_N + 1))
+	((start < 0)) && start=0
+	for ((i = start; i <= end; i++)); do
+		l=${L[i]}
+		clean l
+		printf '%s\n' "$l"
+	done
+	exit 0
+fi
 if ((ROWS)); then
 	gather
 	sleep 0.3 # CPU is measured between two looks
@@ -1264,6 +1330,8 @@ if ((ONCE)); then
 	gather
 	sleep 0.5 # CPU is measured between two looks
 	gather
+	# Tests pick the selected pane by its id (name@host for a linked computer's).
+	for i in "${!P_ID[@]}"; do [[ -n ${REVIVE_PANEL_SEL:-} && ${P_ID[i]} == "$REVIVE_PANEL_SEL" ]] && SEL=$i; done
 	draw
 	exit 0
 fi

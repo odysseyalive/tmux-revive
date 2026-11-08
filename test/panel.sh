@@ -210,14 +210,25 @@ echo "other computers"
 tmux -L "revive-panel-remote-$$" -f /dev/null new-session -d -s far -x 120 -y 30 "bash --norc --noprofile"
 tmux -L "revive-panel-remote-$$" -f /dev/null split-window -d -t far "top -d 5"
 tmux -L "revive-panel-remote-$$" -f /dev/null set-option -p -t far:0.1 @agent far-top
+tmux -L "revive-panel-remote-$$" -f /dev/null set-option -p -t far:0.0 @agent far-sh
+tmux -L "revive-panel-remote-$$" -f /dev/null send-keys -t far:0.0 'echo far-marker-$((6 * 7))' Enter
 rsock=$(tmux -L "revive-panel-remote-$$" -f /dev/null display -p '#{socket_path}')
-cat >"$T/fakessh" <<EOF
-#!/bin/bash
-unset TMUX TMUX_PANE
-REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data exec bash $ROOT/scripts/panel.sh --rows
+# The remote command is the last argument; only the two panel commands are answered, and the
+# peek's id and count go through as plain arguments, never through a shell.
+{
+	printf '#!/bin/bash\nunset TMUX TMUX_PANE\nexport REVIVE_SOCKET=%q REVIVE_DIR=%q\npanel=%q\n' "$rsock" "$T/remote-data" "$ROOT/scripts/panel.sh"
+	cat <<'EOF'
+cmd=${!#}
+if [[ $cmd =~ \ panel\ --rows$ ]]; then exec bash "$panel" --rows
+elif [[ $cmd =~ \ panel\ --peek\ \'([^\']*)\'\ ([^ ]*)$ ]]; then exec bash "$panel" --peek "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+fi
+exit 127
 EOF
+} >"$T/fakessh"
+# An older tmux-revive over there: rows, but no --peek.
+printf '#!/bin/bash\n[[ ${!#} == *--rows ]] && exec %q "$@"\nexit 1\n' "$T/fakessh" >"$T/oldssh"
 printf '#!/bin/sh\nexit 255\n' >"$T/deadssh"
-chmod +x "$T/fakessh" "$T/deadssh"
+chmod +x "$T/fakessh" "$T/oldssh" "$T/deadssh"
 st=$(dirname "$AGENT_SAY_MAILBOX")
 mkdir -p "$st/links/far.example"; touch "$st/links/far.example/on"; printf 'far-top\nfar-two\n' >"$st/links/far.example/names"
 far() { tm run-shell "AGENT_SAY_SSH=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
@@ -226,6 +237,21 @@ check "panes are grouped by computer" "grep -q 'this computer' <<<\"\$out\" && g
 check "a linked computer's panes show with their state" "grep -q 'far-top *top *▸ running' <<<\"\$out\""
 check "and its shell panes too" "grep -A3 'FAR.EXAMPLE' <<<\"\$out\" | grep -q 'bash *· shell'"
 check "the whole frame still fits" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
+farsel() { tm run-shell "AGENT_SAY_SSH=$1 REVIVE_PANEL_SEL=$2 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
+peekbox() { sed -n '/PEEK · /,/ART · \|MESSAGES/p'; }
+out=$(farsel "$T/fakessh" far-sh@far.example | plain)
+check "the peek at a linked computer's pane shows its screen" "peekbox <<<\"\$out\" | grep -q '^║ *│ far-marker-42'"
+rm -f "$st/panel/far.example.peek-"*
+out=$(farsel "$T/oldssh" far-sh@far.example | plain)
+check "a tmux-revive there too old to peek says so" "grep -q 'far-sh' <<<\"\$out\" && peekbox <<<\"\$out\" | grep -qF 'on far.example: no peek (update tmux-revive there)'"
+rm -f "$st/panel/far.example.rows"
+out=$(farsel "$T/deadssh" far-top@far.example | plain)
+check "and an unreachable one has no peek either" "peekbox <<<\"\$out\" | grep -qF 'on far.example: no peek'"
+# --peek itself: only a pane id and a line count get through.
+rpanel() { REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data bash "$ROOT/scripts/panel.sh" "$@" 2>/dev/null; }
+check "--peek prints the pane's last lines" "rpanel --peek \"\$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.0 '#{pane_id}')\" 3 | grep -q '^far-marker-42$'"
+check "--peek turns away a bad pane id or count" "! rpanel --peek 'far:0.0' 3 && ! rpanel --peek '%0;touch $T/pwn' 3 && ! rpanel --peek %0 0 && ! rpanel --peek %0 61 && ! rpanel --peek %0 && [[ ! -e $T/pwn ]]"
+check "--peek at a pane that isn't there fails" "! rpanel --peek %999 5"
 rm -f "$st/panel/far.example.rows"
 out=$(far "$T/deadssh")
 check "if it can't be asked, the link's names show instead" "grep -q 'far-two *◌ linked' <<<\"\$out\""
@@ -235,6 +261,21 @@ printf '#!/bin/sh\ncat %s\n' "$T/hostile" >"$T/hostilessh"; chmod +x "$T/hostile
 rm -f "$st/panel/far.example.rows"
 out=$(tm run-shell "AGENT_SAY_SSH=$T/hostilessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
 check "rows from the other side are cleaned and checked" "grep -q 'evil' <<<\"\$out\" && ! grep -q \$'\\e]52' <<<\"\$out\" && ! grep -q 'pwned' <<<\"\$out\" && ! grep -q 'not a row' <<<\"\$out\""
+# A hostile peek: escape sequences, a huge line, far too many lines.
+python3 - "$T/hostilepeek" <<'PY2'
+import sys
+with open(sys.argv[1], 'w', encoding='utf-8') as f:
+    for n in range(500):
+        f.write(f'line-{n}\n')
+    f.write('top\x1b]52;c;aGk=\x07\x1b[2Jbottom\x9b31m-end\n')
+    f.write('W' * 200000 + '\n')
+PY2
+printf '#!/bin/bash\nif [[ ${!#} == *--peek* ]]; then cat %q; else cat %q; fi\n' "$T/hostilepeek" "$T/hostile" >"$T/hostilessh"
+rm -f "$st/panel/far.example.rows" "$st/panel/far.example.peek-"*
+out=$(farsel "$T/hostilessh" evil@far.example)
+bare=$(sed 's/\x1b\[[0-9;]*m//g' <<<"$out")
+check "a peek from the other side is cleaned" "peekbox <<<\"\$bare\" | grep -qF 'top]52;c;aGk=[2Jbottom31m-end' && ! LC_ALL=C grep -q '[[:cntrl:]]' <<<\"\$bare\""
+check "and capped: no line past the frame, no more lines than the box" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$bare\") == 1 ]] && (( \$(peekbox <<<\"\$bare\" | grep -c '│') <= 14 )) && [[ \$(stat -c %s $st/panel/far.example.peek-9 2>/dev/null || echo 0) -le 65536 ]]"
 # Live: select a pane on the linked computer, and the keys that can't act on it fade.
 rm -f "$st/panel/far.example.rows"
 tm new-window -d -t work -n farpanel "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
@@ -243,6 +284,7 @@ for _ in $(seq 1 60); do farscreen | grep -q 'far-top' && break; sleep 0.25; don
 for _ in $(seq 1 20); do farscreen | grep -q '▶ far-top' && break; tm send-keys -t work:farpanel Down; sleep 0.4; done
 bar() { tm capture-pane -e -p -t work:farpanel | grep -F 'ump' | tail -1; }
 grey=$'\e[90m[J]ump' lit=$'\e[93mS'
+check "its peek tracks that pane's screen live" "for _ in \$(seq 1 30); do farscreen | sed -n '/PEEK · far-top/,\$p' | grep -q 'load average' && break; sleep 0.3; done; farscreen | sed -n '/PEEK · far-top/,\$p' | grep -q 'load average'"
 check "on a linked computer's pane, J and N fade" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\" && bar | grep -qF $'\\e[90m[N]ame'"
 check "while keys that still work stay lit" "bar | grep -qF \"\$lit\""
 tm send-keys -t work:farpanel 1
