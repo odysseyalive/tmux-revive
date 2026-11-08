@@ -75,19 +75,21 @@ BGBLU="$e[44m"
 FRAME="$BLU"
 
 # ------------------------------------------------------------------ drawing
-rep() { local s; printf -v s '%*s' "$2" ''; printf '%s' "${s// /$1}"; } # rep CHAR N
-fld() { # fld TEXT WIDTH: plain text cut or padded to exactly WIDTH characters
+# The helpers a frame is built from leave their result in a variable named after them (REP,
+# FLD, PADV...) rather than printing it: a $( ) costs a fork, and a frame took hundreds.
+rep() { printf -v REP '%*s' "$2" ''; REP=${REP// /$1}; } # rep CHAR N -> REP
+fld() { # fld TEXT WIDTH -> FLD: plain text cut or padded to exactly WIDTH characters
 	local s=${1:0:$2}
-	printf '%s%*s' "$s" $(($2 - ${#s})) ''
+	printf -v FLD '%s%*s' "$s" $(($2 - ${#s})) ''
 }
 vlen() { # visible length of a string holding colour codes -> VLEN
 	local s=$1
 	while [[ $s =~ $e\[[0-9\;]*m ]]; do s=${s//"${BASH_REMATCH[0]}"/}; done
 	VLEN=${#s}
 }
-padv() { # padv TEXT WIDTH: a coloured string padded (or cut) to WIDTH visible characters
+padv() { # padv TEXT WIDTH -> PADV: a coloured string padded (or cut) to WIDTH visible characters
 	vlen "$1"
-	if ((VLEN > $2)); then trim_colored "$1" "$2"; else printf '%s%*s' "$1" $(($2 - VLEN)) ''; fi
+	if ((VLEN > $2)); then trim_colored "$1" "$2"; PADV=$TRIM; else printf -v PADV '%s%*s' "$1" $(($2 - VLEN)) ''; fi
 }
 # Folder and pane names, process names, mail from linked machines and ssh errors can carry
 # escape sequences (an OSC 52 clipboard write, a faked screen). clean drops C0, DEL and C1
@@ -103,30 +105,41 @@ clean() { # clean VAR...
 }
 OUT=()
 line() { OUT+=("$1"); }
-row() { # row CONTENT: one line inside the frame, cut or padded to the inner width
-	local c=$1
-	vlen "$c"
-	((VLEN > IW)) && { c=$(trim_colored "$c" "$IW"); VLEN=$IW; }
-	line "$FRAME║$R $c$(rep ' ' $((IW - VLEN))) $FRAME║$R"
+row() { # row CONTENT [WIDTH]: one line inside the frame, cut or padded to the inner width.
+	# A row whose visible width is known already (the artwork, a peek line) says so, and isn't
+	# measured again: measuring a row of many colours is most of what drawing it costs.
+	local c=$1 pad
+	if [[ -n ${2:-} ]]; then VLEN=$2; else vlen "$c"; fi
+	((VLEN > IW)) && { trim_colored "$c" "$IW"; c=$TRIM VLEN=$IW; }
+	printf -v pad '%*s' $((IW - VLEN)) ''
+	line "$FRAME║$R $c$pad $FRAME║$R"
 }
 # A section title on a solid blue band that fades into the black on both sides: shading as
 # a short transition between two colours, the way the artpack groups used it.
 # A question waiting on you gets the band in magenta, the colour of the asking state.
-tab() { local c=${2:-4}; printf '%s' "$e[3${c}m░▒▓$e[4${c}m$B$BWHT $1 $R$e[3${c}m▓▒░$R"; } # tab TITLE [COLOUR 0-7]
+tab() { local c=${2:-4}; TAB="$e[3${c}m░▒▓$e[4${c}m$B$BWHT $1 $R$e[3${c}m▓▒░$R"; } # tab TITLE [COLOUR 0-7] -> TAB
 sectk() { # sectk TITLE KEYS [COLOUR]: a divider with a title, and the keys for that section at its right end
-	local t="$FRAME╠═$(tab "$1" "${3:-4}")" a
+	local t a
+	tab "$1" "${3:-4}"
+	t="$FRAME╠═$TAB"
 	vlen "$t"; a=$VLEN
 	vlen "$2"
-	line "$t$FRAME$(rep ═ $((W - 5 - a - VLEN)))$R $2 $FRAME══╣$R"
+	rep ═ $((W - 5 - a - VLEN))
+	line "$t$FRAME$REP$R $2 $FRAME══╣$R"
 }
 sect() { # sect TITLE [RIGHT-TITLE SPLIT-AT]: a divider carrying section titles
-	local t="$FRAME╠═$(tab "$1")"
+	local t
+	tab "$1"
+	t="$FRAME╠═$TAB"
 	if [[ -n ${2:-} ]]; then
 		vlen "$t"
-		t+="$FRAME$(rep ═ $(($3 + 2 - VLEN)))╤═$(tab "$2")"
+		rep ═ $(($3 + 2 - VLEN))
+		tab "$2"
+		t+="$FRAME$REP╤═$TAB"
 	fi
 	vlen "$t"
-	line "$t$FRAME$(rep ═ $((W - 1 - VLEN)))╣$R"
+	rep ═ $((W - 1 - VLEN))
+	line "$t$FRAME$REP╣$R"
 }
 
 # Block letters for the banner, three rows each.
@@ -193,17 +206,20 @@ monitor() { # monitor WORKING ASKING AGENTS -> MON[0..5]: a little CRT, its scre
 	if (($2)); then msg="$2 NEED YOU" col="$B$BMAG$BLINK"
 	elif (($1)); then msg="$1 working" col=$BYEL
 	else msg="$3 AI idle" col=$BGRN; fi
+	fld " $OSP$cur" 11
+	cur=$FLD
+	fld " $msg" 11
 	MON=(
 		"$g▄▄▄▄▄▄▄▄▄▄▄▄▄$R"
-		"$g█$R$BGRN$(fld " $OSP$cur" 11)$R$g█$R"
-		"$g█$R$col$(fld " $msg" 11)$R$g█$R"
+		"$g█$R$BGRN$cur$R$g█$R"
+		"$g█$R$col$FLD$R$g█$R"
 		"$g▀▀▀▀▀▀▀▀▀▀▀▀▀$R"
 		"$g     ▄█▄     $R"
 		"$g  ▀▀▀▀▀▀▀▀▀  $R"
 	)
 }
 
-spark() { # spark WIDTH: CPU history as a ▁▂▃▅▇ graph, newest on the right
+spark() { # spark WIDTH -> SPARK: CPU history as a ▁▂▃▅▇ graph, newest on the right
 	local w=$1 i v max=10 lvl out="" bars=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
 	local -a h=("${CPU_HIST[@]: -$w}")
 	for v in "${h[@]}"; do ((v > max)) && max=$v; done
@@ -213,7 +229,7 @@ spark() { # spark WIDTH: CPU history as a ▁▂▃▅▇ graph, newest on the r
 		if ((lvl <= 1)); then out+="$BLU"; elif ((lvl <= 3)); then out+="$BBLU"; elif ((lvl <= 5)); then out+="$BCYN"; else out+="$BYEL"; fi
 		out+=${bars[lvl]}
 	done
-	printf '%s' "$out$R"
+	SPARK=$out$R
 }
 CPU_HIST=()
 
@@ -268,7 +284,7 @@ twinkle() { # twinkle N ROWS: N stars in the top ROWS rows that take turns shini
 }
 declare -A ART_MEMO=()
 art() { # art WIDTH HEIGHT [still] -> ART rows of the current scene; "still" stops its animation
-	local k
+	local k rows
 	if [[ ${3:-} == still ]]; then AT=0; else AT=$TICK; fi
 	# The same frame again (answering a question redraws every 0.3 s) is kept, not redrawn.
 	k="$SCENE $1 $2 $AT"
@@ -278,7 +294,8 @@ art() { # art WIDTH HEIGHT [still] -> ART rows of the current scene; "still" sto
 	((ART_W > 0 && ART_H > 0)) && "scene_${SCENES[SCENE]}"
 	emit
 	((${#ART_MEMO[@]} > 6)) && ART_MEMO=()
-	ART_MEMO[$k]=$(printf '%s\n' "${ART[@]}")
+	printf -v rows '%s\n' "${ART[@]}"
+	ART_MEMO[$k]=${rows%$'\n'}
 }
 
 scene_city() { # towers with lit windows under the stars; one star and two windows change
@@ -501,20 +518,20 @@ scene_grid() { # a striped sun setting behind a neon floor, streaks of cloud in 
 	done
 }
 
-meter() { # meter PERCENT -> five shaded cells, retro style
+meter() { # meter PERCENT -> METER: five shaded cells, retro style
 	local p=${1%.*} out="" i lvl
 	p=${p:-0}
 	for ((i = 0; i < 5; i++)); do
 		lvl=$((p - i * 20))
 		if ((lvl >= 20)); then out+="█"; elif ((lvl >= 13)); then out+="▓"; elif ((lvl >= 7)); then out+="▒"; elif ((lvl > 0)); then out+="░"; else out+="·"; fi
 	done
-	printf '%s' "$out"
+	METER=$out
 }
-human() { # KB -> 412M / 1.2G
+human() { # KB -> HUMAN: 412M / 1.2G
 	local k=$1
-	if ((k >= 1048576)); then printf '%d.%dG' $((k / 1048576)) $((k % 1048576 * 10 / 1048576))
-	elif ((k >= 1024)); then printf '%dM' $((k / 1024))
-	else printf '%dK' "$k"; fi
+	if ((k >= 1048576)); then printf -v HUMAN '%d.%dG' $((k / 1048576)) $((k % 1048576 * 10 / 1048576))
+	elif ((k >= 1024)); then printf -v HUMAN '%dM' $((k / 1024))
+	else printf -v HUMAN '%dK' "$k"; fi
 }
 
 # ------------------------------------------------------------------ gathering
@@ -949,18 +966,22 @@ outside_ssh() {
 
 # ------------------------------------------------------------------ sections
 SEL=0 SEL_ID="" PEEK=${REVIVE_PANEL_PEEK:-1} FULL=0 ANSWERING=0 FLASH="" FLASH_T=0 TICK=0
+# nav: this frame only moves the selection. Then the messages, links and saves (MSG, SIDE) are
+# kept from the last frame, unless MSG_OLD says they're due a look (new panes were gathered,
+# or they were hidden). TCOLS and TLINES: the terminal's size, asked again with the panes.
+nav=0 MSG=() SIDE=() MSG_OLD=1 TCOLS="" TLINES=""
 SPIN=(▖ ▘ ▝ ▗)
 
-state_cell() { # coloured status, 18 characters wide
+state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
 	case $1 in
-	asking) printf '%s' "$B$BMAG$BLINK?$R$B$BMAG NEEDS ANSWER    $R" ;;
-	working) printf '%s' "$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
-	waiting) printf '%s' "$BGRN◆ WAITING ON YOU  $R" ;;
-	shell) printf '%s' "$GRY· shell           $R" ;;
-	self) printf '%s' "$BBLU✦ this panel      $R" ;;
-	linked) printf '%s' "$GRY◌ linked          $R" ;;
-	unreachable) printf '%s' "$BRED◌ unreachable     $R" ;;
-	*) printf '%s' "$CYN▸ running         $R" ;;
+	asking) CELL="$B$BMAG$BLINK?$R$B$BMAG NEEDS ANSWER    $R" ;;
+	working) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
+	waiting) CELL="$BGRN◆ WAITING ON YOU  $R" ;;
+	shell) CELL="$GRY· shell           $R" ;;
+	self) CELL="$BBLU✦ this panel      $R" ;;
+	linked) CELL="$GRY◌ linked          $R" ;;
+	unreachable) CELL="$BRED◌ unreachable     $R" ;;
+	*) CELL="$CYN▸ running         $R" ;;
 	esac
 }
 
@@ -985,9 +1006,17 @@ draw_panes() {
 	v=$((13 - GW < NW - 10 ? 13 - GW : NW - 10)); ((v > 0)) && NW=$((NW - v)) GW=$((GW + v))
 	((GW < 13)) && wide=0 NW=$((IW - 66))
 	# Built from the same widths as the rows below, so the columns line up.
-	local hdr="$(fld ' #' 6)$(fld NAME $((NW + 1)))$(fld APP 10)$(fld STATE 18)"
-	((wide)) && hdr+="$(fld FOLDER $((FW + 1)))$(fld GIT $((GW + 1)))"
-	hdr+="$(fld CPU 13)   MEM  $(fld 'CTX LEFT' 10)"
+	local hdr num
+	fld ' #' 6; hdr=$FLD
+	fld NAME $((NW + 1)); hdr+=$FLD
+	fld APP 10; hdr+=$FLD
+	fld STATE 18; hdr+=$FLD
+	if ((wide)); then
+		fld FOLDER $((FW + 1)); hdr+=$FLD
+		fld GIT $((GW + 1)); hdr+=$FLD
+	fi
+	fld CPU 13; hdr+="$FLD   MEM  "
+	fld 'CTX LEFT' 10; hdr+=$FLD
 	row "$GRY$hdr$R"
 	local group="-"
 	for ((i = 0; i < n; i++)); do
@@ -1018,31 +1047,48 @@ draw_panes() {
 		cells="$key "
 		if ((i == SEL)); then mark="$BYEL▶$R"; else mark=" "; fi
 		cells+="$mark "
-		if ((i == SEL)); then cells+="$REV$BCYN$(fld "$name" "$NW")$R "; else cells+="$BWHT$(fld "$name" "$NW")$R "; fi
-		if ((P_AGENT[i])); then cells+="$BCYN$(fld "${P_APP[i]}" 9)$R "; else cells+="$CYN$(fld "${P_APP[i]}" 9)$R "; fi
-		cells+="$(state_cell "${P_STATE[i]}")"
+		fld "$name" "$NW"
+		if ((i == SEL)); then cells+="$REV$BCYN$FLD$R "; else cells+="$BWHT$FLD$R "; fi
+		fld "${P_APP[i]}" 9
+		if ((P_AGENT[i])); then cells+="$BCYN$FLD$R "; else cells+="$CYN$FLD$R "; fi
+		state_cell "${P_STATE[i]}"
+		cells+=$CELL
 		if ((wide)); then
-			cells+="$BBLU$(fld "$folder" "$FW")$R "
-			if [[ $git == *\* ]]; then cells+="$BYEL$(fld "$git" "$GW")$R "; else cells+="$GRN$(fld "$git" "$GW")$R "; fi
+			fld "$folder" "$FW"
+			cells+="$BBLU$FLD$R "
+			fld "$git" "$GW"
+			if [[ $git == *\* ]]; then cells+="$BYEL$FLD$R "; else cells+="$GRN$FLD$R "; fi
 		fi
 		# Names-only rows from a link have nothing measured: leave CPU and memory blank.
 		if [[ ${P_STATE[i]} != linked && ${P_STATE[i]} != unreachable ]]; then
-			cells+="$BCYN$(meter "${P_CPU[i]}")$R $(printf '%4s%%' "${P_CPU[i]}")  $(printf '%6s' "$(human "${P_MEM[i]}")")"
-			cells+="  $(ctx_cell "${P_CTX[i]}" "${P_AGENT[i]}")"
+			meter "${P_CPU[i]}"
+			human "${P_MEM[i]}"
+			printf -v num '%4s%%  %6s' "${P_CPU[i]}" "$HUMAN"
+			cells+="$BCYN$METER$R $num"
+			ctx_cell "${P_CTX[i]}" "${P_AGENT[i]}"
+			cells+="  $CTX_CELL"
 		fi
 		row "$cells"
 	done
 	((n)) || row "$GRY  no tmux panes found$R"
 }
 
-ctx_cell() { # ctx_cell PERCENT AGENT: context left as a meter, red as it runs out; a dash for
-	# an agent that keeps no count the panel can read, nothing for anything else
+ctx_cell() { # ctx_cell PERCENT AGENT -> CTX_CELL: context left as a meter, red as it runs out; a
+	# dash for an agent that keeps no count the panel can read, nothing for anything else
 	local c
-	if [[ -z $1 ]]; then (($2)) && printf '%s' "$GRY·····    –$R"; return 0; fi
+	CTX_CELL=""
+	if [[ -z $1 ]]; then (($2)) && CTX_CELL="$GRY·····    –$R"; return 0; fi
 	if (($1 <= 15)); then c=$BRED; elif (($1 <= 40)); then c=$BYEL; else c=$BGRN; fi
-	printf '%s' "$c$(meter "$1")$R $(printf '%3s%%' "$1")"
+	meter "$1"
+	printf -v CTX_CELL '%s %3s%%' "$c$METER$R" "$1"
 }
-kc() { printf '%s' "$BBLU[$B$BYEL$1$R$BBLU]$R$BWHT$2$R"; } # kc KEY LABEL: a key as the command bar shows it
+# kc KEY LABEL -> KC: a key as the command bar shows it. kcs KEY LABEL...: several, two spaces apart
+kc() { KC="$BBLU[$B$BYEL$1$R$BBLU]$R$BWHT$2$R"; }
+kcs() {
+	local k=""
+	while (($# >= 2)); do kc "$1" "$2"; k+="${k:+  }$KC"; shift 2; done
+	KC=$k
+}
 draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or the question it's asking
 	local -a L=()
 	local id=${P_ID[SEL]:-} i end start shown=0 keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}}
@@ -1050,8 +1096,8 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 		draw_question "$1"
 		return
 	fi
-	if ((FULL)); then keys="$(kc x " back")  $(kc c " collapse")"; else keys=$(kc x " full view"); fi
-	sectk "PEEK · $name" "$keys"
+	if ((FULL)); then kcs x " back" c " collapse"; else kc x " full view"; fi
+	sectk "PEEK · $name" "$KC"
 	if [[ -n ${P_HOST[SEL]:-} ]]; then
 		remote_peek "$1"
 	elif [[ -n $id ]]; then
@@ -1065,7 +1111,7 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 	start=$((end - $1 + 1))
 	((start < 0)) && start=0
 	for ((shown = end - start + 1; shown < $1; shown++)); do row "$GRY│$R"; done
-	for ((i = start; i <= end; i++)); do row "$GRY│$R $DIM$(fld "${L[i]}" $((IW - 2)))$R"; done
+	for ((i = start; i <= end; i++)); do fld "${L[i]}" $((IW - 2)); row "$GRY│$R $DIM$FLD$R" "$IW"; done
 }
 
 # The question the selected pane is asking, in place of its peek: only the dialog at the
@@ -1074,10 +1120,13 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 draw_question() { # draw_question LINES
 	local id=${P_ID[SEL]:-} i start keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}}
 	if ((ANSWERING)); then
-		keys="$B${BMAG}keys go to $name$R  $(kc Tab " back to panes")  $(kc "Ctrl-]" " leaves")"
+		kcs Tab " back to panes" "Ctrl-]" " leaves"
+		keys="$B${BMAG}keys go to $name$R  $KC"
 	else
-		keys="$(kc Tab " answer")  $(kc J " open the chat")  "
-		if ((FULL)); then keys+="$(kc x " back")"; else keys+=$(kc x " full view"); fi
+		kcs Tab " answer" J " open the chat"
+		keys="$KC  "
+		if ((FULL)); then kc x " back"; else kc x " full view"; fi
+		keys+=$KC
 	fi
 	sectk "QUESTION · $name" "$keys" 5
 	if [[ -n ${P_HOST[SEL]:-} ]]; then
@@ -1094,7 +1143,7 @@ draw_question() { # draw_question LINES
 	((start < 0)) && start=0
 	question_parts
 	for ((shown = end - start + 1; shown < $1; shown++)); do row "$BMAG│$R"; done
-	for ((i = start; i <= end; i++)); do row "$BMAG│$R ${QSTYLE[i]:-$BWHT}$(fld "${L[i]}" $((IW - 2)))$R"; done
+	for ((i = start; i <= end; i++)); do fld "${L[i]}" $((IW - 2)); row "$BMAG│$R ${QSTYLE[i]:-$BWHT}$FLD$R" "$IW"; done
 }
 
 # question_parts: a colour for each line of L by what it is, so the question stands out:
@@ -1216,7 +1265,8 @@ links_saves() { # -> SIDE lines: saves, then links
 
 draw() {
 	local cols lines n i LW RW avail peek_h=0 counts w=0 a=0 s=0 l r
-	cols=$(tput cols 2>/dev/null || echo 100) lines=$(tput lines 2>/dev/null || echo 40)
+	[[ -n $TCOLS ]] || TCOLS=$(tput cols 2>/dev/null || echo 100) TLINES=$(tput lines 2>/dev/null || echo 40)
+	cols=$TCOLS lines=$TLINES
 	((ONCE)) && cols=${COLUMNS:-$cols} lines=${LINES:-$lines}
 	W=$((cols < 80 ? 80 : cols)) IW=$((W - 4))
 	OUT=()
@@ -1227,28 +1277,34 @@ draw() {
 	done
 
 	# Banner: block letters, a little CRT and the board's details. The big one when there's room.
-	line "$FRAME╔$(rep ═ $((W - 2)))╗$R"
-	local BH=3 total=0 BAN=()
+	rep ═ $((W - 2))
+	line "$FRAME╔$REP╗$R"
+	local BH=3 total=0 BAN=() now
 	if ((lines - n >= 30)); then
 		BH=6
 		monitor "$w" "$a" "$s"
+		rep ─ 25
+		printf -v now '%(%a %H:%M:%S)T' -1
 		local tag=("$BBLU░▒▓$R$B$BWHT T M U X $R$BBLU▓▒░$R" "$B${BCYN}C O N T R O L   P A N E L$R"
-			"$GRY$(rep ─ 25)$R" "$GRY node   $BWHT$HOST$R" "$GRY time   $BWHT$(date '+%a %H:%M:%S')$R"
+			"$GRY$REP$R" "$GRY node   $BWHT$HOST$R" "$GRY time   $BWHT$now$R"
 			"$GRY sysop  $BWHT${USER:-you}$GRY · $n panes · $s agents$R")
 		for i in 0 1 2 3 4 5; do
-			if ((IW >= 100)); then BAN[i]=" ${BIG_ROWS[i]}  ${MON[i]}   $(padv "${tag[i]}" 36)"; else BAN[i]=" ${BIG_ROWS[i]}  $(padv "${tag[i]}" 36)"; fi
+			padv "${tag[i]}" 36
+			if ((IW >= 100)); then BAN[i]=" ${BIG_ROWS[i]}  ${MON[i]}   $PADV"; else BAN[i]=" ${BIG_ROWS[i]}  $PADV"; fi
 		done
 	else
-		local tag=("$BBLU░▒▓$R$B$BWHT T M U X $R$BBLU▓▒░$R" "$B${BCYN}C O N T R O L   P A N E L$R" "$GRY node $BWHT$HOST$GRY · $(date +%H:%M:%S) · $n panes · $s agents$R")
+		printf -v now '%(%H:%M:%S)T' -1
+		local tag=("$BBLU░▒▓$R$B$BWHT T M U X $R$BBLU▓▒░$R" "$B${BCYN}C O N T R O L   P A N E L$R" "$GRY node $BWHT$HOST$GRY · $now · $n panes · $s agents$R")
 		local shade=("$BCYN" "$CYN" "$BBLU")
-		for i in 0 1 2; do BAN[i]="  ${shade[i]}$B${BANNER[i]}$R   $(padv "${tag[i]}" 60)"; done
+		for i in 0 1 2; do padv "${tag[i]}" 60; BAN[i]="  ${shade[i]}$B${BANNER[i]}$R   $PADV"; done
 	fi
 	# Whatever width is left beside the banner shows the scene.
 	vlen "${BAN[0]}"
 	local tw=$((IW - VLEN - 1))
 	if ((tw >= 8)); then
 		art "$tw" "$BH" still # beside the banner the scene holds still
-		for ((i = 0; i < BH; i++)); do row "${BAN[i]} ${ART[i]}"; done
+		# Every banner row is as wide as the first (the letters, the CRT and the padded details).
+		for ((i = 0; i < BH; i++)); do row "${BAN[i]} ${ART[i]}" "$IW"; done
 	else
 		for ((i = 0; i < BH; i++)); do row "${BAN[i]}"; done
 	fi
@@ -1262,13 +1318,18 @@ draw() {
 	CPU_HIST+=("$total")
 	((${#CPU_HIST[@]} > 200)) && CPU_HIST=("${CPU_HIST[@]: -200}")
 	vlen "$counts"
-	row "$GRY cpu $R$(spark $((IW - 8 - VLEN)))  $counts"
+	spark $((IW - 8 - VLEN))
+	row "$GRY cpu $R$SPARK  $counts"
 
-	messages
-	links_saves
-	local bottom=$(( ${#MSG[@]} > ${#SIDE[@]} ? ${#MSG[@]} : ${#SIDE[@]} )) msgs=1
-	# A question needs every row it can get: the messages step aside until it's answered.
-	if [[ ${P_STATE[SEL]:-} == asking && ${P_STATE[SEL]:-} != self ]]; then msgs=0 bottom=-1; fi
+	# A question needs every row it can get: the messages step aside until it's answered, and
+	# aren't looked at meanwhile. Moving the selection can't change them, so they're kept.
+	local bottom=-1 msgs=0
+	if [[ ${P_STATE[SEL]:-} == asking ]]; then
+		MSG_OLD=1
+	else
+		((nav && !MSG_OLD)) || { messages; links_saves; MSG_OLD=0; }
+		msgs=1 bottom=$((${#MSG[@]} > ${#SIDE[@]} ? ${#MSG[@]} : ${#SIDE[@]}))
+	fi
 	# Fixed rows: frame 2, banner, section bars 3, column header 1, totals 1, keys 1. The peek
 	# matters more than the artwork: it takes about two thirds of the rest (14 rows or more
 	# when they're there) and the scene the others, unless that leaves the scene too little to
@@ -1294,7 +1355,7 @@ draw() {
 	if ((avail >= 3)); then
 		sect "ART · ${TITLES[SCENE]}"
 		art "$IW" $((avail - 1))
-		for l in "${ART[@]}"; do row "$l"; done
+		for l in "${ART[@]}"; do row "$l" "$IW"; done
 		avail=0
 	fi
 	for ((; avail > 0; avail--)); do row ""; done
@@ -1304,11 +1365,12 @@ draw() {
 	for ((i = 0; i < bottom; i++)); do
 		l=${MSG[i]:-} r=${SIDE[i]:-}
 		vlen "$l"
-		((VLEN > LW)) && l=$(trim_colored "$l" "$LW")
+		((VLEN > LW)) && { trim_colored "$l" "$LW"; l=$TRIM; }
 		vlen "$l"
-		l+="$(rep ' ' $((LW - VLEN)))"
+		rep ' ' $((LW - VLEN))
+		l+=$REP
 		vlen "$r"
-		((VLEN > RW)) && r=$(trim_colored "$r" "$RW")
+		((VLEN > RW)) && { trim_colored "$r" "$RW"; r=$TRIM; }
 		row "$l $FRAME│$R $r"
 	done
 
@@ -1340,11 +1402,13 @@ draw() {
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	# While answering every key goes to the agent, so the bar says that and how to stop.
 	((ANSWERING)) && k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Tab$R$BMAG back to the panes ·$R $B${BYEL}Ctrl-]$R$BMAG leaves$R"
-	line "$FRAME╠$(rep ═ $((W - 2)))╣$R"
+	rep ═ $((W - 2))
+	line "$FRAME╠$REP╣$R"
 	row "$k"
 	local sig="$BLU▓▒░$R$GRY tmux-revive bbs · est. 2026 $R$BLU░▒▓$R"
 	vlen "$sig"
-	line "$FRAME╚$(rep ═ $((W - 4 - VLEN)))$R$sig$FRAME══╝$R"
+	rep ═ $((W - 4 - VLEN))
+	line "$FRAME╚$REP$R$sig$FRAME══╝$R"
 
 	if ((ONCE)); then
 		printf '%s\n' "${OUT[@]}"
@@ -1363,7 +1427,7 @@ draw() {
 	fi
 }
 
-trim_colored() { # trim_colored TEXT WIDTH: cut to WIDTH visible characters, keeping the colours
+trim_colored() { # trim_colored TEXT WIDTH -> TRIM: cut to WIDTH visible characters, keeping the colours
 	local s=$1 w=$2 out="" n=0
 	while [[ -n $s ]] && ((n < w - 1)); do
 		if [[ $s =~ ^($e\[[0-9\;]*m) ]]; then
@@ -1373,7 +1437,7 @@ trim_colored() { # trim_colored TEXT WIDTH: cut to WIDTH visible characters, kee
 			((n++))
 		fi
 	done
-	printf '%s' "$out…$R"
+	TRIM=$out…$R
 }
 
 # ------------------------------------------------------------------ actions
@@ -1442,24 +1506,32 @@ pick() {
 	trap 'INTR=1' INT
 	while :; do
 		# Frame, title tab and shadow.
-		line="$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$(rep ═ $((w - ${#title} - 11)))╗$R"
+		rep ═ $((w - ${#title} - 11))
+		line="$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
 		printf '%s' "$e[$top;${left}H$line"
-		printf '%s' "$e[$((top + 1));${left}H$bg$BWHT║$(rep ' ' $((w - 2)))║$R$GRY░$R"
+		rep ' ' $((w - 2))
+		local blank=$REP
+		printf '%s' "$e[$((top + 1));${left}H$bg$BWHT║$blank║$R$GRY░$R"
 		for ((i = 0; i < ${#items[@]}; i++)); do
 			local key="  "
 			((i < 9)) && key="$((i + 1)) "
-			local txt
-			txt=$(fld " $key ${items[i]}" $((w - 5)))
 			if ((i == sel)); then
-				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║ $hi$B▶$txt$R$bg$BWHT ║$R$GRY░$R"
+				fld " $key ${items[i]}" $((w - 5))
+				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║ $hi$B▶$FLD$R$bg$BWHT ║$R$GRY░$R"
 			else
-				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║  $BYEL$(fld "$key" 3)$BWHT$(fld "${items[i]}" $((w - 9)))  ║$R$GRY░$R"
+				fld "$key" 3
+				local kf=$FLD
+				fld "${items[i]}" $((w - 9))
+				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║  $BYEL$kf$BWHT$FLD  ║$R$GRY░$R"
 			fi
 		done
-		printf '%s' "$e[$((top + 2 + ${#items[@]}));${left}H$bg$BWHT║$(rep ' ' $((w - 2)))║$R$GRY░$R"
-		printf '%s' "$e[$((top + 3 + ${#items[@]}));${left}H$bg$BWHT║ $BCYN$(fld "$hint" $((w - 4)))$BWHT ║$R$GRY░$R"
-		printf '%s' "$e[$((top + 4 + ${#items[@]}));${left}H$bg$BWHT╚$(rep ═ $((w - 2)))╝$R$GRY░$R"
-		printf '%s' "$e[$((top + 5 + ${#items[@]}));$((left + 1))H$GRY$(rep ░ "$w")$R"
+		printf '%s' "$e[$((top + 2 + ${#items[@]}));${left}H$bg$BWHT║$blank║$R$GRY░$R"
+		fld "$hint" $((w - 4))
+		printf '%s' "$e[$((top + 3 + ${#items[@]}));${left}H$bg$BWHT║ $BCYN$FLD$BWHT ║$R$GRY░$R"
+		rep ═ $((w - 2))
+		printf '%s' "$e[$((top + 4 + ${#items[@]}));${left}H$bg$BWHT╚$REP╝$R$GRY░$R"
+		rep ░ "$w"
+		printf '%s' "$e[$((top + 5 + ${#items[@]}));$((left + 1))H$GRY$REP$R"
 		k=""
 		until IFS= read -rsn1 -t 0.2 k; do
 			(($? <= 128 || INTR)) && { k=CLOSE; break; }
@@ -1879,7 +1951,7 @@ on_exit restore_term
 # Other computers' screens it fetched go when it closes.
 on_exit 'for f in "${!PEEK_FILES[@]}"; do rm -f "$f" "$f.fail"; done'
 trap 'exit 0' INT TERM
-trap 'printf "%s" "$e[2J"; PREV=()' WINCH
+trap 'printf "%s" "$e[2J"; PREV=() TCOLS=""' WINCH
 case ${REVIVE_PANEL_SPLASH:-} in
 1) splash ;;
 0) ;;
@@ -1888,32 +1960,10 @@ esac
 PREV=() # after the splash: paint the whole panel
 
 declare -A SSH_SEEN=()
-nav=0
-while :; do
-	# Moving the selection only redraws from what was gathered last; everything is looked at
-	# again on the next refresh or any other key, so the arrows stay quick.
-	if ((!nav)); then
-		gather
-		for h in "${P_SSH[@]}" "${X_SSH[@]}"; do
-			[[ -n $h && -z ${SSH_SEEN[$h]:-} ]] || continue
-			SSH_SEEN[$h]=1
-			linked "$h" || flash "new ssh: $h · L links it"
-		done
-	fi
-	# Keep the same pane selected when panes come and go.
-	if [[ -n $SEL_ID ]]; then
-		for i in "${!P_ID[@]}"; do [[ ${P_ID[i]} == "$SEL_ID" ]] && SEL=$i; done
-	fi
-	((SEL >= ${#P_ID[@]})) && SEL=$((${#P_ID[@]} ? ${#P_ID[@]} - 1 : 0))
-	SEL_ID=${P_ID[SEL]:-}
-	draw
-	nav=0
-	key=""
-	if ! IFS= read -rsn1 -t "$REFRESH" key; then
-		((TICK++)) # the animation moves on with the clock, not with keys
-		continue
-	fi
-	# Take this key and any already waiting (a held arrow), then draw once.
+# keys KEY: act on KEY and on any keys already waiting behind it (a held arrow), so that they
+# are drawn once. Keys that only move the selection set nav.
+keys() {
+	key=$1
 	while :; do
 		[[ -z $key || $key == $'\r' ]] && key=enter # read stops at the newline Enter sends
 		if [[ $key == "$e" ]]; then
@@ -1927,6 +1977,43 @@ while :; do
 		*) act "$key"; nav=0; break ;;
 		esac
 		key=""
-		IFS= read -rsn1 -t 0.01 key || break
+		read -t 0 && IFS= read -rsn1 key || break
 	done
+}
+held=0
+while :; do
+	# Moving the selection only redraws from what was gathered last; everything is looked at
+	# again on the next refresh or any other key, so the arrows stay quick.
+	if ((!nav)); then
+		gather
+		for h in "${P_SSH[@]}" "${X_SSH[@]}"; do
+			[[ -n $h && -z ${SSH_SEEN[$h]:-} ]] || continue
+			SSH_SEEN[$h]=1
+			linked "$h" || flash "new ssh: $h · L links it"
+		done
+		TCOLS="" MSG_OLD=1 # looked at again along with the panes
+	fi
+	# Keep the same pane selected when panes come and go.
+	if [[ -n $SEL_ID ]]; then
+		for i in "${!P_ID[@]}"; do [[ ${P_ID[i]} == "$SEL_ID" ]] && SEL=$i; done
+	fi
+	((SEL >= ${#P_ID[@]})) && SEL=$((${#P_ID[@]} ? ${#P_ID[@]} - 1 : 0))
+	SEL_ID=${P_ID[SEL]:-}
+	# A key pressed while it gathered is taken first, so one draw shows both. Not twice running,
+	# so keys arriving all the time can't keep the panel from drawing.
+	if ((!nav && !held && ${#PREV[@]})) && read -t 0; then
+		held=1 key=""
+		IFS= read -rsn1 key
+		keys "$key"
+		continue
+	fi
+	held=0
+	draw
+	nav=0
+	key=""
+	if ! IFS= read -rsn1 -t "$REFRESH" key; then
+		((TICK++)) # the animation moves on with the clock, not with keys
+		continue
+	fi
+	keys "$key"
 done

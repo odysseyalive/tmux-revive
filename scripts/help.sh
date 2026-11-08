@@ -66,7 +66,7 @@ help_ink() {
 # hpush CONTENT: one row of the page, inside the open box if there is one.
 hpush() {
 	[[ -z $1 ]] && HBLANK=1 || HBLANK=0
-	if ((HBOX)); then HROWS+=("$HBC║$R $(padv "$1" $((HW - 5))) $HBC║$R$GRY░$R")
+	if ((HBOX)); then padv "$1" $((HW - 5)); HROWS+=("$HBC║$R $PADV $HBC║$R$GRY░$R")
 	else HROWS+=("$1"); fi
 }
 # hhang PREFIX PREFIX-WIDTH TEXT: TEXT wrapped beside PREFIX, its later lines indented under it
@@ -111,7 +111,8 @@ help_build() {
 		else t="$GRY$t$R"; fi
 		HROWS+=("  $BLU░▒▓$R ${shade[i]}${letters[i]}$R$BLU▓▒░$R   $t")
 	done
-	HROWS+=("  $BLU$(rep ▀ $((HW - 4)))$R")
+	rep ▀ $((HW - 4))
+	HROWS+=("  $BLU$REP$R")
 	if [[ ! -r $HELP_FILE ]]; then
 		HROWS+=("" "  ${BRED}help.txt is missing from $(dirname "$HELP_FILE")$R")
 		HELP_W=$HW
@@ -126,24 +127,31 @@ help_build() {
 		"= "*)
 			hpara
 			((HBLANK)) || HROWS+=("")
-			t=$(tab "${ln#= }" 4)
+			tab "${ln#= }" 4
+			t=$TAB
 			vlen "$t"
-			HROWS+=("$t$BLU$(rep ─ $((HW - VLEN - 1)))$R")
+			rep ─ $((HW - VLEN - 1))
+			HROWS+=("$t$BLU$REP$R")
 			HROWS+=("") HBLANK=1 ;;
 		.box\ *)
 			hpara
 			((HBLANK)) || HROWS+=("")
 			c=${bcol[boxes % 2]} boxes=$((boxes + 1))
 			HBC=$'\e'"[9${c}m"
-			t="$HBC╔═$(tab "${ln#.box }" "$c")"
+			tab "${ln#.box }" "$c"
+			t="$HBC╔═$TAB"
 			vlen "$t"
-			HROWS+=("$t$HBC$(rep ═ $((HW - VLEN - 2)))╗$R")
+			rep ═ $((HW - VLEN - 2))
+			HROWS+=("$t$HBC$REP╗$R")
 			HBOX=1
 			hpush "" ;;
 		.end)
 			hpara
 			((HBLANK)) || hpush ""
-			HROWS+=("$HBC╚$(rep ═ $((HW - 3)))╝$R$GRY░$R" " $GRY$(rep ░ $((HW - 1)))$R")
+			rep ═ $((HW - 3))
+			t=$REP
+			rep ░ $((HW - 1))
+			HROWS+=("$HBC╚$t╝$R$GRY░$R" " $GRY$REP$R")
 			HBOX=0 HBLANK=0 ;;
 		.button\ *)
 			hpara
@@ -171,7 +179,8 @@ help_build() {
 		\<*\>\ *)
 			hpara
 			k=${ln%%>*} k=${k#<} t=${ln#*> }
-			hhang " $B$BCYN$(fld "$k" 9)$R" 10 "$t" ;;
+			fld "$k" 9
+			hhang " $B$BCYN$FLD$R" 10 "$t" ;;
 		"- "*)
 			hpara
 			hhang "  $BYEL▪$R " 4 "${ln#- }" ;;
@@ -183,7 +192,7 @@ help_build() {
 		esac
 	done <"$HELP_FILE"
 	hpara
-	((HBOX)) && HROWS+=("$HBC╚$(rep ═ $((HW - 3)))╝$R")
+	((HBOX)) && { rep ═ $((HW - 3)); HROWS+=("$HBC╚$REP╝$R"); }
 	HELP_W=$HW
 }
 
@@ -200,7 +209,8 @@ help_frame() {
 	sect "HELP · HOW TO USE REVIVE"
 	for ((i = 0; i < view; i++)); do row "${HROWS[HELP_TOP + i]:-}"; done
 	last=$((HELP_TOP + view < n ? HELP_TOP + view : n))
-	k="$(kc ↑↓ " scroll")  $(kc PgUp/PgDn " page")  $(kc i " install")  $(kc o " open")  $(kc Esc " close")"
+	kcs ↑↓ " scroll" PgUp/PgDn " page" i " install" o " open" Esc " close"
+	k=$KC
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	vlen "$k"
 	i="$GRY$((HELP_TOP + 1))-$last of $n$R"
@@ -210,12 +220,14 @@ help_frame() {
 	vlen "$k"
 	local kl=$VLEN
 	vlen "$i"
-	((kl + VLEN <= IW)) && k+="$(rep ' ' $((IW - kl - VLEN)))$i"
-	line "$FRAME╠$(rep ═ $((W - 2)))╣$R"
+	((kl + VLEN <= IW)) && { rep ' ' $((IW - kl - VLEN)); k+="$REP$i"; }
+	rep ═ $((W - 2))
+	line "$FRAME╠$REP╣$R"
 	row "$k"
 	local sig="$BLU▓▒░$R$GRY tmux-revive bbs · est. 2026 $R$BLU░▒▓$R"
 	vlen "$sig"
-	line "$FRAME╚$(rep ═ $((W - 4 - VLEN)))$R$sig$FRAME══╝$R"
+	rep ═ $((W - 4 - VLEN))
+	line "$FRAME╚$REP$R$sig$FRAME══╝$R"
 	if ((ONCE)); then printf '%s\n' "${OUT[@]}"; return; fi
 	# As draw() paints: only the lines that changed, in one synchronized update.
 	local buf=""
@@ -282,14 +294,19 @@ help_confirm() {
 	top=$(((rows - ${#L[@]} - 4) / 2)) left=$(((cols - w) / 2))
 	((top < 1)) && top=1
 	((left < 1)) && left=1
-	printf '%s' "$e[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$(rep ═ $((w - ${#title} - 11)))╗$R"
+	rep ═ $((w - ${#title} - 11))
+	printf '%s' "$e[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
 	for i in "${!L[@]}"; do
-		printf '%s' "$e[$((top + 1 + i));${left}H$bg$BWHT║ $(padv "$bg$BWHT${L[i]}" $((w - 4)))$bg$BWHT ║$R$GRY░$R"
+		padv "$bg$BWHT${L[i]}" $((w - 4))
+		printf '%s' "$e[$((top + 1 + i));${left}H$bg$BWHT║ $PADV$bg$BWHT ║$R$GRY░$R"
 	done
 	i=${#L[@]}
-	printf '%s' "$e[$((top + 1 + i));${left}H$bg$BWHT║ $(padv "$B${BYEL}[y]$BWHT yes, run it     $B${BYEL}[n]$BWHT no, cancel" $((w - 4)))$bg$BWHT ║$R$GRY░$R"
-	printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT╚$(rep ═ $((w - 2)))╝$R$GRY░$R"
-	printf '%s' "$e[$((top + 3 + i));$((left + 1))H$GRY$(rep ░ "$w")$R"
+	padv "$B${BYEL}[y]$BWHT yes, run it     $B${BYEL}[n]$BWHT no, cancel" $((w - 4))
+	printf '%s' "$e[$((top + 1 + i));${left}H$bg$BWHT║ $PADV$bg$BWHT ║$R$GRY░$R"
+	rep ═ $((w - 2))
+	printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT╚$REP╝$R$GRY░$R"
+	rep ░ "$w"
+	printf '%s' "$e[$((top + 3 + i));$((left + 1))H$GRY$REP$R"
 	trap 'INTR=1' INT
 	k=""
 	until IFS= read -rsn1 -t 0.2 k; do

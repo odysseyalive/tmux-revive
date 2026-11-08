@@ -195,6 +195,26 @@ tm send-keys -t work:panel a
 check "A switches the artwork ($before)" "for _ in \$(seq 1 20); do after=\$(screen | grep -o 'ART · [a-z ]*' | head -1); [[ -n \$after && \$after != '$before' ]] && break; sleep 0.2; done; [[ \$after != '$before' ]]"
 tm send-keys -t work:panel q; sleep 1
 check "Q quits" "! tm list-windows -F '#{window_name}' | grep -qx panel"
+# An arrow redraws from what was gathered: the links and saves aren't looked at again for it.
+# A tmux that logs what it's asked shows it (the saves ask it for @revive-interval).
+mkdir -p "$T/shim"
+printf '#!/bin/sh\necho "$*" >>"%s/shim.log"\nexec %s "$@"\n' "$T" "$(command -v tmux)" >"$T/shim/tmux"
+chmod +x "$T/shim/tmux"
+tm new-window -d -t work -n navp "env PATH=$T/shim:$PATH REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=60 bash $ROOT/scripts/panel.sh"
+nscreen() { tm capture-pane -p -t work:navp; }
+wait_n() { for _ in $(seq 1 30); do nscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+looks() { grep -c 'show-option -gqv @revive-interval' "$T/shim.log" 2>/dev/null; }
+wait_n 'C O N T R O L' >/dev/null; sleep 0.5
+tm send-keys -t work:navp 1; wait_n '[1] ▶' >/dev/null; sleep 0.3
+l0=$(looks)
+tm send-keys -t work:navp Down; wait_n '[2] ▶' >/dev/null
+tm send-keys -t work:navp Down; wait_n '[3] ▶' >/dev/null
+tm send-keys -t work:navp Up; wait_n '[2] ▶' >/dev/null; sleep 0.3
+l1=$(looks)
+check "an arrow redraws without looking at the links and saves again ($l0, $l1)" "(( l0 >= 1 && l1 == l0 ))"
+tm send-keys -t work:navp a
+check "any other key looks again" "for _ in \$(seq 1 20); do (( \$(looks) > l1 )) && break; sleep 0.2; done; (( \$(looks) > l1 ))"
+tm kill-window -t work:navp
 
 echo "help"
 # Its own panel, with a stand-in browser opener and a stand-in installer: nothing here opens a
