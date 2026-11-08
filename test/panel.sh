@@ -616,7 +616,7 @@ chmod +x "$T/rbin/tmux"
 # peek's id and count go through as plain arguments, never through a shell. agent-say name is
 # run by a shell, as sshd would run it.
 {
-	printf '#!/bin/bash\nunset TMUX TMUX_PANE\nexport REVIVE_SOCKET=%q REVIVE_DIR=%q REVIVE_VERSION_FILE=%q\npanel=%q T=%q\n' "$rsock" "$T/remote-data" "$T/remote-version" "$ROOT/scripts/panel.sh" "$T"
+	printf '#!/bin/bash\nunset TMUX TMUX_PANE\nexport HOME=%q REVIVE_SOCKET=%q REVIVE_DIR=%q REVIVE_VERSION_FILE=%q\npanel=%q T=%q\n' "$T/rhome" "$rsock" "$T/remote-data" "$T/remote-version" "$ROOT/scripts/panel.sh" "$T"
 	cat <<'EOF'
 cmd=${!#}
 if [[ $cmd =~ \ panel\ --rows$ ]]; then exec bash "$panel" --rows
@@ -643,6 +643,38 @@ check "a linked computer's panes show with their state" "grep -q 'far-top *top *
 check "numbered by their window.pane over there" "grep -q '\[0\.1\] *far-top ' <<<\"\$out\" && grep -q '\[0\.0\] *far-sh ' <<<\"\$out\""
 check "and its shell panes too" "grep -A3 'FAR.EXAMPLE' <<<\"\$out\" | grep -q 'bash *· shell'"
 check "the whole frame still fits" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
+# Agents there show the state that computer's own panel gives them. Stand-ins for Claude Code
+# (copies of bash named claude): one working with no session record to go by (an older Claude
+# Code, or a record kept where that panel can't see it), one whose record says busy, one
+# whose record says idle, and one asking a question.
+far_tm() { tmux -L "revive-panel-remote-$$" -f /dev/null "$@"; }
+mkdir -p "$T/rhome/.claude/sessions"
+far_cl() { # far_cl NAME COMMAND [STATUS]: a stand-in there, with a record saying STATUS if given
+	far_tm new-window -d -t far -n "$1" "$T/bin/claude $2"
+	far_tm set-option -p -t "far:$1" @agent "$1"
+	[[ -n ${3:-} ]] || return 0
+	sleep 0.3
+	local p
+	p=$(far_tm display -p -t "far:$1" '#{pane_pid}')
+	printf '{"pid":%s,"sessionId":"s-%s","status":"%s"}\n' "$p" "$1" "$3" >"$T/rhome/.claude/sessions/$p.json"
+}
+far_cl cl-none "-c 'printf \"* Working (esc to interrupt)\\n\"; sleep 300; :'"
+far_cl cl-busy "-c 'printf \"> \"; sleep 300; :'" busy
+far_cl cl-idle "-c 'printf \"* Working (esc to interrupt)\\n\"; sleep 300; :'" idle
+far_cl cl-ask "$T/ask.sh $T/ans-far-cl"
+sleep 0.5
+rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
+check "--rows there: an agent working with no record to go by is working, from its screen" "grep -q $'\x1fcl-none\x1fclaude\x1fworking\x1f' <<<\"\$rows\""
+check "--rows there: a record that says busy is working, even with no sign on screen" "grep -q $'\x1fcl-busy\x1fclaude\x1fworking\x1f' <<<\"\$rows\""
+check "--rows there: a record that says idle is waiting, whatever the screen says" "grep -q $'\x1fcl-idle\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
+check "--rows there: a question on screen is asking" "grep -q $'\x1fcl-ask\x1fclaude\x1fasking\x1f' <<<\"\$rows\""
+out=$(far "$T/fakessh")
+check "here: a linked agent working with no record shows WORKING" "grep -q 'cl-none *claude *. WORKING' <<<\"\$out\""
+check "here: one whose record says busy shows WORKING" "grep -q 'cl-busy *claude *. WORKING' <<<\"\$out\""
+check "here: one whose record says idle shows WAITING ON YOU" "grep -q 'cl-idle *claude *◆ WAITING ON YOU' <<<\"\$out\""
+check "here: one asking a question shows NEEDS ANSWER" "grep -q 'cl-ask *claude *? NEEDS ANSWER' <<<\"\$out\""
+for w in cl-none cl-busy cl-idle cl-ask; do far_tm kill-window -t far:$w; done
+rm -rf "$T/rhome/.claude" "$st/panel/far.example.rows"*
 farsel() { tm run-shell "AGENT_SAY_SSH=$1 REVIVE_PANEL_SEL=$2 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
 peekbox() { sed -n '/PEEK · /,/ART · \|MESSAGES/p'; }
 out=$(farsel "$T/fakessh" far-sh@far.example | plain)

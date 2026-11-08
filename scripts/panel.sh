@@ -620,11 +620,16 @@ agent_kind() { # agent_kind ARGS -> claude/codex/cursor/crush/gemini or nothing 
 	esac
 }
 
-claude_status() { # Claude Code's own idle/busy, from its session record
+claude_record() { # claude_record PID -> RECORD: Claude Code's session record for it, or nothing
 	local f
-	for f in "$HOME"/.claude*/sessions/"$1".json; do
-		[[ -f $f ]] && { jq -r '.status // empty' "$f" 2>/dev/null; return; }
+	RECORD=""
+	for f in "$HOME"/.claude*/sessions/"$1".json ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR/sessions/$1.json"}; do
+		[[ -f $f ]] && { RECORD=$f; return; }
 	done
+}
+claude_status() { # Claude Code's own idle/busy, from its session record
+	claude_record "$1"
+	[[ -n $RECORD ]] && jq -r '.status // empty' "$RECORD" 2>/dev/null
 }
 
 # ------------------------------------------------------------------ context left
@@ -681,14 +686,12 @@ ctx_left() { # ctx_left KIND AGENT_PID PID... -> CTX: percent of its context win
 	CTX="" # set here, not printed: the files' answers are kept between frames
 	case $kind in
 	claude)
-		for f in "$HOME"/.claude*/sessions/"$apid".json; do
-			[[ -f $f ]] || continue
-			sid=$(jq -r '.sessionId // empty' "$f" 2>/dev/null)
-			[[ $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
-			for f in "${f%/sessions/*}"/projects/*/"$sid".jsonl; do
-				[[ -f $f ]] && { ctx_cached "$f" claude_ctx_file; return 0; }
-			done
-			return 0
+		claude_record "$apid"
+		[[ -n $RECORD ]] || return 0
+		sid=$(jq -r '.sessionId // empty' "$RECORD" 2>/dev/null)
+		[[ $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
+		for f in "${RECORD%/sessions/*}"/projects/*/"$sid".jsonl; do
+			[[ -f $f ]] && { ctx_cached "$f" claude_ctx_file; return 0; }
 		done ;;
 	codex)
 		for p in "$@"; do
@@ -816,8 +819,11 @@ gather() {
 			st=self P_APP+=("panel") P_AGENT+=(0)
 		elif [[ -n $kind ]]; then
 			st=$(screen_state "$id")
+			# Claude Code's record says for itself whether it is busy, and outranks the screen.
+			# With nothing in it to go by (no record found for this process, or one with no
+			# status), the screen decides, as it does for the other agents.
 			if [[ $kind == claude && $st != asking ]]; then
-				[[ $(claude_status "$apid") == busy ]] && st=working || st=waiting
+				case $(claude_status "$apid") in busy) st=working ;; "") ;; *) st=waiting ;; esac
 			fi
 			ctx_left "$kind" "$apid" "${tree[@]}"
 			ctx=$CTX
