@@ -88,29 +88,41 @@ check "ssh:// with a port" "[[ \$(dest 'ssh ssh://me@h2.example:2222') == h2.exa
 check "a jump host is skipped for the destination" "[[ \$(dest '/usr/bin/ssh -J jump h3 uptime') == h3 ]]"
 check "not ssh, or a host that can't be one" "[[ -z \$(dest 'sshd -D') && -z \$(dest 'ssh \"bad;host\"') ]]"
 
+# ssh outside tmux (another terminal) is found too; ssh that other tools start for themselves isn't.
+bash -c 'exec -a "ssh me@outside.example" sleep 60' & o1=$!
+bash -c 'exec -a "ssh -o BatchMode=yes linkpoll.example agent-say _sync x" sleep 60' & o2=$!
+bash -c 'exec -a "ssh -o SendEnv=GIT_PROTOCOL git@gitfetch.example git-upload-pack x" sleep 60' & o3=$!
+bash -c 'exec -a "ssh -x -oForwardAgent=no -s sftpcopy.example sftp" sleep 60' & o4=$!
+sleep 0.5
+out=$(frame 140 45)
+check "an ssh session outside tmux is offered for linking" "grep -q 'outside.example · ssh in' <<<\"\$out\""
+check "agent-say's own, git's and sftp's ssh aren't" "! grep -qE 'linkpoll.example|gitfetch.example|sftpcopy.example' <<<\"\$out\""
+kill $o1 $o2 $o3 $o4 2>/dev/null; wait $o1 $o2 $o3 $o4 2>/dev/null
+
 tm new-window -d -t work -n sshpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=false REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
 sshscreen() { tm capture-pane -p -t work:sshpanel; }
 wait_ssh() { for _ in $(seq 1 40); do sshscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 wait_ssh 'C O N T R O L'
 # A pane connecting somewhere: a process whose command line is an ssh one.
 tm new-window -d -t work -n remote "bash -c 'exec -a \"ssh -p 2222 me@devbox.example\" sleep 300'"
-check "a new ssh connection is announced" "wait_ssh 'new ssh connection to devbox.example'"
+check "a new ssh connection is announced" "wait_ssh 'new ssh: devbox.example · L links it'"
 check "and offered for linking" "wait_ssh 'devbox.example · ssh in'"
 tm send-keys -t work:sshpanel u
 check "U with nothing linked says so" "wait_ssh 'nothing is linked'"
-tm send-keys -t work:sshpanel l; sleep 0.5
-check "L asks before linking" "wait_ssh 'Link agents on devbox.example with this computer?'"
-tm send-keys -t work:sshpanel n Enter
-check "anything but y backs out" "wait_ssh 'link cancelled'"
-tm send-keys -t work:sshpanel l; sleep 0.5; tm send-keys -t work:sshpanel y Enter
-check "y tries the link and shows what happened" "wait_ssh \"couldn't run agent-say on devbox.example\""
+tm send-keys -t work:sshpanel l; sleep 0.7
+check "L opens a popup listing the ssh hosts" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q 'devbox.example  · ssh in' && sshscreen | grep -q 'other host'"
+check "the popup says how to close it" "sshscreen | grep -q 'Esc closes'"
+tm send-keys -t work:sshpanel Escape
+check "Esc closes the popup" "wait_ssh 'link cancelled' && ! sshscreen | grep -q 'LINK AGENTS ON'"
+tm send-keys -t work:sshpanel l; sleep 0.7; tm send-keys -t work:sshpanel Enter
+check "Enter links the chosen host and shows what happened" "wait_ssh \"couldn't run agent-say on devbox.example\""
 # Pretend the link is up, then take it down with U.
 st=$(dirname "$AGENT_SAY_MAILBOX"); mkdir -p "$st/links/devbox.example"; touch "$st/links/devbox.example/on"
 check "a linked host is no longer offered" "for _ in \$(seq 1 20); do sshscreen | grep -q 'devbox.example · ssh in' || break; sleep 0.2; done; ! sshscreen | grep -q 'devbox.example · ssh in'"
-tm send-keys -t work:sshpanel u; sleep 0.5
-check "U asks before unlinking" "wait_ssh 'Unlink devbox.example? (y)'"
-tm send-keys -t work:sshpanel y Enter
-check "and unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $st/links/devbox.example ]]"
+tm send-keys -t work:sshpanel u; sleep 0.7
+check "U opens a popup listing the links" "wait_ssh 'UNLINK' && sshscreen | grep -q 'devbox.example  ·'"
+tm send-keys -t work:sshpanel 1
+check "a number picks from the list and unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $st/links/devbox.example ]]"
 tm send-keys -t work:sshpanel q
 tm kill-window -t work:remote 2>/dev/null
 

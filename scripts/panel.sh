@@ -419,7 +419,8 @@ human() { # KB -> 412M / 1.2G
 }
 
 # ------------------------------------------------------------------ gathering
-declare -A PCHILD PARGS PRSS PCPU TICKS_PREV GIT GIT_T
+declare -A PCHILD PARGS PRSS PCPU PPAR INPANE TICKS_PREV GIT GIT_T
+X_SSH=() X_WHERE=()
 T_PREV=""
 SHELLS=" sh bash zsh fish dash ksh tcsh csh nu "
 # An agent asking you something: a permission prompt or a multiple-choice question.
@@ -517,9 +518,9 @@ ssh_dest() {
 linked() { [[ -f $ASTATE/links/$1/on ]]; }
 gather() {
 	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh
-	PCHILD=() PARGS=() PRSS=() PCPU=()
+	PCHILD=() PARGS=() PRSS=() PCPU=() PPAR=() INPANE=()
 	while read -r pid ppid rss pcpu args; do
-		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu
+		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu PPAR[$pid]=$ppid
 	done < <(ps -ww -eo pid=,ppid=,rss=,pcpu=,args= 2>/dev/null) # -ww: never cut to $COLUMNS
 	now=${EPOCHREALTIME:-$SECONDS}
 	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=()
@@ -529,7 +530,7 @@ gather() {
 		tree=() q=("$ppid0") kind="" apid=""
 		while ((${#q[@]})); do
 			p=${q[0]} q=("${q[@]:1}")
-			tree+=("$p")
+			tree+=("$p") INPANE[$p]=1
 			if [[ -z $kind ]]; then kind=$(agent_kind "${PARGS[$p]:-}"); [[ -n $kind ]] && apid=$p; fi
 			# shellcheck disable=SC2206
 			[[ -n ${PCHILD[$p]:-} ]] && q+=(${PCHILD[$p]})
@@ -575,6 +576,36 @@ gather() {
 		P_DIR+=("$path") P_GIT+=("$(git_info "$path")") P_CPU+=("$cpu") P_MEM+=("$mem")
 	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
 	T_PREV=$now
+	outside_ssh
+}
+
+# ssh sessions in terminals outside tmux (a kitty tab, another window): their hosts can be
+# linked too. Only someone's own interactive ssh counts: not the ones git, scp, sftp or
+# rsync start for themselves, and not agent-say's own link connections.
+outside_ssh() {
+	local pid a h up where c
+	X_SSH=() X_WHERE=()
+	for pid in "${!PARGS[@]}"; do
+		[[ -n ${INPANE[$pid]:-} ]] && continue
+		a=${PARGS[$pid]}
+		h=$(ssh_dest "$a")
+		[[ -n $h ]] || continue
+		[[ $a == *BatchMode=yes* || $a == *agent-say* || $a == *git-upload-pack* || $a == *git-receive-pack* ||
+			$a == *"rsync --server"* || $a == *" -s "* || $a == *sftp* ]] && continue
+		c=${PARGS[${PPAR[$pid]:-0}]:-}
+		c=${c%% *} c=${c##*/}
+		[[ $c == git || $c == scp || $c == sftp || $c == rsync ]] && continue
+		# Where it runs: the first ancestor that isn't a shell (kitty, alacritty, sshd...).
+		up=${PPAR[$pid]:-0} where=""
+		while ((up > 1)); do
+			c=${PARGS[$up]:-}
+			c=${c%% *} c=${c##*/} c=${c#-}
+			[[ $SHELLS == *" $c "* ]] || { where=$c; break; }
+			up=${PPAR[$up]:-0}
+		done
+		clean where
+		X_SSH+=("$h") X_WHERE+=("${where:-a terminal}")
+	done
 }
 
 # ------------------------------------------------------------------ sections
@@ -707,6 +738,13 @@ links_saves() { # -> SIDE lines: saves, then links
 		linked "$h" && continue
 		SIDE+=("$BYEL◇$R $BWHT$h$R $GRY· ssh in ${P_NAME[i]:-${P_LOC[i]}} ·$R $BBLU[$B${BYEL}L$R$BBLU]$R${BWHT}ink?$R")
 	done
+	for i in "${!X_SSH[@]}"; do
+		h=${X_SSH[i]}
+		[[ $seen == *" $h "* ]] && continue
+		seen+="$h "
+		linked "$h" && continue
+		SIDE+=("$BYEL◇$R $BWHT$h$R $GRY· ssh in ${X_WHERE[i]} ·$R $BBLU[$B${BYEL}L$R$BBLU]$R${BWHT}ink?$R")
+	done
 	((${#SIDE[@]} > 2)) || SIDE+=("$GRY  no links · ssh to a host and press L$R")
 }
 
@@ -765,7 +803,8 @@ draw() {
 	# Fixed rows: frame 2, banner, section bars 3, column header 1, totals 1, keys 1. The peek
 	# takes up to 14 of the rest and the scene the remainder, so the panel fills its pane.
 	avail=$((lines - BH - 8 - n - bottom))
-	if ((PEEK && n && avail >= 4)); then
+	# No peek at the panel's own pane: it would only show itself.
+	if ((PEEK && n && avail >= 4)) && [[ ${P_STATE[SEL]:-} != self ]]; then
 		peek_h=$((avail - 1 > 14 ? 14 : avail - 1))
 		avail=$((avail - peek_h - 1))
 		draw_peek "$peek_h"
@@ -873,6 +912,64 @@ ask() { # ask PROMPT -> REPLY on the bottom line. Enter accepts; Esc, Ctrl-C or 
 	return 1
 }
 
+# pick TITLE ITEM...: a BBS-style popup over the panel, a blue double-line box with a shaded
+# shadow, listing ITEMs. ↑↓ or 1-9 choose, Enter picks (-> PICKED, the index), Esc or q closes
+# it (returns 1). Ctrl-C closes it too, read in slices as in ask.
+pick() {
+	local title=$1 rows cols w h top left i k rest sel=0 line hint="↑↓ choose · Enter picks · Esc closes" INTR=0
+	shift
+	local -a items=("$@")
+	rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80)
+	w=$((${#hint} + 6))
+	for i in "${items[@]}"; do ((${#i} + 10 > w)) && w=$((${#i} + 10)); done
+	((w > cols - 4)) && w=$((cols - 4))
+	h=$((${#items[@]} + 5))
+	top=$(((rows - h) / 2)) left=$(((cols - w) / 2))
+	((top < 1)) && top=1
+	((left < 1)) && left=1
+	local bg="$e[44m" hi="$e[46m$e[30m"
+	trap 'INTR=1' INT
+	while :; do
+		# Frame, title tab and shadow.
+		line="$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$(rep ═ $((w - ${#title} - 10)))╗$R"
+		printf '%s' "$e[$top;${left}H$line"
+		printf '%s' "$e[$((top + 1));${left}H$bg$BWHT║$(rep ' ' $((w - 2)))║$R$GRY░$R"
+		for ((i = 0; i < ${#items[@]}; i++)); do
+			local key="  "
+			((i < 9)) && key="$((i + 1)) "
+			local txt
+			txt=$(fld " $key ${items[i]}" $((w - 4)))
+			if ((i == sel)); then
+				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║ $hi$B▶$txt$R$bg$BWHT ║$R$GRY░$R"
+			else
+				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║  $BYEL$(fld "$key" 3)$BWHT$(fld "${items[i]}" $((w - 8)))  ║$R$GRY░$R"
+			fi
+		done
+		printf '%s' "$e[$((top + 2 + ${#items[@]}));${left}H$bg$BWHT║$(rep ' ' $((w - 2)))║$R$GRY░$R"
+		printf '%s' "$e[$((top + 3 + ${#items[@]}));${left}H$bg$BWHT║ $BCYN$(fld "$hint" $((w - 4)))$BWHT ║$R$GRY░$R"
+		printf '%s' "$e[$((top + 4 + ${#items[@]}));${left}H$bg$BWHT╚$(rep ═ $((w - 2)))╝$R$GRY░$R"
+		printf '%s' "$e[$((top + 5 + ${#items[@]}));$((left + 1))H$GRY$(rep ░ "$w")$R"
+		k=""
+		until IFS= read -rsn1 -t 0.2 k; do
+			(($? <= 128 || INTR)) && { k=CLOSE; break; }
+			k=""
+		done
+		case $k in
+		CLOSE | q | Q) trap 'exit 0' INT; return 1 ;;
+		$'\e')
+			rest=""
+			IFS= read -rsn2 -t 0.05 rest || true
+			case $rest in
+			'') trap 'exit 0' INT; return 1 ;; # a lone Esc closes the window
+			'[A') ((sel > 0)) && ((sel--)) ;;
+			'[B') ((sel < ${#items[@]} - 1)) && ((sel++)) ;;
+			esac ;;
+		[1-9]) ((k - 1 < ${#items[@]})) && sel=$((k - 1)) && { PICKED=$sel; trap 'exit 0' INT; return 0; } ;;
+		"") PICKED=$sel; trap 'exit 0' INT; return 0 ;; # Enter
+		esac
+	done
+}
+
 act() {
 	local id=${P_ID[SEL]:-} name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} out
 	case $1 in
@@ -901,35 +998,42 @@ act() {
 		out=$(AGENT_SAY_PANE=$id "$ASAY" name "$REPLY" 2>&1 | head -n 1)
 		flash "${out#agent-say: }" ;;
 	l | L)
-		# The selected pane's ssh host, or else the first one not linked yet.
-		local h=${P_SSH[SEL]:-} i
-		if [[ -z $h ]] || linked "$h"; then
-			h=""
-			for i in "${!P_SSH[@]}"; do [[ -n ${P_SSH[i]} ]] && ! linked "${P_SSH[i]}" && { h=${P_SSH[i]}; break; }; done
+		# Every ssh host not linked yet, the selected pane's first, then "other host...".
+		local hosts=() labels=() seen=" " h i j
+		for j in -1 "${!P_SSH[@]}"; do
+			((j < 0)) && i=$SEL || i=$j
+			h=${P_SSH[i]:-}
+			[[ -n $h && $seen != *" $h "* ]] && ! linked "$h" || continue
+			seen+="$h " hosts+=("$h") labels+=("$h  · ssh in ${P_NAME[i]:-${P_LOC[i]}}")
+		done
+		for i in "${!X_SSH[@]}"; do
+			h=${X_SSH[i]}
+			[[ $seen != *" $h "* ]] && ! linked "$h" || continue
+			seen+="$h " hosts+=("$h") labels+=("$h  · ssh in ${X_WHERE[i]}")
+		done
+		hosts+=("") labels+=("other host… (type its name)")
+		pick "LINK AGENTS ON" "${labels[@]}" || { flash "link cancelled"; return; }
+		h=${hosts[PICKED]}
+		if [[ -z $h ]]; then
+			ask "Host to link (as you'd type after ssh):" || { flash "link cancelled"; return; }
+			h=$REPLY
+			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { flash "not a host name: $h"; return; }
 		fi
-		[[ -n $h ]] || { flash "no ssh connection to link: ssh to a host in a pane first"; return; }
-		ask "Link agents on $h with this computer? (y)" || { flash "link cancelled"; return; }
-		[[ $REPLY == [yY]* ]] || { flash "link cancelled"; return; }
 		flash "linking $h…"; draw
 		out=$(timeout 30 "$ASAY" link "$h" 2>&1 | head -n 1)
 		clean out
 		flash "${out#agent-say: }" ;;
 	u | U | d | D)
-		# The selected pane's ssh host if it's linked, the only link, or ask which.
-		local h=${P_SSH[SEL]:-} d hosts=() i
-		for d in "$ASTATE"/links/*/; do [[ -f $d/on ]] && hosts+=("$(basename "$d")"); done
+		local hosts=() labels=() d h
+		for d in "$ASTATE"/links/*/; do
+			[[ -f $d/on ]] || continue
+			h=$(basename "$d")
+			clean h
+			hosts+=("$h") labels+=("$h  · $(grep -c . "$d/names" 2>/dev/null || echo 0) names")
+		done
 		((${#hosts[@]})) || { flash "nothing is linked"; return; }
-		if [[ -z $h ]] || ! linked "$h"; then
-			if ((${#hosts[@]} == 1)); then
-				h=${hosts[0]}
-			else
-				ask "Unlink which? (${hosts[*]})" || { flash "unlink cancelled"; return; }
-				h=$REPLY
-				linked "$h" || { flash "not linked: $h"; return; }
-			fi
-		fi
-		ask "Unlink $h? (y)" || { flash "unlink cancelled"; return; }
-		[[ $REPLY == [yY]* ]] || { flash "unlink cancelled"; return; }
+		pick "UNLINK" "${labels[@]}" || { flash "unlink cancelled"; return; }
+		h=${hosts[PICKED]}
 		flash "unlinking $h…"; draw
 		out=$(timeout 30 "$ASAY" unlink "$h" 2>&1 | tail -n 1)
 		clean out
@@ -1002,11 +1106,10 @@ while :; do
 	fi
 	((SEL >= ${#P_ID[@]})) && SEL=$((${#P_ID[@]} ? ${#P_ID[@]} - 1 : 0))
 	SEL_ID=${P_ID[SEL]:-}
-	for i in "${!P_SSH[@]}"; do
-		h=${P_SSH[i]}
+	for h in "${P_SSH[@]}" "${X_SSH[@]}"; do
 		[[ -n $h && -z ${SSH_SEEN[$h]:-} ]] || continue
 		SSH_SEEN[$h]=1
-		linked "$h" || flash "new ssh connection to $h · press L to link its agents"
+		linked "$h" || flash "new ssh: $h · L links it"
 	done
 	draw
 	((TICK++))
