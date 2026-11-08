@@ -140,7 +140,7 @@ help_build() {
 	HW=$1 HROWS=() HBOX=0 HBLANK=1 HPARA="" HBC=$BMAG HB=() HPEND=() HPEND_END=() HBN=0
 	HSIDE=$((HW >= 110)) HBW=$HW
 	((HSIDE)) && HBW=$(((HW - 2) / 2))
-	local boxes=0 heads=0 bcol=(5 6) hcol=(4 5 6)
+	local boxes=0 heads=0 bcol=(5 6) hcol=(4 4 4) # every title on blue: the easiest to read
 	# The banner: HELP in big letters going down a sunset, the .tag lines beside it, and the
 	# sun itself going down behind a grid when there's room for it.
 	if [[ -r $HELP_FILE ]]; then
@@ -155,7 +155,7 @@ help_build() {
 	tw=$((HW - VLEN - 5)) # the room beside the letters
 	local -a side=("" "" "" "" "" "")
 	if ((${#tags[@]})); then
-		tab "${tags[0]}" 5
+		tab "${tags[0]}" 4
 		side[1]=$TAB
 	fi
 	if ((${#tags[@]} > 1)); then
@@ -199,7 +199,7 @@ help_build() {
 			((HBLANK || ${#HPEND[@]})) || HROWS+=("")
 			c=${bcol[boxes % 2]} boxes=$((boxes + 1))
 			HBC=$'\e'"[9${c}m"
-			tab "${ln#.box }" "$c"
+			tab "${ln#.box }" 4 # the title on blue; the frame keeps its colour
 			t="$HBC╔═$TAB"
 			vlen "$t"
 			rep ═ $((HBW - VLEN - 2))
