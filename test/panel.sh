@@ -190,6 +190,46 @@ check "A switches the artwork ($before)" "for _ in \$(seq 1 20); do after=\$(scr
 tm send-keys -t work:panel q; sleep 1
 check "Q quits" "! tm list-windows -F '#{window_name}' | grep -qx panel"
 
+echo "context left"
+# Stand-in agents (copies of bash named claude and codex) with the records the real ones keep:
+# Claude Code's session record and transcript, and a Codex rollout file held open.
+H=$T/home
+mkdir -p "$H/.claude/sessions" "$H/.claude/projects/-w" "$H/.codex/sessions/2026/01/01" "$T/bin"
+cp "$(command -v bash)" "$T/bin/claude"; cp "$(command -v bash)" "$T/bin/codex"
+ro=$H/.codex/sessions/2026/01/01/rollout-2026-01-01T00-00-00-x.jsonl
+{
+	echo '{"type":"event_msg","payload":{"type":"token_count","info":null}}'
+	echo '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":200000},"model_context_window":250000}}}'
+	echo '{"type":"event_msg","payload":{"type":"token_count","info":null}}'
+} >"$ro"
+tm new-window -d -t work -n cl "$T/bin/claude -c 'sleep 300; :'"
+tm new-window -d -t work -n cx "$T/bin/codex -c 'exec 3<$ro; sleep 300; :'"
+tm new-window -d -t work -n cl2 "$T/bin/claude -c 'sleep 300; :'"
+sleep 0.5
+clpid=$(tm display -p -t work:cl '#{pane_pid}')
+printf '{"pid":%s,"sessionId":"s-1","status":"idle"}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
+{
+	echo '{"type":"assistant","message":{"model":"claude-haiku-4-5","usage":{"input_tokens":5,"cache_read_input_tokens":40000,"cache_creation_input_tokens":5000}}}'
+	echo '{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":190000}}}'
+	echo '{"type":"assistant","message":{"model":"<synthetic>","usage":{"input_tokens":0}}}'
+	echo '{"type":"user","message":{"content":"the word \"usage\" in a message"}}'
+} >"$H/.claude/projects/-w/s-1.jsonl"
+cframe() { tm run-shell "HOME=$H REVIVE_PANEL_PEEK=0 COLUMNS=${1:-130} LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
+out=$(cframe)
+check "a CTX LEFT column follows MEM" "grep -q 'MEM  CTX LEFT' <<<\"\$out\""
+check "Claude Code's context left, from its transcript's last turn (45k of 200k: 77% left)" "grep -q 'claude .*M  ███▓· *77%' <<<\"\$out\""
+check "Codex's, from the rollout file it holds open (200k of 250k)" "grep -q 'codex .*M  █···· *20%' <<<\"\$out\""
+check "an agent with no record shows a dash" "[[ \$(grep -c 'claude .*·····    –' <<<\"\$out\") == 1 ]]"
+check "a shell shows nothing there" "grep 'bash *· shell' <<<\"\$out\" | grep -qv '–\\|%.*%'"
+out=$(cframe 80)
+check "it stays in the narrowest panel" "grep -q 'codex .* 20% *║' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
+echo '{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":500000}}}' >>"$H/.claude/projects/-w/s-1.jsonl"
+out=$(cframe)
+check "a Claude 5 model has a million-token window (500k: 50% left)" "grep -q 'claude .* 50%' <<<\"\$out\""
+rows=$(tm run-shell "HOME=$H REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows")
+check "--rows gives each pane's context left on a line of its own, before its row" "grep -A1 '^#ctx %[0-9]* 20$' <<<\"\$rows\" | grep -q $'\x1fcodex\x1f'"
+tm kill-window -t work:cl; tm kill-window -t work:cx; tm kill-window -t work:cl2
+
 echo "questions"
 # A stand-in agent (a copy of bash named codex) asking a question the way Claude Code draws
 # one. Every key it reads is logged to OUT.keys; the answer it got goes to OUT.
@@ -561,7 +601,7 @@ tm send-keys -t work:splash q
 echo "hostile text"
 # Folder names, pane names, mail from linked machines and git config all come from elsewhere.
 # None of it may put an escape sequence on the terminal or make the panel run a command.
-raw() { tm run-shell "COLUMNS=130 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
+raw() { tm run-shell "COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
 evil="$T/evil"$'\e]52;c;cHduZWQ=\a\e[2Jdir'
 mkdir -p "$evil"
 mkdir -p "$T/mail"

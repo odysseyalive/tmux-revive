@@ -127,6 +127,12 @@ what's running in each, and whether each AI agent is working, waiting on you,
 or stuck on a question before it can go on. CPU, memory and git status are
 there too, along with recent agent messages, links and saves.
 
+**CTX LEFT** shows how much of each agent's context window is still free,
+green, then yellow at 40% and red at 15%. It reads Claude Code's and Codex's
+own session records; other agents show a dash. Claude Code doesn't record its
+window size, so the panel takes a million tokens for models that have one and
+200k otherwise. Set `REVIVE_CLAUDE_WINDOW` to override it.
+
 ```sh
 tmux-revive panel
 ```

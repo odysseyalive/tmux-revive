@@ -543,6 +543,78 @@ claude_status() { # Claude Code's own idle/busy, from its session record
 	done
 }
 
+# ------------------------------------------------------------------ context left
+# How much of an agent's context window is still free, as a percentage, read from the
+# record the agent itself keeps of its session: Claude Code's transcript (the session record
+# under sessions/PID.json names it), Codex's rollout file (the file its process holds open).
+# Each holds the tokens the last turn sent; Codex also says its window. Claude Code doesn't:
+# REVIVE_CLAUDE_WINDOW when set, else a million for a model or setting that has one (the
+# Claude 5 family, Opus and Sonnet 4.6 on, an [1m] model, or a session already past 200k),
+# else 200k.
+declare -A CTX_STAMP=() CTX_VAL=()
+CTX=""
+fstamp() { stat -c '%s.%Y' "$1" 2>/dev/null || stat -f '%z.%m' "$1" 2>/dev/null; }
+ctx_cached() { # ctx_cached FILE FUNC: CTX=FUNC FILE's answer, worked out again only when FILE changes
+	local st
+	st=$(fstamp "$1")
+	[[ -n $st ]] || return 0
+	if [[ ${CTX_STAMP[$1]:-} != "$st" ]]; then CTX_VAL[$1]=$("$2" "$1") CTX_STAMP[$1]=$st; fi
+	CTX=${CTX_VAL[$1]}
+}
+ctx_pct() { # ctx_pct USED WINDOW -> percent left, or nothing
+	[[ $1 =~ ^[0-9]+$ && $2 =~ ^[0-9]+$ ]] && (($2 > 0)) || return 0
+	local l=$((100 - ($1 * 100 + $2 / 2) / $2))
+	((l < 0)) && l=0
+	printf '%s' "$l"
+}
+claude_ctx_file() { # a transcript -> percent left
+	local u m w=${REVIVE_CLAUDE_WINDOW:-} dir=${1%/projects/*}
+	# The last turn of the main conversation (not a subagent's, not a placeholder): the end of
+	# the file is enough, and a line cut in half there is skipped.
+	read -r u m < <(tail -c 4000000 "$1" 2>/dev/null | grep '"usage"' |
+		jq -Rr 'fromjson? | select(.type == "assistant" and (.isSidechain | not) and .message.usage
+			and .message.model != "<synthetic>") | .message
+			| "\((.usage.input_tokens // 0) + (.usage.cache_read_input_tokens // 0)
+				+ (.usage.cache_creation_input_tokens // 0)) \(.model)"' 2>/dev/null | tail -n 1)
+	[[ -n ${u:-} ]] || return 0
+	if [[ -z $w ]]; then
+		w=200000
+		if ((u > 200000)) || [[ $m =~ ^claude-[a-z]+-5 || $m =~ ^claude-(opus|sonnet)-4-[6-9] || $m == *'[1m]'* ]] ||
+			grep -qs '"model": *"[^"]*\[1m\]' "$dir/settings.json"; then w=1000000; fi
+	fi
+	ctx_pct "$u" "$w"
+}
+codex_ctx_file() { # a rollout file -> percent left
+	local u w
+	read -r u w < <(tail -c 2000000 "$1" 2>/dev/null | grep '"token_count"' |
+		jq -Rr 'fromjson? | .payload | select(.type == "token_count" and .info)
+			| "\(.info.last_token_usage.total_tokens) \(.info.model_context_window)"' 2>/dev/null | tail -n 1)
+	ctx_pct "${u:-}" "${w:-}"
+}
+ctx_left() { # ctx_left KIND AGENT_PID PID... -> CTX: percent of its context window left, or nothing
+	local kind=$1 apid=$2 f sid p
+	shift 2
+	CTX="" # set here, not printed: the files' answers are kept between frames
+	case $kind in
+	claude)
+		for f in "$HOME"/.claude*/sessions/"$apid".json; do
+			[[ -f $f ]] || continue
+			sid=$(jq -r '.sessionId // empty' "$f" 2>/dev/null)
+			[[ $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
+			for f in "${f%/sessions/*}"/projects/*/"$sid".jsonl; do
+				[[ -f $f ]] && { ctx_cached "$f" claude_ctx_file; return 0; }
+			done
+			return 0
+		done ;;
+	codex)
+		for p in "$@"; do
+			while IFS= read -r f; do
+				[[ $f == */sessions/*/rollout-*.jsonl && -f $f ]] && { ctx_cached "$f" codex_ctx_file; return 0; }
+			done < <(open_files "$p")
+		done ;;
+	esac
+}
+
 screen_state() { # screen_state PANE -> asking / working / waiting, read off the bottom of the screen
 	local -a SL
 	mapfile -t SL < <(tm capture-pane -p -t "$1" 2>/dev/null)
@@ -598,7 +670,7 @@ tree_ticks() { # tree_ticks PID...: CPU ticks used so far by these processes (Li
 }
 
 # One record per pane, in these parallel arrays. P_RID is a linked computer's own pane id.
-P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=() P_HOST=() P_RID=()
+P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=()
 P_GROUPS=0
 # ssh_dest ARGS -> the host an `ssh ...` command line connects to, as agent-say link takes it
 # (no user@, no port), or nothing. Options that take a value are skipped with their value.
@@ -620,13 +692,13 @@ ssh_dest() {
 }
 linked() { [[ -f $ASTATE/links/$1/on ]]; }
 gather() {
-	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh
+	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh ctx
 	PCHILD=() PARGS=() PRSS=() PCPU=() PPAR=() PUID=() INPANE=()
 	while read -r pid ppid uid rss pcpu args; do
 		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu PPAR[$pid]=$ppid PUID[$pid]=$uid
 	done < <(ps -ww -eo pid=,ppid=,uid=,rss=,pcpu=,args= 2>/dev/null) # -ww: never cut to $COLUMNS
 	now=${EPOCHREALTIME:-$SECONDS}
-	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=() P_HOST=() P_RID=()
+	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=()
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
 		clean loc cmd path name
 		# The pane's process tree, breadth-first, and the first agent in it.
@@ -653,6 +725,7 @@ gather() {
 			cpu=0
 			for p in "${tree[@]}"; do cpu=$(awk -v a="$cpu" -v b="${PCPU[$p]:-0}" 'BEGIN{printf "%d", a + b + 0.5}'); done
 		fi
+		ctx=""
 		if [[ $id == "${TMUX_PANE:-}" ]]; then
 			st=self P_APP+=("panel") P_AGENT+=(0)
 		elif [[ -n $kind ]]; then
@@ -660,6 +733,8 @@ gather() {
 			if [[ $kind == claude && $st != asking ]]; then
 				[[ $(claude_status "$apid") == busy ]] && st=working || st=waiting
 			fi
+			ctx_left "$kind" "$apid" "${tree[@]}"
+			ctx=$CTX
 			P_APP+=("$kind") P_AGENT+=(1)
 		elif [[ $SHELLS == *" ${cmd#-} "* ]]; then
 			st=shell P_APP+=("${cmd#-}") P_AGENT+=(0)
@@ -676,7 +751,7 @@ gather() {
 		fi
 		P_SSH+=("$ssh") P_HOST+=("") P_RID+=("")
 		P_ID+=("$id") P_LOC+=("$loc") P_NAME+=("$name") P_STATE+=("$st")
-		P_DIR+=("$path") P_GIT+=("$(git_info "$path")") P_CPU+=("$cpu") P_MEM+=("$mem")
+		P_DIR+=("$path") P_GIT+=("$(git_info "$path")") P_CPU+=("$cpu") P_MEM+=("$mem") P_CTX+=("$ctx")
 	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
 	T_PREV=$now
 	outside_ssh
@@ -777,6 +852,7 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 }
 remote_panes() {
 	local d h f id loc name app st folder git cpu mem agent got v S=$'\x1f'
+	local -A rctx
 	P_GROUPS=0
 	# Other computers' screens are kept no longer than they're shown: a minute at most.
 	[[ -d $RDIR ]] && find "$RDIR" -maxdepth 1 \( -name '*.peek-*' -o -name '*.answered-*' \) -mmin +1 -delete 2>/dev/null
@@ -785,7 +861,7 @@ remote_panes() {
 		h=$(basename "$d")
 		[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
 		if ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
-		f="$RDIR/$h.rows" got=0 RVER[$h]=""
+		f="$RDIR/$h.rows" got=0 RVER[$h]="" rctx=()
 		# Rows a minute old or newer; older means that computer stopped answering.
 		if [[ -s $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
 			RVER[$h]=old # unless it says which version it is
@@ -794,6 +870,11 @@ remote_panes() {
 				if [[ ${id:0:40} =~ ^\#version\ (.*)$ && -z $loc ]]; then
 					v=${BASH_REMATCH[1]}
 					[[ $v =~ $VER_RE ]] && RVER[$h]=$v
+					continue
+				fi
+				# A pane's context left, on a line of its own before its row (for the same reason).
+				if [[ ${id:0:40} =~ ^\#ctx\ (%[0-9]{1,9})\ ([0-9]{1,3})$ && -z $loc ]]; then
+					((BASH_REMATCH[2] <= 100)) && rctx[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
 					continue
 				fi
 				# Only a complete row from a pane: a %id first and the agent flag last.
@@ -809,7 +890,7 @@ remote_panes() {
 				[[ $agent == 1 ]] || agent=0
 				P_ID+=("${name:+$name@$h}") P_LOC+=("${loc:0:20}") P_NAME+=("$name") P_APP+=("${app:0:12}")
 				P_STATE+=("$st") P_DIR+=("${folder:0:40}") P_GIT+=("${git:0:30}") P_CPU+=("$cpu") P_MEM+=("$mem")
-				P_AGENT+=("$agent") P_SSH+=("") P_HOST+=("$h") P_RID+=("$id")
+				P_CTX+=("${rctx[$id]:-}") P_AGENT+=("$agent") P_SSH+=("") P_HOST+=("$h") P_RID+=("$id")
 				got=1
 			done < <(head -n 200 "$f")
 		fi
@@ -821,7 +902,7 @@ remote_panes() {
 			while IFS= read -r name; do
 				[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || continue
 				P_ID+=("$name@$h") P_LOC+=("") P_NAME+=("$name") P_APP+=("") P_STATE+=("$st") P_DIR+=("")
-				P_GIT+=("") P_CPU+=(0) P_MEM+=(0) P_AGENT+=(0) P_SSH+=("") P_HOST+=("$h") P_RID+=("")
+				P_GIT+=("") P_CPU+=(0) P_MEM+=(0) P_CTX+=("") P_AGENT+=(0) P_SSH+=("") P_HOST+=("$h") P_RID+=("")
 				got=1
 			done < <(head -c 65536 "$d/names" 2>/dev/null | head -n 200)
 		fi
@@ -879,20 +960,21 @@ state_cell() { # coloured status, 18 characters wide
 }
 
 draw_panes() {
-	local i n=${#P_ID[@]} name key folder git cells mark wide=$((IW >= 100)) extra NW=15 FW=15 v
-	# Spare width goes to the name and folder columns.
+	local i n=${#P_ID[@]} name key folder git cells mark wide=$((IW >= 111)) extra NW=15 FW=15 v
+	# Spare width goes to the name and folder columns. The narrowest panel takes the name down
+	# to 10 to keep CTX LEFT.
 	if ((wide)); then
-		extra=$((IW - 99))
+		extra=$((IW - 111))
 		NW=$((15 + (extra / 2 > 14 ? 14 : extra / 2)))
 		FW=$((15 + (extra - NW + 15 > 20 ? 20 : extra - NW + 15)))
 	else
-		extra=$((IW - 69))
+		extra=$((IW - 81))
 		NW=$((15 + (extra > 14 ? 14 : extra)))
 	fi
 	# Built from the same widths as the rows below, so the columns line up.
 	local hdr="$(fld ' #' 6)$(fld NAME $((NW + 1)))$(fld APP 10)$(fld STATE 18)"
 	((wide)) && hdr+="$(fld FOLDER $((FW + 1)))$(fld GIT 14)"
-	hdr+="$(fld CPU 13)   MEM"
+	hdr+="$(fld CPU 13)   MEM  CTX LEFT"
 	row "$GRY$hdr$R"
 	local group="-"
 	for ((i = 0; i < n; i++)); do
@@ -933,12 +1015,20 @@ draw_panes() {
 		# Names-only rows from a link have nothing measured: leave CPU and memory blank.
 		if [[ ${P_STATE[i]} != linked && ${P_STATE[i]} != unreachable ]]; then
 			cells+="$BCYN$(meter "${P_CPU[i]}")$R $(printf '%4s%%' "${P_CPU[i]}")  $(printf '%6s' "$(human "${P_MEM[i]}")")"
+			cells+="  $(ctx_cell "${P_CTX[i]}" "${P_AGENT[i]}")"
 		fi
 		row "$cells"
 	done
 	((n)) || row "$GRY  no tmux panes found$R"
 }
 
+ctx_cell() { # ctx_cell PERCENT AGENT: context left as a meter, red as it runs out; a dash for
+	# an agent that keeps no count the panel can read, nothing for anything else
+	local c
+	if [[ -z $1 ]]; then (($2)) && printf '%s' "$GRY·····    –$R"; return 0; fi
+	if (($1 <= 15)); then c=$BRED; elif (($1 <= 40)); then c=$BYEL; else c=$BGRN; fi
+	printf '%s' "$c$(meter "$1")$R $(printf '%3s%%' "$1")"
+}
 kc() { printf '%s' "$BBLU[$B$BYEL$1$R$BBLU]$R$BWHT$2$R"; } # kc KEY LABEL: a key as the command bar shows it
 draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or the question it's asking
 	local -a L=()
@@ -1724,6 +1814,9 @@ if ((ROWS)); then
 	for i in "${!P_ID[@]}"; do
 		[[ ${P_STATE[i]} == self ]] && continue
 		folder=${P_DIR[i]##*/}
+		# Context left goes on a line of its own: a panel from before it skips the line, where a
+		# field added to the row would make it drop the row.
+		[[ -n ${P_CTX[i]} ]] && printf '#ctx %s %s\n' "${P_ID[i]}" "${P_CTX[i]}"
 		printf '%s\x1f' "${P_ID[i]}" "${P_LOC[i]}" "${P_NAME[i]}" "${P_APP[i]}" "${P_STATE[i]}" "$folder" "${P_GIT[i]}" "${P_CPU[i]}" "${P_MEM[i]}"
 		printf '%s\n' "${P_AGENT[i]}"
 	done
