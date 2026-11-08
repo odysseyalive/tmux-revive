@@ -112,6 +112,18 @@ check "U with nothing linked says so" "wait_ssh 'nothing is linked'"
 tm send-keys -t work:sshpanel l; sleep 0.7
 check "L opens a popup listing the ssh hosts" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q 'devbox.example  · ssh in' && sshscreen | grep -q 'other host'"
 check "the popup says how to close it" "sshscreen | grep -q 'Esc closes'"
+# Every row of the popup has its right edge in the same column as the top-right corner.
+popup_square() {
+	sshscreen | awk '
+		index($0, "LINK AGENTS ON") && !l { l = index($0, "╔"); r = index($0, "╗"); top = NR; next }
+		l && NR > top && !done {
+			c = substr($0, r, 1)
+			if (c != "║" && c != "╝") bad = 1
+			if (c == "╝") done = 1
+		}
+		END { exit !(l && r > l && done && !bad) }'
+}
+check "the popup's edges line up on every row" "popup_square"
 tm send-keys -t work:sshpanel Escape
 check "Esc closes the popup" "wait_ssh 'link cancelled' && ! sshscreen | grep -q 'LINK AGENTS ON'"
 tm send-keys -t work:sshpanel l; sleep 0.7; tm send-keys -t work:sshpanel Enter

@@ -931,18 +931,18 @@ pick() {
 	trap 'INTR=1' INT
 	while :; do
 		# Frame, title tab and shadow.
-		line="$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$(rep ═ $((w - ${#title} - 10)))╗$R"
+		line="$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$(rep ═ $((w - ${#title} - 11)))╗$R"
 		printf '%s' "$e[$top;${left}H$line"
 		printf '%s' "$e[$((top + 1));${left}H$bg$BWHT║$(rep ' ' $((w - 2)))║$R$GRY░$R"
 		for ((i = 0; i < ${#items[@]}; i++)); do
 			local key="  "
 			((i < 9)) && key="$((i + 1)) "
 			local txt
-			txt=$(fld " $key ${items[i]}" $((w - 4)))
+			txt=$(fld " $key ${items[i]}" $((w - 5)))
 			if ((i == sel)); then
 				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║ $hi$B▶$txt$R$bg$BWHT ║$R$GRY░$R"
 			else
-				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║  $BYEL$(fld "$key" 3)$BWHT$(fld "${items[i]}" $((w - 8)))  ║$R$GRY░$R"
+				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║  $BYEL$(fld "$key" 3)$BWHT$(fld "${items[i]}" $((w - 9)))  ║$R$GRY░$R"
 			fi
 		done
 		printf '%s' "$e[$((top + 2 + ${#items[@]}));${left}H$bg$BWHT║$(rep ' ' $((w - 2)))║$R$GRY░$R"
