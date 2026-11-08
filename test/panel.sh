@@ -138,6 +138,40 @@ check "a number picks from the list and unlinks it" "wait_ssh 'unlinked devbox.e
 tm send-keys -t work:sshpanel q
 tm kill-window -t work:remote 2>/dev/null
 
+echo "other computers"
+# A second private tmux server stands in for a linked computer, and a fake ssh runs the
+# panel there: whatever command it's given, it answers as that computer's panel would.
+tmux -L "revive-panel-remote-$$" -f /dev/null new-session -d -s far -x 120 -y 30 "bash --norc --noprofile"
+tmux -L "revive-panel-remote-$$" -f /dev/null split-window -d -t far "top -d 5"
+tmux -L "revive-panel-remote-$$" -f /dev/null set-option -p -t far:0.1 @agent far-top
+rsock=$(tmux -L "revive-panel-remote-$$" -f /dev/null display -p '#{socket_path}')
+cat >"$T/fakessh" <<EOF
+#!/bin/bash
+unset TMUX TMUX_PANE
+REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data exec bash $ROOT/scripts/panel.sh --rows
+EOF
+printf '#!/bin/sh\nexit 255\n' >"$T/deadssh"
+chmod +x "$T/fakessh" "$T/deadssh"
+st=$(dirname "$AGENT_SAY_MAILBOX")
+mkdir -p "$st/links/far.example"; touch "$st/links/far.example/on"; printf 'far-top\nfar-two\n' >"$st/links/far.example/names"
+far() { tm run-shell "AGENT_SAY_SSH=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
+out=$(far "$T/fakessh")
+check "panes are grouped by computer" "grep -q 'this computer' <<<\"\$out\" && grep -q 'FAR.EXAMPLE · linked' <<<\"\$out\""
+check "a linked computer's panes show with their state" "grep -q 'far-top *top *▸ running' <<<\"\$out\""
+check "and its shell panes too" "grep -A3 'FAR.EXAMPLE' <<<\"\$out\" | grep -q 'bash *· shell'"
+check "the whole frame still fits" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
+rm -f "$st/panel/far.example.rows"
+out=$(far "$T/deadssh")
+check "if it can't be asked, the link's names show instead" "grep -q 'far-two *◌ linked' <<<\"\$out\""
+# Hostile rows from the other side: control characters, a bad state, junk lines.
+printf '%%9\x1f0:0.0\x1fevil\x1fapp\x1b]52;c;aGk=\x07\x1fpwned\x1ffold\x1fmain\x1f99999\x1fabc\x1f1\nnot a row at all\n' >"$T/hostile"
+printf '#!/bin/sh\ncat %s\n' "$T/hostile" >"$T/hostilessh"; chmod +x "$T/hostilessh"
+rm -f "$st/panel/far.example.rows"
+out=$(tm run-shell "AGENT_SAY_SSH=$T/hostilessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
+check "rows from the other side are cleaned and checked" "grep -q 'evil' <<<\"\$out\" && ! grep -q \$'\\e]52' <<<\"\$out\" && ! grep -q 'pwned' <<<\"\$out\" && ! grep -q 'not a row' <<<\"\$out\""
+rm -rf "$st/links/far.example" "$st/panel"
+tmux -L "revive-panel-remote-$$" -f /dev/null kill-server 2>/dev/null
+
 echo "splash"
 tm new-window -d -t work -n splash "env REVIVE_PANEL_SPLASH=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh"
 check "the dial-up splash plays" "for _ in \$(seq 1 40); do tm capture-pane -p -t work:splash | grep -q 'CONNECT 33600' && break; sleep 0.1; done; tm capture-pane -p -t work:splash | grep -q 'CONNECT 33600'"

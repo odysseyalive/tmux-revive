@@ -5,6 +5,7 @@
 #
 #   panel.sh            run it (redraws every couple of seconds)
 #   panel.sh --once     draw one frame to stdout and exit (tests, a quick look)
+#   panel.sh --rows     this computer's panes as rows for another computer's panel (over a link)
 #
 # REVIVE_PANEL_POPUP=1 (set by @revive-panel-key) closes the panel after a jump, since a popup
 # would otherwise sit on top of the pane you jumped to.
@@ -12,8 +13,9 @@ set -uo pipefail
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-ONCE=0
+ONCE=0 ROWS=0
 [[ ${1:-} == --once ]] && ONCE=1
+[[ ${1:-} == --rows ]] && ROWS=1
 
 # Widths below are counted in characters, which needs a UTF-8 locale.
 if [[ $(locale charmap 2>/dev/null) != UTF-8 ]]; then
@@ -496,7 +498,8 @@ tree_ticks() { # tree_ticks PID...: CPU ticks used so far by these processes (Li
 }
 
 # One record per pane, in these parallel arrays.
-P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=()
+P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=() P_HOST=()
+P_GROUPS=0
 # ssh_dest ARGS -> the host an `ssh ...` command line connects to, as agent-say link takes it
 # (no user@, no port), or nothing. Options that take a value are skipped with their value.
 ssh_dest() {
@@ -523,7 +526,7 @@ gather() {
 		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu PPAR[$pid]=$ppid
 	done < <(ps -ww -eo pid=,ppid=,rss=,pcpu=,args= 2>/dev/null) # -ww: never cut to $COLUMNS
 	now=${EPOCHREALTIME:-$SECONDS}
-	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=()
+	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_AGENT=() P_SSH=() P_HOST=()
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
 		clean loc cmd path name
 		# The pane's process tree, breadth-first, and the first agent in it.
@@ -571,12 +574,83 @@ gather() {
 				[[ -n $ssh ]] && break
 			done
 		fi
-		P_SSH+=("$ssh")
+		P_SSH+=("$ssh") P_HOST+=("")
 		P_ID+=("$id") P_LOC+=("$loc") P_NAME+=("$name") P_STATE+=("$st")
 		P_DIR+=("$path") P_GIT+=("$(git_info "$path")") P_CPU+=("$cpu") P_MEM+=("$mem")
 	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
 	T_PREV=$now
 	outside_ssh
+	((ROWS)) || remote_panes
+}
+
+# ------------------------------------------------------------------ other computers
+# Panes on linked computers: each link's other end is asked for its panel rows over the
+# link's own ssh connection, in the background every 10 s so the panel never waits on it.
+# Rows from there are treated as untrusted: cleaned, and every field checked. If that
+# computer's tmux-revive is too old to answer, or it can't be reached, its pane names (which
+# the link already keeps) are shown instead.
+RDIR="$ASTATE/panel"
+REMOTE_ROWS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --rows'
+declare -A RFETCH_T=() RFETCH_PID=()
+fetch_rows() {
+	# shellcheck disable=SC2086 # AGENT_SAY_SSH may carry its own arguments, as in agent-say
+	timeout 8 ${AGENT_SAY_SSH:-ssh} -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto \
+		-o "ControlPath=$ASTATE/ssh-%C" -o ControlPersist=120 "$1" "$REMOTE_ROWS_CMD" </dev/null 2>/dev/null
+}
+remote_fetch() { # remote_fetch HOST [now]
+	local h=$1 f="$RDIR/$1.rows"
+	mkdir -p "$RDIR"
+	if [[ ${2:-} == now ]]; then
+		if fetch_rows "$h" >"$f.new"; then mv -f "$f.new" "$f"; else rm -f "$f.new"; fi
+		return
+	fi
+	[[ -n ${RFETCH_PID[$h]:-} ]] && kill -0 "${RFETCH_PID[$h]}" 2>/dev/null && return
+	[[ -n ${RFETCH_T[$h]:-} ]] && ((SECONDS - RFETCH_T[$h] < 10)) && return
+	RFETCH_T[$h]=$SECONDS
+	(if fetch_rows "$h" >"$f.new"; then mv -f "$f.new" "$f"; else rm -f "$f.new"; fi) &
+	RFETCH_PID[$h]=$!
+}
+remote_panes() {
+	local d h f id loc name app st folder git cpu mem agent got S=$'\x1f'
+	P_GROUPS=0
+	for d in "$ASTATE"/links/*/; do
+		[[ -f $d/on ]] || continue
+		h=$(basename "$d")
+		[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
+		if ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
+		f="$RDIR/$h.rows" got=0
+		# Rows a minute old or newer; older means that computer stopped answering.
+		if [[ -s $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
+			while IFS=$S read -r id loc name app st folder git cpu mem agent; do
+				# Only a complete row from a pane: a %id first and the agent flag last.
+				[[ $id =~ ^%[0-9]+$ && $agent =~ ^[01]$ ]] || continue
+				clean loc name app st folder git
+				[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || name=""
+				case $st in asking | working | waiting | shell | program) ;; *) st=program ;; esac
+				[[ $cpu =~ ^[0-9]{1,4}$ ]] || cpu=0
+				[[ $mem =~ ^[0-9]{1,10}$ ]] || mem=0
+				[[ $agent == 1 ]] || agent=0
+				P_ID+=("${name:+$name@$h}") P_LOC+=("${loc:0:20}") P_NAME+=("$name") P_APP+=("${app:0:12}")
+				P_STATE+=("$st") P_DIR+=("${folder:0:40}") P_GIT+=("${git:0:30}") P_CPU+=("$cpu") P_MEM+=("$mem")
+				P_AGENT+=("$agent") P_SSH+=("") P_HOST+=("$h")
+				got=1
+			done < <(head -n 200 "$f")
+		fi
+		if ((!got)); then
+			# Names only, from the link.
+			st=linked
+			[[ -s $f || ! -s $d/error ]] || st=unreachable
+			while IFS= read -r name; do
+				[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || continue
+				P_ID+=("$name@$h") P_LOC+=("") P_NAME+=("$name") P_APP+=("") P_STATE+=("$st") P_DIR+=("")
+				P_GIT+=("") P_CPU+=(0) P_MEM+=(0) P_AGENT+=(0) P_SSH+=("") P_HOST+=("$h")
+				got=1
+			done < <(head -n 200 "$d/names" 2>/dev/null)
+		fi
+		((got)) && ((P_GROUPS++))
+	done
+	# A heading for this computer too, once there's more than one.
+	((P_GROUPS)) && ((P_GROUPS++))
 }
 
 # ssh sessions in terminals outside tmux (a kitty tab, another window): their hosts can be
@@ -619,6 +693,8 @@ state_cell() { # coloured status, 18 characters wide
 	waiting) printf '%s' "$BGRN◆ WAITING ON YOU  $R" ;;
 	shell) printf '%s' "$GRY· shell           $R" ;;
 	self) printf '%s' "$BBLU✦ this panel      $R" ;;
+	linked) printf '%s' "$GRY◌ linked          $R" ;;
+	unreachable) printf '%s' "$BRED◌ unreachable     $R" ;;
 	*) printf '%s' "$CYN▸ running         $R" ;;
 	esac
 }
@@ -639,7 +715,17 @@ draw_panes() {
 	((wide)) && hdr+="$(fld FOLDER $((FW + 1)))$(fld GIT 14)"
 	hdr+="$(fld CPU 13)   MEM"
 	row "$GRY$hdr$R"
+	local group="-"
 	for ((i = 0; i < n; i++)); do
+		# One heading per computer, once panes from a linked one are listed.
+		if ((P_GROUPS)) && [[ ${P_HOST[i]} != "$group" ]]; then
+			group=${P_HOST[i]}
+			if [[ -z $group ]]; then
+				row "$BLU▓▒░$R $B$BWHT${HOST^^}$R $GRY· this computer$R"
+			else
+				row "$BLU▓▒░$R $B$BWHT${group^^}$R $GRY· linked$R"
+			fi
+		fi
 		name=${P_NAME[i]:-${P_LOC[i]}}
 		if ((i < 9)); then key="$BBLU[$BWHT$B$((i + 1))$R$BBLU]$R"; else key="$GRY · $R"; fi
 		folder=${P_DIR[i]/#$HOME/\~}
@@ -655,7 +741,10 @@ draw_panes() {
 			cells+="$BBLU$(fld "$folder" "$FW")$R "
 			if [[ $git == *\* ]]; then cells+="$BYEL$(fld "$git" 13)$R "; else cells+="$GRN$(fld "$git" 13)$R "; fi
 		fi
-		cells+="$BCYN$(meter "${P_CPU[i]}")$R $(printf '%4s%%' "${P_CPU[i]}")  $(printf '%6s' "$(human "${P_MEM[i]}")")"
+		# Names-only rows from a link have nothing measured: leave CPU and memory blank.
+		if [[ ${P_STATE[i]} != linked && ${P_STATE[i]} != unreachable ]]; then
+			cells+="$BCYN$(meter "${P_CPU[i]}")$R $(printf '%4s%%' "${P_CPU[i]}")  $(printf '%6s' "$(human "${P_MEM[i]}")")"
+		fi
 		row "$cells"
 	done
 	((n)) || row "$GRY  no tmux panes found$R"
@@ -665,7 +754,11 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen
 	local -a L=()
 	local id=${P_ID[SEL]:-} i end start shown=0
 	sect "PEEK · ${P_NAME[SEL]:-${P_LOC[SEL]:-}}"
-	[[ -n $id ]] && mapfile -t L < <(tm capture-pane -p -t "$id" 2>/dev/null)
+	if [[ -n ${P_HOST[SEL]:-} ]]; then
+		L=("" "  on ${P_HOST[SEL]}: open the panel there to peek at it")
+	elif [[ -n $id ]]; then
+		mapfile -t L < <(tm capture-pane -p -t "$id" 2>/dev/null)
+	fi
 	# The last lines on its screen, trailing blank rows aside.
 	for ((end = ${#L[@]} - 1; end >= 0; end--)); do [[ ${L[end]} =~ ^[[:space:]]*$ ]] || break; done
 	start=$((end - $1 + 1))
@@ -791,7 +884,7 @@ draw() {
 	sect "PANES"
 	draw_panes
 	# CPU across every pane, as a running graph.
-	for i in "${P_CPU[@]}"; do total=$((total + i)); done
+	for i in "${!P_CPU[@]}"; do [[ -z ${P_HOST[i]} ]] && total=$((total + P_CPU[i])); done
 	CPU_HIST+=("$total")
 	((${#CPU_HIST[@]} > 200)) && CPU_HIST=("${CPU_HIST[@]: -200}")
 	vlen "$counts"
@@ -802,7 +895,7 @@ draw() {
 	local bottom=$(( ${#MSG[@]} > ${#SIDE[@]} ? ${#MSG[@]} : ${#SIDE[@]} ))
 	# Fixed rows: frame 2, banner, section bars 3, column header 1, totals 1, keys 1. The peek
 	# takes up to 14 of the rest and the scene the remainder, so the panel fills its pane.
-	avail=$((lines - BH - 8 - n - bottom))
+	avail=$((lines - BH - 8 - n - P_GROUPS - bottom))
 	# No peek at the panel's own pane: it would only show itself.
 	if ((PEEK && n && avail >= 4)) && [[ ${P_STATE[SEL]:-} != self ]]; then
 		peek_h=$((avail - 1 > 14 ? 14 : avail - 1))
@@ -974,6 +1067,13 @@ act() {
 	local id=${P_ID[SEL]:-} name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} out
 	case $1 in
 	j | J)
+		if [[ -n ${P_HOST[SEL]:-} ]]; then
+			# Not a pane here: go to the pane that's ssh'd into that computer, if there is one.
+			local h=${P_HOST[SEL]} j
+			id=""
+			for j in "${!P_SSH[@]}"; do [[ ${P_SSH[j]} == "$h" ]] && { id=${P_ID[j]}; name="${P_NAME[j]:-${P_LOC[j]}} (ssh to $h)"; break; }; done
+			[[ -n $id ]] || { flash "${P_NAME[SEL]:-that pane} is on $h, and no pane here is ssh'd there"; return; }
+		fi
 		[[ -n $id ]] || return
 		if [[ -n ${TMUX:-} ]]; then
 			tm switch-client -t "$id" 2>/dev/null
@@ -988,11 +1088,12 @@ act() {
 			exec tmux attach -t "${P_LOC[SEL]%%:*}"
 		fi ;;
 	m | M)
-		[[ -n $id ]] || return
+		[[ -n $id ]] || { [[ -n ${P_HOST[SEL]:-} ]] && flash "that pane has no name; name it on ${P_HOST[SEL]} to message it"; return; }
 		ask "Message to $name:" || { flash "message cancelled"; return; }
 		out=$("$ASAY" --from panel "$id" "$REPLY" 2>&1 | tail -n 1)
 		flash "${out#agent-say: }" ;;
 	n | N)
+		[[ -n ${P_HOST[SEL]:-} ]] && { flash "rename it on ${P_HOST[SEL]} (agent-say name there)"; return; }
 		[[ -n $id ]] || return
 		ask "New name for $name:" || { flash "rename cancelled"; return; }
 		out=$(AGENT_SAY_PANE=$id "$ASAY" name "$REPLY" 2>&1 | head -n 1)
@@ -1079,6 +1180,18 @@ splash() {
 }
 
 # ------------------------------------------------------------------ main
+if ((ROWS)); then
+	gather
+	sleep 0.3 # CPU is measured between two looks
+	gather
+	for i in "${!P_ID[@]}"; do
+		[[ ${P_STATE[i]} == self ]] && continue
+		folder=${P_DIR[i]##*/}
+		printf '%s\x1f' "${P_ID[i]}" "${P_LOC[i]}" "${P_NAME[i]}" "${P_APP[i]}" "${P_STATE[i]}" "$folder" "${P_GIT[i]}" "${P_CPU[i]}" "${P_MEM[i]}"
+		printf '%s\n' "${P_AGENT[i]}"
+	done
+	exit 0
+fi
 if ((ONCE)); then
 	gather
 	sleep 0.5 # CPU is measured between two looks
