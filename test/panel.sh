@@ -234,8 +234,10 @@ hwhole() { local s; s=$(hscreen); [[ ${s%%$'\n'*} == ╔* && ${s##*$'\n'} == *�
 hwait 'C O N T R O L'
 check "the command bar offers ? for help" "hscreen | grep -qF '[?] help'"
 tm send-keys -t work:helpw '?'
-check "? opens the help page, with its banner" "hwait 'THE REVIVE CHEAT SHEET' && hscreen | grep -q 'HELP · HOW TO USE REVIVE'"
+check "? opens the help page, with its banner" "hwait 'C H E A T   S H E E T' && hscreen | grep -q 'HELP · HOW TO USE REVIVE'"
 check "in place of the pane list, under the panel's banner" "! hscreen | grep -q '✦ this panel\|PANES\|MESSAGES' &&hscreen | grep -q 'C O N T R O L' && hwhole"
+# A short pane, so there's a page to scroll through.
+tm resize-window -t work:helpw -x 130 -y 24; sleep 1.5
 p0=$(hpos)
 check "it says how much of the page shows ($p0)" "[[ '$p0' == 1-* ]] && [[ \${p0##* } -gt \${p0%% *} ]]"
 tm send-keys -t work:helpw Down
@@ -247,7 +249,8 @@ tm send-keys -t work:helpw End; sleep 0.5
 p2=$(hpos) last=${p2#*-} last=${last%% *}
 check "End shows the bottom: the ads ($p2)" "[[ $last == \${p2##* } ]] && hscreen | grep -q 'playwright-mcp'"
 tm send-keys -t work:helpw Home
-check "Home goes back to the top" "hwait ' 1-' && hscreen | grep -q 'THE REVIVE CHEAT SHEET'"
+check "Home goes back to the top" "hwait ' 1-' && hscreen | grep -q 'C H E A T   S H E E T'"
+tm resize-window -t work:helpw -x 130 -y 40; sleep 1
 tm send-keys -t work:helpw i
 check "i asks before installing, showing what it would run" "hwait 'yes, run it' && hscreen | grep -q 'touch $T/installed'"
 tm send-keys -t work:helpw n
@@ -277,6 +280,11 @@ for c in 60 80 100 160; do
 	w=$((c < 80 ? 80 : c)) # the panel is never narrower than 80
 	check "the help page fits $c columns ($(awk '{w[length]=1} END{for (k in w) printf "%s ", k}' <<<"$out"))" "grep -q 'Claude Workforce' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$w ' ]]"
 done
+# A few suggestions to get going, not a reference: the keys are on the panel already.
+out=$(hframe 160)
+check "it has no key reference or column list" "! grep -qiE 'key reference|What the columns mean|Remember the old BBS|^║ +\\[[^]]+\\] {2,}[A-Z]' <<<\"\$out\" && grep -q 'shop-dev' <<<\"\$out\" && grep -q 'press L' <<<\"\$out\""
+hp=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
+check "at 160x50 it fits on one screen ($hp)" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]]"
 
 echo "context left"
 # Stand-in agents (copies of bash named claude and codex) with the records the real ones keep:

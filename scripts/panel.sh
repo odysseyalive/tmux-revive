@@ -162,10 +162,14 @@ banner_rows REVIVE
 declare -A BIG=(
 	[R]="█████▄|██   █|█████▀|██  ▀▄|██   █" [E]="██████|██    |█████ |██    |██████"
 	[V]="██  ██|██  ██|▐█  █▌| ▀██▀ |  ▀▀  " [I]="██|██|██|██|██"
+	[H]="██  ██|██  ██|██████|██  ██|██  ██" [L]="██    |██    |██    |██    |██████"
+	[P]="█████▄|██   █|█████▀|██    |██    "
 )
-big_banner() { # big_banner WORD -> BIG_ROWS[0..5]
+big_banner() { # big_banner WORD [COLOUR x5] -> BIG_ROWS[0..5]: a colour for each row, top down
 	local w=$1 i r c ch up cur out parts
+	shift
 	local -a G=("" "" "" "" "") shade=("$B$BWHT" "$B$BCYN" "$B$BCYN" "$CYN" "$BBLU")
+	(($#)) && shade=("$@")
 	for ((i = 0; i < ${#w}; i++)); do
 		IFS='|' read -ra parts <<<"${BIG[${w:i:1}]}"
 		for r in 0 1 2 3 4; do G[r]+="${parts[r]} "; done

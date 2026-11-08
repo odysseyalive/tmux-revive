@@ -66,8 +66,9 @@ help_ink() {
 # hpush CONTENT: one row of the page, inside the open box if there is one.
 hpush() {
 	[[ -z $1 ]] && HBLANK=1 || HBLANK=0
-	if ((HBOX)); then padv "$1" $((HW - 5)); HROWS+=("$HBC║$R $PADV $HBC║$R$GRY░$R")
-	else HROWS+=("$1"); fi
+	if ((HBOX)); then padv "$1" $((HBW - 5)); HB+=("$HBC║$R $PADV $HBC║$R$GRY░$R"); return; fi
+	if ((${#HPEND[@]})); then [[ -z $1 ]] && return; hflush; fi
+	HROWS+=("$1")
 }
 # hhang PREFIX PREFIX-WIDTH TEXT: TEXT wrapped beside PREFIX, its later lines indented under it
 hhang() {
@@ -83,36 +84,94 @@ hhang() {
 }
 hpara() { # the paragraph gathered so far, wrapped
 	[[ -n $HPARA ]] || return 0
-	hhang "" 0 "$HPARA"
+	hhang " " 1 "$HPARA"
 	HPARA=""
+}
+# hrule WIDTH -> RULE: a line that fades out to the right, bright and heavy to faint and thin
+hrule() {
+	local q=$(($1 / 4)) r=""
+	rep ━ "$q"; r+="$BCYN$REP"
+	rep ━ "$q"; r+="$BBLU$REP"
+	rep ─ "$q"; r+="$BLU$REP"
+	rep ┄ $(($1 - 3 * q)); r+="$GRY$REP$R"
+	RULE=$r
+}
+# hbutton KEY LABEL: a solid button, the key on a black cap at its left. Half blocks above and
+# below pad it, and a fade frames it from outside: nothing shaded touches the words.
+hbutton() {
+	local fg bg cap blk n
+	if ((HBN % 2)); then fg=$BLU bg="$e[44m$B$BWHT" cap="$e[40m$B$BWHT"
+	else fg=$BYEL bg="$e[103m$B$e[30m" cap="$e[40m$B$BYEL"; fi
+	HBN=$((HBN + 1))
+	blk="$bg $cap $1 $R$bg  $2  $R"
+	n=$((${#2} + 8))
+	rep ▄ "$n"; hpush "     $fg$REP$R"
+	hpush "  $fg░▒▓$R$blk$fg▓▒░$R"
+	rep ▀ "$n"; hpush "     $fg$REP$R"
+}
+# The boxes. hbox_close lays the open one out: under the page, or, on a wide panel, beside the
+# box before it (HPEND holds that one until its partner comes). hflush puts a lone one down.
+hbox_close() {
+	local bot sh blank i
+	rep ═ $((HBW - 3)); bot="$HBC╚$REP╝$R$GRY░$R"
+	rep ░ $((HBW - 1)); sh=" $GRY$REP$R"
+	printf -v blank '%*s' $((HBW - 3)) ''
+	blank="$HBC║$R$blank$HBC║$R$GRY░$R"
+	HBOX=0 HBLANK=0
+	if ((!HSIDE)); then HROWS+=("${HB[@]}" "$bot" "$sh"); return; fi
+	if ((!${#HPEND[@]})); then HPEND=("${HB[@]}") HPEND_END=("$blank" "$bot" "$sh"); return; fi
+	# Two boxes side by side end on the same row.
+	while ((${#HPEND[@]} < ${#HB[@]})); do HPEND+=("${HPEND_END[0]}"); done
+	while ((${#HB[@]} < ${#HPEND[@]})); do HB+=("$blank"); done
+	HPEND+=("${HPEND_END[@]:1}") HB+=("$bot" "$sh")
+	for i in "${!HB[@]}"; do HROWS+=("${HPEND[i]}  ${HB[i]}"); done
+	HPEND=()
+}
+hflush() {
+	((${#HPEND[@]})) || return 0
+	HROWS+=("${HPEND[@]}" "${HPEND_END[@]:1}")
+	HPEND=()
 }
 
 # help_build WIDTH -> HROWS: help.txt drawn for a page WIDTH characters wide
 help_build() {
-	local ln k t i c pad
-	local -a tags=() letters=("" "" "")
-	HW=$1 HROWS=() HBOX=0 HBLANK=1 HPARA="" HBC=$BMAG
-	local boxes=0 bcol=(5 6)
-	# The banner: HELP in block letters, the .tag lines beside it.
+	local ln k t i c tw pad
+	local -a tags=() big sun
+	HW=$1 HROWS=() HBOX=0 HBLANK=1 HPARA="" HBC=$BMAG HB=() HPEND=() HPEND_END=() HBN=0
+	HSIDE=$((HW >= 110)) HBW=$HW
+	((HSIDE)) && HBW=$(((HW - 2) / 2))
+	local boxes=0 heads=0 bcol=(5 6) hcol=(4 5 6)
+	# The banner: HELP in big letters going down a sunset, the .tag lines beside it, and the
+	# sun itself going down behind a grid when there's room for it.
 	if [[ -r $HELP_FILE ]]; then
 		while IFS= read -r ln; do clean ln; [[ $ln == .tag\ * ]] && tags+=("${ln#.tag }"); done <"$HELP_FILE"
 	fi
-	local -A HG=([H]="█ █|█▀█|▀ ▀" [E]="█▀▀|█▀▀|▀▀▀" [L]="█  |█  |▀▀▀" [P]="█▀█|█▀▀|▀  ")
-	local -a parts shade=("$B$BWHT" "$BCYN" "$BBLU")
-	for c in H E L P; do
-		IFS='|' read -ra parts <<<"${HG[$c]}"
-		for i in 0 1 2; do letters[i]+="${parts[i]} "; done
-	done
+	local keep=("${BIG_ROWS[@]}")
+	big_banner HELP "$B$BWHT" "$B$BYEL" "$YEL" "$BRED" "$BMAG"
+	big=("${BIG_ROWS[@]}") BIG_ROWS=("${keep[@]}")
+	sun=("$GRY ·    $BYEL▄▄▄▄▄▄▄$GRY    + $R" "$BYEL   ▄███████████▄   $R" "$YEL  ███████████████  $R"
+		"$BRED  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  $R" "$BMAG   ▀▀▀▀▀▀▀▀▀▀▀▀▀   $R" "$MAG━┿━━━┿━━━┿━━━┿━━━┿━$R")
+	vlen "${big[0]}"
+	tw=$((HW - VLEN - 5)) # the room beside the letters
+	local -a side=("" "" "" "" "" "")
+	if ((${#tags[@]})); then
+		tab "${tags[0]}" 5
+		side[1]=$TAB
+	fi
+	if ((${#tags[@]} > 1)); then
+		help_wrap "${tags[1]}" "$tw"
+		for i in 0 1 2; do [[ -n ${WRAP[i]:-} ]] && side[i + 3]="$B$BCYN${WRAP[i]}$R"; done
+	fi
+	local sw=0
+	for i in "${!side[@]}"; do vlen "${side[i]}"; ((VLEN > sw)) && sw=$VLEN; done
 	HROWS+=("")
-	for i in 0 1 2; do
-		t=${tags[i]:-}
-		if ((i == 0)) && [[ -n $t ]]; then t="$BBLU░▒▓$R$B$BWHT $t $R$BBLU▓▒░$R"
-		elif ((i == 1)); then t="$B$BCYN$t$R"
-		else t="$GRY$t$R"; fi
-		HROWS+=("  $BLU░▒▓$R ${shade[i]}${letters[i]}$R$BLU▓▒░$R   $t")
+	for i in 0 1 2 3 4 5; do
+		padv "${side[i]}" "$sw"
+		t="  ${big[i]}   $PADV"
+		((tw - sw >= 24)) && t+="    ${sun[i]}"
+		HROWS+=("$t")
 	done
-	rep ▀ $((HW - 4))
-	HROWS+=("  $BLU$REP$R")
+	HBLANK=0
 	if [[ ! -r $HELP_FILE ]]; then
 		HROWS+=("" "  ${BRED}help.txt is missing from $(dirname "$HELP_FILE")$R")
 		HELP_W=$HW
@@ -120,79 +179,67 @@ help_build() {
 	fi
 	while IFS= read -r ln || [[ -n $ln ]]; do
 		clean ln
-		HCW=$((HBOX ? HW - 5 : HW - 2))
+		HCW=$((HBOX ? HBW - 5 : HW - 2))
 		case $ln in
 		\;* | .tag\ *) continue ;;
 		"") hpara; ((HBLANK)) || hpush "" ;;
 		"= "*)
 			hpara
+			hflush
 			((HBLANK)) || HROWS+=("")
-			tab "${ln#= }" 4
-			t=$TAB
+			heads=$((heads + 1))
+			tab "$heads ${ln#= }" "${hcol[(heads - 1) % 3]}"
+			t=" $TAB "
 			vlen "$t"
-			rep ─ $((HW - VLEN - 1))
-			HROWS+=("$t$BLU$REP$R")
-			HROWS+=("") HBLANK=1 ;;
+			hrule $((HW - VLEN))
+			HROWS+=("$t$RULE")
+			HBLANK=0 ;;
 		.box\ *)
 			hpara
-			((HBLANK)) || HROWS+=("")
+			((HBLANK || ${#HPEND[@]})) || HROWS+=("")
 			c=${bcol[boxes % 2]} boxes=$((boxes + 1))
 			HBC=$'\e'"[9${c}m"
 			tab "${ln#.box }" "$c"
 			t="$HBC╔═$TAB"
 			vlen "$t"
-			rep ═ $((HW - VLEN - 2))
-			HROWS+=("$t$HBC$REP╗$R")
+			rep ═ $((HBW - VLEN - 2))
+			HB=("$t$HBC$REP╗$R ")
 			HBOX=1
 			hpush "" ;;
 		.end)
 			hpara
 			((HBLANK)) || hpush ""
-			rep ═ $((HW - 3))
-			t=$REP
-			rep ░ $((HW - 1))
-			HROWS+=("$HBC╚$t╝$R$GRY░$R" " $GRY$REP$R")
-			HBOX=0 HBLANK=0 ;;
+			hbox_close ;;
 		.button\ *)
 			hpara
 			t=${ln#.button } k=${t%% *} t=${t#* }
-			c=${HBC/9/4} # the box's colour as a background
-			hpush "  $HBC░▒▓$R$e[103m$e[30m$B [$k] $R$c$B$BWHT $t $R$HBC▓▒░$R  $GRY← press $k$R" ;;
+			hbutton "$k" "$t" ;;
 		"$ "*)
 			hpara
 			# Too long for a line: broken after a / or a space where there's one late enough.
-			t=${ln#\$ } pad="  $GRY\$$R "
+			t=${ln#\$ } pad="     $GRY\$$R "
 			while [[ -n $t ]]; do
-				c=$((HCW - 4))
+				c=$((HCW - 8))
 				if ((${#t} > c)); then
 					k=${t:0:c} k=${k%[/ ]*}
 					((${#k} >= c / 2)) && c=$((${#k} + 1))
 				fi
 				hpush "$pad$BCYN${t:0:c}$R"
-				t=${t:c} pad="    "
+				t=${t:c} pad="       "
 			done ;;
-		\[*\]\ *)
-			hpara
-			k=${ln%%]*} k=${k#[} t=${ln#*] }
-			printf -v pad '%*s' $((7 - ${#k})) ''
-			hhang " $BBLU[$B$BYEL$k$R$BBLU]$R$pad" 10 "$t" ;;
-		\<*\>\ *)
-			hpara
-			k=${ln%%>*} k=${k#<} t=${ln#*> }
-			fld "$k" 9
-			hhang " $B$BCYN$FLD$R" 10 "$t" ;;
 		"- "*)
 			hpara
 			hhang "  $BYEL▪$R " 4 "${ln#- }" ;;
 		[0-9].\ * | [0-9][0-9].\ *)
 			hpara
-			k=${ln%%.*}
-			hhang " $B$BYEL$(printf '%2s' "$k")$R$BBLU▸$R " 5 "${ln#*. }" ;;
+			printf -v k '%2s' "${ln%%.*}"
+			hhang " $B$BYEL$k$R$BBLU▸$R " 5 "${ln#*. }" ;;
 		*) HPARA+="${HPARA:+ }$ln" ;;
 		esac
 	done <"$HELP_FILE"
 	hpara
-	((HBOX)) && { rep ═ $((HW - 3)); HROWS+=("$HBC╚$REP╝$R"); }
+	((HBOX)) && hbox_close
+	hflush
 	HELP_W=$HW
 }
 
