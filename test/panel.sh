@@ -129,6 +129,14 @@ tm send-keys -t work:panel p; sleep 1.5
 check "P hides the peek box" "! screen | grep -q 'PEEK'"
 tm send-keys -t work:panel Down
 check "the arrow keys move the selection" "wait_screen '[3] ▶'"
+# Held arrows: quick to follow, nothing echoed, nothing scrolled.
+tm send-keys -t work:panel Up Up
+quick() { local s=$EPOCHREALTIME; tm send-keys -t work:panel Down; for _ in $(seq 1 40); do screen | grep -qF "[$1] ▶" && break; sleep 0.05; done; awk -v a=$s -v b=$EPOCHREALTIME 'BEGIN{exit !(b - a < 1.0)}'; }
+wait_screen '[1] ▶' >/dev/null
+check "an arrow key moves the selection within a second" "quick 2"
+for _ in 1 2 3 4 5 6; do tm send-keys -t work:panel Down Up; done; sleep 1.5
+check "held arrows echo nothing onto the screen" "! screen | grep -qF '^['"
+check "and the frame never scrolls" "screen | head -1 | grep -q '^╔'"
 tm send-keys -t work:panel m; sleep 0.5
 check "M opens the message prompt, saying how to back out" "wait_screen 'Esc cancels'"
 tm send-keys -t work:panel -l 'never sent'; sleep 0.3

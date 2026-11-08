@@ -1183,7 +1183,9 @@ pick() {
 
 PREV=()
 act() {
-	PREV=() # a key may draw over the panel (popup, prompt) and return early: repaint it whole
+	# A key may draw over the panel (popup, prompt) and return early: repaint it whole. Keys
+	# that only move the selection don't, so they keep the line-by-line redraw.
+	case $1 in up | down | [1-9]) ;; *) PREV=() ;; esac
 	local id=${P_ID[SEL]:-} name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} out
 	case $1 in
 	j | J)
@@ -1273,7 +1275,10 @@ act() {
 	SEL_ID=${P_ID[SEL]:-}
 }
 
-restore_term() { printf '%s' "$e[?25h$e[?1049l"; }
+restore_term() {
+	[[ -n ${STTY_SAVED:-} ]] && stty "$STTY_SAVED" 2>/dev/null
+	printf '%s' "$e[?25h$e[?1049l"
+}
 
 # Dial-up welcome, the first time the panel opens on a tmux server (REVIVE_PANEL_SPLASH=1
 # always shows it, 0 never). Any key skips it. Returns 1 once skipped.
@@ -1337,6 +1342,11 @@ if ((ONCE)); then
 fi
 [[ -t 0 && -t 1 ]] || { echo "tmux-revive panel needs a terminal" >&2; exit 1; }
 printf '%s' "$e[?1049h$e[?25l$e[2J"
+# Keys pressed while the panel is busy gathering must not be echoed: an arrow's ^[[A printed at
+# the bottom line scrolls the whole screen. Echo stays off for the panel's whole run (keys are
+# read one at a time anyway) and the terminal's own settings come back on exit.
+STTY_SAVED=$(stty -g 2>/dev/null)
+stty -echo -icanon 2>/dev/null
 on_exit restore_term
 trap 'exit 0' INT TERM
 trap 'printf "%s" "$e[2J"; PREV=()' WINCH
@@ -1348,26 +1358,44 @@ esac
 PREV=() # after the splash: paint the whole panel
 
 declare -A SSH_SEEN=()
+nav=0
 while :; do
-	gather
+	# Moving the selection only redraws from what was gathered last; everything is looked at
+	# again on the next refresh or any other key, so the arrows stay quick.
+	if ((!nav)); then
+		gather
+		for h in "${P_SSH[@]}" "${X_SSH[@]}"; do
+			[[ -n $h && -z ${SSH_SEEN[$h]:-} ]] || continue
+			SSH_SEEN[$h]=1
+			linked "$h" || flash "new ssh: $h · L links it"
+		done
+	fi
 	# Keep the same pane selected when panes come and go.
 	if [[ -n $SEL_ID ]]; then
 		for i in "${!P_ID[@]}"; do [[ ${P_ID[i]} == "$SEL_ID" ]] && SEL=$i; done
 	fi
 	((SEL >= ${#P_ID[@]})) && SEL=$((${#P_ID[@]} ? ${#P_ID[@]} - 1 : 0))
 	SEL_ID=${P_ID[SEL]:-}
-	for h in "${P_SSH[@]}" "${X_SSH[@]}"; do
-		[[ -n $h && -z ${SSH_SEEN[$h]:-} ]] || continue
-		SSH_SEEN[$h]=1
-		linked "$h" || flash "new ssh: $h · L links it"
-	done
 	draw
-	((TICK++))
+	nav=0
 	key=""
-	IFS= read -rsn1 -t "$REFRESH" key || true
-	if [[ $key == "$e" ]]; then
-		IFS= read -rsn2 -t 0.05 rest || true
-		case $rest in '[A') key=up ;; '[B') key=down ;; *) key="" ;; esac
+	if ! IFS= read -rsn1 -t "$REFRESH" key; then
+		((TICK++)) # the animation moves on with the clock, not with keys
+		continue
 	fi
-	[[ -n $key ]] && act "$key"
+	# Take this key and any already waiting (a held arrow), then draw once.
+	while :; do
+		if [[ $key == "$e" ]]; then
+			rest=""
+			IFS= read -rsn2 -t 0.05 rest || true
+			case $rest in '[A') key=up ;; '[B') key=down ;; *) key="" ;; esac
+		fi
+		case $key in
+		up | down | [1-9]) act "$key"; nav=1 ;;
+		"") ;;
+		*) act "$key"; nav=0; break ;;
+		esac
+		key=""
+		IFS= read -rsn1 -t 0.01 key || break
+	done
 done
