@@ -269,62 +269,76 @@ tri() { # tri X PERIOD AMPLITUDE -> TRI: a triangle wave from 0 up to AMPLITUDE 
 	TRI=$(((x < h ? x : per - x) * $3 / h))
 }
 
-# Three ridges, far to near. Each height is a sum of triangle waves whose lengths don't line
-# up, so the peaks never repeat.
-ridges() { # ridges C -> HF HM HN at column C
-	# Far peaks reach highest, the middle ridge rises well into them, the near hills stay low.
-	tri $(($1 + P1)) $((ART_W / 3 + 11)) $((ART_H / 2)); HF=$((ART_H / 3 + TRI))
-	tri $(($1 + P4)) 13 1; HF=$((HF + TRI))
-	((HF > ART_H - 1)) && HF=$((ART_H - 1))
-	tri $(($1 + P2)) $((ART_W / 5 + 7)) $((ART_H * 2 / 5)); HM=$((ART_H / 4 + TRI))
-	tri $(($1 + P5)) 7 1; HM=$((HM + TRI))
-	tri $(($1 + P3)) $((ART_W / 8 + 5)) $((ART_H / 4)); HN=$((1 + ART_H / 8 + TRI))
-	tri $1 5 1; HN=$((HN + TRI))
-}
-slope() { # slope LEFT HERE RIGHT -> TOP: ▟ climbing, ▙ falling, ▲ a summit, ▄ flat
-	if (($3 > $2 && $1 <= $2)); then TOP="▟"; elif (($1 > $2 && $3 <= $2)); then TOP="▙"
-	elif (($1 < $2 && $3 < $2)); then TOP="▲"; else TOP="▄"; fi
+# Pixel art at twice the height: each cell is two pixels, a ▀ in the top one's colour over the
+# bottom one's. Colours are the 16 ANSI ones (0-15); -1 is empty sky, left for the stars.
+pixel_cell() { # pixel_cell ROW COL TOP BOTTOM
+	local t=$3 b=$4 tf bb
+	((t < 0 && b < 0)) && return
+	tf=$((t < 8 ? 30 + t : 82 + t)) bb=$((b < 8 ? 40 + b : 92 + b))
+	if ((t == b)); then put "$1" "$2" " " "$e[${bb}m"
+	elif ((t < 0)); then put "$1" "$2" "▄" "$e[$((b < 8 ? 30 + b : 82 + b))m"
+	elif ((b < 0)); then put "$1" "$2" "▀" "$e[${tf}m"
+	else put "$1" "$2" "▀" "$e[${tf};${bb}m"; fi
 }
 
-scene_mountains() { # three ridges, snow on the high peaks, pines, a lit cabin and a moon
+scene_mountains() { # a snow-capped range under the moon, dark wooded hills in front
 	local W=$ART_W H=$ART_H
-	local c r lf lm ln hf hm hn rf rm rn cab=-1
-	rnd; P1=$((RV % 97)); rnd; P2=$((RV % 53)); rnd; P3=$((RV % 61)); rnd; P4=$((RV % 13)); rnd; P5=$((RV % 7))
+	local PH=$((H * 2)) c r k k2 n v jag=0 win=-1 top bot P
+	local -a pk=() ph=() ps=() far=() near=() tree=() snow=() back=() lit=()
 	stars "$H" 19
 	twinkle 2 $((H / 3))
 	rnd; put 0 $((W / 8 + RV % (W * 3 / 4 + 1))) "●" "$BWHT"
-	rnd; ((W > 30)) && cab=$((W / 4 + RV % (W / 2)))
-	for ((c = 0; c < W; c++)); do
-		ridges $((c - 1)); lf=$HF lm=$HM ln=$HN
-		ridges $((c + 1)); rf=$HF rm=$HM rn=$HN
-		ridges $c; hf=$HF hm=$HM hn=$HN
-		# Far ridge: pale, snow-capped where it's high.
-		slope $lf $hf $rf
-		for ((r = H - hf; r < H; r++)); do
-			if ((r == H - hf)); then
-				# Snow on the tips of the tallest peaks only.
-				if ((hf >= H * 3 / 4)); then put $r $c "$TOP" "$BWHT"; else put $r $c "$TOP" "$GRY"; fi
-			else put $r $c "▒" "$GRY"; fi
-		done
-		# Middle ridge.
-		slope $lm $hm $rm
-		for ((r = H - hm; r < H; r++)); do
-			if ((r == H - hm)); then put $r $c "$TOP" "$BBLU"; else put $r $c "▒" "$BBLU"; fi
-		done
-		# Near ridge, with pines along its top here and there.
-		slope $ln $hn $rn
-		for ((r = H - hn; r < H; r++)); do
-			if ((r == H - hn)); then put $r $c "$TOP" "$BLU"; else put $r $c "█" "$BLU"; fi
-		done
-		rnd
-		((RV % 3 == 0 && c != cab && c != cab + 1)) && put $((H - hn - 1)) $c "▲" "$GRN"
+	# The range: two to four big peaks, each a rough cone, roughened a little column by column.
+	rnd; n=$((2 + RV % 3))
+	for ((k = 0; k < n; k++)); do
+		rnd; pk+=($((k * W / n + RV % (W / n + 1))))
+		rnd; ph+=($((PH * 55 / 100 + RV % (PH * 35 / 100 + 1))))
+		rnd; ps+=($((6 + RV % 6))) # tenths of a pixel down per column: steep, not cliffs
 	done
-	# A cabin on the near ridge, its window lit.
-	if ((cab >= 0)); then
-		ridges $cab
-		put $((H - HN - 1)) $cab "▄" "$YEL"
-		put $((H - HN - 1)) $((cab + 1)) "▪" "$BYEL"
-	fi
+	rnd; P=$((RV % 97))
+	for ((c = 0; c < W; c++)); do
+		# The peak standing tallest here decides the light: the side toward the moon (left of
+		# its summit) is lit, the other side in shadow.
+		v=0 k=0
+		for ((k2 = 0; k2 < n; k2++)); do
+			r=$((ph[k2] - (c > pk[k2] ? c - pk[k2] : pk[k2] - c) * ps[k2] / 10))
+			((r > v)) && v=$r k=$k2
+		done
+		lit+=($((c <= pk[k])))
+		# A dim range further back, for distance.
+		tri $((c + P * 3)) $((W / 4 + 9)) $((PH / 7)); back+=($((PH * 3 / 10 + TRI)))
+		rnd; jag=$((jag + RV % 3 - 1)); ((jag > 2)) && jag=2; ((jag < -2)) && jag=-2
+		v=$((v + jag)); ((v > PH - 1)) && v=$((PH - 1)); ((v < 2)) && v=2
+		far+=("$v")
+		rnd; snow+=($((2 + RV % 3)))
+		# Wooded hills in front, and the ragged tops of their trees.
+		tri $((c + P)) $((W / 3 + 5)) $((PH / 8)); v=$((PH / 7 + TRI))
+		near+=("$v")
+		rnd; tree+=($((v + RV % 3)))
+	done
+	rnd; ((W > 20)) && win=$((W / 5 + RV % (W * 3 / 5)))
+	for ((r = 0; r < H; r++)); do
+		for ((c = 0; c < W; c++)); do
+			mpix $((PH - 1 - 2 * r)) $c; top=$MP
+			mpix $((PH - 2 - 2 * r)) $c; bot=$MP
+			pixel_cell $r $c $top $bot
+		done
+	done
+}
+mpix() { # mpix HEIGHT COL -> MP: the colour of that pixel of the mountain scene
+	local y=$1 c=$2
+	if ((y < near[c])); then
+		if ((c == win && y == near[c] - 3)); then MP=11; else MP=2; fi # one lit window
+	elif ((y < tree[c])); then MP=2
+	elif ((y < far[c])); then
+		# Snow on the high peaks; moonlit side bright, shadow side dim.
+		if ((far[c] - y <= snow[c] && far[c] > PH * 6 / 10)); then
+			((lit[c])) && MP=15 || MP=7
+		else
+			((lit[c])) && MP=12 || MP=4
+		fi
+	elif ((y < back[c])); then MP=8
+	else MP=-1; fi
 }
 
 scene_space() { # a ringed planet, starfields and a comet crossing over time
@@ -364,7 +378,7 @@ scene_circuit() { # traces turning corners, chips and three blinking LEDs
 			put $r $((c + len)) "┐" "$GRN"
 			for ((i = 1; i < vl; i++)); do put $((r + i)) $((c + len)) "│" "$GRN"; done
 		fi
-		put $((r + (vl ? vl : 0))) $((c + len)) "◆" "$BGRN"
+		put $((r + (vl ? vl : 0))) $((c + len)) "●" "$BGRN"
 		lr+=($((r + (vl ? vl : 0)))) lc+=($((c + len)))
 	done
 	for ((k = 0; k < 2 && H >= 3; k++)); do
@@ -379,7 +393,7 @@ scene_circuit() { # traces turning corners, chips and three blinking LEDs
 	for ((k = 0; k < ${#lr[@]} && blink < 3; k++)); do
 		r=${lr[k]} c=${lc[k]}
 		((r >= 0 && r < H && c >= 0 && c < W)) || continue
-		if (((blink + AT) % 2)); then put $r $c "◆" "$BGRN"; else put $r $c "◆" "$BRED"; fi
+		if (((blink + AT) % 2)); then put $r $c "●" "$BGRN"; else put $r $c "●" "$BRED"; fi
 		((blink++))
 	done
 }
@@ -983,9 +997,17 @@ draw() {
 	if ((ONCE)); then
 		printf '%s\n' "${OUT[@]}"
 	else
-		local buf=""
-		for l in "${OUT[@]}"; do buf+="$l$e[K"$'\n'; done
-		printf '%s' "$e[H${buf%$'\n'}$e[J"
+		# Only the lines that changed since the last frame are sent, each placed by row, and the
+		# whole update is wrapped in synchronized-output marks (?2026) so the terminal shows it at
+		# once. A twinkling star then rewrites one line, not the whole screen.
+		local buf="" i
+		for i in "${!OUT[@]}"; do
+			[[ ${OUT[i]} == "${PREV[i]-}" ]] && continue
+			buf+="$e[$((i + 1));1H${OUT[i]}$e[K"
+		done
+		((${#OUT[@]} < ${#PREV[@]})) && buf+="$e[$((${#OUT[@]} + 1));1H$e[J"
+		PREV=("${OUT[@]}")
+		[[ -n $buf ]] && printf '%s' "$e[?2026h$buf$e[?2026l"
 	fi
 }
 
@@ -1106,7 +1128,9 @@ pick() {
 	done
 }
 
+PREV=()
 act() {
+	PREV=() # a key may draw over the panel (popup, prompt) and return early: repaint it whole
 	local id=${P_ID[SEL]:-} name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} out
 	case $1 in
 	j | J)
@@ -1247,12 +1271,13 @@ fi
 printf '%s' "$e[?1049h$e[?25l$e[2J"
 on_exit restore_term
 trap 'exit 0' INT TERM
-trap 'printf "%s" "$e[2J"' WINCH
+trap 'printf "%s" "$e[2J"; PREV=()' WINCH
 case ${REVIVE_PANEL_SPLASH:-} in
 1) splash ;;
 0) ;;
 *) [[ $(opt @revive-panel-splashed '') == 1 ]] || { splash; tm set-option -g @revive-panel-splashed 1 2>/dev/null; } ;;
 esac
+PREV=() # after the splash: paint the whole panel
 
 declare -A SSH_SEEN=()
 while :; do
