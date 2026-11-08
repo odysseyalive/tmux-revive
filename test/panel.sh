@@ -166,6 +166,12 @@ tm send-keys -t work:panel p; sleep 1.5
 check "P hides the peek box" "! screen | grep -q 'PEEK'"
 tm send-keys -t work:panel Down
 check "the arrow keys move the selection" "wait_screen '[3] ▶'"
+# The list goes round: Down past the last pane comes back to the first, Up past the first to the last.
+tm send-keys -t work:panel Down
+check "Down from the last pane selects the first" "wait_screen '[1] ▶'"
+tm send-keys -t work:panel 1; wait_screen '[1] ▶' >/dev/null
+tm send-keys -t work:panel Up
+check "Up from the first pane selects the last" "wait_screen '[3] ▶' && seen '[4]' 0"
 # Held arrows: quick to follow, nothing echoed, nothing scrolled.
 tm send-keys -t work:panel Up Up
 quick() { local s=$EPOCHREALTIME; tm send-keys -t work:panel Down; for _ in $(seq 1 40); do screen | grep -qF "[$1] ▶" && break; sleep 0.05; done; awk -v a=$s -v b=$EPOCHREALTIME 'BEGIN{exit !(b - a < 1.0)}'; }

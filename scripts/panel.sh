@@ -1726,8 +1726,9 @@ act() {
 		if "$BASH" "$REVIVE_ROOT/scripts/save.sh" manual >/dev/null 2>&1; then flash "saved"; else flash "save failed (see: tmux-revive log)"; fi ;;
 	q | Q) exit 0 ;;
 	[1-9]) (($1 - 1 < ${#P_ID[@]})) && SEL=$(($1 - 1)) ;;
-	up) ((SEL > 0)) && ((SEL--)) ;;
-	down) ((SEL < ${#P_ID[@]} - 1)) && ((SEL++)) ;;
+	# The list goes round: up from the first pane is the last, down from the last the first.
+	up) ((${#P_ID[@]})) && SEL=$(((SEL - 1 + ${#P_ID[@]}) % ${#P_ID[@]})) ;;
+	down) ((${#P_ID[@]})) && SEL=$(((SEL + 1) % ${#P_ID[@]})) ;;
 	esac
 	SEL_ID=${P_ID[SEL]:-}
 }
