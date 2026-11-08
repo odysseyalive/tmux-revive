@@ -247,7 +247,7 @@ p1=$(hpos)
 check "PgDn scrolls a page ($p1)" "(( \${p1%%-*} > 10 )) && hwhole"
 tm send-keys -t work:helpw End; sleep 0.5
 p2=$(hpos) last=${p2#*-} last=${last%% *}
-check "End shows the bottom: the ads ($p2)" "[[ $last == \${p2##* } ]] && hscreen | grep -q 'playwright-mcp'"
+check "End shows the bottom: the ads ($p2)" "[[ $last == \${p2##* } ]] && hscreen | grep -q 'Open it on GitHub'"
 tm send-keys -t work:helpw Home
 check "Home goes back to the top" "hwait ' 1-' && hscreen | grep -q 'C H E A T   S H E E T'"
 tm resize-window -t work:helpw -x 130 -y 40; sleep 1

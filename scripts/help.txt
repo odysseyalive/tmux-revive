@@ -17,32 +17,31 @@
 .tag C H E A T   S H E E T
 .tag Turn your computer off and on, type tmux, and it's all back. Your AI agents too.
 
-= Get started
-- Pick a pane by its number or the arrow keys. J jumps you there.
-- Agent asking you something? Press Tab and answer it from here.
-- S saves every pane, right now.
+= Get your agents talking
+I like my agents working together. Revive lets any AI session talk to any other, even across different Claude accounts, or between Claude Code and Codex.
+1. Select a session's pane here and press N to name it, say shop-dev.
+2. In any other session, just mention it by name: "Ask shop-dev to run the tests and tell me what fails."
 
-= Two AI sessions talking
-1. Name one of them. In Claude Code, type `! agent-say name shop-dev`, or select its pane here and press N.
-2. In the other one, just ask: "Use agent-say to tell shop-dev the tests pass."
+= Talk to your servers too
+Got agents on a remote server? I wanted mine right here with the rest.
+1. Open another terminal and ssh into the server. It has to log in with a key.
+2. Install tmux-revive there too, then start tmux.
+3. Back in this panel, press L to link it.
 
-= Linking a server
-1. Open another terminal window.
-2. ssh into the server. It has to log in with a key.
-3. Make sure tmux-revive is installed there:
-$ curl -fsSL https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.sh | sh
-4. Start `tmux`.
-5. Back in this panel, press L to link it.
-
-Now you can detach tmux and close that window. The server stays linked.
+As long as tmux keeps running there, its windows show up right here in the Revive panel, even after you close that terminal.
 
 .box Tame Your AI
-Get more done. Claude Workforce tracks several jobs at once, and its blueprints work in auto mode too.
+I built Claude Workforce because I wanted my AI to get more done, and to show its work.
+- Ask for several things at once. Each job goes to a helper in the background, and a work list keeps track, so an interruption doesn't lose your place.
+- Every helper proves its work with a check that passes or fails.
+- Plan in auto mode with /blueprint. Nothing gets built until you say so.
 .button i Install Claude Workforce
-github.com/odysseyalive/claude-workforce
 .end
 
 .box playwright-mcp
-Give every Claude Code project a real browser.
+I wanted Claude to browse the web the way I do.
+- A real browser in every project, so pages built on JavaScript just work.
+- Log in to a site once and Claude can use it everywhere. Your password never goes to Claude.
+- Pages come back with their author, date and publisher, so citing them is easy.
 .button o Open it on GitHub
 .end
