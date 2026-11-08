@@ -770,6 +770,9 @@ REMOTE_PEEK_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --peek'
 REMOTE_KEYS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --keys'
 # A fixed command line: nothing from this panel or that computer goes into it.
 REMOTE_UPDATE_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive update </dev/null 2>&1'
+# agent-say name there, for the pane AGENT_SAY_PANE gives. The pane id and the name are
+# checked before they go into the command line, and agent-say checks the name again there.
+REMOTE_NAME_CMD='PATH="$HOME/.local/bin:$PATH" agent-say name'
 declare -A RFETCH_T=() RFETCH_PID=() PFETCH_T=() PFETCH_PID=() PEEK_FILES=() RVER=()
 PEEK_EVERY=$REFRESH # seconds between asks for a linked pane's screen; none while answering
 cache_dir() { # $RDIR, for this user only (an older panel made it with the default umask)
@@ -1301,11 +1304,12 @@ draw() {
 	# Command bar.
 	local k=""
 	((!ANSWERING)) && [[ ${P_STATE[SEL]:-} == asking ]] && k="$B$BMAG[Tab]$R$B$BWHT answer$R  "
-	# Keys that can't act on the selected pane are faded: on a linked computer's pane there's
-	# nothing to rename here, and nothing to jump to unless a pane here is ssh'd there.
+	# Keys that can't act on the selected pane are faded: on a linked computer's pane, nothing
+	# to rename unless its rows say which pane it is, and nothing to jump to unless a pane
+	# here is ssh'd there.
 	local off=" " rh=${P_HOST[SEL]:-} j
 	if [[ -n $rh ]]; then
-		off+="N "
+		[[ -n ${P_RID[SEL]:-} ]] || off+="N "
 		[[ -n ${P_NAME[SEL]:-} ]] || off+="M "
 		off+="J "
 		for j in "${!P_SSH[@]}"; do [[ ${P_SSH[j]} == "$rh" ]] && { off=${off/J /}; break; }; done
@@ -1635,7 +1639,26 @@ act() {
 		out=$("$ASAY" --from panel "$id" "$REPLY" 2>&1 | tail -n 1)
 		flash "${out#agent-say: }" ;;
 	n | N)
-		[[ -n ${P_HOST[SEL]:-} ]] && { flash "rename it on ${P_HOST[SEL]} (agent-say name there)"; return; }
+		if [[ -n ${P_HOST[SEL]:-} ]]; then
+			# A pane on a linked computer: agent-say name runs there, over the link's ssh.
+			local h=${P_HOST[SEL]} rid=${P_RID[SEL]:-} st
+			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return
+			[[ $rid =~ ^%[0-9]+$ ]] || { flash "on $h: can't tell which pane that is (update tmux-revive there)"; return; }
+			ask "New name for $name on $h:" || { flash "rename cancelled"; return; }
+			# The same letters a name may have there, so no quote or shell character gets through.
+			[[ $REPLY =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || { flash "that can't be a name: use letters, digits and . _ - : + ="; return; }
+			flash "naming it on $h…"; draw
+			out=$(remote_run "$h" "AGENT_SAY_PANE='$rid' $REMOTE_NAME_CMD '$REPLY' </dev/null 2>&1" | tail -c 4096)
+			st=$?
+			out=$(grep -v '^[[:space:]]*$' <<<"$out" | head -n 1)
+			clean out
+			out=${out#agent-say: } out=${out:0:120}
+			if ((st == 124 || st == 255)); then flash "on $h: couldn't be reached to rename"
+			else flash "on $h: ${out:-rename failed}"; fi
+			((st == 0)) && SEL_ID="$REPLY@$h" # the row goes by its new name
+			RFETCH_T[$h]=0 # and ask it for its rows again, to show it
+			return
+		fi
 		[[ -n $id ]] || return
 		ask "New name for $name:" || { flash "rename cancelled"; return; }
 		out=$(AGENT_SAY_PANE=$id "$ASAY" name "$REPLY" 2>&1 | head -n 1)

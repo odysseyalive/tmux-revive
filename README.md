@@ -152,7 +152,7 @@ the agents there: **L** links it (after showing you the computer's host key to
 confirm), **U** unlinks. Once linked, that computer's panes show up in the list too,
 grouped under its name, with the version of tmux-revive it runs. If that's older than
 yours, its heading says `out of date`: select one of its panes and press **V** to update
-it over ssh, after a yes.
+it over ssh, after a yes. **N** names one of its panes the same way, over ssh.
 
 You don't need the panel open to hear about questions: when any agent starts asking
 one, tmux shows a message naming the pane and rings the bell, once per question.

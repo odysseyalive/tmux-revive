@@ -427,14 +427,21 @@ tmux -L "revive-panel-remote-$$" -f /dev/null set-option -p -t far:0.1 @agent fa
 tmux -L "revive-panel-remote-$$" -f /dev/null set-option -p -t far:0.0 @agent far-sh
 tmux -L "revive-panel-remote-$$" -f /dev/null send-keys -t far:0.0 'echo far-marker-$((6 * 7))' Enter
 rsock=$(tmux -L "revive-panel-remote-$$" -f /dev/null display -p '#{socket_path}')
+# agent-say there: in ~/.local/bin of a home of its own, with a tmux that reaches that server.
+mkdir -p "$T/rhome/.local/bin" "$T/rbin"
+ln -s "$ROOT/bin/agent-say" "$T/rhome/.local/bin/agent-say"
+printf '#!/bin/sh\nexec %q -S %q -f /dev/null "$@"\n' "$(command -v tmux)" "$rsock" >"$T/rbin/tmux"
+chmod +x "$T/rbin/tmux"
 # The remote command is the last argument; only the two panel commands are answered, and the
-# peek's id and count go through as plain arguments, never through a shell.
+# peek's id and count go through as plain arguments, never through a shell. agent-say name is
+# run by a shell, as sshd would run it.
 {
 	printf '#!/bin/bash\nunset TMUX TMUX_PANE\nexport REVIVE_SOCKET=%q REVIVE_DIR=%q REVIVE_VERSION_FILE=%q\npanel=%q T=%q\n' "$rsock" "$T/remote-data" "$T/remote-version" "$ROOT/scripts/panel.sh" "$T"
 	cat <<'EOF'
 cmd=${!#}
 if [[ $cmd =~ \ panel\ --rows$ ]]; then exec bash "$panel" --rows
 elif [[ $cmd == *' tmux-revive update '* ]]; then printf '%s' "$cmd" >"$T/update.cmd"; printf 'downloading\ntmux-revive 9.9.9 installed\n\n'; exit 0
+elif [[ $cmd == AGENT_SAY_PANE=* ]]; then printf '%s' "$cmd" >"$T/name.cmd"; HOME=$T/rhome PATH=$T/rbin:$PATH AGENT_SAY_MAILBOX=$T/rstate/mailbox.md exec bash -c "$cmd"
 elif [[ $cmd =~ \ panel\ --peek\ \'([^\']*)\'\ ([^ ]*)$ ]]; then exec bash "$panel" --peek "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 elif [[ $cmd =~ \ panel\ --keys\ \'([^\']*)\'((\ [^ ]+)+)$ ]]; then read -ra k <<<"${BASH_REMATCH[2]}"; exec bash "$panel" --keys "${BASH_REMATCH[1]}" "${k[@]}"
 fi
@@ -552,7 +559,7 @@ for _ in $(seq 1 20); do farscreen | grep -q '▶ far-top' && break; tm send-key
 bar() { tm capture-pane -e -p -t work:farpanel | grep -F 'ump' | tail -1; }
 grey=$'\e[90m[J]ump' lit=$'\e[93mS'
 check "its peek tracks that pane's screen live" "for _ in \$(seq 1 30); do farscreen | sed -n '/PEEK · far-top/,\$p' | grep -c 'Mem' >/dev/null && break; sleep 0.3; done; farscreen | sed -n '/PEEK · far-top/,\$p' | grep -c 'Mem' >/dev/null"
-check "on a linked computer's pane, J and N fade" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\" && bar | grep -qF $'\\e[90m[N]ame'"
+check "on a linked computer's pane, J fades and N doesn't" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\" && bar | grep -qF $'\\e[93mN' && ! bar | grep -qF $'\\e[90m[N]ame'"
 check "while keys that still work stay lit" "bar | grep -qF \"\$lit\""
 # V: update tmux-revive over there, once confirmed, with a fixed command.
 check "on a linked computer's pane, V offers an update" "bar | grep -cF $'\\e[93mV' >/dev/null && farscreen | grep -c 'out of date' >/dev/null"
@@ -563,6 +570,24 @@ check "and Esc updates nothing" "for _ in \$(seq 1 20); do farscreen | grep -c '
 tm send-keys -t work:farpanel v; sleep 0.5; tm send-keys -t work:farpanel Enter
 check "yes runs tmux-revive update there and shows how it went" "for _ in \$(seq 1 30); do farscreen | grep -c 'on far.example: tmux-revive 9.9.9 installed' >/dev/null && break; sleep 0.2; done; farscreen | grep -c 'on far.example: tmux-revive 9.9.9 installed' >/dev/null"
 check "with the fixed command, nothing else" "[[ \$(cat $T/update.cmd) == 'PATH=\"\$HOME/.local/bin:\$PATH\" tmux-revive update </dev/null 2>&1' ]]"
+# N: agent-say name runs over there, for that pane, by its id.
+rtop=$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.1 '#{pane_id}')
+wait_far() { for _ in $(seq 1 ${2:-30}); do farscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
+rename_far() { tm send-keys -t work:farpanel n; wait_far 'New name for' >/dev/null; tm send-keys -t work:farpanel -l "$1"; tm send-keys -t work:farpanel Enter; }
+rename_far far-renamed
+check "N names a linked computer's pane there" "wait_far \"on far.example: pane $rtop is now 'far-renamed'\" && [[ \$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t $rtop '#{@agent}') == far-renamed ]]"
+check "with agent-say name, for that pane, nothing else" "[[ \$(cat $T/name.cmd) == \"AGENT_SAY_PANE='$rtop' PATH=\\\"\\\$HOME/.local/bin:\\\$PATH\\\" agent-say name 'far-renamed' </dev/null 2>&1\" ]]"
+check "and its row shows the new name, still selected" "wait_far '▶ far-renamed' 40"
+rm -f "$T/name.cmd"
+rename_far "x';touch $T/pwn;'"
+check "a name that can't be one never leaves here" "wait_far \"that can't be a name\" && [[ ! -e $T/name.cmd && ! -e $T/pwn ]]"
+rename_far list
+check "and one agent-say there turns away is refused there" "wait_far \"on far.example: 'list' can't be a name\" && [[ \$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t $rtop '#{@agent}') == far-renamed ]]"
+# Read-only holds what that computer sends here; like V, naming there from here isn't that.
+touch "$st/links/far.example/read-only"
+rename_far far-top
+check "on a read-only link too, as V and answering are" "wait_far \"on far.example: pane $rtop is now 'far-top'\" && wait_far '▶ far-top' 40"
+rm -f "$st/links/far.example/read-only"
 tm send-keys -t work:farpanel 1
 check "back on a pane here, J lights up again" "for _ in \$(seq 1 25); do farscreen | grep -q '\[1\] ▶' && ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; farscreen | grep -q '\[1\] ▶' && ! bar | grep -qF \"\$grey\""
 tm send-keys -t work:farpanel q

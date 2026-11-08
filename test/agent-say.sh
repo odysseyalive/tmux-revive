@@ -256,6 +256,12 @@ check "and says who sent it, as an address that works from here" "seen $LC '[age
 there "$ROOT/bin/agent-say --from codex me 'plain name back'" >/dev/null
 check "the other side can use a plain name too" "wait_seen $LC 'plain name back'"
 check "list shows the linked machine's names" "say list | grep -q 'codex@devbox'"
+# A pane over there renamed from here, the way the panel's N does it: the link carries the new name back.
+mkdir -p "$T/rhome/.local/bin" && ln -sf "$ROOT/bin/agent-say" "$T/rhome/.local/bin/agent-say"
+there "AGENT_SAY_PANE='$RC' PATH=\"\$HOME/.local/bin:\$PATH\" agent-say name 'codex2' </dev/null 2>&1" >/dev/null
+check "a pane renamed over ssh shows here by its new name" "for _ in \$(seq 20); do say list | grep -q 'codex2@devbox' && break; sleep 0.25; done; say list | grep -q 'codex2@devbox' && ! say list | grep -q 'codex@devbox'"
+there "AGENT_SAY_PANE='$RC' PATH=\"\$HOME/.local/bin:\$PATH\" agent-say name 'codex' </dev/null 2>&1" >/dev/null
+for _ in $(seq 20); do say list | grep -q ' codex@devbox' && break; sleep 0.25; done
 out=$(AGENT_SAY_PANE=$LC say '-oProxyCommand=x@devbox' 'hi' 2>&1)
 check "name@host with a name that isn't one is refused ($out)" "[[ '$out' == *'is not a pane name'* ]]"
 there "$ROOT/bin/agent-say --from codex nobody@laptop 'lost'" >/dev/null
