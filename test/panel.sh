@@ -253,6 +253,11 @@ for want in 'Do you want to proceed?' 'rm -rf build' '❯ 1. Yes' '5. Type somet
 done
 lastrow() { tm capture-pane -p -t work:asker | tail -1 | sed 's/[[:space:]]*$//'; }
 boxrow() { qbox | grep '│' | tail -1 | sed 's/^║[^│]*│ \{0,1\}//; s/[[:space:]]*║$//; s/[[:space:]]*$//'; }
+# The question stands out: bold yellow; the highlighted choice on a band; the rest plainer.
+qcolor() { tm capture-pane -e -p -t work:qpanel | grep -F -- "$1" | head -1; }
+check "the question itself is bold yellow" "[[ \$(qcolor 'Do you want to proceed?') == *'93'* ]]"
+check "the highlighted choice sits on a band" "[[ \$(qcolor '❯ 1. Yes') == *'44'* ]]"
+check "the other choices don't" "[[ \$(qcolor '2. No') != *'44'* ]]"
 check "its last row is the agent's last row" "[[ \"\$(boxrow)\" == \"\$(lastrow)\" ]]"
 check "Tab offers to answer it, J the chat" "qhas '[Tab] answer' && qhas '[J] open the chat'"
 check "the messages step aside while a question shows" "! qhas 'MESSAGES'"

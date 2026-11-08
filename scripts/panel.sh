@@ -987,8 +987,42 @@ draw_question() { # draw_question LINES
 	local end=$((${#L[@]} - 1)) shown
 	start=$((end - $1 + 1))
 	((start < 0)) && start=0
+	question_parts
 	for ((shown = end - start + 1; shown < $1; shown++)); do row "$BMAG│$R"; done
-	for ((i = start; i <= end; i++)); do row "$BMAG│$R $BWHT$(fld "${L[i]}" $((IW - 2)))$R"; done
+	for ((i = start; i <= end; i++)); do row "$BMAG│$R ${QSTYLE[i]:-$BWHT}$(fld "${L[i]}" $((IW - 2)))$R"; done
+}
+
+# question_parts: a colour for each line of L by what it is, so the question stands out:
+# the question itself bold yellow, the highlighted choice bold cyan on a band, the other
+# choices white with their descriptions dim, the history above and the footer grey. Only
+# colours are chosen here, nothing is cut, so a dialog shaped some other way just looks
+# plainer. -> QSTYLE[i]
+question_parts() {
+	local i first=-1 top=-1 last=-1
+	QSTYLE=()
+	# The first choice: "1." (or "❯ 1.") nearest the bottom that starts a run of choices.
+	for ((i = ${#L[@]} - 1; i >= 0; i--)); do
+		[[ ${L[i]} =~ ^[[:space:]│]*(❯[[:space:]]*)?1\.[[:space:]] ]] && { first=$i; break; }
+	done
+	((first < 0)) && return 0
+	# The dialog's top: the nearest rule above the first choice, else the blank-line gap.
+	for ((i = first - 1; i >= 0 && i >= first - 20; i--)); do
+		[[ ${L[i]} =~ ^[[:space:]]*[─━═╌]{8,} ]] && { top=$i; break; }
+	done
+	((top < 0)) && top=$((first > 6 ? first - 6 : 0))
+	# The footer: "Enter to select", "Esc to cancel" and the like, after the choices.
+	for ((i = ${#L[@]} - 1; i > first; i--)); do
+		[[ ${L[i]} =~ (Esc to|Enter to|to navigate|to cancel) ]] && { last=$i; break; }
+	done
+	for ((i = 0; i < ${#L[@]}; i++)); do
+		if ((i < top)); then QSTYLE[i]=$GRY$DIM                          # history above it
+		elif [[ ${L[i]} =~ ^[[:space:]]*[─━═╌]{8,} ]]; then QSTYLE[i]=$MAG  # its rules
+		elif ((i < first)); then QSTYLE[i]=$B$BYEL                         # the question
+		elif ((last >= 0 && i >= last)); then QSTYLE[i]=$GRY                # the footer
+		elif [[ ${L[i]} =~ ^[[:space:]│]*❯ ]]; then QSTYLE[i]=$e[44m$B$BCYN  # the highlighted choice
+		elif [[ ${L[i]} =~ ^[[:space:]│]*(\[.\][[:space:]]*)?[0-9]+\. ]]; then QSTYLE[i]=$BWHT # a choice
+		else QSTYLE[i]=$GRY; fi                                               # a choice's description
+	done
 }
 
 messages() { # -> MSG lines for the message center
