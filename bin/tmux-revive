@@ -61,12 +61,23 @@ agent_kind() { # agent_kind ARGS -> claude/codex/cursor/crush/gemini or nothing 
 	esac
 }
 
-# sessions: S_NAME S_WIN S_WHEN S_HOW S_ATT S_AGENTS, most recently used first.
+# Session names can hold anything a terminal acts on: C0, DEL and C1 controls, bidi
+# overrides and zero-width characters that make one name look like another. NOSHOW is
+# those as UTF-8, for a [...] pattern that drops them before a name is printed.
+NOSHOW=""
+for c in {128..159}; do printf -v c '\\xc2\\x%x' "$c"; printf -v c "$c"; NOSHOW+=$c; done
+for c in 80{8b,8c,8d,8e,8f,aa,ab,ac,ad,ae} 81{a6,a7,a8,a9}; do
+	printf -v c '\\xe2\\x%s\\x%s' "${c:0:2}" "${c:2}"; printf -v c "$c"; NOSHOW+=$c
+done
+
+# sessions: S_ID S_NAME S_SHOW S_WIN S_WHEN S_HOW S_ATT S_AGENTS, most recently used first.
+# S_ID ($N) is the only safe target: tmux splits even an =exact name at : and . so
+# "victim:0" would aim at "victim". S_SHOW is the name made safe to print.
 # Agents come from each pane's process tree, so closing one can say what it ends.
 sessions() {
-	S_NAME=() S_WIN=() S_WHEN=() S_HOW=() S_ATT=() S_AGENTS=()
+	S_ID=() S_NAME=() S_SHOW=() S_WIN=() S_WHEN=() S_HOW=() S_ATT=() S_AGENTS=()
 	local -A kids args found
-	local pid ppid a sid p q k when how win att name
+	local pid ppid a sid p q k when how win att name show
 	while read -r pid ppid a; do kids[$ppid]+="$pid " args[$pid]=$a; done < <(ps -ww -eo pid=,ppid=,args= 2>/dev/null)
 	while IFS=$'\t' read -r sid p; do
 		q=("$p")
@@ -80,7 +91,8 @@ sessions() {
 	done < <(tm list-panes -a -F $'#{session_id}\t#{pane_pid}' 2>/dev/null)
 	# A tab is whitespace to read, so empty fields would merge: awk fills them first.
 	while IFS=$'\t' read -r when how win att sid name; do
-		S_NAME+=("$name") S_WIN+=("$win") S_ATT+=("$att") S_AGENTS+=("${found[$sid]:-}")
+		show=${name//[[:cntrl:]]/} show=${show//[$NOSHOW]/}
+		S_ID+=("$sid") S_NAME+=("$name") S_SHOW+=("$show") S_WIN+=("$win") S_ATT+=("$att") S_AGENTS+=("${found[$sid]:-}")
 		S_WHEN+=("$when") S_HOW+=("$how")
 	done < <(tm list-sessions -F $'#{session_last_attached}\t#{session_created}\t#{session_windows}\t#{session_attached}\t#{session_id}\t#{session_name}' 2>/dev/null |
 		awk -F'\t' -v OFS='\t' '{ how = $1 > 0 ? "attached" : "created"; when = $1 > 0 ? $1 : $2; n = $6; for (i = 7; i <= NF; i++) n = n "\t" $i
@@ -100,12 +112,24 @@ ago() {
 # pick: the pick list. Runs before tmux, in whatever terminal this is, so it
 # keeps to plain ANSI and redraws only its own lines.
 pick() {
-	local sel=0 drawn=0 note="" k r i m n row w names agents ok list
+	local sel=0 drawn=0 note="" k r i j m n row w names agents ok list ids was AT
 	local -A mark=()
 	w=$(tput cols 2>/dev/null) || w=80
 	((w > 1)) || w=80
 	# shellcheck disable=SC2329
 	leave() { ((drawn)) && printf '\033[%dA\r\033[J' "$drawn"; printf '\033[?25h'; drawn=0; }
+	# drain: drop keys already waiting (typed after `tmux`, or pasted), so only keys
+	# pressed at the list or a question answer it: a typed-ahead "ay" closes nothing.
+	drain() { while IFS= read -rsn1 -t 0.01 _; do :; done; }
+	# at ID: AT is the row of that session now, if it still exists.
+	at() { for AT in "${!S_ID[@]}"; do [[ ${S_ID[$AT]} == "$1" ]] && return 0; done; return 1; }
+	# fresh: read the sessions again; rows renumber, so marks go.
+	fresh() {
+		mark=()
+		sessions
+		((sel >= ${#S_NAME[@]})) && sel=$((${#S_NAME[@]} - 1))
+		((sel < 0)) && sel=0
+	}
 	trap 'leave; exit 130' INT TERM
 	printf '\033[?25l'
 	draw() {
@@ -117,7 +141,7 @@ pick() {
 		fi
 		for i in "${!S_NAME[@]}"; do
 			m=" "; [[ -n ${mark[$i]:-} ]] && m="*"
-			printf -v row '%s%2d  %-20.20s %3d window%s  %-9s %-9s %s' "$m" $((i + 1)) "${S_NAME[$i]}" \
+			printf -v row '%s%2d  %-20.20s %3d window%s  %-9s %-9s %s' "$m" $((i + 1)) "${S_SHOW[$i]}" \
 				"${S_WIN[$i]}" "$( ((S_WIN[i] == 1)) || echo s)" "${S_HOW[$i]}" "$(ago "${S_WHEN[$i]}")" \
 				"${S_AGENTS[$i]}$( ((S_ATT[i] > 0)) && echo "${S_AGENTS[$i]:+ }(attached)")"
 			row=${row:0:w-1}
@@ -128,38 +152,47 @@ pick() {
 		[[ -n $note ]] && { printf '%s\n' "$note"; ((drawn++)); }
 		note=""
 	}
-	# confirm I...: ask before closing these sessions. One holding an agent ends
-	# that agent's conversation, so then only a typed "yes" will do.
+	# confirm I...: ask before closing these sessions, then set ids to close. One
+	# holding an agent ends that agent's conversation, so then only a typed "yes" will
+	# do. Names are given in full here: the list cuts them to 20 columns.
 	confirm() {
-		names=() agents=()
+		names=() agents=() ids=() was=()
 		for i; do
-			names+=("${S_NAME[$i]}")
-			[[ -n ${S_AGENTS[$i]} ]] && agents+=("${S_AGENTS[$i]// /, } in ${S_NAME[$i]}")
+			ids+=("${S_ID[$i]}") was+=("${S_NAME[$i]}"$'\t'"${S_AGENTS[$i]}")
+			names+=("${S_SHOW[$i]}")
+			[[ -n ${S_AGENTS[$i]} ]] && agents+=("${S_AGENTS[$i]// /, } in ${S_SHOW[$i]}")
 		done
 		list=$(printf '%s, ' "${names[@]}")
+		drain
 		if ((${#agents[@]})); then
 			printf '\033[1;33mclose %s?\033[0m that ends %s. type yes to close: ' "${list%, }" "$(printf '%s; ' "${agents[@]}" | sed 's/; $//')"
 			printf '\033[?25h'
 			IFS= read -r ok || ok=""
 			printf '\033[?25l'
 			((drawn++))
-			[[ $ok == yes ]]
+			[[ $ok == yes ]] || return 1
 		else
 			printf '\033[1;33mclose %s?\033[0m [y/N] ' "${list%, }"
 			IFS= read -rsn1 ok || ok=""
 			printf '\n'; ((drawn++))
-			[[ $ok == [yY] ]]
+			[[ $ok == [yY] ]] || return 1
 		fi
+		# The list may have gone stale while it was open: a session renamed, closed, or
+		# an agent started in it. Close only if each is still what the question named.
+		fresh
+		for j in "${!ids[@]}"; do
+			at "${ids[$j]}" && [[ ${S_NAME[$AT]}$'\t'${S_AGENTS[$AT]} == "${was[$j]}" ]] && continue
+			note="sessions changed while the list was open; nothing closed, here they are now"
+			return 1
+		done
 	}
-	# close I...: kill them; tmux-revive's close hook saves without them, so
-	# they stay closed after a restart.
+	# close: kill the sessions confirm chose, by id; tmux-revive's close hook saves
+	# without them, so they stay closed after a restart.
 	close() {
-		for i; do tm kill-session -t "=${S_NAME[$i]}" 2>/dev/null; done
-		mark=()
-		sessions
-		((sel >= ${#S_NAME[@]})) && sel=$((${#S_NAME[@]} - 1))
-		((sel < 0)) && sel=0
+		for i in "${ids[@]}"; do tm kill-session -t "$i" 2>/dev/null; done
+		fresh
 	}
+	drain
 	while :; do
 		draw
 		IFS= read -rsn1 k || k=q
@@ -182,7 +215,7 @@ pick() {
 		'')
 			((n)) || { leave; tmx new-session; }
 			leave
-			tmx attach-session -t "=${S_NAME[$sel]}"
+			tmx attach-session -t "${S_ID[$sel]}"
 			;;
 		' ')
 			((n)) || continue
@@ -192,19 +225,19 @@ pick() {
 		x)
 			((n)) || continue
 			if ((${#mark[@]})); then set -- "${!mark[@]}"; else set -- "$sel"; fi
-			if confirm "$@"; then close "$@"; else note="nothing closed"; fi
+			if confirm "$@"; then close; else note=${note:-nothing closed}; fi
 			;;
 		a)
 			((n > 1)) || continue
 			set --
 			for i in "${!S_NAME[@]}"; do ((i == sel)) || set -- "$@" "$i"; done
-			r=${S_NAME[$sel]}
-			if confirm "$@"; then
-				close "$@"
+			r=${S_ID[$sel]}
+			if confirm "$@" && at "$r"; then
+				close
 				leave
-				tmx attach-session -t "=$r"
+				tmx attach-session -t "$r"
 			fi
-			note="nothing closed"
+			note=${note:-nothing closed}
 			;;
 		esac
 	done
@@ -222,7 +255,7 @@ wake | open)
 		((${#S_NAME[@]})) || tmx new-session -A -s 0
 		# One session, or no terminal to ask in: the most recently used one.
 		if ((${#S_NAME[@]} == 1)) || [[ ! -t 0 || ! -t 1 ]]; then
-			tmx attach-session -t "=${S_NAME[0]}"
+			tmx attach-session -t "${S_ID[0]}"
 		fi
 		pick
 		exit 0

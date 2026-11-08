@@ -274,7 +274,8 @@ sleep 1.1
 tmux new-session -d -s newer -c "$T/proj"
 : >"$calls"
 bash --norc --noprofile -c ". $ROOT/scripts/shell.sh; tmux" </dev/null >/dev/null 2>&1
-check "no terminal, several sessions: attaches the most recent, makes none" "grep -qx 'attach-session -t =newer' $calls && [[ \$(nsess) -eq 3 ]]"
+id=$(tmux list-sessions -F '#{session_name} #{session_id}' | awk '$1 == "newer" { print $2 }')
+check "no terminal, several sessions: attaches the most recent (by id), makes none" "[[ -n '$id' ]] && grep -qxF 'attach-session -t $id' $calls && [[ \$(nsess) -eq 3 ]]"
 check "other tmux commands pass straight through" "bash --norc --noprofile -c '. $ROOT/scripts/shell.sh; tmux ls' | grep -q '^newer:'"
 
 # A shell keeps the function it sourced; the app behind it is what updates.
@@ -298,6 +299,14 @@ wait_screen() { for _ in $(seq 50); do screen | grep -q -- "$1" && return 0; sle
 picker() { o respawn-pane -k -t outer "$PICK"; wait_screen 'enter attach'; }
 row() { screen | sed -n "s/^.[ *]\{0,1\} *\([0-9]\)  $1 .*/\1/p" | head -1; }
 keys() { o send-keys -t outer "$@"; sleep 0.4; }
+# A confirmation drops keys sent with the one that asked for it (a paste can't answer
+# it), so its answer goes in a keys call of its own.
+on_screen() { [[ $(screen) == *"$1"* ]]; }
+has() { # has NAME: a session by that exact name (=NAME would split at : and .)
+	local n
+	while IFS= read -r n; do [[ $n == "$1" ]] && return 0; done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
+	return 1
+}
 client_on() { for _ in $(seq 30); do [[ $(tmux list-clients -F '#{session_name}' 2>/dev/null) == "$1" ]] && return 0; sleep 0.1; done; return 1; }
 
 picker
@@ -306,9 +315,11 @@ keys Escape
 check "esc leaves without attaching" "wait_screen picker-exit-0 && [[ -z \$(tmux list-clients 2>/dev/null) ]]"
 
 picker
-keys "$(row older)" x n
+keys "$(row older)" x
+keys n
 check "x, then n: nothing closed" "tmux has-session -t =older && screen | grep -q 'nothing closed'"
-keys x y
+keys x
+keys y
 check "x, then y: that session is closed" "! tmux has-session -t =older 2>/dev/null"
 check "closed is recorded, so it stays closed" "wait_snap '([.sessions[].name] | index(\"older\") | not) and ([.sessions[].name] | index(\"newer\"))'"
 keys q
@@ -332,7 +343,8 @@ keys "$(row ag)" x
 check "closing an agent session names the agent and asks for yes" "screen | grep -q 'ends crush in ag. type yes'"
 keys y Enter
 check "y is not enough for an agent session" "tmux has-session -t =ag && screen | grep -q 'nothing closed'"
-keys x yes Enter
+keys x
+keys yes Enter
 check "yes closes it" "! tmux has-session -t =ag 2>/dev/null"
 keys "$(row solo)" Enter
 check "enter attaches the chosen session" "client_on solo"
@@ -350,12 +362,52 @@ check "a keeps only the chosen one and attaches it" "client_on keep && [[ \$(tmu
 check "the others are recorded closed" "wait_snap '[.sessions[].name] == [\"keep\"]'"
 tmux new-session -d -s last -c "$T/proj"
 picker
-keys "$(row last)" x y
+keys "$(row last)" x
+keys y
 check "one left: still waits for enter, attaches nothing" "! tmux has-session -t =last 2>/dev/null && screen | grep -q 'enter attach' && [[ -z \$(tmux list-clients 2>/dev/null) ]]"
-keys x y
+keys x
+keys y
 check "none left: says so" "screen | grep -q 'no sessions left'"
 keys Enter
 check "none left: enter starts a fresh one" "for _ in \$(seq 30); do [[ \$(tmux list-clients 2>/dev/null) ]] && break; sleep 0.1; done; [[ \$(nsess) -eq 1 ]] && ! tmux has-session -t =keep 2>/dev/null"
+
+# Names that aren't what they look like. tmux splits even an =exact target at : and .
+# so the list acts by session id ($N), never by name.
+tmux new-session -d -s victim -c "$T/proj"
+tmux new-session -d -s victim:0 -c "$T/proj"
+tmux new-session -d -s a:b.c -c "$T/proj"
+picker
+keys "$(row victim:0)" x
+keys y
+check "closing a decoy victim:0 closes the decoy, not victim" "! has victim:0 && has victim"
+keys "$(row 'a:b\.c')" x
+keys y
+check "a session named a:b.c can be closed" "! has a:b.c && has victim"
+keys q
+n0=$(nsess)
+o respawn-pane -k -t outer "$PICK"
+o send-keys -t outer a y # typed right after `tmux`, before the list is up
+wait_screen 'enter attach'
+sleep 0.5
+check "keys typed before the list draws answer nothing" "[[ \$(nsess) -eq $n0 ]] && has victim && ! on_screen '[y/N]' && [[ -z \$(tmux list-clients 2>/dev/null) ]]"
+keys q
+tmux new-session -d -s ren -c "$T/proj"
+picker
+r=$(row ren)
+tmux rename-session -t =ren ren2 # after the list was drawn
+keys "$r" x
+keys y
+check "a session renamed while the list was open isn't closed by its old row" "has ren2 && on_screen 'changed while the list was open' && on_screen ' ren2 '"
+keys q
+bidi=$'bidi\u202Eevil-and-then-a-long-tail'
+tmux new-session -d -s "$bidi" -c "$T/proj"
+picker
+check "a name is shown without its bidi override" "on_screen ' bidievil-and-then-a-  ' && [[ \$(screen) != *$'\u202E'* ]]"
+keys "$(row bidievil-and-then-a-)" x
+check "the confirmation shows the whole name, cleaned" "on_screen 'close bidievil-and-then-a-long-tail?'"
+keys n
+check "n there: still there" "has \"\$bidi\""
+keys q
 o kill-server
 tmux kill-server
 
@@ -374,21 +426,38 @@ printf '#!/bin/sh\nexec %q -S %q -f /dev/null "$@"\n' "$real_tmux" "$T/sock4" >"
 cat >"$T/tmux-bad" <<'EOF'
 #!/bin/sh
 case $1 in
-run-shell) echo "boom: revive.tmux is broken" >&2; exit 1 ;;
+run-shell) printf 'boom: revive.tmux is broken\033]52;c;cHduZWQ=\a\302\2332J\033[2J\n' >&2; exit 1 ;;
 show-option) exit 0 ;;
 esac
 exit 0
 EOF
-chmod +x "$T/tmux-ok" "$T/tmux-bad"
+# revive.tmux stopped partway: its first option set, the rest (and its last step) never ran.
+cat >"$T/tmux-half" <<EOF
+#!/bin/sh
+[ "\$1" = run-shell ] && exec $(printf %q "$T/tmux-ok") set-option -g @revive-bash /bin/bash
+exec $(printf %q "$T/tmux-ok") "\$@"
+EOF
+chmod +x "$T/tmux-ok" "$T/tmux-bad" "$T/tmux-half"
 # Started with the sandbox PATH: revive.tmux's own `tmux` calls must reach this server.
 mkdir -p "$T/ib" && cp "$T/tmux-ok" "$T/ib/tmux"
 PATH="$T/ib:$PATH" "$T/tmux-ok" new-session -d -s i
 inst "$T/tmux-ok"; rc=$?
-check "installer loads into the running server" "((rc == 0)) && grep -q 'running tmux server is protected' $T/inst.out && [[ -n \$($T/tmux-ok show -gqv @revive-bash) ]]"
+check "installer loads into the running server" "((rc == 0)) && grep -q 'running tmux server is protected' $T/inst.out && [[ -n \$($T/tmux-ok show -gqv @revive-loaded) ]]"
 check "first install: tells open shells to restart" "grep -q 'exec \\\$SHELL -l' $T/inst.out"
 inst "$T/tmux-bad"; rc=$?
 check "a failed load is warned about, with tmux's error and the fix" "((rc == 0)) && grep -q 'did NOT load' $T/inst.out && grep -q 'boom: revive.tmux is broken' $T/inst.out && grep -q 'tmux source-file' $T/inst.out && ! grep -q 'is protected' $T/inst.out"
 check "an update: no restart hint, the hand-off picks it up" "! grep -q 'exec \\\$SHELL -l' $T/inst.out"
+no_esc() { local f; f=$(<"$T/inst.out"); [[ $f != *$'\e]52'* && $f != *$'\e[2J'* && $f != *$'\xc2\x9b'* ]]; }
+check "tmux's error is printed without its escape sequences" "no_esc && grep -q 'boom: revive.tmux is broken' $T/inst.out"
+loaded=$("$T/tmux-ok" show -gqv @revive-loaded)
+inst "$T/tmux-half"; rc=$?
+check "a revive.tmux that stops partway is reported as not loaded" "((rc == 0)) && grep -q 'did NOT load' $T/inst.out && ! grep -q 'is protected' $T/inst.out"
+check "and the server's load mark is put back" "[[ -n '$loaded' && \$($T/tmux-ok show -gqv @revive-loaded) == '$loaded' ]]"
+# An rc file with our BEGIN but no END is left alone, so nothing hands open shells off.
+mv "$T/ih/.local/share/tmux-revive/app" "$T/app-was"
+printf '%s\n' '# >>> tmux-revive >>>' >"$T/ih/.bashrc"
+inst "$T/tmux-ok"
+check "no restart hint when no rc file got the hand-off" "grep -q 'left it alone' $T/inst.out && ! grep -q 'exec \\\$SHELL -l' $T/inst.out"
 "$T/tmux-ok" kill-server
 
 echo "$pass passed, $fail failed"

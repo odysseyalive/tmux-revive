@@ -389,6 +389,7 @@ main() {
 	if [ -n "${sha:-}" ]; then say "installed $REPO commit $sha to $APP"; else say "installed to $APP"; fi
 
 	# ------------------------------------------------------------ tmux config
+	wrapped=0 # the `tmux` hand-off went into a shell rc file
 	if [ $wire_config = 1 ]; then
 		conf=$(tmux_conf)
 		mkdir -p "$(dirname "$conf")"
@@ -408,10 +409,14 @@ main() {
 			printf 'TMUX_REVIVE_BIN=%s\n' "$(sq "$APP/bin/tmux-revive")"
 			printf '[ -f %s ] && . %s\n' "$(sq "$APP/scripts/shell.sh")" "$(sq "$APP/scripts/shell.sh")"
 		)
-		shell_rcs | while IFS= read -r rc; do
+		# Not a pipe: wrapped must outlive the loop (a pipe runs it in a subshell).
+		while IFS= read -r rc; do
+			[ -n "$rc" ] || continue
 			had=0; grep -qxF "$BEGIN" "$rc" 2>/dev/null && had=1
-			if set_block "$rc" "$BEGIN" "$END" "$block"; then told "$rc" "$had"; fi
-		done
+			if set_block "$rc" "$BEGIN" "$END" "$block"; then told "$rc" "$had"; wrapped=1; fi
+		done <<EOF
+$(shell_rcs)
+EOF
 		agent_setup
 		if grep -Eq "^[[:space:]]*set(-option)?[[:space:]]+-g[[:space:]]+@continuum-restore[[:space:]]+['\"]?on" "$conf"; then
 			warn "tmux-continuum auto-restore is on in $conf; turn it off or both will restore"
@@ -419,24 +424,29 @@ main() {
 	fi
 
 	# Start protecting the running server now; no restart needed. Then check it took:
-	# revive.tmux sets @revive-bash first thing, and a run-shell that fails under set -e
-	# would otherwise end the install without a word.
+	# revive.tmux sets @revive-loaded as its very last step, so a run that stopped
+	# partway (a run-shell failing under set -e would end the install without a word)
+	# doesn't pass for one that finished.
 	if tmux info >/dev/null 2>&1; then
-		prev=$(tmux show-option -gqv @revive-bash 2>/dev/null) || prev=""
-		tmux set-option -gu @revive-bash 2>/dev/null || true
+		prev=$(tmux show-option -gqv @revive-loaded 2>/dev/null) || prev=""
+		tmux set-option -gu @revive-loaded 2>/dev/null || true
 		if out=$(tmux run-shell "$(sq "$APP/revive.tmux" | sed 's/#/##/g')" 2>&1) &&
-			[ -n "$(tmux show-option -gqv @revive-bash 2>/dev/null)" ]; then
+			[ -n "$(tmux show-option -gqv @revive-loaded 2>/dev/null)" ]; then
 			"$BIN/tmux-revive" save >/dev/null 2>&1 || true
 			say "running tmux server is protected, first snapshot taken"
 		else
-			[ -z "$prev" ] || tmux set-option -g @revive-bash "$prev" 2>/dev/null || true
-			if [ $wire_config = 1 ]; then fix="tmux source-file $(tmux_conf)"; else fix="tmux run-shell $(sq "$APP/revive.tmux")"; fi
+			[ -z "$prev" ] || tmux set-option -g @revive-loaded "$prev" 2>/dev/null || true
+			if [ $wire_config = 1 ]; then fix="tmux source-file $(sq "$(tmux_conf)")"; else fix="tmux run-shell $(sq "$APP/revive.tmux")"; fi
 			warn "tmux-revive did NOT load into the running tmux server; it is not protected yet"
+			# tmux's error can quote anything revive.tmux printed: drop C0 (but tab and
+			# newline), DEL and C1 controls so it can't drive the terminal.
+			out=$(printf '%s\n' "$out" | LC_ALL=C tr -d '\000-\010\013-\037\177' |
+				LC_ALL=C sed "s/$(printf '\302')[$(printf '\200-\237')]//g")
 			[ -z "$out" ] || warn "tmux said: $out"
 			warn "fix: run  $fix  (or restart tmux), then  tmux-revive doctor"
 		fi
 	fi
-	if [ $wire_config = 1 ] && [ $old_wrapper = 1 ] && [ -n "$(shell_rcs)" ]; then
+	if [ $wire_config = 1 ] && [ $old_wrapper = 1 ] && [ $wrapped = 1 ]; then
 		say "terminals already open get the new \`tmux\` after:  exec \$SHELL -l"
 	fi
 

@@ -79,3 +79,7 @@ tmux run-shell -b "${as//\#/##} _resume-links"
 
 # First start after a reboot: bring everything back.
 tmux run-shell -b "$(rs restore.sh --auto)"
+
+# Last, so it says this file ran to the end: the installer checks for it. A value of
+# its own each load, so a mark left by an earlier load can't pass for this one.
+tmux set-option -g @revive-loaded "$(date +%s).$$"
