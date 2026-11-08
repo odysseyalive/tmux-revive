@@ -1,0 +1,106 @@
+# Runs the three test suites on Linux and macOS, and shellcheck, on every push and PR.
+#
+# What CI cannot exercise, so these stay manual checks:
+# - install.ps1: needs Windows with WSL; no runner here has both.
+# - The logind shutdown hook (scripts/daemon.sh: systemd-inhibit + gdbus on the system bus):
+#   runners have no user systemd session or login1 seat to watch.
+# - Real Claude Code / Codex / Cursor processes: the suites use stand-ins.
+# - Linked machines over ssh (agent-say link, the panel's remote rows): the suites stub ssh.
+# - macOS: the suites lean on Linux tools (/proc, util-linux `script -qfc`). GNU coreutils and
+#   findutils are put first on PATH below for `stat -c`, `timeout`, `md5sum`, `find -perm /`,
+#   but checks that read /proc or drive `script` may still fail there until the tests are
+#   made portable.
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suites:
+    name: suites (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      # tmux needs a terminal type even for detached sessions.
+      TERM: xterm-256color
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          # util-linux (script, setsid, flock), procps (pgrep, ps) and python3 ship with the image.
+          sudo apt-get install -y -qq tmux jq sqlite3
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # Stock macOS bash is 3.2; the scripts and suites need bash 4+.
+          brew install bash tmux jq sqlite coreutils findutils
+          prefix=$(brew --prefix)
+          {
+            echo "$prefix/opt/coreutils/libexec/gnubin"
+            echo "$prefix/opt/findutils/libexec/gnubin"
+            echo "$prefix/opt/sqlite/bin"
+            echo "$prefix/bin"
+          } >>"$GITHUB_PATH"
+
+      - name: Tool versions
+        run: |
+          command -v bash && bash --version | head -1
+          tmux -V
+          jq --version
+          sqlite3 --version
+          python3 --version
+
+      - name: e2e
+        run: bash test/e2e.sh
+
+      - name: agent-say
+        if: ${{ !cancelled() }}
+        run: bash test/agent-say.sh
+
+      - name: panel
+        if: ${{ !cancelled() }}
+        run: bash test/panel.sh
+
+      - name: release
+        if: ${{ !cancelled() && hashFiles('test/release.sh') != '' }}
+        run: bash test/release.sh
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck --version
+
+      # Warnings are shown but do not fail the build yet; raise the gate to --severity=warning
+      # once the existing findings are cleared.
+      - name: shellcheck (warnings, informational)
+        run: |
+          shellcheck --severity=warning --format=gcc \
+            bin/* scripts/*.sh install.sh revive.tmux test/*.sh || true
+
+      - name: shellcheck (errors fail the build)
+        run: |
+          shellcheck --severity=error \
+            bin/* scripts/*.sh install.sh revive.tmux test/*.sh
