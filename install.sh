@@ -152,7 +152,7 @@ rget() {
 	rm -f "$3.json"
 	case $id in "" | *[!0-9]*) return 1 ;; esac
 	get "$api/assets/$id" "$3" 'Accept: application/octet-stream' || return 1
-	warn "github.com didn't serve $2; downloaded it through GitHub's API instead"
+	warn "couldn't get $2 from github.com, so it came through GitHub's API instead"
 }
 
 # fetch_release DIR: the signed release PIN (or the latest) unpacked in DIR, its version in

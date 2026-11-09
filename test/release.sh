@@ -282,7 +282,7 @@ check "after waiting 2 s, then 5 s, for each file" "[[ \$(tr '\\n' ' ' <$T/sleep
 check "and no need for GitHub's API" "! api_used && ! said \"through GitHub's API\""
 ghinst GH_DOWN=1
 check "github.com never serving it: GitHub's API does, and it installs" \
-	"((rc == 0)) && installed 1.1.0 && api_used && said \"github.com didn't serve tmux-revive-1.1.0.tar.gz; downloaded it through GitHub's API instead\""
+	"((rc == 0)) && installed 1.1.0 && api_used && said \"couldn't get tmux-revive-1.1.0.tar.gz from github.com, so it came through GitHub's API instead\""
 check "after trying github.com four times, waiting 2, 5 and 10 s" "[[ \$(head -n 3 $T/sleep.log | tr '\\n' ' ') == '2 5 10 ' ]] && (( \$(grep -c 'releases/latest/download/SHA256SUMS\$' $T/gh.log) == 4 ))"
 check "the API is asked about the latest release, then the tag it names" \
 	"grep -qx 'https://api.github.com/repos/odysseyalive/tmux-revive/releases/latest' $T/gh.log && grep -qx 'https://api.github.com/repos/odysseyalive/tmux-revive/releases/tags/v1.1.0' $T/gh.log"
