@@ -434,7 +434,9 @@ one still running under the same pane name, and only to the agents you allowed
 that one to reach.
 
 Agents on your own computer run as you, and a determined one could get around the
-popup, or around agent-say altogether. Every permission given is logged with what gave it (`agent-say intros`
+popup, or around agent-say altogether. It could type `agent-say` into a shell pane
+of yours with `tmux send-keys`, or run it over `ssh` to its own computer, and pass
+for you. Every permission given is logged with what gave it (`agent-say intros`
 shows them). For real isolation on your computer, deny agents `tmux send-keys` and
 writes under `~/.local/state/agent-say` (in Claude Code, a `permissions.deny` rule
 such as `Bash(tmux send-keys:*)`), or run them as another user.

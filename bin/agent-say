@@ -420,7 +420,7 @@ queue_local() { # queue_local FROM TO MESSAGE
 	(($(find "$STATE/queue" -maxdepth 1 -name 'msg.*' ! -name '*.err' | wc -l) < QUEUE_MAX)) || return 1
 	q="$(mktemp "$STATE/queue/msg.XXXXXX")"
 	printf '%s' "$3" >"$q"
-	detach --from "$1" _queued "$2" "$q"
+	AGENT_SAY_INTERNAL="$(internal_key)" detach --from "$1" _queued "$2" "$q"
 }
 
 ssh_to() { # ssh_to HOST REMOTE-COMMAND (stdin passes through)
@@ -766,15 +766,36 @@ sender_identity() { # -> SENDER_PANE SENDER_SID
 	SENDER_SID="$(session_id "$SENDER_PANE")"
 	return 0
 }
+# agent-say's own deliveries (the link's poller, a queued message, one you allowed in the
+# panel, its notices) carry a key the sending check knows them by (AGENT_SAY_INTERNAL), never
+# by where they run: $STATE/internal.key, readable only by you, made on first use. An agent
+# running as you can read it too: it keeps out casual misuse, not a determined agent.
+internal_key() {
+	local f="$STATE/internal.key" k
+	if [[ ! -s $f ]]; then
+		mkdir -p "$STATE"
+		k="$(od -An -N16 -tx1 /dev/urandom | tr -dc 0-9a-f)"
+		(umask 077 && printf '%s\n' "$k" >"$f.$$") && mv -n "$f.$$" "$f"
+		rm -f "$f.$$"
+	fi
+	head -n 1 "$f" 2>/dev/null
+}
+internal_caller() { [[ -n "${AGENT_SAY_INTERNAL:-}" && -s "$STATE/internal.key" && "$AGENT_SAY_INTERNAL" == "$(head -n 1 "$STATE/internal.key")" ]]; }
+
 # Is an agent sending this? Every message from one agent session to another needs your
 # permission; one a person sends (agent-say typed in a shell, the panel's M) doesn't. Told
-# apart only by walking up from this process, never by --from or AGENT_SAY_PANE: an agent is
-# among its callers, in the pane it runs in. -> AGENT_PANE AGENT_SID, both empty for a person.
-# Returns 1 when an agent sends but which agent session it is can't be told.
+# apart only by walking up from this process, never by --from or AGENT_SAY_PANE, and it fails
+# closed. A person is one in a pane with no agent anywhere in it, no agent between them, or
+# one logged in over ssh outside any pane (on a server: what the computer that links it hands
+# it, which asked you there itself). An agent is one among the callers, in the pane it runs
+# in, or else the agent running in the pane this comes from. -> AGENT_PANE AGENT_SID, both
+# empty for a person or agent-say's own deliveries (internal_caller). Returns 1 when which it
+# is can't be told: outside any pane and not over ssh (a process that left its pane, say).
 sending_agent() {
-	local pid=$$ panes hit="" agent="" anc=" " apid args AK
+	local pid=$$ panes hit="" agent="" sshd="" anc=" " apid args AK
 	AGENT_PANE="" AGENT_SID=""
-	panes="$(tmux list-panes -a -F '#{pane_pid} #{pane_id}' 2>/dev/null)" || return 0
+	internal_caller && return 0
+	panes="$(tmux list-panes -a -F '#{pane_pid} #{pane_id}' 2>/dev/null)" || return 1
 	while [[ -n "$pid" && "$pid" -gt 1 ]]; do
 		anc+="$pid "
 		args="$(ps -ww -o args= -p "$pid" 2>/dev/null)"
@@ -784,14 +805,25 @@ sending_agent() {
 			[[ -n $AGENT_PANE ]] && AGENT_SID="$(session_id "$AGENT_PANE")" && [[ -n $AGENT_SID ]] && return 0
 			return 1
 		fi
+		# A login over ssh: what is above it is the ssh server's, not the caller's.
+		[[ "$args" == sshd* || "$args" == */sshd* ]] && { sshd=1; break; }
 		agent_cmd "$args"; [[ -n $AK ]] && agent=1
 		hit="$(awk -v p="$pid" '$1 == p {print $2; exit}' <<<"$panes")"
 		[[ -n $hit ]] && break
 		pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
 	done
-	# No agent between this and its pane, or no pane here at all: a person (or agent-say's own
-	# background work: the link's poller, a queued delivery).
-	[[ -n $hit && -n $agent ]] || return 0
+	if [[ -z $hit ]]; then
+		[[ -n $sshd && -z $agent ]] && return 0 # logged in over ssh, no agent in between
+		return 1
+	fi
+	if [[ -z $agent ]]; then
+		read -r _ apid < <(pane_agent_pid "$pid") || true
+		[[ -z "${apid:-}" ]] && return 0 # a pane with no agent in it: a person
+		# An agent runs in that pane, though not above this: it is taken as that agent.
+		AGENT_PANE=$hit AGENT_SID="$(session_id "$hit")"
+		[[ -n $AGENT_SID ]]
+		return
+	fi
 	sender_identity || return 1
 	# The pane's agent must be one of the callers: its session is the one sending.
 	read -r _ apid < <(pane_agent_pid "$pid") || true
@@ -853,7 +885,7 @@ relay_send() { # relay_send FROM NAME@HOST TEXT [RECIPIENT-KEY (see stamp)]
 	s="${s#s:}"; s="${s%@*}"
 	[[ "${4:-}" == s:* ]] && valid_session "$s" || s=""
 	if [[ "${2#*@}" == "$LABEL" ]]; then
-		printf '%s' "$3" | AGENT_SAY_TO_SESSION="$s" "${BASH_SOURCE[0]}" --from "${1%"@$LABEL"}" _deliver "${2%@*}" >/dev/null || rc=$?
+		printf '%s' "$3" | AGENT_SAY_TO_SESSION="$s" AGENT_SAY_INTERNAL="$(internal_key)" "${BASH_SOURCE[0]}" --from "${1%"@$LABEL"}" _deliver "${2%@*}" >/dev/null || rc=$?
 		((rc == 75)) || return "$rc"
 		AGENT_SAY_TO_SESSION="$s" queue_local "${1%"@$LABEL"}" "${2%@*}" "$3" || { echo "agent-say: ${2%@*} is busy, and $QUEUE_MAX messages already wait in the queue" >&2; return 1; }
 		return 0
@@ -1250,11 +1282,15 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 		if [[ -z "$hub" ]]; then
 			if peer_alive "$host"; then
 				# Your permission for it is asked there (its poller, see permit), by the agent
-				# session sending it, which goes with it under its pane's own name. Without one
-				# (a person, or a session that can't be told), its name stands in there.
-				sending_agent || true
-				sn="$( [[ -n $AGENT_PANE ]] && name_of "$AGENT_PANE" || true)"
-				if [[ -n $AGENT_SID ]] && valid_name "$sn"; then from="$sn@$LABEL"; else AGENT_SID=""; fi
+				# session sending it, which goes with it under its pane's own name. What a person
+				# sends goes without one, by its name.
+				rc=0; sending_agent || rc=$?
+				((rc == 0)) || die "can't tell which agent session this comes from: run agent-say from the agent's own pane; not sent"
+				if [[ -n $AGENT_SID ]]; then
+					sn="$(name_of "$AGENT_PANE")"
+					valid_name "$sn" || die "this pane has no name: name it first (agent-say name <name>); not sent"
+					from="$sn@$LABEL"
+				fi
 				queue_for_peer "$host" "$name" "$from" "$msg" "$AGENT_SID"
 				return
 			fi
@@ -1830,6 +1866,9 @@ case "$cmd" in
 							ssid="$(stamp "${msid[$id]:-}" "${mfrom%@*}" "$host")"
 							if [[ $ssid == s:* ]] && ! grep -qxF -- "${mfrom%@*} ${msid[$id]}" "$d/sessions" 2>/dev/null; then
 								why="its session isn't the one $host reports for ${mfrom%@*}"
+							elif [[ $ssid == n:* ]] && awk -v n="${mfrom%@*}" '$1 == n {f = 1} END {exit !f}' "$d/sessions" 2>/dev/null; then
+								# By name only for a person there, never under an agent's name.
+								why="no agent session came with it, though ${mfrom%@*} is an agent's name on $host"
 							elif ! permit "$ssid" "$(stamp "$rs" "" "$LABEL")" "$mfrom" "$to@$LABEL" "$text"; then
 								why="$PERMIT_WHY" held=1
 								[[ -z $PERMIT_SAY ]] || tell "$host" "${mfrom%@*}" "$PERMIT_SAY"
@@ -1837,7 +1876,7 @@ case "$cmd" in
 						fi
 						if [[ -z $why && -z $held ]]; then
 							rc=0
-							printf '%s' "$text" | AGENT_SAY_TO_SESSION="$rs" "$0" --from "$mfrom" _deliver "$to" >/dev/null 2>"$d/deliver.err" || rc=$?
+							printf '%s' "$text" | AGENT_SAY_TO_SESSION="$rs" AGENT_SAY_INTERNAL="$(internal_key)" "$0" --from "$mfrom" _deliver "$to" >/dev/null 2>"$d/deliver.err" || rc=$?
 							# Someone typing there, or the like: delivered here once the pane is free.
 							if ((rc == 75)); then
 								if AGENT_SAY_TO_SESSION="$rs" queue_local "$mfrom" "$to" "$text"; then rc=0; else rc=1; echo "busy, and $QUEUE_MAX messages already wait in the queue" >"$d/deliver.err"; fi
@@ -1979,7 +2018,7 @@ case "$cmd" in
 	_tell)
 		valid_host "${2:-}" && valid_name "${3:-}" || die "usage: agent-say _tell <host> <name> <text>"
 		if [[ "$2" == "$LABEL" ]]; then # a pane here (an agent here you declined)
-			printf '%s' "${4:-}" | AGENT_SAY_LOCAL_ONLY=1 AGENT_SAY_NOTICE=1 "$0" --from "agent-say@$LABEL" "$3" - >/dev/null 2>&1 || true
+			printf '%s' "${4:-}" | AGENT_SAY_LOCAL_ONLY=1 AGENT_SAY_NOTICE=1 AGENT_SAY_INTERNAL="$(internal_key)" "$0" --from "agent-say@$LABEL" "$3" - >/dev/null 2>&1 || true
 			exit 0
 		fi
 		printf '%s' "${4:-}" | ssh_to "$2" "AGENT_SAY_LOCAL_ONLY=1 AGENT_SAY_NOTICE=1 $REMOTE_CMD --from $(printf %q "agent-say@$LABEL") $(printf %q "$3") -" >/dev/null 2>&1 || true ;;

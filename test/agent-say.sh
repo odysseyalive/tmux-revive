@@ -13,7 +13,11 @@ chmod +x "$T/bin/tmux"
 PATH="$T/bin:$PATH"
 hash -r
 [[ $(command -v tmux) == "$T/bin/tmux" ]] || { echo "refusing: tmux would reach a real server"; exit 1; }
-say() { "$ROOT/bin/agent-say" "$@"; }
+# The test itself runs in no pane, so agent-say would refuse what it sends to an agent as from
+# no one it can tell. It sends as agent-say's own deliveries do, with their key; who sends what
+# is tested from panes (runner, below).
+(umask 077 && od -An -N16 -tx1 /dev/urandom | tr -dc 0-9a-f >"$T/internal.key")
+say() { AGENT_SAY_INTERNAL=$(cat "$T/internal.key") "$ROOT/bin/agent-say" "$@"; }
 pass=0 fail=0
 check() {
 	if eval "$2"; then
@@ -250,9 +254,12 @@ fi
 r=r label=devbox-1
 [[ \$1 == dev.example.com ]] && r=r2 label=dev
 shift # the host
-exec env -u AGENT_SAY_PANE -u AGENT_SAY_LOCAL_ONLY PATH="$T/\${r}bin:\$PATH" XDG_STATE_HOME=$T/\${r}state \\
-	AGENT_SAY_MAILBOX=$T/\${r}state/agent-say/mailbox.md AGENT_SAY_HOST=\$label TMPDIR=$T/\${r}tmp HOME=$T/\${r}home \\
-	bash -c "\$*"
+unset AGENT_SAY_PANE AGENT_SAY_LOCAL_ONLY AGENT_SAY_INTERNAL
+export PATH="$T/\${r}bin:\$PATH" XDG_STATE_HOME=$T/\${r}state AGENT_SAY_MAILBOX=$T/\${r}state/agent-say/mailbox.md \\
+	AGENT_SAY_HOST=\$label TMPDIR=$T/\${r}tmp HOME=$T/\${r}home
+# Under a process named like sshd's, as a command run over ssh is: agent-say there takes what
+# comes in over ssh, outside any pane, for a login, not an agent that left its pane.
+exec -a "sshd: fake@notty" bash -c 'bash -c "\$1"; exit \$?' _ "\$*"
 EOF
 chmod +x "$T/bin/fakessh"
 export AGENT_SAY_SSH=$T/bin/fakessh AGENT_SAY_REMOTE_CMD=$ROOT/bin/agent-say AGENT_SAY_HOST=laptop AGENT_SAY_LINK_INTERVAL=0.3
@@ -298,13 +305,14 @@ check "the link keeps running in the background" "say link | grep -q '^devbox  r
 AGENT_SAY_PANE=$LC say codex "ping from here" >/dev/null
 check "a plain name reaches the pane on the linked machine" "seen_there '[agent-msg from=me@laptop' && seen_there 'ping from here'"
 check "its reply command points back here" "seen_there 'agent-say --from codex me@laptop'"
-there "$ROOT/bin/agent-say --from codex me@laptop 'pong from codex'" >/dev/null
-# me runs an agent: what comes from there for it waits for your permission (the watchman-dev case).
-check "a message from there for an agent here waits as an introduction" "wait_intro 'codex@devbox wants to talk with me@laptop' && ! seen $LC 'pong from codex'"
-allow_intro "$(intro_id 'codex@devbox wants to talk with me@laptop')" >/dev/null
+there "$ROOT/bin/agent-say --from ops me@laptop 'pong from codex'" >/dev/null
+# ops, a person logged in there over ssh (no agent session, so by name), writes to me, which
+# runs an agent: what comes from there for an agent here waits for your permission.
+check "a message from there for an agent here waits as an introduction" "wait_intro 'ops@devbox wants to talk with me@laptop' && ! seen $LC 'pong from codex'"
+allow_intro "$(intro_id 'ops@devbox wants to talk with me@laptop')" >/dev/null
 check "a reply from there arrives here once allowed, with no way in to this machine" "wait_seen $LC '(introduction, allowed by the user on laptop) pong from codex'"
-check "and says who sent it, as an address that works from here" "seen $LC '[agent-msg from=codex@devbox'"
-there "$ROOT/bin/agent-say --from codex me 'plain name back'" >/dev/null
+check "and says who sent it, as an address that works from here" "seen $LC '[agent-msg from=ops@devbox'"
+there "$ROOT/bin/agent-say --from ops me 'plain name back'" >/dev/null
 check "the other side can use a plain name too" "wait_seen $LC 'plain name back'"
 check "list shows the linked machine's names" "say list | grep -q 'codex@devbox'"
 # A pane over there renamed from here, the way the panel's N does it: the link carries the new name back.
@@ -315,7 +323,7 @@ there "AGENT_SAY_PANE='$RC' PATH=\"\$HOME/.local/bin:\$PATH\" agent-say name 'co
 for _ in $(seq 20); do say list | grep -q ' codex@devbox' && break; sleep 0.25; done
 out=$(AGENT_SAY_PANE=$LC say '-oProxyCommand=x@devbox' 'hi' 2>&1)
 check "name@host with a name that isn't one is refused ($out)" "[[ '$out' == *'is not a pane name'* ]]"
-there "$ROOT/bin/agent-say --from codex nobody@laptop 'lost'" >/dev/null
+there "$ROOT/bin/agent-say --from ops nobody@laptop 'lost'" >/dev/null
 sleep 1.5
 check "a message for a name that isn't here lands in the mailbox, marked" "grep -q 'NOT DELIVERED' $AGENT_SAY_MAILBOX"
 
@@ -333,8 +341,8 @@ check "a pane can't be named like a command" "! AGENT_SAY_PANE=$LC say name read
 check "a sender name with a space is refused" "! AGENT_SAY_PANE=$LC say --from 'a b' codex 'x' 2>/dev/null"
 
 "$T/rbin/tmux" set-option -p -t "$RC" -u @agent # nothing named on the other side
-there "$ROOT/bin/agent-say --from codex me 'with nothing named there'" >/dev/null 2>&1
-there "$ROOT/bin/agent-say --from codex me@laptop 'with nothing named there'" >/dev/null
+there "$ROOT/bin/agent-say --from ops me 'with nothing named there'" >/dev/null 2>&1
+there "$ROOT/bin/agent-say --from ops me@laptop 'with nothing named there'" >/dev/null
 check "the link still works when the other side has no named panes" "wait_seen $LC 'with nothing named there'"
 # Its only named pane has no agent session in it (as when a pane closes while that side
 # answers): that pane's line is dropped, and the link keeps checking in. It must be the only
@@ -349,13 +357,13 @@ check "a pane there with no agent session in it doesn't stop the link" "say link
 # Someone typing in the pane a message is for: the link retries instead of stalling.
 tmux send-keys -t "$X" -l 'my draft'
 sleep 0.5
-there "$ROOT/bin/agent-say --from codex delta@laptop 'after your draft'" >/dev/null
-allow_from 'codex@devbox wants to talk with delta@laptop'
+there "$ROOT/bin/agent-say --from ops delta@laptop 'after your draft'" >/dev/null
+allow_from 'ops@devbox wants to talk with delta@laptop'
 sleep 2
 check "a message waits while someone types there" "! grep -q 'after your draft' $T/codex.typed"
 check "and the link keeps checking in meanwhile" "[[ -n \$(find $T/rstate/agent-say/peers/laptop/alive -newermt '-2 seconds') ]]"
 tmux send-keys -t "$X" C-u
-check "it is delivered once the prompt is empty" "wait_typed codex '[agent-msg from=codex@devbox \$(date -u +%H:%MZ)] after your draft -- To answer, run the shell command: agent-say --from delta codex@devbox \"<your reply>\"' || grep -q 'after your draft' $T/codex.typed"
+check "it is delivered once the prompt is empty" "wait_typed codex '[agent-msg from=ops@devbox \$(date -u +%H:%MZ)] after your draft -- To answer, run the shell command: agent-say --from delta ops@devbox \"<your reply>\"' || grep -q 'after your draft' $T/codex.typed"
 check "and only once" "[[ \$(grep -c 'after your draft' $T/codex.typed) -eq 1 ]]"
 
 echo "two servers linked here talk through it"
@@ -603,9 +611,30 @@ allow_from 'lb@laptop wants to talk with cx@devbox'
 check "allowed, it goes there, from here" "wait_seen1 $CX '(introduction, allowed by the user on laptop) lb here, for cx' && seen1 $CX '[agent-msg from=lb@laptop'"
 out=$(in1 $CX "$ROOT/bin/agent-say lb 'cx answering lb'")
 check "and the answer comes back with no second introduction ($out)" "wait_seen $LB 'cx answering lb' && ! say intros | grep -F 'cx@devbox wants to talk with lb' >/dev/null"
-out=$(there "$ROOT/bin/agent-say --from cx la 'cx by name, from a shell there'" 2>&1)
-check "what comes from there without its agent session is held by its name, not let through ($out)" "wait_intro 'cx@devbox wants to talk with la@laptop' && ! seen $LA 'cx by name, from a shell there'"
-say _intro deny "$(intro_id 'cx@devbox wants to talk with la@laptop')" >/dev/null
+there "$ROOT/bin/agent-say --from ops la 'a person there, by name'" >/dev/null 2>&1
+check "what a person there sends an agent here is held by its name, not let through" "wait_intro 'ops@devbox wants to talk with la@laptop' && ! seen $LA 'a person there, by name'"
+say _intro deny "$(intro_id 'ops@devbox wants to talk with la@laptop')" >/dev/null
+there "$ROOT/bin/agent-say --from cx la 'cx by name, from a shell there'" >/dev/null 2>&1
+check "but never under the name of an agent there, without its session" "wait_mail \"cx@devbox -> la .*NOT DELIVERED: no agent session came with it, though cx is an agent's name on devbox\" && ! seen $LA 'cx by name, from a shell there'"
+# An agent can't pass for a person by leaving its pane: what it starts detached (setsid, its
+# parent gone) runs in no pane, and is refused, not taken for a person's.
+detached() { # detached PANE-KEY ENV OUT TEXT-ARGS: run agent-say detached from the agent in that pane
+	rm -f "$3"
+	run "$1" "( $2 setsid $ROOT/bin/agent-say $4 >$3 2>&1 & )" >/dev/null
+	for _ in $(seq 40); do [[ -s $3 ]] && break; sleep 0.25; done
+	cat "$3" 2>/dev/null
+}
+out=$(detached "0$LA" "$E0" "$T/det.out" "lb 'from a detached child'")
+check "an agent's detached child sending here is refused, not taken for a person ($out)" "[[ '$out' == *\"can't tell which agent session this comes from\"* ]] && sleep 1 && ! seen $LB 'from a detached child'"
+out=$(detached "1$CX" "$E1" "$T/det2.out" "la 'cx detached'")
+check "and so is one on a linked server sending here ($out)" "[[ '$out' == *\"can't tell which agent session this comes from\"* && -z \$(ls $outbox) ]] && ! seen $LA 'cx detached'"
+mkfifo "$T/run.un"
+UN=$("$T/rbin/tmux" new-window -d -P -F '#{pane_id}' -t r "$T/bin/runner $T/run.un")
+FIFO[1$UN]=$T/run.un
+sleep 0.3
+out=$(in1 $UN "$ROOT/bin/agent-say la 'from an unnamed pane'")
+check "an agent in a pane with no name there can't send here ($out)" "[[ '$out' == *'this pane has no name'* && -z \$(ls $outbox) ]]"
+"$T/rbin/tmux" kill-pane -t "$UN"
 
 echo "declining, revoking, limits"
 in1 $CX "$ROOT/bin/agent-say --from cx dev-root 'codex here'" >/dev/null
@@ -762,15 +791,15 @@ out=$(say link devbox --read-only 2>&1 </dev/null)
 check "changing a link's mode asks nothing again ($out)" "[[ '$out' == *'Read-only'* && '$out' != *'host key'* ]]"
 out=$(say link)
 check "link lists the mode and the key ($out)" "[[ '$out' == 'devbox  running  read-only  key: $fp1 (ED25519)  names: codex '* ]]"
-there "$ROOT/bin/agent-say --from codex me@laptop 'read only please'" >/dev/null
+there "$ROOT/bin/agent-say --from ops me@laptop 'read only please'" >/dev/null
 check "a read-only link's message is held in the mailbox" "wait_mail 'held: read-only link' && grep -A1 'held: read-only link' $AGENT_SAY_MAILBOX | grep -c 'read only please' >/dev/null"
 check "and not typed in" "! seen $LC 'read only please'"
 check "and the other side has it acknowledged, not fetched again" "for _ in \$(seq 20); do [[ -z \$(ls $outbox) ]] && break; sleep 0.2; done; [[ -z \$(ls $outbox) && \$(mailcount 'held: read-only') == 1 ]]"
 check "it may still see the names here" "[[ -n \$(find $T/rstate/agent-say/peers/laptop/names -newermt '-3 seconds') ]] && grep -cx me $T/rstate/agent-say/peers/laptop/names >/dev/null"
 out=$(say link devbox --read-write --allow me,alpha2 2>&1 </dev/null)
 check "an allowlist is set ($out)" "[[ '$out' == *'can reach only: alpha2,me.'* && ! -e $lk/read-only ]]"
-there "$ROOT/bin/agent-say --from codex delta@laptop 'not for delta'" >/dev/null
-there "$ROOT/bin/agent-say --from codex me@laptop 'allowed to me'" >/dev/null
+there "$ROOT/bin/agent-say --from ops delta@laptop 'not for delta'" >/dev/null
+there "$ROOT/bin/agent-say --from ops me@laptop 'allowed to me'" >/dev/null
 check "an allowlisted name gets its message" "wait_seen $LC 'allowed to me'"
 check "another name's is NOT DELIVERED, not allowed" "wait_mail 'NOT DELIVERED: not allowed' && ! grep -c 'not for delta' $T/codex.typed >/dev/null"
 check "--allow takes only names a pane can have" "! say link devbox --allow 'x;y' </dev/null 2>/dev/null && ! say link devbox --allow '' </dev/null 2>/dev/null && [[ \$(paste -sd, $lk/allow) == alpha2,me ]]"
@@ -783,7 +812,7 @@ echo "$T/hostkey2.pub" >"$T/presented.devbox"; echo "$T/hostkey2.pub" >"$T/scan.
 check "a changed host key stops the poller" "for _ in \$(seq 40); do pollers devbox >/dev/null || break; sleep 0.25; done; ! pollers devbox >/dev/null"
 out=$(say link)
 check "and link says why ($out)" "[[ \$out == *'not running'*'host key changed'* ]]"
-there "$ROOT/bin/agent-say --from codex me@laptop 'while the key is wrong'" >/dev/null
+there "$ROOT/bin/agent-say --from ops me@laptop 'while the key is wrong'" >/dev/null
 sleep 1
 check "nothing comes in from it meanwhile" "! seen $LC 'while the key is wrong' && [[ -n \$(ls $outbox) ]]"
 out=$(say link devbox 2>&1 </dev/null)
@@ -799,7 +828,7 @@ check "starting the link twice runs one poller" "[[ \$(pollers devbox -c) -eq 1 
 
 # Stop the poller (as a reboot would), then queue: the message waits, and unlink marks it.
 pkill -f " $ROOT/bin/agent-say _poll devbox\$"; sleep 0.3
-there "$ROOT/bin/agent-say --from codex me@laptop 'never fetched'" >/dev/null
+there "$ROOT/bin/agent-say --from ops me@laptop 'never fetched'" >/dev/null
 say unlink devbox >/dev/null
 sleep 0.5
 check "unlink stops it" "! pollers devbox >/dev/null"
@@ -857,15 +886,15 @@ pw _login pwbox "$fp2 (ED25519)" <<<hunter2 >/dev/null 2>&1
 check "the right one, typed into ssh, leaves a login open" "pw _login pwbox --check"
 out=$(pw link pwbox --yes 2>&1 </dev/null)
 check "the link is then made over that login, with no prompt ($out)" "[[ \$out == *'linked to pwbox'*'Its panes: codex'* ]]"
-there "$ROOT/bin/agent-say --from codex me@laptop 'over the password link'" >/dev/null
-allow_from 'codex@pwbox wants to talk with me@laptop'
+there "$ROOT/bin/agent-say --from ops me@laptop 'over the password link'" >/dev/null
+allow_from 'ops@pwbox wants to talk with me@laptop'
 check "and its poller brings messages over it" "wait_seen $LC 'over the password link'"
 rm -f "$T/pw.master" # the login dropped: a reboot over there, or the network gone a while
 check "a dropped login shows as needing one, not as a failure to reach it" "for _ in \$(seq 40); do [[ -e $pl/login ]] && break; sleep 0.25; done; [[ -e $pl/login ]] && say link | grep -q '^pwbox  running.*needs login: pwbox asks for a password'"
 n=$(batch_tries); sleep 3
 check "while it waits for a login it doesn't keep trying ssh ($n tries)" "[[ \$(batch_tries) == $n ]]"
 pw _login pwbox <<<hunter2 >/dev/null 2>&1
-there "$ROOT/bin/agent-say --from codex me@laptop 'after logging in again'" >/dev/null
+there "$ROOT/bin/agent-say --from ops me@laptop 'after logging in again'" >/dev/null
 check "logged in again, the link picks up by itself" "wait_seen $LC 'after logging in again' && [[ ! -e $pl/login ]]"
 # On a terminal, link asks for the password itself, through ssh (script gives it a terminal).
 rm -f "$T/pw.master"
@@ -892,7 +921,7 @@ out=$(pw link pwbox 2>&1 </dev/null)
 check "its own key back, it relinks with no question ($out)" "[[ \$out == *'linked to pwbox'* && \$out != *'host key'* ]] && pollers pwbox >/dev/null"
 # known_hosts stops mattering to it: its entry goes, and the link goes on, bound to its pin.
 grep -v '^pwbox ' "$T/known_hosts" >"$T/known_hosts.new" && mv "$T/known_hosts.new" "$T/known_hosts"
-there "$ROOT/bin/agent-say --from codex me@laptop 'with known_hosts gone'" >/dev/null
+there "$ROOT/bin/agent-say --from ops me@laptop 'with known_hosts gone'" >/dev/null
 check "with its known_hosts entry gone, the link goes on" "wait_seen $LC 'with known_hosts gone' && [[ ! -s $pl/error ]]"
 # Another computer on the connection, while ssh-keyscan still shows the key you confirmed: the
 # connection itself is turned away, so the scan can't vouch for it.
