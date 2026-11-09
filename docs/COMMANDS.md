@@ -383,12 +383,12 @@ pick it, read why it's asking, and choose Approve or Deny.
 
 Approve shows a four-digit code in a popup for you to type back. Then it delivers
 the introduction and anything sent since, in order, and the two can talk both ways.
-Deny drops them, and that agent can't write to that one again.
+Deny drops them, and the asking agent can't write to the other one again.
 
 An agent can restart while it waits. Approve covers whoever is in those two panes
 now. If the recipient restarted, it still gets what waited. If the sender restarted,
-what it sent before is dropped, since it may have sent it again; the panel tells you
-before you choose. MESSAGES shows each waiting message as held, then as delivered
+what it sent earlier is dropped, because it may have sent it again. The panel tells
+you before you choose. MESSAGES shows each waiting message as held, then as delivered
 or not delivered with the reason, and a sender whose message didn't get through is
 told so it can send it again.
 

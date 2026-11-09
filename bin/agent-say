@@ -1021,8 +1021,8 @@ approve() { # approve ID CODE: allow the pair, then deliver what waited, in orde
 	# when it asked (an agent restarted meanwhile). Only you get here, with the popup's code,
 	# and it names the panes; who is in them is what their own computers report.
 	fcur="$(current_key "$I_FROM" "$I_FSID")" tcur="$(current_key "$I_TO" "$I_TSID")"
-	[[ -n $fcur ]] || die "${I_FROM%@*} has no agent running now, so this still waits; deny it if it's done"
-	[[ -n $tcur ]] || die "${I_TO%@*} has no agent running now, so this still waits"
+	[[ -n $fcur ]] || die "${I_FROM%@*} has no agent running now, so this keeps waiting; deny it if that work is finished"
+	[[ -n $tcur ]] || die "${I_TO%@*} has no agent running now, so this keeps waiting"
 	grant_set allow "$fcur" "$tcur" "$I_FROM" "$I_TO"
 	if [[ $fcur != "$I_FSID" ]]; then
 		# The agent that sent these is gone (it may well have sent them again since): they're

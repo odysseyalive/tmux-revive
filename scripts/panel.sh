@@ -2566,7 +2566,7 @@ if ((SHOWMODE)); then
 	# Once asked for by another computer's J, to select a pane here and switch the client used
 	# last to it. That moved focus away from whoever was working here, so it changes nothing
 	# now; an older computer's J that asks says it couldn't show it.
-	echo "panel.sh --show: not done any more; nothing was changed" >&2
+	echo "panel.sh --show is no longer supported; nothing was changed" >&2
 	exit 1
 fi
 if ((ASKMODE)); then
