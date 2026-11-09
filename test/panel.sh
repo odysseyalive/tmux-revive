@@ -434,6 +434,12 @@ out=$(bgframe)
 check "with that command ended (an MCP server still running under it), WAITING ON YOU" "pgrep -P $clpid -f mcp-server >/dev/null && grep -q 'claude *◆ WAITING ON YOU' <<<\"\$out\""
 tm kill-window -t work:cl; tm kill-window -t work:cx; tm kill-window -t work:cl2
 
+# The key bar offers I only while the Links area has something for it: an introduction waiting.
+iid=0123456789abcdef0123456789abcdef
+check "with no introductions, the bar has no [I]ntroductions" "! frame 200 50 | grep -qF '[I]ntroductions'"
+mkdir -p "$T/mail/intros/$iid" && echo "x@far" >"$T/mail/intros/$iid/from" && echo "y@near" >"$T/mail/intros/$iid/to"
+check "with one waiting, the bar offers [I]ntroductions" "frame 200 50 | grep -qF '[I]ntroductions'"
+rm -rf "$T/mail/intros/$iid"
 echo "questions"
 # A stand-in agent (a copy of bash named codex) asking a question the way Claude Code draws
 # one. Every key it reads is logged to OUT.keys; the answer it got goes to OUT.

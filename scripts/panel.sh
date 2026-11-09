@@ -1541,13 +1541,16 @@ links_saves() { # -> SIDE lines: saves, then links
 	done
 	# Agents on two linked computers asking to talk through this one: yours to allow (I).
 	local f t gn
+	INTRO_ON=0 # anything for I: an introduction waiting, or permissions given (the key bar offers I)
 	for d in "$ASTATE"/intros/*/; do
 		[[ -f $d/from ]] || continue
+		INTRO_ON=1
 		f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to")
 		clean f t
 		SIDE+=("$BMAG⚑$R $BWHT${f:0:30}$R $GRY→$R $BWHT${t:0:30}$R $BBLU[$B${BYEL}I$R$BBLU]$R${BWHT}ntro$R")
 	done
 	gn=$(grep -c . "$ASTATE/grants" 2>/dev/null)
+	((gn)) && INTRO_ON=1
 	((gn)) && SIDE+=("$GRY  $gn permission(s) given · $R$BBLU[$B${BYEL}I$R$BBLU]$R$GRY to see$R")
 	# ssh connections in panes that aren't linked yet: offered for linking with L.
 	local i seen=" "
@@ -1712,6 +1715,7 @@ draw() {
 	local cs=("J:ump" "M:essage" "N:ame" "L:ink" "U:nlink")
 	v_mode # tmux-revive for that row's user, or on that computer
 	case $VMODE in host | update) cs+=("V: update") ;; install) cs+=("V: install") ;; esac
+	((${INTRO_ON:-0})) && cs+=("I:ntroductions")
 	cs+=("P:eek" "A:rt" "S:ave" "Q:uit" "?: help")
 	for c in "${cs[@]}"; do
 		if [[ $off == *" ${c%%:*} "* ]]; then
