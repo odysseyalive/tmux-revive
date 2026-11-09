@@ -1343,7 +1343,7 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 		draw_question "$1"
 		return
 	fi
-	if ((FULL)); then kcs x " back" c " collapse"; else kc x " full view"; fi
+	if ((FULL)); then kc c " collapse"; else kc x " full view"; fi
 	# Its agents working in the background don't keep it from taking what you type.
 	if [[ ${P_STATE[SEL]:-} == agents ]]; then sectk "PEEK · $name · agents busy, takes input" "$KC"; else sectk "PEEK · $name" "$KC"; fi
 	if [[ -n ${P_HOST[SEL]:-} ]]; then
@@ -1373,7 +1373,7 @@ draw_question() { # draw_question LINES
 	else
 		kcs Tab " answer" J " open the chat"
 		keys="$KC  "
-		if ((FULL)); then kc x " back"; else kc x " full view"; fi
+		if ((FULL)); then kc c " collapse"; else kc x " full view"; fi
 		keys+=$KC
 	fi
 	sectk "QUESTION · $name" "$keys" 5
@@ -2277,8 +2277,8 @@ act() {
 		clean out
 		flash "${out#agent-say: }" ;;
 	p | P) PEEK=$((!PEEK)) ;;
-	x | X) if ((FULL)); then FULL=0; else FULL=1 PEEK=1; fi ;; # the peek over the whole art, and back
-	c | C) FULL=0 ;;
+	x | X) FULL=1 PEEK=1 ;; # the peek over the whole art; pressed again, it stays there
+	c | C) FULL=0 ;;        # only c puts the art back
 	enter | $'\t') [[ ${P_STATE[SEL]:-} == asking ]] && answer ;; # Tab: focus to the question
 	a | A)
 		SCENE=$(((SCENE + 1) % ${#SCENES[@]}))

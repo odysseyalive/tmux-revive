@@ -188,15 +188,19 @@ check "N renames the selected pane" "named top-watch && wait_screen '▶ top-wat
 tm send-keys -t work:panel s
 check "S saves" "wait_screen '(manual)'"
 check "the peek box shows the selected pane" "screen | grep -q 'PEEK · top-watch'"
-# x: the peek over the whole artwork; x again or c back. Every row is repainted right.
+# x: the peek over the whole artwork, and x again keeps it there; only c brings the art back.
+# Every row is repainted right.
 whole() { local s; s=$(screen); [[ ${s%%$'\n'*} == ╔* && ${s##*$'\n'} == *╝ ]] && seen 'PEEK · ' && seen 'MESSAGES'; }
 tm send-keys -t work:panel x
-check "x gives the peek the artwork's space too" "wait_screen '[x] back' && seen '[c] collapse' && seen 'ART · ' 0 && whole"
+check "x gives the peek the artwork's space too" "wait_screen '[c] collapse' && seen 'ART · ' 0 && whole"
+check "the full view's hint offers c to collapse, not x" "seen '[c] collapse' && seen '[x] full view' 0 && seen '[x] back' 0"
 tm send-keys -t work:panel c
 check "c collapses it back, artwork and all" "wait_screen '[x] full view' && wait_screen 'ART · ' && whole"
-tm send-keys -t work:panel x; wait_screen '[x] back' >/dev/null
-tm send-keys -t work:panel x
-check "and x again snaps it back too" "wait_screen '[x] full view' && seen 'ART · ' && whole"
+tm send-keys -t work:panel x; wait_screen '[c] collapse' >/dev/null
+tm send-keys -t work:panel x; sleep 1.5
+check "x again keeps it expanded" "seen '[c] collapse' && seen 'ART · ' 0 && seen '[x] full view' 0 && whole"
+tm send-keys -t work:panel c
+check "and c collapses it again" "wait_screen '[x] full view' && wait_screen 'ART · ' && whole"
 tm send-keys -t work:panel p; sleep 1.5
 check "P hides the peek box" "! screen | grep -q 'PEEK'"
 tm send-keys -t work:panel Down
