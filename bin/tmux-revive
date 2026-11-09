@@ -363,7 +363,7 @@ doctor)
 	cs=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json
 	# Ours name this path (see HOOK_TAG in install.sh).
 	has_hook() { jq -e --arg e "$1" --arg t tmux-revive/app/scripts/claude-hook.sh \
-		'any(.hooks[$e][]?.hooks[]?; (.command? // "") | tostring | contains($t))' "${2:-$cs}" >/dev/null 2>&1; }
+		'any(.hooks[$e][]?.hooks[]?; (.command? // "") | tostring | contains($t))' "$cs" >/dev/null 2>&1; }
 	if has_hook SessionStart; then
 		ok "Claude Code is told about agent-say when a session starts"
 	else
@@ -373,21 +373,6 @@ doctor)
 		ok "Claude Code reports its context left to the panel"
 	else
 		bad "Claude Code doesn't report its context left ($cs has no tmux-revive ctx hook). Run tmux-revive update to add it"
-	fi
-	# Root's Claude Code (sessions started with sudo -i in a pane), when root has a config
-	# folder: read through sudo -n where that needs no password, never asking for one. The tests
-	# can't be root: REVIVE_TEST_ROOT_HOME stands in for root's home, never as root.
-	if ((EUID != 0)) && command -v sudo >/dev/null && sudo -n true </dev/null >/dev/null 2>&1; then
-		rh=${REVIVE_TEST_ROOT_HOME:-$(getent passwd 0 2>/dev/null | cut -d: -f6)}
-		if [[ $rh == /* ]] && sudo -n test -d "$rh/.claude" </dev/null 2>/dev/null; then
-			cs=$rh/.claude/settings.json
-			rs=$(sudo -n cat "$cs" </dev/null 2>/dev/null | head -c 1048576)
-			if has_hook SessionStart /dev/stdin <<<"$rs" && has_hook Stop /dev/stdin <<<"$rs" && has_hook PostToolUse /dev/stdin <<<"$rs"; then
-				ok "root's Claude Code is told about agent-say and reports its context left"
-			else
-				bad "root's Claude Code isn't told about agent-say and doesn't report its context left ($cs has no tmux-revive hook). Run tmux-revive update to add it"
-			fi
-		fi
 	fi
 	codex_home=${CODEX_HOME:-$HOME/.codex}
 	if [[ -d $codex_home ]]; then

@@ -10,8 +10,6 @@
 #   panel.sh --keys %ID KEY...   keys for a question on that pane, sent from another computer's panel
 #   panel.sh --show %ID  that pane shown in tmux here (its window and pane), for another computer's J
 #   panel.sh --asking   the panes whose agent is asking a question now: id, place, name (daemon.sh)
-#   panel.sh --ctx-of PID   the context left of that Claude Code process, as a number: run by
-#                       --rows through sudo -n for one running as another user (see ctx_left)
 #
 # REVIVE_PANEL_POPUP=1 (set by @revive-panel-key) closes the panel after a jump, since a popup
 # would otherwise sit on top of the pane you jumped to.
@@ -38,13 +36,6 @@ fi
 # --keys is checked key by key once key_ok is defined, before anything is sent.
 [[ ${1:-} == --keys ]] && KEYSMODE=1
 [[ ${1:-} == --show ]] && SHOWMODE=1
-# --ctx-of reads, prints one number and exits once the functions it needs are defined (below
-# ctx_left). Run as root through sudo: nothing but a process id gets through, and it writes nothing.
-CTXOF=""
-if [[ ${1:-} == --ctx-of ]]; then
-	[[ ${2:-} =~ ^[1-9][0-9]{0,9}$ ]] || { echo "usage: panel.sh --ctx-of PID" >&2; exit 2; }
-	CTXOF=$2
-fi
 
 # Widths below are counted in characters, which needs a UTF-8 locale.
 if [[ $(locale charmap 2>/dev/null) != UTF-8 ]]; then
@@ -56,7 +47,7 @@ fi
 ASAY="$REVIVE_ROOT/bin/agent-say"
 AMAIL="${AGENT_SAY_MAILBOX:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-say/mailbox.md}"
 ASTATE=$(dirname "$AMAIL")
-[[ -n $CTXOF ]] || DIR=$(revive_dir)
+DIR=$(revive_dir)
 REFRESH=${REVIVE_PANEL_REFRESH:-2}
 CLK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 HOST=$(hostname -s 2>/dev/null || uname -n)
@@ -689,7 +680,6 @@ claude_transcript() { # claude_transcript PID -> TRANSCRIPT, or nothing
 		done
 		return 0
 	fi
-	[[ -z $CTXOF ]] || return 0 # see ctx_of
 	cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null)
 	[[ -n $cwd ]] || return 0
 	# Another Claude Code in the same folder could own the newest transcript there.
@@ -735,8 +725,6 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 		[[ -n $RECORD ]] && sid=$(jq -r '.sessionId // empty' "$RECORD" 2>/dev/null)
 		ctx_reported "$pane" "$apid" "$sid"
 		[[ -n $CTX ]] && return 0
-		ctx_by_sudo "$apid"
-		[[ -n $CTX ]] && return 0
 		if [[ -z $RECORD ]]; then
 			claude_transcript "$apid"
 			[[ -n $TRANSCRIPT ]] && ctx_cached "$TRANSCRIPT" claude_ctx_file
@@ -754,76 +742,6 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 		done ;;
 	esac
 }
-
-# A Claude Code running as another user (root, from sudo -i in a pane of a link's user) with
-# no fresh report from its hook: its files can't be read from here, so --rows asks this same
-# script to read them as root, through sudo -n (never a password prompt), where sudo allows
-# that without one. Whether it does is asked once a run.
-# As root it runs root's own copy of this script, never this one, which this user can change:
-# the copy install.sh keeps in ROOT_COPY for root's hooks. Only when every file in it is root's,
-# and it and every folder above it, up to /, are root's, none of them a link and none writable by
-# a group or other users; otherwise there's no asking. Checked once a run. The tests can't be
-# root: REVIVE_TEST_ROOT_PREFIX stands in for /usr/local/lib/tmux-revive, REVIVE_TEST_ROOT_UID
-# for root's uid, and the check stops at the folder above it; never as root.
-ROOT_COPY=/usr/local/lib/tmux-revive/app RC_UID=0 RC_TOP=/
-if ((EUID != 0)) && [[ ${REVIVE_TEST_ROOT_PREFIX:-} == /?* ]]; then
-	ROOT_COPY=$REVIVE_TEST_ROOT_PREFIX/app RC_UID=${REVIVE_TEST_ROOT_UID:-$EUID} RC_TOP=$(dirname "$REVIVE_TEST_ROOT_PREFIX")
-fi
-root_only() { # root_only PATH: PATH and every folder above it root's, as install.sh's root_only
-	local p=$1
-	[[ $p == /* ]] || return 1
-	while :; do
-		[[ ! -L $p && -n $(find "$p" -maxdepth 0 -user "$RC_UID" ! -perm -g+w ! -perm -o+w 2>/dev/null) ]] || return 1
-		[[ $p == "$RC_TOP" || $p == / ]] && return 0
-		p=$(dirname "$p")
-	done
-}
-copy_ok() {
-	local bad
-	[[ -f $ROOT_COPY/scripts/panel.sh ]] && root_only "$ROOT_COPY" &&
-		bad=$(find "$ROOT_COPY" \( -type l -o ! -user "$RC_UID" -o -perm -g+w -o -perm -o+w \) -print -quit 2>/dev/null) && [[ -z $bad ]]
-}
-SUDO_OK="" COPY_OK=""
-ctx_by_sudo() { # ctx_by_sudo AGENT_PID -> CTX
-	local out
-	((ROWS)) && [[ -n ${PUID[$1]:-} && ${PUID[$1]} != "$UID" ]] || return 0
-	if [[ -z $COPY_OK ]]; then
-		COPY_OK=0
-		copy_ok && COPY_OK=1
-	fi
-	((COPY_OK)) || return 0
-	if [[ -z $SUDO_OK ]]; then
-		SUDO_OK=0
-		command -v sudo >/dev/null && timeout 5 sudo -n true </dev/null >/dev/null 2>&1 && SUDO_OK=1
-	fi
-	((SUDO_OK)) || return 0
-	out=$(timeout 10 sudo -n "$ROOT_COPY/scripts/panel.sh" --ctx-of "$1" </dev/null 2>/dev/null | head -c 8)
-	[[ $out =~ ^[0-9]{1,3}$ ]] && ((out <= 100)) && CTX=$out
-	return 0
-}
-# panel.sh --ctx-of PID: what ctx_left finds for that Claude Code process, looked for as the
-# user it runs as (its HOME and CLAUDE_CONFIG_DIR, from its own environment), and printed as a
-# number, or nothing. A working folder shared with another Claude Code can't be told apart
-# here (no other processes are looked at), so none is guessed from one.
-ctx_of() {
-	local e kind
-	kind=$(agent_kind "$(ps -ww -o args= -p "$1" 2>/dev/null)")
-	[[ $kind == claude ]] || return 0
-	unset CLAUDE_CONFIG_DIR
-	while IFS= read -r -d '' e; do
-		case $e in
-		HOME=/*) HOME=${e#*=} ;;
-		CLAUDE_CONFIG_DIR=/*) CLAUDE_CONFIG_DIR=${e#*=} ;;
-		esac
-	done <"/proc/$1/environ" 2>/dev/null
-	ctx_left claude "$1" ""
-	[[ $CTX =~ ^[0-9]{1,3}$ ]] && printf '%s\n' "$CTX"
-	return 0
-}
-if [[ -n $CTXOF ]]; then
-	ctx_of "$CTXOF"
-	exit 0
-fi
 
 screen_state() { # screen_state PANE -> asking / working / waiting, read off the bottom of the screen
 	local -a SL
@@ -883,8 +801,34 @@ tree_ticks() { # tree_ticks PID...: CPU ticks used so far by these processes (Li
 }
 
 # One record per pane, in these parallel arrays. P_RID is a linked computer's own pane id,
-# P_WP the pane's window.pane as tmux's status bar numbers it (empty when not known).
-P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=()
+# P_WP the pane's window.pane as tmux's status bar numbers it (empty when not known). P_USER is
+# the user its agent (or the program it runs) runs as, empty when not known; P_INST whether that
+# user has tmux-revive: "owner" (it's the tmux owner's own), a version, or empty (none known).
+P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=()
+ME=$(id -un 2>/dev/null)
+USER_RE='^[A-Za-z_][A-Za-z0-9_.-]{0,31}$'
+declare -A UNAMES=()
+user_of() { # user_of UID -> UNAME: its user name (the number if it has none)
+	local n
+	if [[ -z ${UNAMES[$1]+x} ]]; then
+		n=$(getent passwd "$1" 2>/dev/null | cut -d: -f1)
+		[[ -n $n ]] || n=$(id -un "$1" 2>/dev/null)
+		[[ $n =~ $USER_RE ]] || n=$1
+		UNAMES[$1]=$n
+	fi
+	UNAME=${UNAMES[$1]}
+}
+# user_inst NAME -> INST: as P_INST. Another user's install inside this tmux leaves its version
+# here (agent-say _user-installed), since their home can't be looked in.
+user_inst() {
+	local v=""
+	INST=owner
+	[[ $1 == "$ME" ]] && return 0
+	INST=""
+	[[ $1 =~ $USER_RE && -f $ASTATE/users/$1 ]] && read -r v <"$ASTATE/users/$1" 2>/dev/null
+	[[ $v =~ $VER_RE ]] && INST=$v
+	return 0
+}
 P_GROUPS=0
 # ssh_dest ARGS -> the host an `ssh ...` command line connects to, as agent-say link takes it
 # (no user@, no port), or nothing. Options that take a value are skipped with their value.
@@ -913,7 +857,7 @@ gather() {
 		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu PPAR[$pid]=$ppid PUID[$pid]=$uid
 	done < <(ps -ww -eo pid=,ppid=,uid=,rss=,pcpu=,args= 2>/dev/null) # -ww: never cut to $COLUMNS
 	now=${EPOCHREALTIME:-$SECONDS}
-	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=()
+	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=()
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
 		clean loc cmd path name
 		# The pane's process tree, breadth-first, and the first agent in it.
@@ -971,7 +915,12 @@ gather() {
 			done
 		fi
 		# window.pane from the place: tmux allows no : or . in a session name.
-		P_SSH+=("$ssh") P_HOST+=("") P_RID+=("") P_WP+=("${loc##*:}")
+		# Whose it is: its agent's user, else the deepest process in it (root's shell after sudo -i).
+		p=${apid:-${tree[${#tree[@]} - 1]}}
+		UNAME=""
+		[[ -n ${PUID[$p]:-} ]] && user_of "${PUID[$p]}"
+		user_inst "$UNAME"
+		P_SSH+=("$ssh") P_HOST+=("") P_RID+=("") P_WP+=("${loc##*:}") P_USER+=("$UNAME") P_INST+=("$INST")
 		P_ID+=("$id") P_LOC+=("$loc") P_NAME+=("$name") P_STATE+=("$st")
 		P_DIR+=("$path") P_GIT+=("$(git_info "$path")") P_CPU+=("$cpu") P_MEM+=("$mem") P_CTX+=("$ctx")
 	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
@@ -1026,7 +975,7 @@ REMOTE_UPDATE_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive update </dev/null 2
 # agent-say name there, for the pane AGENT_SAY_PANE gives. The pane id and the name are
 # checked before they go into the command line, and agent-say checks the name again there.
 REMOTE_NAME_CMD='PATH="$HOME/.local/bin:$PATH" agent-say name'
-declare -A RFETCH_T=() RFETCH_PID=() PFETCH_T=() PFETCH_PID=() PEEK_FILES=() RVER=()
+declare -A RFETCH_T=() RFETCH_PID=() PFETCH_T=() PFETCH_PID=() PEEK_FILES=() RVER=() ROWNER=()
 PEEK_EVERY=$REFRESH # seconds between asks for a linked pane's screen; none while answering
 cache_dir() { # $RDIR, for this user only (an older panel made it with the default umask)
 	[[ -d $RDIR ]] || mkdir -p "$RDIR"
@@ -1059,10 +1008,8 @@ rows_get() {
 	t=$(mktemp "$2.XXXXXX") || return
 	fetch_rows "$1" | head -c 262144 >"$t"
 	st=${PIPESTATUS[0]}
-	if ((st == 0 || st == 141)); then mv -f "$t" "$2"; rm -f "$2.old"; return; fi # 141: cut off by head
+	if ((st == 0 || st == 141)); then mv -f "$t" "$2"; return; fi # 141: cut off by head
 	rm -f "$t"
-	# Reached (ssh and timeout fail with 255 and 124), but no rows: a tmux-revive too old for them.
-	((st == 124 || st == 255)) || : >"$2.old"
 }
 remote_fetch() { # remote_fetch HOST [now]
 	local h=$1 f="$RDIR/$1.rows"
@@ -1137,7 +1084,7 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 }
 remote_panes() {
 	local d h f id loc name app st folder git cpu mem agent got v wp lg S=$'\x1f'
-	local -A rctx rbg
+	local -A rctx rbg ruser rinst
 	P_GROUPS=0
 	# Other computers' screens are kept no longer than they're shown: a minute at most. So are
 	# the temporary files of an ask cut off by the panel closing.
@@ -1150,10 +1097,9 @@ remote_panes() {
 		lg=0
 		[[ -f $d/login ]] && lg=1
 		if ((lg)); then :; elif ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
-		f="$RDIR/$h.rows" got=0 RVER[$h]="" rctx=() rbg=()
+		f="$RDIR/$h.rows" got=0 RVER[$h]="" ROWNER[$h]="" rctx=() rbg=() ruser=() rinst=()
 		# Rows a minute old or newer; older means that computer stopped answering.
 		if ((!lg)) && [[ -s $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
-			RVER[$h]=old # unless it says which version it is
 			while IFS=$S read -r id loc name app st folder git cpu mem agent; do
 				# Its version, on a line of its own (an older panel's check below skips it).
 				if [[ ${id:0:40} =~ ^\#version\ (.*)$ && -z $loc ]]; then
@@ -1171,6 +1117,16 @@ remote_panes() {
 				# takes input.
 				if [[ ${id:0:40} =~ ^\#agents\ (%[0-9]{1,9})$ && -z $loc ]]; then
 					rbg[${BASH_REMATCH[1]}]=1
+					continue
+				fi
+				# Whose tmux it is, and whose each pane is, with whether that user has tmux-revive
+				# there (owner, a version, or -), likewise.
+				if [[ ${id:0:40} =~ ^\#owner\ ([A-Za-z_][A-Za-z0-9_.-]{0,31})$ && -z $loc ]]; then
+					ROWNER[$h]=${BASH_REMATCH[1]}
+					continue
+				fi
+				if [[ ${id:0:80} =~ ^\#user\ (%[0-9]{1,9})\ ([A-Za-z_][A-Za-z0-9_.-]{0,31})\ (owner|-|[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9})$ && -z $loc ]]; then
+					ruser[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]} rinst[${BASH_REMATCH[1]}]=${BASH_REMATCH[3]#-}
 					continue
 				fi
 				# Only a complete row from a pane: a %id first and the agent flag last.
@@ -1191,12 +1147,12 @@ remote_panes() {
 				P_ID+=("${name:+$name@$h}") P_LOC+=("${loc:0:20}") P_NAME+=("$name") P_APP+=("${app:0:12}")
 				P_STATE+=("$st") P_DIR+=("${folder:0:40}") P_GIT+=("${git:0:30}") P_CPU+=("$cpu") P_MEM+=("$mem")
 				P_CTX+=("${rctx[$id]:-}") P_AGENT+=("$agent") P_SSH+=("") P_HOST+=("$h") P_RID+=("$id") P_WP+=("$wp")
+				P_USER+=("${ruser[$id]:-}") P_INST+=("${rinst[$id]:-}")
 				got=1
 			done < <(head -n 200 "$f")
 		fi
 		if ((!got)); then
 			# Names only, from the link.
-			[[ -e $f.old ]] && RVER[$h]=old
 			st=linked
 			[[ -s $f || ! -s $d/error ]] || st=unreachable
 			((lg)) && st=login
@@ -1204,6 +1160,7 @@ remote_panes() {
 				[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || continue
 				P_ID+=("$name@$h") P_LOC+=("") P_NAME+=("$name") P_APP+=("") P_STATE+=("$st") P_DIR+=("")
 				P_GIT+=("") P_CPU+=(0) P_MEM+=(0) P_CTX+=("") P_AGENT+=(0) P_SSH+=("") P_HOST+=("$h") P_RID+=("") P_WP+=("")
+				P_USER+=("") P_INST+=("")
 				got=1
 			done < <(head -c 65536 "$d/names" 2>/dev/null | head -n 200)
 		fi
@@ -1273,8 +1230,8 @@ state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
 }
 
 draw_panes() {
-	local i n=${#P_ID[@]} name key folder git cells mark wide=1 NW=10 FW=10 GW v KW=3 pad
-	local -a lab=() nm=()
+	local i n=${#P_ID[@]} name key folder git cells mark wide=1 NW=10 FW=10 GW v KW=3 pad UW=4 VW=3 us=1 extra
+	local -a lab=() nm=() ver=()
 	local -A ses=() many=()
 	# An unnamed pane's NAME is a dim ---: the # column already says where it is. Unless its
 	# computer has more than one tmux session, when [0.0] alone could be any of them: then its
@@ -1286,7 +1243,8 @@ draw_panes() {
 		[[ ${ses[$key]} == "$v" ]] || many[$key]=1
 	done
 	# Worked out again on every frame, so a resized terminal gets them too. The name and folder
-	# are as wide as their longest (10 to 29 and 10 to 35); GIT has the rest of the row, so
+	# are as wide as their longest (10 to 29 and 10 to 35), USER and VER too (4 to 10, 3 to 11)
+	# with a space after each; GIT has the rest of the row, so
 	# CTX LEFT ends at the panel's right edge. The rest of the row is fixed: the # cell (its
 	# widest label, the mark and two spaces: 6 for [1]), APP 10, STATE 18, CPU and MEM 19,
 	# CTX LEFT 12, and a space after the name, folder and GIT.
@@ -1301,20 +1259,39 @@ draw_panes() {
 		((${#folder} > FW)) && FW=${#folder}
 		if [[ -n ${P_WP[i]:-} ]]; then lab[i]=${P_WP[i]}; elif ((i < 9)); then lab[i]=$((i + 1)); else lab[i]=""; fi
 		((${#lab[i]} + 2 > KW)) && KW=$((${#lab[i]} + 2))
+		# VER: the row's user's tmux-revive, or [V] when that user has none (V installs it).
+		v=${P_INST[i]:-}
+		if [[ $v == owner ]]; then
+			v=$VERSION
+			[[ -n ${P_HOST[i]} ]] && { v=${RVER[${P_HOST[i]}]:-}; [[ $v =~ $VER_RE ]] || v=""; }
+		elif [[ -z $v && -n ${P_USER[i]:-} ]]; then v="[V]"; fi
+		ver[i]=$v
+		((${#v} > VW)) && VW=${#v}
+		((${#P_USER[i]} > UW)) && UW=${#P_USER[i]}
 	done
 	((NW > 29)) && NW=29
 	((FW > 35)) && FW=35
-	GW=$((IW - 65 - KW - NW - FW))
+	((UW > 10)) && UW=10
+	((VW > 11)) && VW=11
+	# USER and VER, and a space after each.
+	extra=$((UW + VW + 2))
+	GW=$((IW - 65 - KW - NW - FW - extra))
 	# A narrow panel cuts GIT first, down to 13, then the folder and the name, down to 10. Too
 	# narrow for that, the folder and GIT go and the name has their room: the narrowest panel
 	# takes the name down to 10 to keep CTX LEFT.
 	v=$((13 - GW < FW - 10 ? 13 - GW : FW - 10)); ((v > 0)) && FW=$((FW - v)) GW=$((GW + v))
 	v=$((13 - GW < NW - 10 ? 13 - GW : NW - 10)); ((v > 0)) && NW=$((NW - v)) GW=$((GW + v))
-	((GW < 13)) && wide=0 NW=$((IW - 63 - KW))
+	((GW < 13)) && wide=0 NW=$((IW - 63 - KW - extra))
+	# Narrower still, USER and VER go too, before the name gets under 10.
+	((NW < 10)) && us=0 NW=$((NW + extra))
 	# Built from the same widths as the rows below, so the columns line up.
 	local hdr num
 	fld ' #' $((KW + 3)); hdr=$FLD
 	fld NAME $((NW + 1)); hdr+=$FLD
+	if ((us)); then
+		fld USER $((UW + 1)); hdr+=$FLD
+		fld VER $((VW + 1)); hdr+=$FLD
+	fi
 	fld APP 10; hdr+=$FLD
 	fld STATE 18; hdr+=$FLD
 	if ((wide)); then
@@ -1330,19 +1307,9 @@ draw_panes() {
 		if ((P_GROUPS)) && [[ ${P_HOST[i]} != "$group" ]]; then
 			group=${P_HOST[i]}
 			if [[ -z $group ]]; then
-				row "$BLU▓▒░$R $B$BWHT${HOST^^}$R $GRY· this computer${VERSION:+ · v$VERSION}$R"
+				row "$BLU▓▒░$R $B$BWHT${HOST^^}$R $GRY· this computer$R"
 			else
-				# Its tmux-revive's version, from its rows: out of date next to this one, or too old
-				# to say (it answers no rows, or rows without a version).
-				v=${RVER[$group]:-}
-				case $v in
-				"") v="" ;;
-				old) v=" $GRY·$R ${BYEL}too old to tell$R" ;;
-				*)
-					if [[ -n $VERSION ]] && ver_lt "$v" "$VERSION"; then v=" $GRY· v$v ·$R $B${BYEL}out of date$R"
-					else v=" $GRY· v$v$R"; fi ;;
-				esac
-				row "$BLU▓▒░$R $B$BWHT${group^^}$R $GRY· linked$R$v"
+				row "$BLU▓▒░$R $B$BWHT${group^^}$R $GRY· linked$R"
 			fi
 		fi
 		name=${nm[i]}
@@ -1358,6 +1325,14 @@ draw_panes() {
 		if ((i == SEL)); then cells+="$REV$BCYN$FLD$R "
 		elif [[ -z ${P_NAME[i]} ]]; then cells+="$GRY$FLD$R "
 		else cells+="$BWHT$FLD$R "; fi
+		if ((us)); then
+			fld "${P_USER[i]:-}" "$UW"
+			cells+="$CYN$FLD$R "
+			fld "${ver[i]}" "$VW"
+			if [[ ${ver[i]} == "[V]" ]]; then cells+="$BYEL$FLD$R "
+			elif [[ -n ${ver[i]} && -n $VERSION ]] && ver_lt "${ver[i]}" "$VERSION"; then cells+="$BYEL$FLD$R "
+			else cells+="$GRY$FLD$R "; fi
+		fi
 		fld "${P_APP[i]}" 9
 		if ((P_AGENT[i])); then cells+="$BCYN$FLD$R "; else cells+="$CYN$FLD$R "; fi
 		state_cell "${P_STATE[i]}"
@@ -1729,7 +1704,8 @@ draw() {
 		fi
 	fi
 	local cs=("J:ump" "M:essage" "N:ame" "L:ink" "U:nlink")
-	[[ -n $rh ]] && cs+=("V: update") # tmux-revive on that computer
+	v_mode # tmux-revive for that row's user, or on that computer
+	case $VMODE in host | update) cs+=("V: update") ;; install) cs+=("V: install") ;; esac
 	cs+=("P:eek" "A:rt" "S:ave" "Q:uit" "?: help")
 	for c in "${cs[@]}"; do
 		if [[ $off == *" ${c%%:*} "* ]]; then
@@ -2121,6 +2097,73 @@ answer() {
 }
 
 PREV=()
+# v_mode -> VMODE: what V does for the selected row. Another user's pane (not the tmux owner's,
+# here or on its linked computer): install when that user has no tmux-revive, update when theirs
+# is older than the owner's, current otherwise. host: update tmux-revive on its linked computer,
+# for the user the link logs in as. Nothing for this tmux's owner here.
+v_mode() {
+	local u=${P_USER[SEL]:-} h=${P_HOST[SEL]:-} own=$ME v=${P_INST[SEL]:-} ref=$VERSION
+	VMODE=""
+	[[ -n $h ]] && own=${ROWNER[$h]:-} ref=${RVER[$h]:-}
+	if [[ -n $u && $u != "$own" ]]; then
+		if [[ -z $v ]]; then VMODE=install
+		elif [[ $v =~ $VER_RE && $ref =~ $VER_RE ]] && ver_lt "$v" "$ref"; then VMODE=update
+		else VMODE=current; fi
+	elif [[ -n $h ]]; then VMODE=host; fi
+}
+# user_note install|update: the command that installs or updates tmux-revive for the selected
+# row's user, to run in that user's own pane: shown in a box over the panel, and put in tmux's
+# paste buffer. Nothing is run for them from here. The install command is README.md's.
+user_note() {
+	local u=${P_USER[SEL]:-} cmd="tmux-revive update" f l
+	[[ $u =~ $USER_RE ]] || return
+	if [[ $1 == install ]]; then
+		cmd=""
+		for f in "$REVIVE_ROOT/README.md" "$REVIVE_ROOT/install.sh"; do
+			while IFS= read -r l; do
+				l=${l#\#   }
+				[[ $l =~ ^curl\ -fsSL\ https://[A-Za-z0-9./_-]+/install\.sh\ \|\ sh$ ]] && { cmd=$l; break 2; }
+			done <"$f" 2>/dev/null
+		done
+		[[ -n $cmd ]] || return
+	fi
+	# Into tmux's paste buffer, and the system clipboard too where the terminal allows (-w).
+	tm set-buffer -w -- "$cmd" 2>/dev/null || tm set-buffer -- "$cmd" 2>/dev/null
+	note "$1 for $u" "Run this in $u's pane:" "" "$cmd" "" "Copied. Paste it there, or with prefix ]."
+}
+# note TITLE LINE...: a box over the panel, drawn as pick's, until a key is pressed.
+note() {
+	local title=$1 rows cols w top left i k l hint="any key closes" INTR=0
+	shift
+	local -a ls=("$@")
+	rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80)
+	w=$((${#hint} + 6))
+	for l in "${ls[@]}"; do ((${#l} + 6 > w)) && w=$((${#l} + 6)); done
+	((${#title} + 12 > w)) && w=$((${#title} + 12))
+	((w > cols - 4)) && w=$((cols - 4))
+	top=$(((rows - ${#ls[@]} - 5) / 2)) left=$(((cols - w) / 2))
+	((top < 1)) && top=1
+	((left < 1)) && left=1
+	rep ═ $((w - ${#title} - 11))
+	printf '%s' "$e[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
+	rep ' ' $((w - 2))
+	printf '%s' "$e[$((top + 1));${left}H$BGBLU$BWHT║$REP║$R$GRY░$R"
+	for ((i = 0; i < ${#ls[@]}; i++)); do
+		fld "${ls[i]}" $((w - 4))
+		printf '%s' "$e[$((top + 2 + i));${left}H$BGBLU$BWHT║ $B$FLD$R$BGBLU$BWHT ║$R$GRY░$R"
+	done
+	fld "$hint" $((w - 4))
+	printf '%s' "$e[$((top + 2 + ${#ls[@]}));${left}H$BGBLU$BWHT║ $BCYN$FLD$BWHT ║$R$GRY░$R"
+	rep ═ $((w - 2))
+	printf '%s' "$e[$((top + 3 + ${#ls[@]}));${left}H$BGBLU$BWHT╚$REP╝$R$GRY░$R"
+	rep ░ "$w"
+	printf '%s' "$e[$((top + 4 + ${#ls[@]}));$((left + 1))H$GRY$REP$R"
+	trap 'INTR=1' INT
+	until IFS= read -rsn1 -t 0.2 k; do (($? <= 128 || INTR)) && break; done
+	# The rest of a key sequence (an arrow) goes too.
+	read -rsn4 -t 0.02 _ || true
+	trap 'exit 0' INT
+}
 act() {
 	# A key may draw over the panel (popup, prompt) and return early: repaint it whole. Keys
 	# that only move the selection don't, so they keep the line-by-line redraw.
@@ -2317,12 +2360,16 @@ act() {
 		flash "unlinking $h…"; draw
 		out=$(timeout 30 "$ASAY" unlink "$h" 2>&1 | tail -n 1)
 		clean out
-		[[ -d $ASTATE/links/$h ]] || rm -f "$RDIR/$h.rows" "$RDIR/$h.rows.old" # what it kept of that computer
+		[[ -d $ASTATE/links/$h ]] || rm -f "$RDIR/$h.rows" # what it kept of that computer
 		flash "${out#agent-say: }" ;;
 	v | V)
-		# Update tmux-revive on the selected pane's linked computer, over the link's ssh.
+		# For another user's pane, here or on a linked computer: tmux-revive for that user.
+		v_mode
+		[[ $VMODE == install || $VMODE == update ]] && { user_note "$VMODE"; return; }
+		[[ $VMODE == current ]] && { flash "${P_USER[SEL]} has tmux-revive ${P_INST[SEL]}"; return; }
+		# Otherwise update tmux-revive on the selected pane's linked computer, over the link's ssh.
 		local h=${P_HOST[SEL]:-} last st msg w
-		[[ -n $h ]] || { flash "V updates a linked computer: select one of its panes"; return; }
+		[[ -n $h ]] || { flash "V updates a linked computer, or shows another user's install command"; return; }
 		[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return
 		pick "Update tmux-revive on $h?" "Yes, update it over ssh" "No" && ((PICKED == 0)) || { flash "update cancelled"; return; }
 		flash "updating tmux-revive on $h…"; draw
@@ -2525,9 +2572,12 @@ if ((ROWS)); then
 	# First, its version on a line of its own: a panel that doesn't know the line skips it,
 	# since a row must start with a pane id.
 	[[ -n $VERSION ]] && printf '#version %s\n' "$VERSION"
+	[[ $ME =~ $USER_RE ]] && printf '#owner %s\n' "$ME"
 	for i in "${!P_ID[@]}"; do
 		[[ ${P_STATE[i]} == self ]] && continue
 		folder=${P_DIR[i]##*/}
+		# Whose pane it is, and whether that user has tmux-revive here, likewise.
+		[[ ${P_USER[i]} =~ $USER_RE ]] && printf '#user %s %s %s\n' "${P_ID[i]}" "${P_USER[i]}" "${P_INST[i]:--}"
 		# Context left goes on a line of its own: a panel from before it skips the line, where a
 		# field added to the row would make it drop the row.
 		[[ -n ${P_CTX[i]} ]] && printf '#ctx %s %s\n' "${P_ID[i]}" "${P_CTX[i]}"

@@ -81,9 +81,10 @@ follow_tmux_owner() {
 	local -a drop=() env=()
 	me="$(id -u)"
 	if [[ -n ${AGENT_SAY_FOLLOWED:-} ]]; then
-		# Run again as the owner: the server above must still be that one, and ours now.
-		s=$AGENT_SAY_FOLLOWED
-		unset AGENT_SAY_FOLLOWED
+		# Run again as the owner: the server above must still be that one, and ours now. CALLER:
+		# the user who ran it (for _user-installed).
+		s=$AGENT_SAY_FOLLOWED CALLER=${AGENT_SAY_CALLER:-}
+		unset AGENT_SAY_FOLLOWED AGENT_SAY_CALLER
 		tmux_server_above && [[ $TS_PID == "$s" && $TS_UID == "$me" ]] ||
 			die "couldn't run as the user who owns this pane's tmux. Run agent-say as that user"
 		s="$(server_socket "$TS_PID" "$me")" || die "can't find the socket for this pane's tmux"
@@ -104,6 +105,7 @@ follow_tmux_owner() {
 		fi
 		return 0
 	fi
+	unset AGENT_SAY_CALLER
 	# The tmux $TMUX names is ours: nothing to follow.
 	[[ -z ${AGENT_SAY_TEST_OWNER:-} && -n ${TMUX:-} && -S ${TMUX%%,*} && -O ${TMUX%%,*} ]] && return 0
 	tmux_server_above || return 0
@@ -135,13 +137,14 @@ follow_tmux_owner() {
 	"${drop[@]}" test -r "$self" -a -x "$self" 2>/dev/null || self="$home/.local/bin/agent-say"
 	"${drop[@]}" test -r "$self" -a -x "$self" 2>/dev/null ||
 		die "this pane is in $name's tmux, but $name has no agent-say to run. Install tmux-revive as $name"
-	env=(HOME="$home" USER="$name" LOGNAME="$name" AGENT_SAY_FOLLOWED="$TS_PID")
+	env=(HOME="$home" USER="$name" LOGNAME="$name" AGENT_SAY_FOLLOWED="$TS_PID" AGENT_SAY_CALLER="$(id -un)")
 	[[ -d /run/user/$TS_UID && "$(stat -c %u -- "/run/user/$TS_UID" 2>/dev/null)" == "$TS_UID" ]] &&
 		env+=(XDG_RUNTIME_DIR="/run/user/$TS_UID")
 	exec "${drop[@]}" env -u AGENT_SAY_MAILBOX -u XDG_STATE_HOME -u XDG_RUNTIME_DIR -u TMUX \
 		-u AGENT_SAY_TEST_OWNER -u AGENT_SAY_TEST_ROOT "${env[@]}" "$self" "$@"
 }
 # Not when sourced (the panel's popup, run as you): only a command run is followed.
+CALLER=""
 [[ "${BASH_SOURCE[0]}" != "$0" ]] || follow_tmux_owner "$@"
 
 MAILBOX="${AGENT_SAY_MAILBOX:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-say/mailbox.md}"
@@ -1800,6 +1803,20 @@ case "$cmd" in
 		mkdir -p "$STATE/ctx"
 		f="$(mktemp "$STATE/ctx/.${p#%}.XXXXXX")"
 		printf '%s %s %s %s %s\n' "$p" "$sid" "$pct" "$(date +%s)" "$apid" >"$f" && mv -f "$f" "$STATE/ctx/${p#%}" || rm -f "$f" ;;
+	_user-installed)
+		# From install.sh: a user working inside someone else's tmux has tmux-revive VERSION now
+		# ("-": not any more). Run as this tmux's owner (see follow_tmux_owner), it keeps that in
+		# the owner's state, one file a user, for the owner's panel, which can't look in other
+		# users' homes. A user only ever records themselves. The owner's own install records
+		# nothing: the panel knows its own.
+		v="${2:-}" who="$CALLER"
+		[[ $v == - || $v =~ ^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$ ]] && [[ -z $who || $who =~ ^[A-Za-z_][A-Za-z0-9_.-]{0,31}$ ]] ||
+			die "usage: agent-say _user-installed <version>|-"
+		[[ -n $who ]] || exit 0
+		mkdir -p "$STATE/users"
+		if [[ $v == - ]]; then rm -f "$STATE/users/$who"; exit 0; fi
+		f="$(mktemp "$STATE/users/.$who.XXXXXX")"
+		printf '%s\n' "$v" >"$f" && mv -f "$f" "$STATE/users/$who" || rm -f "$f" ;;
 	show)
 		[[ -n "${2:-}" ]] || die "usage: agent-say show <id>"
 		files=()
