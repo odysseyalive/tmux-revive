@@ -99,7 +99,7 @@ follow_tmux_owner() {
 		[[ ! -L $st ]] || die "$st is a symbolic link; not using it"
 		if [[ -e $st ]]; then
 			[[ -O $st ]] || die "$st doesn't belong to $(id -un); not using it"
-			bad="$(find "$st" -xdev ! -user "$me" -print -quit 2>/dev/null)"
+			bad="$(find "$st" -xdev ! -user "$me" -print -quit 2>/dev/null || true)"
 			[[ -z $bad ]] || die "$bad doesn't belong to $(id -un), so agent-say can't rewrite it; remove it, then try again"
 		fi
 		return 0
@@ -1697,6 +1697,13 @@ case "$cmd" in
 		mkdir -p "$d/outbox"
 		# Temp files of this call's own, moved in at the end: two _sync at once (a link's check
 		# and its poller) never write into one file.
+		# The link logs in as a user with no tmux here, while another user's tmux runs: its
+		# agents are in that one, which this user can't see. Said below, rather than no names.
+		others=""
+		if ! tmux list-sessions >/dev/null 2>&1; then
+			others="${AGENT_SAY_TEST_TMUX_USERS-$(ps -eo uid=,comm= 2>/dev/null | awk -v me="$(id -u)" '$1 != me && $2 " " $3 == "tmux: server" {print $1}' |
+				sort -u | while read -r u; do getent passwd "$u" | cut -d: -f1 || echo "uid $u"; done | paste -sd, -)}"
+		fi
 		nn="$d/.names.$$" nv="$d/.via.$$"
 		: >"$nn"
 		: >"$nv"
@@ -1722,13 +1729,7 @@ case "$cmd" in
 			done
 			exit 0
 		fi
-		# The link logs in as a user with no tmux here, while another user's tmux runs: its
-		# agents are in that one, which this user can't see. Say so, rather than show no names.
-		if ! tmux list-sessions >/dev/null 2>&1; then
-			others="${AGENT_SAY_TEST_TMUX_USERS-$(ps -eo uid=,comm= 2>/dev/null | awk -v me="$(id -u)" '$1 != me && $2 " " $3 == "tmux: server" {print $1}' |
-				sort -u | while read -r u; do getent passwd "$u" | cut -d: -f1; done | paste -sd, -)}"
-			[[ -z $others ]] || { rm -f "$nn" "$nv"; die "tmux here runs as $others, not $(id -un): link as $others"; }
-		fi
+		[[ -z $others ]] || { rm -f "$nn" "$nv"; die "tmux here runs as $others, not $(id -un): link as $others"; }
 		mv "$nn" "$d/names"
 		mv "$nv" "$d/via"
 		touch "$d/alive"
