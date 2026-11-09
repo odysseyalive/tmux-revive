@@ -925,18 +925,19 @@ case "$cmd" in
 		valid_host "${2:-}" || die "usage: agent-say _sync <label>"
 		d="$STATE/peers/$2"
 		mkdir -p "$d/outbox"
-		: >"$d/names.new"
-		bye=""
+		# Its names gathered here, then written to a file of this call's own: a check from
+		# agent-say link can come in while the poller's own sync for the same label is running.
+		names="" bye=""
 		while read -r tag val; do
 			case "$tag" in
-				N) valid_name "$val" && echo "$val" >>"$d/names.new" ;;
+				N) valid_name "$val" && names+="$val"$'\n' ;;
 				A) [[ "$val" =~ ^[A-Za-z0-9-]+$ ]] && rm -f "$d/outbox/$val" ;;
 				B) bye=1 ;;
 			esac
 		done
 		if [[ -n "$bye" ]]; then
 			# It unlinked: what we still hold for it won't be fetched. Say so in our mailbox.
-			rm -f "$d/alive" "$d/names" "$d/names.new"
+			rm -f "$d/alive" "$d/names"
 			for f in "$d"/outbox/*; do
 				[[ -f "$f" ]] || continue
 				{ read -r mto; read -r mfrom; } <"$f"
@@ -945,7 +946,9 @@ case "$cmd" in
 			done
 			exit 0
 		fi
-		mv "$d/names.new" "$d/names"
+		f="$(mktemp "$d/names.XXXXXX")"
+		printf '%s' "$names" >"$f"
+		mv "$f" "$d/names"
 		touch "$d/alive"
 		local_names | sed 's/^/N /'
 		for f in "$d"/outbox/*; do
