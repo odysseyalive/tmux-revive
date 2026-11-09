@@ -419,12 +419,12 @@ tmux kill-server
 # The installer loads tmux-revive into a running server, and says so loudly
 # when that fails. All in a sandbox home with tmux on a private socket.
 echo "installer"
-inst() { # inst TMUX-WRAPPER: run install.sh in the sandbox, stdout+stderr to $T/inst.out
+inst() { # inst TMUX-WRAPPER [OPTION]: run install.sh in the sandbox, stdout+stderr to $T/inst.out
 	mkdir -p "$T/ih" "$T/ib"
 	cp "$1" "$T/ib/tmux"
-	env -u REVIVE_DIR -u ZDOTDIR -u XDG_CONFIG_HOME HOME="$T/ih" XDG_DATA_HOME="$T/ih/.local/share" \
+	env -u REVIVE_DIR -u ZDOTDIR -u XDG_CONFIG_HOME -u CLAUDE_CONFIG_DIR HOME="$T/ih" XDG_DATA_HOME="$T/ih/.local/share" \
 		TMUX_TMPDIR="$T/ih" CODEX_HOME="$T/ih/.codex" REVIVE_SOURCE="$ROOT" PATH="$T/ib:$PATH" \
-		sh "$ROOT/install.sh" >"$T/inst.out" 2>&1
+		sh "$ROOT/install.sh" "${@:2}" >"$T/inst.out" 2>&1
 }
 mkdir -p "$T/ih" && : >"$T/ih/.bashrc"
 printf '#!/bin/sh\nexec %q -S %q -f /dev/null "$@"\n' "$real_tmux" "$T/sock4" >"$T/tmux-ok"
@@ -464,6 +464,45 @@ mv "$T/ih/.local/share/tmux-revive/app" "$T/app-was"
 printf '%s\n' '# >>> tmux-revive >>>' >"$T/ih/.bashrc"
 inst "$T/tmux-ok"
 check "no restart hint when no rc file got the hand-off" "grep -q 'left it alone' $T/inst.out && ! grep -q 'exec \\\$SHELL -l' $T/inst.out"
+
+# Claude Code's SessionStart hook: registered in settings.json next to what's there, once.
+CS=$T/ih/.claude/settings.json HOOK=$T/ih/.local/share/tmux-revive/app/scripts/claude-hook.sh
+mkdir -p "$T/ih/.claude"
+rm -f "$CS" "$CS".bak-revive-*
+cat >"$CS" <<'EOF'
+{"theme":"dark","permissions":{"allow":["Bash(ls:*)"]},
+ "hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"pre.sh"}]}],
+  "SessionStart":[{"hooks":[{"type":"command","command":"mine.sh"},{"type":"command","command":"'/old/tmux-revive/app/scripts/claude-hook.sh'"}]}]}}
+EOF
+cp "$CS" "$T/cs.seed"
+inst "$T/tmux-ok"
+ours() { jq --arg t "tmux-revive/app/scripts/claude-hook.sh'" '[.hooks.SessionStart[]?.hooks[]? | select(.command | endswith($t))] | length' "$CS"; }
+mine() { jq -e '.theme == "dark" and .hooks.PreToolUse[0].hooks[0].command == "pre.sh" and .hooks.SessionStart[0].hooks == [{type: "command", command: "mine.sh"}]' "$CS" >/dev/null; }
+check "install adds the SessionStart hook to settings.json" "grep -q 'told about agent-say when a session starts' $T/inst.out && jq -e --arg c \"'\$HOOK'\" '.hooks.SessionStart[-1].hooks == [{type: \"command\", command: \$c, timeout: 10}]' $CS >/dev/null"
+check "what was there is kept, and an older install's hook goes" "[[ \$(ours) == 1 ]] && mine && jq -e '.permissions.allow | index(\"Bash(ls:*)\")' $CS >/dev/null"
+check "settings.json was backed up before the edit" "cmp -s $T/cs.seed \"\$(ls $CS.bak-revive-* | head -n 1)\""
+cp "$CS" "$T/cs.once"
+inst "$T/tmux-ok"
+check "a second install doesn't add it again" "cmp -s $T/cs.once $CS && ! grep -q 'told about agent-say' $T/inst.out"
+# In a tmux pane the hook tells Claude about agent-say, with the pane's name. $T/ib first:
+# the `tmux` in $T/bin talks to another test server.
+"$T/tmux-ok" new-window -d -t i -n hk "sleep 0.5; PATH=$(printf %q "$T/ib"):\$PATH bash $(printf %q "$HOOK") >$(printf %q "$T/hook.json"); touch $(printf %q "$T/hook.done"); sleep 5"
+"$T/tmux-ok" set-option -p -t i:hk @agent hooked
+for _ in $(seq 50); do [[ -f $T/hook.done ]] && break; sleep 0.1; done
+check "in a tmux pane the hook prints SessionStart JSON with the guidance" "jq -e '.hookSpecificOutput.hookEventName == \"SessionStart\" and (.hookSpecificOutput.additionalContext | contains(\"named \\\"hooked\\\"\") and contains(\"agent-say list\") and contains(\"SendMessage\") and contains(\"introduction\"))' $T/hook.json >/dev/null"
+# Outside tmux: no $TMUX, and no tmux server above it (a ps that sees none).
+mkdir -p "$T/nops" && printf '#!/bin/sh\nexit 0\n' >"$T/nops/ps" && chmod +x "$T/nops/ps"
+hook_out=$(env -u TMUX -u TMUX_PANE PATH="$T/nops:$PATH" bash "$HOOK" </dev/null); rc=$?
+check "outside tmux the hook prints nothing" "((rc == 0)) && [[ -z \$hook_out ]]"
+printf '{"hooks": ' >"$CS" && cp "$CS" "$T/cs.bad"
+inst "$T/tmux-ok"
+check "a settings.json that isn't valid JSON is left alone, with a warning" "cmp -s $T/cs.bad $CS && grep -q \"isn't valid JSON\" $T/inst.out"
+cp "$T/cs.once" "$CS"
+inst "$T/tmux-ok" --uninstall
+check "uninstall removes only our hook" "grep -q 'removed the agent-say hook' $T/inst.out && [[ \$(ours) == 0 ]] && mine && jq -e '.hooks.SessionStart | length == 1' $CS >/dev/null && jq -e '.permissions.allow == [\"Bash(ls:*)\"]' $CS >/dev/null"
+printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s"}]}]}}\n' "'$HOOK'" >"$CS"
+inst "$T/tmux-ok" --uninstall
+check "a settings.json that held only our hook is left with no hooks key" "jq -e '. == {}' $CS >/dev/null"
 "$T/tmux-ok" kill-server
 
 echo "$pass passed, $fail failed"

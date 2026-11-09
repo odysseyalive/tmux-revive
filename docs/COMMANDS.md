@@ -249,6 +249,15 @@ nothing gets lost.
 A word of caution. Anything that can run `agent-say` can type into your
 agents, so treat it the way you'd treat access to your terminal.
 
+Claude Code has its own SendMessage and ListAgents, but they only reach Claude
+sessions on the same computer, so on their own its agents never think to try
+`agent-say`. The installer adds a small hook to Claude Code's `settings.json`
+(`~/.claude`, or `CLAUDE_CONFIG_DIR`, and root's too when installed as root).
+When a Claude Code session starts in a tmux pane, the hook tells it the pane's
+name, the `agent-say` commands, and that a first message to another server waits
+for your OK in the panel. Outside tmux it says nothing. `--no-config` skips it,
+uninstall takes it out, and `tmux-revive doctor` shows whether it's there.
+
 ### Several users in one tmux
 
 Names, links and the mailbox belong to whoever started tmux. Other users can work

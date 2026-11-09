@@ -39,7 +39,7 @@ chmod +x "$T/ib/tmux"
 H=$T/h APP=$T/h/.local/share/tmux-revive/app
 # inst [VAR=VALUE...] CMD...: run CMD in the sandbox home, stdout+stderr to $T/out.
 inst() {
-	env -u ZDOTDIR HOME="$H" XDG_DATA_HOME="$H/.local/share" XDG_CONFIG_HOME="$H/.config" \
+	env -u ZDOTDIR -u CLAUDE_CONFIG_DIR HOME="$H" XDG_DATA_HOME="$H/.local/share" XDG_CONFIG_HOME="$H/.config" \
 		XDG_STATE_HOME="$H/.local/state" XDG_CACHE_HOME="$H/.cache" TMUX_TMPDIR="$H" CODEX_HOME="$H/.codex" \
 		REVIVE_RELEASE_BASE="$T/rel" PATH="$T/ib:$PATH" "$@" >"$T/out" 2>&1
 }

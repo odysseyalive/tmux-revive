@@ -44,6 +44,8 @@ MD_BEGIN='<!-- >>> tmux-revive agent-say >>> -->'
 MD_END='<!-- <<< tmux-revive agent-say <<< -->'
 CODEX=${CODEX_HOME:-$HOME/.codex}
 AGENT_SAY_PERM='Bash(agent-say:*)'
+# Our Claude Code SessionStart hook is the one whose command ends in this path.
+HOOK_TAG=tmux-revive/app/scripts/claude-hook.sh
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; }
@@ -237,7 +239,9 @@ swap_in() {
 	CHANGED=0
 	if cmp -s "$1" "$2"; then rm -f "$2"; return 0; fi
 	CHANGED=1
-	if [ -s "$1" ] && ! cp -p "$1" "$1.bak-revive-$(date +%Y%m%d%H%M%S)"; then
+	# Two edits in one second: the first one's backup holds the older file, so it stays.
+	bk=$1.bak-revive-$(date +%Y%m%d%H%M%S)
+	if [ -s "$1" ] && [ ! -e "$bk" ] && ! cp -p "$1" "$bk"; then
 		rm -f "$2"
 		return 1
 	fi
@@ -303,11 +307,56 @@ json_edit() { # json_edit FILE JQ-ARGS...
 	jf=$(real_path "$jf")
 	jt=$(mktemp "$jf.revive.XXXXXX") || return 1
 	if { [ ! -f "$jf" ] || cp -p "$jf" "$jt"; } &&
-		if [ -f "$jf" ]; then "$j" "$@" "$jf"; else printf '{}\n' | "$j" "$@"; fi >"$jt" 2>/dev/null; then
+		if [ -s "$jf" ]; then "$j" "$@" "$jf"; else printf '{}\n' | "$j" "$@"; fi >"$jt" 2>/dev/null; then
 		swap_in "$jf" "$jt"
 	else
 		rm -f "$jt"
 		return 1
+	fi
+}
+
+# Claude Code config dirs that get the agent-say hook: the one Claude uses here
+# (CLAUDE_CONFIG_DIR, else ~/.claude) even if Claude hasn't run yet, root's too when root
+# installs, and every other ~/.claude* that has run Claude.
+hook_dirs() {
+	{
+		printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+		if [ "$(id -u)" = 0 ]; then
+			rh=~root
+			case $rh in /*) printf '%s\n' "$rh/.claude" ;; esac
+		fi
+		claude_dirs
+	} | sed 's|//*$||' | awk 'NF && !seen[$0]++'
+}
+
+# The hook's command is our hook script, sh-quoted; any other hook ending in HOOK_TAG is an
+# older install's, so it goes. A group that held only ours goes with it; other hooks stay.
+HOOK_JQ='def ours: (.command? // "") | tostring | (endswith($t) or endswith($t + "\u0027"));
+def drop_ours: map(if any(.hooks[]?; ours) then (.hooks |= map(select(ours | not))) | select(.hooks | length > 0) else . end);'
+HOOK_ADD="$HOOK_JQ"'
+if any(.hooks.SessionStart[]?.hooks[]?; .command == $c) then .
+else .hooks.SessionStart = (((.hooks.SessionStart // []) | drop_ours) + [{hooks: [{type: "command", command: $c, timeout: 10}]}])
+end'
+HOOK_DEL="$HOOK_JQ"'
+if any(.hooks.SessionStart[]?.hooks[]?; ours) then
+	.hooks.SessionStart |= drop_ours
+	| if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end
+	| if .hooks == {} then del(.hooks) else . end
+else . end'
+
+# hook_add DIR: register the agent-say SessionStart hook in DIR/settings.json.
+hook_add() {
+	f=$1/settings.json
+	j=$(jq_bin)
+	if [ -s "$f" ] && [ -n "$j" ] && ! "$j" empty "$f" >/dev/null 2>&1; then
+		warn "$f isn't valid JSON, so it was left alone; Claude Code there won't be told about agent-say"
+		return 0
+	fi
+	mkdir -p "$1" 2>/dev/null
+	if json_edit "$f" --arg c "$(sq "$APP/scripts/claude-hook.sh")" --arg t "$HOOK_TAG" "$HOOK_ADD"; then
+		[ "$CHANGED" = 0 ] || say "Claude Code in $1 is told about agent-say when a session starts"
+	else
+		warn "couldn't add the agent-say hook to $f"
 	fi
 }
 
@@ -359,6 +408,7 @@ RULES
 			warn "couldn't update $f; allow $AGENT_SAY_PERM there yourself"
 		fi
 	done
+	hook_dirs | while IFS= read -r d; do hook_add "$d"; done
 }
 
 agent_unsetup() {
@@ -374,6 +424,13 @@ agent_unsetup() {
 		grep -qF "$AGENT_SAY_PERM" "$f" 2>/dev/null || continue
 		if json_edit "$f" --arg p "$AGENT_SAY_PERM" '.permissions.allow -= [$p]'; then
 			say "removed the agent-say permission from $f"
+		fi
+	done
+	hook_dirs | while IFS= read -r d; do
+		f=$d/settings.json
+		grep -qF "$HOOK_TAG" "$f" 2>/dev/null || continue
+		if json_edit "$f" --arg t "$HOOK_TAG" "$HOOK_DEL"; then
+			say "removed the agent-say hook from $f"
 		fi
 	done
 }
