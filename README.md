@@ -3,7 +3,7 @@
 # tmux-revive
 
 Turn your computer off and on, type `tmux`, and it's all back. Your AI agents too.
-Claude Code, Codex, Cursor Agent and Crush pick up the exact conversation they were in.
+Claude Code, Codex, Cursor Agent and Crush each pick up right where they left off.
 
 ## Install
 
@@ -19,7 +19,7 @@ The installer checks for tmux first. If it's missing, it stops and tells you how
 tmux
 ```
 
-That's it. It saves on its own from here on.
+That's it. It saves on its own from here on, so go ahead and poke around.
 
 ## Open the panel
 
@@ -29,7 +29,7 @@ I wanted one screen that shows every pane and every agent. Inside tmux, run:
 tmux-revive panel
 ```
 
-Press `?` anytime for the help page.
+Press `?` any time for the help page. It's a good place to start exploring.
 
 ## Get your agents talking
 
@@ -56,4 +56,4 @@ I built [Claude Workforce](https://github.com/odysseyalive/claude-workforce) bec
 
 I wanted Claude to browse the web the way I do. [playwright-mcp](https://github.com/odysseyalive/playwright-mcp) gives it a real browser in every project.
 
-Everything else, every command, key and setting: [docs/COMMANDS.md](docs/COMMANDS.md)
+Every other command, key and setting is in [docs/COMMANDS.md](docs/COMMANDS.md).
