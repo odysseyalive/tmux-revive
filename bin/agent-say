@@ -33,6 +33,117 @@
 set -euo pipefail
 umask 077 # the mailbox holds whatever agents say to each other: yours only
 
+die() { echo "agent-say: $*" >&2; exit 1; }
+
+# --- whose tmux this is ------------------------------------------------------------------
+# Names, links and the mailbox belong to the user who runs the tmux server a pane is in: that
+# is who a link logs in as, and whose _sync lists those panes. An agent in the pane may run as
+# someone else: root after sudo -i or su - in a pane of your tmux, or you after su - in a pane
+# of root's. Its HOME is then its own and its TMUX is gone (sudo and su - clear it), so it
+# would use a state and a tmux with none of the links in them. So agent-say finds the tmux
+# server above it in the process tree and runs again as that server's owner, with the owner's
+# home and state and the server's socket: everything it writes is the owner's, as the owner
+# would write it. Root becomes the owner with setpriv or runuser; anyone else only with
+# sudo -n (no password asked), and otherwise is told what to do.
+# Only a tmux server this process runs under is followed, never one the environment names.
+tmux_server_above() { # -> TS_PID TS_UID: the nearest tmux server among this process's ancestors
+	local pid ppid uid comm
+	local -A up=() own=() what=()
+	while read -r pid ppid uid comm; do
+		up[$pid]=$ppid own[$pid]=$uid what[$pid]=$comm
+	done < <(ps -eo pid=,ppid=,uid=,comm= 2>/dev/null)
+	pid=$$
+	while [[ -n $pid && $pid -gt 1 ]]; do
+		[[ ${what[$pid]:-} == "tmux: server" ]] && { TS_PID=$pid TS_UID=${own[$pid]}; return 0; }
+		pid=${up[$pid]:-}
+	done
+	return 1
+}
+# The socket of tmux server PID, owned by UID: the ones it holds open (/proc), else $TMUX's or
+# those in tmux's socket directories. Taken only if the server answering on it is that PID.
+server_socket() { # server_socket PID UID
+	local s f ino=" "
+	local -a cands=()
+	[[ -n ${TMUX:-} ]] && cands+=("${TMUX%%,*}")
+	for f in /proc/"$1"/fd/*; do
+		f="$(readlink "$f" 2>/dev/null)" && [[ $f == socket:\[*\] ]] && ino+="${f//[^0-9]/} "
+	done
+	[[ $ino != " " ]] && mapfile -t -O "${#cands[@]}" cands < <(awk -v i="$ino" 'NR > 1 && NF >= 8 && index(i, " " $7 " ") {print $8}' /proc/net/unix 2>/dev/null)
+	cands+=("${TMUX_TMPDIR:-/tmp}/tmux-$2"/* /tmp/tmux-"$2"/*)
+	for s in "${cands[@]}"; do
+		[[ -S $s && "$(stat -L -c %u -- "$s" 2>/dev/null)" == "$2" ]] || continue
+		[[ "$(tmux -S "$s" list-sessions -F '#{pid}' 2>/dev/null | head -n 1)" == "$1" ]] && { echo "$s"; return 0; }
+	done
+	return 1
+}
+follow_tmux_owner() {
+	local me name="" gid="" home="" xdg st bad self test="" s
+	local -a drop=() env=()
+	me="$(id -u)"
+	if [[ -n ${AGENT_SAY_FOLLOWED:-} ]]; then
+		# Run again as the owner: the server above must still be that one, and ours now.
+		s=$AGENT_SAY_FOLLOWED
+		unset AGENT_SAY_FOLLOWED
+		tmux_server_above && [[ $TS_PID == "$s" && $TS_UID == "$me" ]] ||
+			die "couldn't run as the user whose tmux this pane is in; run agent-say as that user"
+		s="$(server_socket "$TS_PID" "$me")" || die "can't find the socket of the tmux this pane is in"
+		export TMUX="$s,$TS_PID,0"
+		# The owner's XDG_STATE_HOME, as their tmux was started with it; else the default.
+		if [[ -z ${XDG_STATE_HOME:-} ]]; then
+			xdg="$(tmux show-environment -g XDG_STATE_HOME 2>/dev/null)" || xdg=""
+			xdg="${xdg#XDG_STATE_HOME=}"
+			[[ $xdg == /* && $xdg != *[[:cntrl:]]* ]] && export XDG_STATE_HOME="$xdg"
+		fi
+		# Never through a link someone left there, or past files the owner can't rewrite.
+		st="${XDG_STATE_HOME:-$HOME/.local/state}/agent-say"
+		[[ ! -L $st ]] || die "$st is a symbolic link; not using it"
+		if [[ -e $st ]]; then
+			[[ -O $st ]] || die "$st doesn't belong to $(id -un); not using it"
+			bad="$(find "$st" -xdev ! -user "$me" -print -quit 2>/dev/null)"
+			[[ -z $bad ]] || die "$bad doesn't belong to $(id -un), so agent-say can't rewrite it; remove it, then try again"
+		fi
+		return 0
+	fi
+	# The tmux $TMUX names is ours: nothing to follow.
+	[[ -z ${AGENT_SAY_TEST_OWNER:-} && -n ${TMUX:-} && -S ${TMUX%%,*} && -O ${TMUX%%,*} ]] && return 0
+	tmux_server_above || return 0
+	# The tests can't be another user: AGENT_SAY_TEST_OWNER=name:home stands in for the server's
+	# owner, and AGENT_SAY_TEST_ROOT=1 for being root. Never when run as root.
+	if [[ -n ${AGENT_SAY_TEST_OWNER:-} ]] && ((me != 0)); then
+		name=${AGENT_SAY_TEST_OWNER%%:*} home=${AGENT_SAY_TEST_OWNER#*:} test=user
+		[[ ${AGENT_SAY_TEST_ROOT:-} == 1 ]] && test=root
+	else
+		[[ $TS_UID == "$me" ]] && return 0
+		IFS=: read -r name _ _ gid _ home _ < <(getent passwd "$TS_UID" 2>/dev/null) || true
+	fi
+	[[ $name =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ && $home == /* && -d $home ]] ||
+		die "this pane is in the tmux of user $TS_UID, who has no home here; not used"
+	if [[ $test == root ]]; then
+		: # as root, without becoming anyone
+	elif ((me == 0)) && command -v setpriv >/dev/null && [[ $gid =~ ^[0-9]+$ ]]; then
+		drop=(setpriv --reuid="$TS_UID" --regid="$gid" --init-groups --)
+	elif ((me == 0)) && command -v runuser >/dev/null; then
+		drop=(runuser -u "$name" --)
+	elif command -v sudo >/dev/null && sudo -n -u "$name" -- true 2>/dev/null; then
+		drop=(sudo -n -u "$name" --)
+	else
+		die "this pane is in $name's tmux, so its links and mailbox are $name's, and $(id -un) can't use them. Run agent-say as $name, or start tmux as $(id -un)."
+	fi
+	# This agent-say, if the owner may run it (one under /root isn't); else the owner's own.
+	self="$0"
+	[[ $self == /* ]] || self="$PWD/$self"
+	"${drop[@]}" test -r "$self" -a -x "$self" 2>/dev/null || self="$home/.local/bin/agent-say"
+	"${drop[@]}" test -r "$self" -a -x "$self" 2>/dev/null ||
+		die "this pane is in $name's tmux, and $name has no agent-say to run; install tmux-revive as $name"
+	env=(HOME="$home" USER="$name" LOGNAME="$name" AGENT_SAY_FOLLOWED="$TS_PID")
+	[[ -d /run/user/$TS_UID && "$(stat -c %u -- "/run/user/$TS_UID" 2>/dev/null)" == "$TS_UID" ]] &&
+		env+=(XDG_RUNTIME_DIR="/run/user/$TS_UID")
+	exec "${drop[@]}" env -u AGENT_SAY_MAILBOX -u XDG_STATE_HOME -u XDG_RUNTIME_DIR -u TMUX \
+		-u AGENT_SAY_TEST_OWNER -u AGENT_SAY_TEST_ROOT "${env[@]}" "$self" "$@"
+}
+# Not when sourced (the panel's popup, run as you): only a command run is followed.
+[[ "${BASH_SOURCE[0]}" != "$0" ]] || follow_tmux_owner "$@"
+
 MAILBOX="${AGENT_SAY_MAILBOX:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-say/mailbox.md}"
 MAILBOX_MAX="${AGENT_SAY_MAILBOX_MAX:-1048576}" # bytes; the older half moves to mailbox.md.1
 ENTER_DELAY="${AGENT_SAY_ENTER_DELAY:-0.4}"
@@ -57,8 +168,6 @@ SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ControlMaster=auto -o "$CONTR
 # A link to a host that wants a password tries again on its own this often (seconds) while no
 # login is open: each try is one refused login in that host's log, so not every 2 s.
 LOGIN_RETRY="${AGENT_SAY_LOGIN_RETRY:-300}"
-
-die() { echo "agent-say: $*" >&2; exit 1; }
 
 # Pane of the caller: walk up the process tree until we reach a pane's shell.
 # $TMUX_PANE is only a fallback: Codex runs commands in a shared app-server daemon whose
@@ -948,7 +1057,7 @@ mail() { # mail HEADER BODY
 }
 
 send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
-	local to="$1" msg me relayed="" homes hubs hub d sp sn rc host name target tkind i ts id you reply line queue_to=""
+	local to="$1" msg me relayed="" ascmd tapid="" homes hubs hub d sp sn rc host name target tkind i ts id you reply line queue_to=""
 	shift; [[ $# -gt 0 ]] || die "usage: agent-say <to> <message...>"
 	if [[ "$*" == - ]]; then msg="$(head -c $((MSG_MAX + 1)))"; else msg="$*"; fi
 	[[ -n "$msg" ]] || die "empty message"
@@ -1035,7 +1144,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	check_target "$target" "$to"
 	# Someone typing in that pane: wait for them to send or clear it, so the message isn't
 	# typed on top of their draft. (Claude Code and Codex, whose prompts we can read.)
-	read -r tkind _ < <(pane_agent_pid "$(tmux display-message -p -t "$target" '#{pane_pid}')") || true
+	read -r tkind tapid < <(pane_agent_pid "$(tmux display-message -p -t "$target" '#{pane_pid}')") || true
 	if [[ "${tkind:-}" == claude || "${tkind:-}" == codex ]]; then
 		for ((i = 0; ; i++)); do
 			input_empty "$target" && break
@@ -1060,7 +1169,14 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	# Tell the receiver its own name: Codex runs commands in a shared daemon outside the
 	# pane, so it cannot work out which pane it is in when it replies.
 	you="$(name_of "$target")"; you="${you:-$target}"
-	reply="To answer, run the shell command: agent-say --from $you $from \"<your reply>\""
+	# An agent running as another user (root, say) may have no agent-say on its PATH: it is
+	# given this one's full path, which runs as this tmux's owner (see follow_tmux_owner).
+	ascmd=agent-say
+	if [[ -n "${tapid:-}" && "$(ps -o uid= -p "$tapid" 2>/dev/null | tr -d ' ')" != "$(id -u)" ]]; then
+		ascmd="$0"; [[ $ascmd == /* ]] || ascmd="$PWD/$ascmd"
+		ascmd="$(printf %q "$ascmd")"
+	fi
+	reply="To answer, run the shell command: $ascmd --from $you $from \"<your reply>\""
 	if [[ -n "${AGENT_SAY_NOTICE:-}" && -n "${AGENT_SAY_LOCAL_ONLY:-}" ]]; then
 		# From agent-say on the machine that relays for us, about what this pane sent: no answer.
 		line="[agent-say notice from ${from#*@} $ts] $msg"
@@ -1605,6 +1721,13 @@ case "$cmd" in
 				rm -f "$f" "$d/outbox/.sid.$(basename "$f")"
 			done
 			exit 0
+		fi
+		# The link logs in as a user with no tmux here, while another user's tmux runs: its
+		# agents are in that one, which this user can't see. Say so, rather than show no names.
+		if ! tmux list-sessions >/dev/null 2>&1; then
+			others="${AGENT_SAY_TEST_TMUX_USERS-$(ps -eo uid=,comm= 2>/dev/null | awk -v me="$(id -u)" '$1 != me && $2 " " $3 == "tmux: server" {print $1}' |
+				sort -u | while read -r u; do getent passwd "$u" | cut -d: -f1; done | paste -sd, -)}"
+			[[ -z $others ]] || { rm -f "$nn" "$nv"; die "tmux here runs as $others, not $(id -un): link as $others"; }
 		fi
 		mv "$nn" "$d/names"
 		mv "$nv" "$d/via"

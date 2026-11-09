@@ -468,6 +468,51 @@ check "a permission given over a day ago has lapsed: the next message is an intr
 allow_intro "$(intro_id 'live-root@devbox wants to talk with dev-root')" >/dev/null
 check "allowed again, it goes through" "wait_seen2 $DR 'a day later'"
 
+echo "an agent running as root (sudo -i) in a pane of someone else's tmux"
+# The server's tmux belongs to the user the link logs in as (admin, standing in: devbox's
+# state). sudo -i in one of its panes leaves the agent there with root's HOME and no TMUX, and
+# root's own tmux isn't running. The tests can't be root or admin: AGENT_SAY_TEST_OWNER names
+# the stand-in owner (name:home) and AGENT_SAY_TEST_ROOT=1 stands in for being root.
+"$T/rbin/tmux" set-environment -g XDG_STATE_HOME "$T/rstate"
+mkdir -p "$T/rootbin" "$T/sudobin" "$T/nosudobin"
+# root's tmux: given -S, or a TMUX, it reaches that server; plain, there is none.
+printf '#!/bin/sh\ncase " $* " in *" -S "*) exec %q -f /dev/null "$@" ;; esac\n[ -n "$TMUX" ] && exec %q -f /dev/null "$@"\necho "no server running on /tmp/tmux-0/default" >&2\nexit 1\n' \
+	"$real_tmux" "$real_tmux" >"$T/rootbin/tmux"
+# sudo -n -u USER -- CMD as it goes for someone who may (runs CMD), or may not (refused).
+printf '#!/bin/sh\n[ "$1" = -n ] && [ "$2" = -u ] && [ "$4" = -- ] || exit 1\nshift 4\nexec "$@"\n' >"$T/sudobin/sudo"
+printf '#!/bin/sh\necho "sudo: a password is required" >&2\nexit 1\n' >"$T/nosudobin/sudo"
+chmod +x "$T/rootbin/tmux" "$T/sudobin/sudo" "$T/nosudobin/sudo"
+AS="env -u TMUX -u TMUX_PANE -u XDG_STATE_HOME -u AGENT_SAY_MAILBOX -u AGENT_SAY_PANE HOME=$T/roothome AGENT_SAY_HOST=devbox-1 AGENT_SAY_TEST_OWNER=admin:$T/rhome"
+ASROOT="$AS PATH=$T/rootbin:$T/nosudobin:\$PATH AGENT_SAY_TEST_ROOT=1"
+out=$(run 1$LR "$ASROOT $ROOT/bin/agent-say list" 2>&1)
+check "list shows the owner's panes and what its link relays ($out)" "[[ '$out' == *'live-root'* && '$out' == *'dev-root@dev.example.com  (via laptop)'* && '$out' == *'tt-dev@dev.example.com  (via laptop)'* ]]"
+out=$(run 1$LR "$ASROOT $ROOT/bin/agent-say name live-root" 2>&1)
+check "name names its own pane in the owner's tmux ($out)" 'grep -qF "pane $LR is now '"'live-root'"'" <<<"$out"'
+out=$(run 1$LR "$ASROOT $ROOT/bin/agent-say dev-root 'root here, from a sudo -i shell'" 2>&1)
+check "a relayed name resolves, and the send goes into the owner's outbox for the hub ($out)" "[[ '$out' == *'queued for dev-root@dev.example.com through laptop'* ]]"
+check "the hub relays it, as from live-root" "wait_seen2 $DR 'root here, from a sudo -i shell' && seen2 $DR 'agent-say --from dev-root live-root@devbox'"
+in2 $DR "$ROOT/bin/agent-say --from dev-root live-root@devbox 'answer for root'" >/dev/null
+check "and the answer comes back to its pane" "wait_seen1 $LR 'answer for root'"
+out=$(run 1$LR "$ASROOT $ROOT/bin/agent-say cx 'root here, next door'" 2>&1)
+check "a send to a pane in the same tmux is typed in ($out)" "[[ '$out' == *'sent to cx'* ]] && seen1 $CX 'root here, next door'"
+id=$(sed -n 's/^## \[live-root -> cx .*\] #\([0-9-]*\)$/\1/p' "$T/rstate/agent-say/mailbox.md" | tail -n 1)
+out=$(run 1$LR "$ASROOT $ROOT/bin/agent-say show $id" 2>&1)
+check "show reads the owner's mailbox ($id)" "[[ -n '$id' && '$out' == *'root here, next door'* ]]"
+check "nothing was written in root's own home" "[[ ! -e $T/roothome ]]"
+out=$(run 1$LR "$AS PATH=$T/rootbin:$T/sudobin:\$PATH $ROOT/bin/agent-say list" 2>&1)
+check "someone else who may sudo -n to the owner gets the same names ($out)" "[[ '$out' == *'dev-root@dev.example.com  (via laptop)'* ]]"
+out=$(run 1$LR "$AS PATH=$T/rootbin:$T/nosudobin:\$PATH $ROOT/bin/agent-say dev-root 'not root'" 2>&1)
+check "one who may not is told plainly, and nothing is sent ($out)" 'grep -qF "this pane is in admin'"'"'s tmux, so its links and mailbox are admin'"'"'s" <<<"$out" && ! grep -q "no pane named" <<<"$out" && ! seen2 $DR "not root"'
+mkdir -p "$T/evilstate" && ln -s "$T/rstate/agent-say" "$T/evilstate/agent-say"
+"$T/rbin/tmux" set-environment -g XDG_STATE_HOME "$T/evilstate"
+out=$(run 1$LR "$ASROOT $ROOT/bin/agent-say list" 2>&1)
+check "an owner's state dir that is a symbolic link is refused ($out)" "[[ '$out' == *'is a symbolic link; not using it'* ]]"
+"$T/rbin/tmux" set-environment -g XDG_STATE_HOME "$T/rstate"
+out=$(AGENT_SAY_FOLLOWED=$$ say list 2>&1)
+check "a run that says it already became the owner, outside any tmux, is refused ($out)" 'grep -qF "couldn'"'"'t run as the user whose tmux this pane is in" <<<"$out"'
+out=$(printf '' | env PATH="$T/rootbin:$PATH" AGENT_SAY_TEST_TMUX_USERS=root XDG_STATE_HOME=$T/nobody AGENT_SAY_MAILBOX=$T/nobody/agent-say/mailbox.md "$ROOT/bin/agent-say" _sync laptop 2>&1)
+check "a link that logs in as a user with no tmux, where root's runs, is told to link as root ($out)" "[[ '$out' == *'tmux here runs as root, not '*': link as root'* ]]"
+
 echo "declining, revoking, limits"
 in1 $CX "$ROOT/bin/agent-say --from cx dev-root 'codex here'" >/dev/null
 check "another sender to the same recipient needs its own introduction" "wait_intro 'cx@devbox wants to talk with dev-root@dev.example.com'"
