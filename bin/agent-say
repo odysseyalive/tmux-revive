@@ -1787,10 +1787,16 @@ case "$cmd" in
 		# while Claude Code runs there. One file a pane: <pane> <session> <percent> <epoch> <pid>.
 		sid="${2:-}" pct="${3:-}"
 		valid_session "$sid" && [[ $pct =~ ^[0-9]{1,3}$ ]] && ((pct <= 100)) || die "usage: agent-say _ctx <session> <percent>"
-		p="$(self_pane)"
+		# The pane by this process's own ancestry only (AGENT_SAY_PANE is not believed here), and
+		# its Claude Code must be one of this process's ancestors: a value can't be filed for
+		# another pane's session.
+		p="$(AGENT_SAY_PANE='' self_pane)"
 		[[ $p =~ ^%[0-9]+$ ]] || exit 0
 		read -r _ apid < <(pane_agent_pid "$(tmux display-message -p -t "$p" '#{pane_pid}' 2>/dev/null)" claude) || true
 		[[ -n ${apid:-} ]] || exit 0
+		anc=$$
+		while [[ -n $anc && $anc -gt 1 && $anc != "$apid" ]]; do anc="$(ps -o ppid= -p "$anc" 2>/dev/null | tr -d ' ')"; done
+		[[ ${anc:-} == "$apid" ]] || exit 0
 		mkdir -p "$STATE/ctx"
 		f="$(mktemp "$STATE/ctx/.${p#%}.XXXXXX")"
 		printf '%s %s %s %s %s\n' "$p" "$sid" "$pct" "$(date +%s)" "$apid" >"$f" && mv -f "$f" "$STATE/ctx/${p#%}" || rm -f "$f" ;;
