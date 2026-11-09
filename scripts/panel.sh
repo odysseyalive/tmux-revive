@@ -1259,12 +1259,15 @@ draw_panes() {
 		((${#folder} > FW)) && FW=${#folder}
 		if [[ -n ${P_WP[i]:-} ]]; then lab[i]=${P_WP[i]}; elif ((i < 9)); then lab[i]=$((i + 1)); else lab[i]=""; fi
 		((${#lab[i]} + 2 > KW)) && KW=$((${#lab[i]} + 2))
-		# VER: the row's user's tmux-revive, or [V] when that user has none (V installs it).
+		# VER: the row's user's tmux-revive, or [V] when that user has none (V installs it). A
+		# linked computer whose rows say nothing of whose tmux it is has a tmux-revive from before
+		# users: [V] there too, as V updates it.
 		v=${P_INST[i]:-}
 		if [[ $v == owner ]]; then
 			v=$VERSION
 			[[ -n ${P_HOST[i]} ]] && { v=${RVER[${P_HOST[i]}]:-}; [[ $v =~ $VER_RE ]] || v=""; }
-		elif [[ -z $v && -n ${P_USER[i]:-} ]]; then v="[V]"; fi
+		elif [[ -z $v && -n ${P_USER[i]:-} ]]; then v="[V]"
+		elif [[ -n ${P_HOST[i]} && -n ${P_RID[i]:-} && -z ${ROWNER[${P_HOST[i]}]:-} ]]; then v="[V]"; fi
 		ver[i]=$v
 		((${#v} > VW)) && VW=${#v}
 		((${#P_USER[i]} > UW)) && UW=${#P_USER[i]}

@@ -894,6 +894,28 @@ check "the same version isn't in the warn colour" "grep -cF $'\\e[90m1.2.0' <<<\
 echo 1.1.0 >"$T/remote-version"
 raw=$(farv "$T/fakessh" no-such-file)
 check "with this computer's version unknown, none is in the warn colour" "grep -cF $'\\e[90m1.1.0' <<<\"\$raw\" >/dev/null && ! grep -cF $'\\e[93m1.1.0' <<<\"\$raw\" >/dev/null"
+# One from before users (1.2.4): rows with no #owner or #user lines. Its rows show [V] in VER, in
+# the warn colour, with no user, and V on them updates it over ssh, asked first, as before.
+printf '#!/bin/bash\nif [[ ${!#} == *--rows ]]; then %q "$@" | grep -v "^#owner \\|^#user "; else exec %q "$@"; fi\n' "$T/fakessh" "$T/fakessh" >"$T/preuserssh"
+chmod +x "$T/preuserssh"
+rm -f "$st/panel/far.example.rows"*
+raw=$(tm run-shell "AGENT_SAY_SSH=$T/preuserssh REVIVE_PANEL_SEL=far-top@far.example REVIVE_VERSION_FILE=$T/local-version COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once") out=$(plain <<<"$raw")
+check "a linked computer from before users: its rows show [V] in VER, in the warn colour, no user" "grep -c '▶ far-top  *\[V\] *top' <<<\"\$out\" >/dev/null && grep -c 'far-sh  *\[V\] *bash' <<<\"\$out\" >/dev/null && grep -cF $'\\e[93m[V]' <<<\"\$raw\" >/dev/null"
+check "and the bar offers V: update" "grep -F 'ump' <<<\"\$out\" | grep -cF '[V] update' >/dev/null"
+check "this computer's own panes don't show [V]" "grep -c ' $me *1\.2\.0 *bash' <<<\"\$out\" >/dev/null"
+rm -f "$st/panel/far.example.rows"* "$T/update.cmd"
+tm new-window -d -t work -n oldpanel "env AGENT_SAY_SSH=$T/preuserssh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+oscreen() { tm capture-pane -p -t work:oldpanel; }
+wait_o() { for _ in $(seq 1 ${2:-60}); do oscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
+wait_o 'far-top  *\[V\]' >/dev/null
+for _ in $(seq 1 20); do oscreen | grep -q '▶ far-top' && break; tm send-keys -t work:oldpanel Down; sleep 0.4; done
+tm send-keys -t work:oldpanel v
+check "V there asks to update that computer over ssh" "wait_o 'Update tmux-revive on far.example?' && oscreen | grep -qF 'Yes, update it over ssh'"
+tm send-keys -t work:oldpanel Escape
+check "and Esc updates nothing" "wait_o 'update cancelled' && [[ ! -e $T/update.cmd ]]"
+tm send-keys -t work:oldpanel q
+tm kill-window -t work:oldpanel 2>/dev/null
+rm -f "$st/panel/far.example.rows"*
 out=$(farv "$T/norowssh" | plain)
 check "one that answers no rows shows its names, with no user or version" "grep -c 'FAR.EXAMPLE · linked *║' <<<\"\$out\" >/dev/null && grep -c 'far-two *◌ linked' <<<\"\$out\" >/dev/null"
 # Its pane names alone carry no window.pane: those rows are counted instead.
