@@ -35,7 +35,9 @@ REPO_SHA=$(git -C "$T/repo" rev-parse HEAD)
 # No server anywhere: the installer finds no tmux to load into (a new enough one, though).
 mkdir -p "$T/ib"
 printf '#!/bin/sh\n[ "$1" = -V ] && { echo "tmux 3.4"; exit 0; }\nexit 1\n' >"$T/ib/tmux"
-chmod +x "$T/ib/tmux"
+# Never your sudo: the installer would use it to reach root's Claude Code config.
+printf '#!/bin/sh\necho "sudo: a password is required" >&2\nexit 1\n' >"$T/ib/sudo"
+chmod +x "$T/ib/tmux" "$T/ib/sudo"
 H=$T/h APP=$T/h/.local/share/tmux-revive/app
 # inst [VAR=VALUE...] CMD...: run CMD in the sandbox home, stdout+stderr to $T/out.
 inst() {
@@ -168,9 +170,10 @@ mkdir -p "$T/notmux" "$T/mac" "$T/osr" "$T/tmux29"
 for d in /usr/bin /bin; do
 	for f in "$d"/*; do
 		n=${f##*/}
-		[[ $n =~ ^(tmux|brew|port|apt-get|dnf|yum|pacman|zypper|apk|xbps-install|emerge|nix-env)$ || -e $T/notmux/$n || ! -x $f ]] || ln -s "$f" "$T/notmux/$n"
+		[[ $n =~ ^(tmux|brew|port|apt-get|dnf|yum|pacman|zypper|apk|xbps-install|emerge|nix-env|sudo)$ || -e $T/notmux/$n || ! -x $f ]] || ln -s "$f" "$T/notmux/$n"
 	done
 done
+cp "$T/ib/sudo" "$T/notmux/sudo"
 printf '#!/bin/sh\n[ "$1" = -s ] && { echo Darwin; exit 0; }\nexec %q "$@"\n' "$(command -v uname)" >"$T/mac/uname"
 printf '#!/bin/sh\necho "tmux 2.9"\n' >"$T/tmux29/tmux"
 chmod +x "$T/mac/uname" "$T/tmux29/tmux"

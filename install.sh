@@ -365,6 +365,67 @@ hook_add() {
 	fi
 }
 
+# Root's Claude Code, when not installing as root: sessions started with sudo -i in a pane run
+# as root, with root's settings, so they'd have none of the hooks. Where sudo lets this user
+# run commands as root without a password (never asked for), this installer, as root, adds
+# them to root's Claude Code config (if root has one), pointing at this user's hook script;
+# uninstall takes them out again. Without that sudo, one line says what's missing.
+root_hooks() { # root_hooks add|del
+	[ "$(id -u)" = 0 ] && return 0
+	if have sudo && sudo -n true </dev/null >/dev/null 2>&1; then
+		sudo -n sh "$APP/install.sh" --root-hooks "$1" "$APP/scripts/claude-hook.sh" </dev/null || true
+	elif [ "$1" = add ] && root_runs_claude; then
+		say "root's Claude Code sessions won't report their context left or get the agent-say note unless tmux-revive is installed as root too"
+	fi
+}
+# Is there a sign that root runs Claude Code here: one running as root now, or root's config
+# folder where this user can see it?
+root_runs_claude() {
+	[ -d "$(root_home)/.claude" ] && return 0
+	ps -eo uid=,args= 2>/dev/null | awk '$1 == 0 && (index($0, "/claude ") || $2 == "claude" || $0 ~ /\/claude$/) { f = 1 } END { exit !f }'
+}
+# root's home. The tests can't be root: REVIVE_TEST_ROOT_HOME stands in for it, never as root.
+root_home() {
+	if [ "$(id -u)" != 0 ] && [ -n "${REVIVE_TEST_ROOT_HOME:-}" ]; then printf '%s' "$REVIVE_TEST_ROOT_HOME"
+	else
+		rh=~root
+		case $rh in /*) printf '%s' "$rh" ;; esac
+	fi
+}
+# install.sh --root-hooks add|del HOOK, run as root by root_hooks: HOOK (another user's
+# claude-hook.sh) into root's Claude Code config folders, or out of them. Only the folders that
+# are there: root's ~/.claude, and any other ~/.claude* that has run Claude. Root with its own
+# tmux-revive keeps its own hooks.
+root_hooks_here() {
+	[ "$(id -u)" = 0 ] || [ -n "${REVIVE_TEST_ROOT_HOME:-}" ] || return 0
+	hook=$2
+	case $hook in /*/scripts/claude-hook.sh) ;; *) return 0 ;; esac
+	APP=${hook%/scripts/claude-hook.sh}
+	rh=$(root_home)
+	[ -n "$rh" ] || return 0
+	dirs=$(for d in "$rh"/.claude*; do
+		[ -d "$d" ] && { [ "$d" = "$rh/.claude" ] || [ -d "$d/sessions" ]; } && printf '%s\n' "$d"
+	done; :)
+	[ -n "$dirs" ] || return 0
+	case $1 in
+	add)
+		[ -e "$rh/.local/share/tmux-revive/app/scripts/claude-hook.sh" ] && return 0
+		if [ ! -r "$hook" ] || [ ! -x "$hook" ]; then
+			warn "root can't run $hook, so root's Claude Code sessions won't report their context left or get the agent-say note"
+			return 0
+		fi
+		printf '%s\n' "$dirs" | while IFS= read -r d; do hook_add "$d"; done ;;
+	del)
+		printf '%s\n' "$dirs" | while IFS= read -r d; do
+			f=$d/settings.json
+			grep -qF "$hook" "$f" 2>/dev/null || continue
+			if json_edit "$f" --arg t "$hook" "$HOOK_DEL"; then
+				say "removed the agent-say hook from $f"
+			fi
+		done ;;
+	esac
+}
+
 # agent_note FILE START-COMMAND: tell an agent, in its own instructions file, what an
 # [agent-msg ...] prompt is. Without it agents tend to answer in their own pane, where
 # the sender never sees the reply, or take the message for the user's words.
@@ -414,6 +475,7 @@ RULES
 		fi
 	done
 	hook_dirs | while IFS= read -r d; do hook_add "$d"; done
+	root_hooks add
 }
 
 agent_unsetup() {
@@ -438,6 +500,7 @@ agent_unsetup() {
 			say "removed the agent-say hook from $f"
 		fi
 	done
+	root_hooks del
 }
 
 pkg_install() { # best effort with whatever package manager is here
@@ -595,6 +658,7 @@ uninstall() {
 # Everything that does something runs from main, called on the last line: a download cut
 # off part way through (curl | sh) is then a syntax error, not half an install.
 main() {
+	if [ "${1:-}" = --root-hooks ]; then root_hooks_here "${2:-}" "${3:-}"; exit 0; fi
 	wire_config=1
 	for a in "$@"; do
 		case $a in
