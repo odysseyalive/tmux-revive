@@ -168,7 +168,7 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 | Enter (or Tab) | answer the question the selected agent is asking |
 | `L` | link a computer you ssh into |
 | `U` (or `D`) | unlink a computer |
-| `V` | update tmux-revive on a linked computer, or copy the command that installs or updates it for the pane's user |
+| `V` | update tmux-revive on a linked computer, or copy the install or update command for another user's pane |
 | `I` | introductions waiting for you, and permissions you gave |
 | `A` | swap the artwork |
 | `S` | save right now |
@@ -196,7 +196,7 @@ box for the password if the server takes one.
 
 Once linked, that computer's panes show up in the list too, grouped under its
 name, with their USER and VER. Select one of your panes there and press **V** to
-update tmux-revive there over ssh, after a yes. On another user's pane there, **V**
+update tmux-revive over ssh, once you say yes. On another user's pane there, **V**
 gives you the command to run in it (see Several users in one tmux). **N** names one of its panes over ssh.
 
 **J** on one of its panes jumps to your pane that's ssh'd into that computer, and
@@ -288,8 +288,8 @@ other and anyone on its links.
 - Every other user working in your tmux can have tmux-revive too, so their
   agents get the agent-say note and report their context left. Until they do,
   their VER in the panel shows `[V]`. Select one of their panes and press **V**
-  for the command to run in that pane. It's copied, ready to paste. On an older
-  version, **V** gives you `tmux-revive update` instead.
+  for the command to run in that pane. It's copied, ready to paste. If they
+  have an older version, **V** gives you `tmux-revive update` instead.
 - Their install tells your tmux which version they have. A user other than root
   needs the same `sudo` as for `agent-say` below, or VER keeps showing `[V]`.
 - Without their own, their agents can still message: the messages they get show

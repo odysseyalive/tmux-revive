@@ -2129,11 +2129,11 @@ user_note() {
 	fi
 	# Into tmux's paste buffer, and the system clipboard too where the terminal allows (-w).
 	tm set-buffer -w -- "$cmd" 2>/dev/null || tm set-buffer -- "$cmd" 2>/dev/null
-	note "$1 for $u" "Run this in $u's pane:" "" "$cmd" "" "Copied. Paste it there, or with prefix ]."
+	note "$1 for $u" "Run this in $u's pane:" "" "$cmd" "" "Copied. Paste it there, or press prefix ]."
 }
 # note TITLE LINE...: a box over the panel, drawn as pick's, until a key is pressed.
 note() {
-	local title=$1 rows cols w top left i k l hint="any key closes" INTR=0
+	local title=$1 rows cols w top left i k l hint="press any key to close" INTR=0
 	shift
 	local -a ls=("$@")
 	rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80)
@@ -2366,10 +2366,10 @@ act() {
 		# For another user's pane, here or on a linked computer: tmux-revive for that user.
 		v_mode
 		[[ $VMODE == install || $VMODE == update ]] && { user_note "$VMODE"; return; }
-		[[ $VMODE == current ]] && { flash "${P_USER[SEL]} has tmux-revive ${P_INST[SEL]}"; return; }
+		[[ $VMODE == current ]] && { flash "${P_USER[SEL]} already has tmux-revive ${P_INST[SEL]}"; return; }
 		# Otherwise update tmux-revive on the selected pane's linked computer, over the link's ssh.
 		local h=${P_HOST[SEL]:-} last st msg w
-		[[ -n $h ]] || { flash "V updates a linked computer, or shows another user's install command"; return; }
+		[[ -n $h ]] || { flash "V works on a linked computer's pane, or on another user's pane"; return; }
 		[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return
 		pick "Update tmux-revive on $h?" "Yes, update it over ssh" "No" && ((PICKED == 0)) || { flash "update cancelled"; return; }
 		flash "updating tmux-revive on $h…"; draw
