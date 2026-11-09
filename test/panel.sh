@@ -300,11 +300,14 @@ done
 talk='██▄█▄██       ░░▒▒▓▓██►   ██▄█▄██' sat='█▒█▒█▒█▒█══███████══█▒█▒█▒█▒█'
 out=$(hframe 160)
 check "at 160 columns two agents talk beside the first section" "grep -q '[a-z][.,]* .*$talk' <<<\"\$out\" && grep -q '1 Get your agents talking.*▄  ' <<<\"\$out\""
-check "and a satellite, alone, beside the second" "grep -q 'Got agents on a remote server.*▀▀▀█▀▀▀' <<<\"\$out\" && grep -q '$sat' <<<\"\$out\" && ! grep -q '░▒▓█▓▒░' <<<\"\$out\""
+check "and a satellite, alone, beside the second" "grep -q 'Got agents on a remote server.*$sat' <<<\"\$out\" && grep -q 'Talk to your servers too.*▪' <<<\"\$out\" && ! grep -q '░▒▓█▓▒░' <<<\"\$out\""
 out=$(hframe 100)
-check "at 100 they still fit beside the words" "grep -q 'Revive lets any AI.*$talk' <<<\"\$out\" && grep -q 'Got agents on a remote server.*▀▀▀▀▀▀▀▀▀  ▀▀▀█▀▀▀' <<<\"\$out\""
+check "at 100 they still fit beside the words" "grep -q 'Revive lets any AI.*$talk' <<<\"\$out\" && grep -q 'Got agents on a remote server.*$sat' <<<\"\$out\""
 out=$(hframe 80)
 check "at 80 they go above the words instead" "grep -q '^║  $talk  *║\$' <<<\"\$out\" && grep -q '^║   $sat  *║\$' <<<\"\$out\" && ! grep -q 'Got agents.*█▒█' <<<\"\$out\""
+# The satellite's light blinks with the panel's clock: lit one tick in three, dark between.
+lit() { tm run-shell "REVIVE_PANEL_TICK=$1 REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=200 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | grep -c $'\e\\[38;5;196m'; }
+check "the satellite's light is lit on a tick in three, and dark on the others" "[[ \$(lit 0) -ge 1 && \$(lit 1) == 0 && \$(lit 2) == 0 && \$(lit 3) -ge 1 ]]"
 # A few suggestions to get going, not a reference: the keys are on the panel already.
 out=$(hframe 160)
 check "it has no key reference or column list" "! grep -qiE 'key reference|What the columns mean|Remember the old BBS|^║ +\\[[^]]+\\] {2,}[A-Z]' <<<\"\$out\" && grep -q 'shop-dev' <<<\"\$out\" && grep -q 'press L' <<<\"\$out\""

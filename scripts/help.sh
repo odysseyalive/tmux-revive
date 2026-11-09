@@ -153,16 +153,21 @@ HART_talk_ink=(
 	"CCCCCCC   MMMMMMMMM       MMMMMMM"
 	" ccccc                     mmmmm "
 )
-HART_satellite=( # a satellite
+HART_satellite=( # a satellite, its light blinking on top (L: see HLIT)
+	"               ▪               "
 	" ▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄ "
 	" █▒█▒█▒█▒█══███████══█▒█▒█▒█▒█ "
 	" ▀▀▀▀▀▀▀▀▀  ▀▀▀█▀▀▀  ▀▀▀▀▀▀▀▀▀ "
 )
 HART_satellite_ink=(
+	"               L               "
 	" BBBBBBBBB  YYYrYyy  BBBBBBBBB "
 	" BbBbBbBbBkkYYYYYyykkBbBbBbBbB "
 	" bbbbbbbbb  yyykyyy  bbbbbbbbb "
 )
+# The satellite's light: a red no other ink uses, so help_frame can find it and let it go dark
+# between blinks. It's lit one panel tick in three, a couple of seconds every few.
+HLIT=$'\e[38;5;196m'
 # hart NAME: the picture HART_NAME, painted, for the section it follows the title of. Beside
 # the section's text when the page is wide enough for both (hart_close puts it there), above
 # the text when it's only wide enough for the picture, and left out when it isn't, or in a box.
@@ -171,7 +176,7 @@ hart() {
 	((HBOX)) && return 0
 	local -n g=HART_$1 p=HART_$1_ink
 	local -A pal=([b]=$BLU [B]=$BBLU [c]=$CYN [C]=$BCYN [m]=$MAG [M]=$BMAG [y]=$YEL [Y]=$BYEL
-		[g]=$GRN [G]=$BGRN [r]=$BRED [k]=$GRY)
+		[g]=$GRN [G]=$BGRN [r]=$BRED [k]=$GRY [L]=$HLIT)
 	local i j c last s w=${#g[0]}
 	local -a rows=()
 	for i in "${!g[@]}"; do
@@ -340,7 +345,11 @@ help_frame() {
 	((HELP_TOP > n - view)) && HELP_TOP=$((n - view))
 	((HELP_TOP < 0)) && HELP_TOP=0
 	sect "HELP · HOW TO USE REVIVE"
-	for ((i = 0; i < view; i++)); do row "${HROWS[HELP_TOP + i]:-}"; done
+	for ((i = 0; i < view; i++)); do
+		k=${HROWS[HELP_TOP + i]:-}
+		((${TICK:-0} % 3)) && k=${k//"$HLIT"/"$GRY"}
+		row "$k"
+	done
 	last=$((HELP_TOP + view < n ? HELP_TOP + view : n))
 	kcs ↑↓ " scroll" PgUp/PgDn " page" i " install" o " open" Esc " close"
 	k=$KC
