@@ -303,6 +303,9 @@ echo "link trust"
 lk=$(dirname "$AGENT_SAY_MAILBOX")/links/devbox
 mailcount() { local n; n=$(grep -c -- "$1" "$AGENT_SAY_MAILBOX"); echo "${n:-0}"; }
 wait_mail() { for _ in $(seq 40); do (($(mailcount "$1") >= ${2:-1})) && return 0; sleep 0.25; done; return 1; }
+# This run's pollers only: another checkout running this file at the same time has its own
+# devbox, and a bare "agent-say _poll devbox" would see (and pkill would stop) that one too.
+pollers() { pgrep "${@:2}" -f " $ROOT/bin/agent-say _poll $1\$"; }
 check "the confirmed key is kept with the link" "[[ \$(cat $lk/fingerprint) == '$fp1 (ED25519)' ]]"
 out=$(say link devbox --read-only 2>&1 </dev/null)
 check "changing a link's mode asks nothing again ($out)" "[[ '$out' == *'Read-only'* && '$out' != *'host key'* ]]"
@@ -324,26 +327,26 @@ say link devbox --allow-all </dev/null >/dev/null
 check "--allow-all lifts it" "[[ ! -e $lk/allow ]]"
 # The host's key changes (another computer answers to devbox now): the poller stops.
 printf 'devbox %s\n' "$(cut -d' ' -f1,2 "$T/hostkey2.pub")" >"$T/known_hosts"
-check "a changed host key stops the poller" "for _ in \$(seq 40); do pgrep -f 'agent-say _poll devbox' >/dev/null || break; sleep 0.25; done; ! pgrep -f 'agent-say _poll devbox' >/dev/null"
+check "a changed host key stops the poller" "for _ in \$(seq 40); do pollers devbox >/dev/null || break; sleep 0.25; done; ! pollers devbox >/dev/null"
 out=$(say link)
 check "and link says why ($out)" "[[ \$out == *'not running'*'host key changed'* ]]"
 there "$ROOT/bin/agent-say --from codex me@laptop 'while the key is wrong'" >/dev/null
 sleep 1
 check "nothing comes in from it meanwhile" "! seen $LC 'while the key is wrong' && [[ -n \$(ls $outbox) ]]"
 out=$(say link devbox 2>&1 </dev/null)
-check "linking again shows the new key, warns, and wants --yes ($fp2)" "[[ \$out == *'$fp2'*'WARNING'*'$fp1'*'--yes'* ]] && ! pgrep -f 'agent-say _poll devbox' >/dev/null"
+check "linking again shows the new key, warns, and wants --yes ($fp2)" "[[ \$out == *'$fp2'*'WARNING'*'$fp1'*'--yes'* ]] && ! pollers devbox >/dev/null"
 say link devbox --yes </dev/null >/dev/null 2>&1
 check "confirmed, the link runs again and what waited arrives" "wait_seen $LC 'while the key is wrong' && [[ \$(cat $lk/fingerprint) == '$fp2 (ED25519)' ]]"
 
 say _resume-links; say _resume-links; sleep 0.5
-check "starting the link twice runs one poller" "[[ \$(pgrep -fc 'agent-say _poll devbox') -eq 1 ]]"
+check "starting the link twice runs one poller" "[[ \$(pollers devbox -c) -eq 1 ]]"
 
 # Stop the poller (as a reboot would), then queue: the message waits, and unlink marks it.
-pkill -f 'agent-say _poll devbox'; sleep 0.3
+pkill -f " $ROOT/bin/agent-say _poll devbox\$"; sleep 0.3
 there "$ROOT/bin/agent-say --from codex me@laptop 'never fetched'" >/dev/null
 say unlink devbox >/dev/null
 sleep 0.5
-check "unlink stops it" "! pgrep -f 'agent-say _poll devbox' >/dev/null"
+check "unlink stops it" "! pollers devbox >/dev/null"
 check "and the other side marks what it held as NOT DELIVERED" "grep -q 'NOT DELIVERED: laptop unlinked' $T/rstate/agent-say/mailbox.md && [[ -z \$(ls $outbox) ]]"
 
 echo "a link to a server that takes a password"
@@ -386,7 +389,7 @@ pw() { AGENT_SAY_SSH=$T/bin/pwssh AGENT_SAY_LOGIN_RETRY=600 say "$@"; }
 pl=$(dirname "$AGENT_SAY_MAILBOX")/links/pwbox
 batch_tries() { grep -c 'BatchMode=yes' "$T/pwssh.log"; }
 out=$(pw link pwbox --yes 2>&1 </dev/null)
-check "off a terminal, it isn't linked and says it needs a login ($out)" "[[ \$out == *'pwbox needs a login'* && ! -e $pl/on ]] && ! pgrep -f 'agent-say _poll pwbox' >/dev/null"
+check "off a terminal, it isn't linked and says it needs a login ($out)" "[[ \$out == *'pwbox needs a login'* && ! -e $pl/on ]] && ! pollers pwbox >/dev/null"
 # The panel logs in with the key you confirmed there; with none confirmed, nothing is asked.
 pw _login pwbox <<<hunter2 >/dev/null 2>&1
 check "with no host key confirmed, no login is tried at all" "[[ \$(prompts) == 0 && ! -e $T/pw.master ]]"
@@ -432,7 +435,7 @@ p=$(prompts); rm -f "$T/pw.master"
 pw _login pwbox <<<hunter2 >/dev/null 2>&1
 check "and no login is asked for against a key that isn't there" "[[ \$(prompts) == $p && ! -e $T/pw.master ]]"
 pw unlink pwbox >/dev/null 2>&1
-check "unlink closes the login with it" "[[ ! -e $T/pw.master ]] && ! pgrep -f 'agent-say _poll pwbox' >/dev/null"
+check "unlink closes the login with it" "[[ ! -e $T/pw.master ]] && ! pollers pwbox >/dev/null"
 "$T/rbin/tmux" kill-server
 
 echo "$pass passed, $fail failed"
