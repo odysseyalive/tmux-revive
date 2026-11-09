@@ -1,7 +1,7 @@
 # tmux-revive reference
 
-Everything tmux-revive and `agent-say` can do, in one place. For the quick start,
-see the [README](../README.md).
+Everything tmux-revive and `agent-say` can do, all in one place. For the quick
+start, see the [README](../README.md).
 
 ## Contents
 
@@ -77,11 +77,11 @@ The installer adds a small `tmux` wrapper to your shell. A bare `tmux` outside
 tmux, and `tmux attach`, go to `tmux-revive open`. Every other tmux command
 passes straight through.
 
-With one session, `tmux` attaches it. With several, it lists them first: pick
-one with the arrows or its number and press Enter, or press `n` for a new one.
-`x` closes the highlighted session (Space marks several), and `a` closes all
-the others and continues in this one. A session with an agent running in it
-asks you to type `yes`, since closing it ends that conversation.
+With one session, `tmux` attaches it. With several, it lists them first. Pick one
+with the arrows or its number and press Enter, or press `n` for a new one. `x`
+closes the highlighted session (Space marks several), and `a` closes all the
+others and carries on in this one. A session with an agent running in it asks you
+to type `yes`, since closing it ends that conversation.
 
 It saves on its own when you detach or close something, every minute if
 anything changed, and on Linux right before shutdown or sleep.
@@ -138,10 +138,10 @@ over, sized to your pane.
 Each pane is numbered the way tmux's status bar numbers it, window then pane:
 `[3.1]` is pane 1 in window 3.
 
-**CTX LEFT** shows how much of each agent's context window is still free,
-green, then yellow at 40% and red at 15%. It reads Claude Code's and Codex's
-own session records; other agents show a dash. Claude Code doesn't record its
-window size, so the panel takes a million tokens for models that have one and
+**CTX LEFT** shows how much of each agent's context window is still free. It goes
+green, then yellow at 40%, then red at 15%. It reads Claude Code's and Codex's own
+session records, and other agents show a dash. Claude Code doesn't record its
+window size, so the panel assumes a million tokens for models that have one and
 200k otherwise. Set `REVIVE_CLAUDE_WINDOW` to override it.
 
 ### Keys
@@ -169,32 +169,38 @@ window size, so the panel takes a million tokens for models that have one and
 ### Answering questions
 
 When the selected agent is asking a question, the peek shows the question instead.
-Press **Enter** to answer it right there: your keys go to the agent as if you were in
-its pane, typed answers included, until it has its answer or you press **Ctrl-]**. For
-a chat with the agent, **J** takes you to its pane.
+Press **Enter** to answer it right there. Your keys go to the agent as if you were
+in its pane, typed answers included, until it has its answer or you press
+**Ctrl-]**. For a real chat with the agent, **J** takes you to its pane.
 
-You don't need the panel open to hear about questions: when any agent starts asking
-one, tmux shows a message naming the pane and rings the bell, once per question.
-See `@revive-question-alert` and `@revive-question-bell` to turn these off.
+You don't need the panel open to hear about questions. When any agent starts
+asking one, tmux shows a message naming the pane and rings the bell, once per
+question. See `@revive-question-alert` and `@revive-question-bell` to turn these
+off.
 
 ### Linked computers in the panel
 
-When a pane ssh's into another computer, the panel spots it and offers to link
-the agents there: **L** links it (after showing you the computer's host key to
-confirm where ssh itself would ask, and a popup for its password if it takes one), **U** unlinks. Once linked, that computer's panes show up in the list too,
-grouped under its name, with the version of tmux-revive it runs. If that's older than
-yours, its heading says `out of date`: select one of its panes and press **V** to update
+When a pane ssh's into another computer, the panel spots it and offers to link the
+agents there. **L** links it and **U** unlinks it. Before linking, it shows you
+the computer's host key to confirm wherever ssh itself would ask, and pops up a
+box for the password if the server takes one.
+
+Once linked, that computer's panes show up in the list too, grouped under its
+name, along with the version of tmux-revive it runs. If that's older than yours,
+its heading says `out of date`. Select one of its panes and press **V** to update
 it over ssh, after a yes. **N** names one of its panes the same way, over ssh.
+
 **J** on one of its panes jumps to your pane that's ssh'd into that computer, and
 has tmux over there switch to the pane you picked. If your ssh runs in a terminal
-outside tmux, the panel can't focus that terminal, but tmux over there still switches.
-That takes an up-to-date tmux-revive over there, which **V** sees to.
+outside tmux, the panel can't focus that terminal, but tmux over there still
+switches. That takes an up-to-date tmux-revive over there, which **V** takes care
+of.
 
 ## agent-say: agents talking to each other
 
-`agent-say` lets an agent in one tmux pane send a message to an agent in
-another pane, and the answer finds its way back on its own. It works across
-accounts, and across different agents like Claude Code and Codex.
+`agent-say` lets an agent in one tmux pane send a message to an agent in another
+pane, and the answer finds its way back on its own. It works across accounts, and
+across different AI interfaces like Claude Code and Codex.
 
 First, give each pane a name. You only do this once. Press **N** in the panel,
 or in Claude Code, type this into its prompt:
@@ -235,10 +241,10 @@ Read the last five messages:
 agent-say read 5
 ```
 
-Only a pane with an agent running in it is typed into, and not while it's
+Only a pane with an agent running in it gets typed into, and not while it's
 scrolled back in copy mode. Every message is also written to the mailbox
 (`~/.local/state/agent-say/mailbox.md`), so long text is read from there and
-nothing is lost.
+nothing gets lost.
 
 A word of caution. Anything that can run `agent-say` can type into your
 agents, so treat it the way you'd treat access to your terminal.
@@ -254,27 +260,30 @@ agent-say link devbox
 ```
 
 The server needs `agent-say` installed too. With an ssh key, the link logs in on
-its own. A server that only takes a password works as well: ssh asks you for it
-once (in a small popup when you press **L** in the panel), and the link keeps that
+its own. A server that only takes a password works too. ssh asks you for it once
+(in a small popup when you press **L** in the panel), and the link keeps that
 connection open. tmux-revive never sees or stores the password, and ssh only asks
-for it once the server has shown the host key you confirmed. If the connection
-drops (that server reboots, or the network goes away for a while), the panel
+for it after the server has shown the host key you confirmed. If the connection
+drops, say that server reboots or the network goes away for a while, the panel
 marks the link `needs login` and **L** asks for the password again. Nothing logs
-in again by itself.
+back in by itself.
 
-Linking follows your ssh setup: the host is resolved as `ssh -G` resolves it (its
-`HostName`, `Port`, `HostKeyAlias` and known_hosts files). A server ssh already
-trusts (its key is in a known_hosts file ssh reads for it) links with no question,
-and its key is recorded with the link; linking one again that still has the key you
-confirmed asks nothing either. Only where ssh itself would ask (a key it doesn't
-know, or a config with `UserKnownHostsFile /dev/null`) does it show the server's host
-key fingerprint and ask you to confirm it (from a script, add `--yes` once you've
-checked it, or `--fingerprint 'SHA256:... (TYPE)'` to link it to exactly that key). If
-that key changes later, or you revoke it (`@revoked` in known_hosts), the link stops
-and `agent-say link` says so, until you link again and confirm the new one. Every
-connection the link makes is bound to the key you confirmed, whatever your ssh config
-says about known_hosts: ssh itself turns away a server showing any other key, and the
-link stops there.
+Linking follows your ssh setup. The host is resolved the way `ssh -G` resolves it,
+with its `HostName`, `Port`, `HostKeyAlias` and known_hosts files.
+
+If ssh already trusts the server (its key is in a known_hosts file ssh reads for
+it), it links with no questions, and that key is recorded with the link. Linking
+it again while it still has the key you confirmed asks nothing either. Only where
+ssh itself would ask, like a key it doesn't know or a config with
+`UserKnownHostsFile /dev/null`, does it show you the server's host key fingerprint
+and ask you to confirm it. From a script, add `--yes` once you've checked it, or
+`--fingerprint 'SHA256:... (TYPE)'` to link it to exactly that key.
+
+If that key changes later, or you revoke it (`@revoked` in known_hosts), the link
+stops and `agent-say link` says so. It stays stopped until you link again and
+confirm the new key. Every connection the link makes is tied to the key you
+confirmed, whatever your ssh config says about known_hosts. ssh itself turns away
+a server showing any other key, and the link stops there.
 
 ### Limits
 
@@ -314,46 +323,51 @@ Link to two servers and your computer passes messages between them. Each server
 sees the other's panes in `agent-say list` (as `tt-dev@dev  (via laptop)`), and
 a plain name works as long as only one pane anywhere has it.
 
-The first time an agent on one server writes to an agent on the other, the
-message waits on your computer as an introduction. The other server gets
-nothing until you allow it: press **I** in the panel, read who's asking and why,
-and pick yes or no. Yes shows a four-digit code in a popup to type back, then
-delivers the introduction and anything sent since, in order, and the two can
-talk both ways. No drops them, and that
-agent can't write to that one again. Permission is per pair of agent sessions,
-so a new session in a pane asks again, and **I** also lists what you've allowed,
-to revoke. The sending agent is told plainly what happened (`introduction sent`,
-`held`, `declined`). At most 5 messages wait per pair and 3 introductions per
-server. `agent-say intros` lists them from a terminal.
+The first time an agent on one server writes to an agent on the other, the message
+waits on your computer as an introduction. The other server gets nothing until you
+allow it. Press **I** in the panel, read who's asking and why, and pick yes or no.
 
-What is kept about agent sessions lasts 24 hours: a permission lapses a day after you
-gave it (**I** shows the time each has left), and the next message between those two
-is an introduction again; an introduction nobody answers lapses after a day with
-what it held. A session that runs longer than that is rare, and if one does,
-something is wrong. Each lapse is logged (`agent-say intros` shows recent ones).
+Yes shows a four-digit code in a popup for you to type back. Then it delivers the
+introduction and anything sent since, in order, and the two can talk both ways. No
+drops them, and that agent can't write to that one again.
+
+Permission is per pair of agent sessions, so a new session in a pane asks again.
+**I** also lists what you've allowed, so you can revoke it. The sending agent is
+told plainly what happened (`introduction sent`, `held`, `declined`). At most 5
+messages wait per pair, and 3 introductions per server. `agent-say intros` lists
+them from a terminal.
+
+Anything kept about agent sessions lasts 24 hours. A permission lapses a day after
+you gave it (**I** shows how long each has left), and the next message between
+those two is an introduction again. An introduction nobody answers lapses after a
+day, along with what it held. A session that runs longer than that is rare, and if
+one does, something is wrong. Each lapse is logged, and `agent-say intros` shows
+recent ones.
 
 A message from another server is never typed into the agent's prompt as if you
-had written it: the agent is told one is waiting and reads it with
-`agent-say show`, marked as coming from another agent, not from you.
+wrote it. The agent is told one is waiting and reads it with `agent-say show`,
+marked as coming from another agent, not from you.
 
-Your computer and both servers need this version. What a server sends through
-your computer also follows its own link's limits: `--read-only` holds it in
-your mailbox, and an `--allow` list must name the far pane as `tt-dev@dev`.
+Your computer and both servers need this version. What a server sends through your
+computer also follows its own link's limits. `--read-only` holds it in your
+mailbox, and an `--allow` list has to name the far pane as `tt-dev@dev`.
 
 ### What this does and doesn't protect
 
-Agents on your servers can't allow anything,
-since they can't touch your computer's files, so a rogue server can't reach
-your other servers' agents without you. Your computer names each sender's server
-itself, from the link it came in on. Within one server, though, an agent's
-session is what that server says it is: a rogue process there could pass for
-another agent on the same server, but only one that is still running under the
-same pane name, and only to the agents you allowed that one to reach. Agents on your own computer run as you,
-though, and a determined one could get round the popup. Every permission given
-is logged with what gave it (`agent-say intros` shows them). For real isolation
-on your computer, deny agents `tmux send-keys` and writes under
-`~/.local/state/agent-say` (in Claude Code, a `permissions.deny` rule such as
-`Bash(tmux send-keys:*)`), or run them as another user.
+Agents on your servers can't allow anything, since they can't touch your
+computer's files. So a rogue server can't reach your other servers' agents without
+you. Your computer names each sender's server itself, from the link it came in on.
+
+Within one server, though, an agent's session is whatever that server says it is.
+A rogue process there could pass for another agent on the same server, but only
+one still running under the same pane name, and only to the agents you allowed
+that one to reach.
+
+Agents on your own computer run as you, and a determined one could get around the
+popup. Every permission given is logged with what gave it (`agent-say intros`
+shows them). For real isolation on your computer, deny agents `tmux send-keys` and
+writes under `~/.local/state/agent-say` (in Claude Code, a `permissions.deny` rule
+such as `Bash(tmux send-keys:*)`), or run them as another user.
 
 ## Settings
 
@@ -440,12 +454,11 @@ agent-say:
 
 ## Releases and signing
 
-The installer installs the latest release, and only after checking it: the
-release's `SHA256SUMS` must carry a signature from the release key written
-into `install.sh` itself, and the tarball must match it. If anything doesn't
-check out it stops, installs nothing, and says why. It never falls back to
-something unchecked. The check uses `ssh-keygen -Y verify` (OpenSSH 8.1 or
-later).
+The installer installs the latest release, but only after checking it. The
+release's `SHA256SUMS` has to carry a signature from the release key written into
+`install.sh` itself, and the tarball has to match it. If anything doesn't check
+out, it stops, installs nothing, and tells you why. It never falls back to
+something unchecked. The check uses `ssh-keygen -Y verify` (OpenSSH 8.1 or later).
 
 To install a particular version, pin it:
 
@@ -453,9 +466,9 @@ To install a particular version, pin it:
 curl -fsSL https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.sh | REVIVE_VERSION=1.0.0 sh
 ```
 
-To follow `main` instead, set `REVIVE_REF=main` (or a branch, tag or commit).
-That isn't signed: it trusts HTTPS and the GitHub account, and installs the
-exact commit the branch pointed at.
+To follow `main` instead, set `REVIVE_REF=main` (or a branch, tag or commit). That
+isn't signed. It trusts HTTPS and the GitHub account, and installs the exact
+commit the branch pointed at.
 
 Once installed, `tmux-revive update` checks each new release against the key in
 the copy you already have.

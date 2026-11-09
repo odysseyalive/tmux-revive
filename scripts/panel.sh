@@ -2149,7 +2149,7 @@ act() {
 		PREV=()
 		case $KEY_STATE in
 			recorded)
-				linked_msg="relinked $h; its key is the one you confirmed" ;;
+				linked_msg="relinked $h with the key you confirmed" ;;
 			trusted)
 				for k in "${keys[@]}"; do largs+=(--fingerprint "$k"); done
 				linked_msg="linked to $h with the key ssh already trusts for it: ${keys[*]}" ;;
@@ -2183,7 +2183,7 @@ act() {
 		if [[ $LOUT == *"check it, then link again and confirm the new key"* ]]; then
 			read_host_keys "$h" --new
 			keys=("${KEYS[@]}")
-			((${#keys[@]})) || { flash "$h's host key isn't the one you confirmed, and ssh-keyscan shows no other; not linked"; return; }
+			((${#keys[@]})) || { flash "$h's host key isn't the one you confirmed, and ssh-keyscan shows no other, so it's not linked"; return; }
 			labels=("No, don't link $h")
 			for k in "${keys[@]}"; do labels+=("Yes, link: its key is $k"); done
 			pick "WARNING: $h's HOST KEY CHANGED since you linked it" "${labels[@]}" && ((PICKED > 0)) || { flash "link cancelled"; return; }
@@ -2263,7 +2263,7 @@ act() {
 			ids+=("g $a $b") labels+=("$([[ $g == allow ]] && echo allowed || echo declined): ${f:0:30} and ${t:0:30} · $((w / 3600))h$((w % 3600 / 60))m left")
 		done < <(cat "$ASTATE/grants" 2>/dev/null)
 		((${#ids[@]})) || { flash "no introductions waiting, and no permissions given"; return; }
-		pick "INTRODUCTIONS · permissions last $((ttl / 3600))h" "${labels[@]}" || return
+		pick "INTRODUCTIONS · each permission lasts $((ttl / 3600))h" "${labels[@]}" || return
 		read -r g a b <<<"${ids[PICKED]}"
 		if [[ $g == i ]]; then
 			d="$ASTATE/intros/$a"

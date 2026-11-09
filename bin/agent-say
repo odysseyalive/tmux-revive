@@ -407,11 +407,11 @@ pin_opts() {
 		0) PIN_OPTS=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PIN" -o GlobalKnownHostsFile=/dev/null
 			-o HostKeyAlias=$PIN_ALIAS -o CheckHostIP=no -o UpdateHostKeys=no) ;;
 		3) ;;
-		2) echo "agent-say: couldn't read $1's host key to bind the connection to the one you confirmed (not in known_hosts, and ssh-keyscan got no answer)" >&2
+		2) echo "agent-say: couldn't read $1's host key to check it against the one you confirmed (it's not in known_hosts, and ssh-keyscan got no answer)" >&2
 			return 1 ;;
-		4) echo "agent-say: Host key verification failed: the key you confirmed for $1 is revoked (@revoked in known_hosts)" >&2
+		4) echo "agent-say: Host key verification failed: the key you confirmed for $1 has been revoked (@revoked in known_hosts)" >&2
 			return 1 ;;
-		*) echo "agent-say: Host key verification failed: none of $1's keys is the one you confirmed" >&2
+		*) echo "agent-say: Host key verification failed: $1 isn't showing the key you confirmed" >&2
 			return 1 ;;
 	esac
 }
@@ -605,7 +605,7 @@ relay_for() {
 remember_sender() { # remember_sender LABEL NAME@HOST
 	local f="$STATE/peers/$1/senders" now
 	printf -v now '%(%s)T' -1
-	index_lock || { echo "agent-say: couldn't record the way back to $2 (the permission list is busy)" >&2; return 1; }
+	index_lock || { echo "agent-say: couldn't record the way back to $2, because the permission list is busy" >&2; return 1; }
 	{ awk -v s="$2" '$1 != s' "$f" 2>/dev/null | tail -n 499 || true; echo "$2 $now"; } >"$f.$$" && mv "$f.$$" "$f" ||
 		{ index_unlock; echo "agent-say: couldn't record the way back to $2" >&2; return 1; }
 	index_unlock
@@ -819,7 +819,7 @@ grant_state() { # grant_state SENDER-SESSION RECIPIENT-SESSION ORIGIN-LINK [SEND
 grant_set() { # grant_set allow|deny|none SENDER-SESSION RECIPIENT-SESSION [SENDER RECIPIENT]: none forgets the pair, either way
 	local t="$GRANTS.$$" now
 	printf -v now '%(%s)T' -1
-	index_lock || die "the permission list is busy; try again"
+	index_lock || die "the permission list is busy, so try again in a moment"
 	{ [[ -f "$GRANTS" ]] && awk -v s="$2" -v r="$3" '!(($2 == s && $3 == r) || ($2 == r && $3 == s))' "$GRANTS"
 		[[ $1 == none ]] || echo "$1 $2 $3 ${4:-$2} ${5:-$3} $now"; } >"$t"
 	mv "$t" "$GRANTS"
@@ -896,7 +896,7 @@ decline() { # decline ID: refuse the pair from now on, drop what waited, tell th
 revoke() { # revoke A B: forget what was said for the pair (sessions or name@host), either way
 	local t="$GRANTS.$$" n
 	[[ -f "$GRANTS" ]] || die "no permissions given (see: agent-say intros)"
-	index_lock || die "the permission list is busy; try again"
+	index_lock || die "the permission list is busy, so try again in a moment"
 	awk -v a="$1" -v b="$2" '!((($2 == a || $4 == a) && ($3 == b || $5 == b)) || (($2 == b || $4 == b) && ($3 == a || $5 == a)))' "$GRANTS" >"$t"
 	n=$(($(wc -l <"$GRANTS") - $(wc -l <"$t")))
 	mv "$t" "$GRANTS"
@@ -1013,7 +1013,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 		# linked machine relayed here once, whose way back has lapsed (after a day): never sent
 		# to that host directly, by whatever this machine calls it.
 		[[ -f "$STATE/links/$host/on" ]] ||
-			die "no way to reach $to: $host isn't linked here, and if $to wrote to you through a linked computer, that route has expired; ask them to message you again"
+			die "can't reach $to. $host isn't linked here, and if $to wrote to you through a linked computer, that route has expired. Ask them to message you again"
 		# The message travels on stdin, so no shell quoting of its content is needed.
 		printf '%s' "$msg" | ssh_to "$host" "$REMOTE_CMD --from $(printf %q "$from") $(printf %q "$name") -"
 		return
@@ -1028,7 +1028,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	[[ "$(grant_state "$from" "$to" local)" == allowed ]] || die "$from may not message $to; not sent"
 	# Remember who a linked machine relayed to us, so an answer goes back through it.
 	if [[ -n "${AGENT_SAY_VIA:-}" ]] && valid_host "$AGENT_SAY_VIA" && [[ -d "$STATE/peers/$AGENT_SAY_VIA" && "$from" == *@* ]]; then
-		remember_sender "$AGENT_SAY_VIA" "$from" || die "not delivered: the way back to $from couldn't be recorded; try again"
+		remember_sender "$AGENT_SAY_VIA" "$from" || die "not delivered, because the way back to $from couldn't be recorded. Try again"
 	fi
 	queue_to="$to" # from here, a pane that can't take it yet queues it (soft_die)
 	take_pane_lock "$target"
@@ -1178,7 +1178,7 @@ case "$cmd" in
 				--yes | -y) yes=1 ;;
 				# The keys you confirmed elsewhere (the panel shows them, you pick one): the link is
 				# bound to exactly these, never to whatever is scanned now.
-				--fingerprint) [[ ${2:-} =~ $FP_RE ]] || die "not a key fingerprint: ${2:-} (as 'SHA256:... (TYPE)')"; given+="$2"$'\n'; shift ;;
+				--fingerprint) [[ ${2:-} =~ $FP_RE ]] || die "that's not a key fingerprint: ${2:-} (it should look like 'SHA256:... (TYPE)')"; given+="$2"$'\n'; shift ;;
 				# You chose to link with no key found: nothing scanned later is taken for one.
 				--no-key) no_key=1 ;;
 				--read-only) ro=on ;;
@@ -1257,7 +1257,7 @@ case "$cmd" in
 		elif [[ -n $no_key && $KEY_STATE == unknown ]]; then
 			keys="" # you linked it with no key found: none taken now that you weren't shown
 		elif [[ -n $no_key && $KEY_STATE == changed ]]; then
-			die "$host's host key changed since you linked it; confirm the new one (agent-say link $host); not linked"
+			die "$host's host key changed since you linked it, so it's not linked. Confirm the new one with agent-say link $host"
 		else
 			[[ $KEY_STATE == trusted ]] && { echo "$host's host key, as ssh already trusts it (known_hosts):"; sed 's/^/  /' <<<"$keys"; }
 			[[ $KEY_STATE == changed || $KEY_STATE == unknown ]] && confirm_keys
@@ -1530,7 +1530,7 @@ case "$cmd" in
 				rc=$?
 				# Turned away for its host key: it isn't the computer you confirmed. The link stops.
 				if [[ -s "$d/fingerprint" ]] && grep -q 'Host key verification failed' "$d/error.new" 2>/dev/null; then
-					echo "stopped: $host's host key changed since you linked it; if that's expected, see the new one with: agent-say link $host" >"$d/error"
+					echo "stopped: $host's host key changed since you linked it. If you expected that, see the new one with agent-say link $host" >"$d/error"
 					rm -f "$d/error.new" "$d/login"
 					break
 				fi
