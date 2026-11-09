@@ -205,6 +205,108 @@ stops "a pinned version is asked for again the same way" "| REVIVE_VERSION=1.0.0
 inst env PATH="$T/notmux" sh "$T/repo/install.sh" --uninstall; rc=$?
 check "uninstall doesn't need tmux" "((rc == 0)) && said 'uninstalled'"
 
+# GitHub that answers badly: a stand-in curl and wget serve the default base (github.com
+# release downloads) and GitHub's API from $T/rel. GH_FAIL=N fails each github.com download
+# N times first, GH_DOWN=1 fails them all, GH_API_SRC serves the API's files from another
+# release dir. sleep only notes how long it was asked to wait.
+echo "release downloads that fail"
+mkdir -p "$T/gh" "$T/ghw"
+cat >"$T/gh/serve" <<EOF
+#!/bin/bash
+T=$(printf %q "$T")
+EOF
+cat >>"$T/gh/serve" <<'EOF'
+url=$1 o=$2 h=$3
+echo "$url" >>"$T/gh.log"
+R=https://github.com/odysseyalive/tmux-revive/releases A=https://api.github.com/repos/odysseyalive/tmux-revive/releases
+src=$T/rel api=${GH_API_SRC:-$T/rel}
+touch "$T/gh/ids"
+asset() { # asset TAG/NAME: its id, given out the first time it's asked for
+	grep -qxF "$1" "$T/gh/ids" || echo "$1" >>"$T/gh/ids"
+	echo $((100 + $(grep -nxF "$1" "$T/gh/ids" | cut -d: -f1)))
+}
+release() { # release TAG: the API's answer about it, compact like GitHub's
+	local f n sep=""
+	printf '{"url":"%s/1","tag_name":"%s","name":"%s","assets":[' "$A" "$1" "$1"
+	for f in "$api/download/$1"/*; do
+		n=${f##*/}
+		printf '%s{"url":"%s/assets/%s","id":%s,"name":"%s","uploader":{"url":"https://api.github.com/users/x","id":7},"browser_download_url":"%s/download/%s/%s"}' \
+			"$sep" "$A" "$(asset "$1/$n")" "$(asset "$1/$n")" "$n" "$R" "$1" "$n"
+		sep=,
+	done
+	printf '],"body":"notes, with a \\"name\\":\\"SHA256SUMS\\" in them"}\n'
+}
+case $url in
+"$R"/*)
+	[[ -z ${GH_DOWN:-} ]] || exit 22
+	k=$(printf %s "$url" | cksum | cut -d' ' -f1)
+	n=$(cat "$T/gh/n.$k" 2>/dev/null || echo 0)
+	echo $((n + 1)) >"$T/gh/n.$k"
+	((n >= ${GH_FAIL:-0})) || exit 22
+	case $url in
+	"$R"/latest/download/*) cp "$src/latest/download/${url##*/}" "$o" ;;
+	"$R"/download/*) cp "$src/download/${url#"$R"/download/}" "$o" ;;
+	esac ;;
+"$A"/latest) release "$(basename "$(readlink "$src/latest/download")")" >"$o" ;;
+"$A"/tags/*) [[ -d $api/download/${url##*/} ]] || exit 22; release "${url##*/}" >"$o" ;;
+"$A"/assets/*)
+	[[ $h == 'Accept: application/octet-stream' ]] || exit 22
+	a=$(sed -n "$((${url##*/} - 100))p" "$T/gh/ids")
+	[[ -n $a ]] && cp "$api/download/$a" "$o" ;;
+*) exit 22 ;;
+esac
+EOF
+printf '#!/bin/bash\nurl="" o="" h=""\nwhile (($#)); do case $1 in https://*) url=$1 ;; -o) o=$2; shift ;; -H) h=$2; shift ;; esac; shift; done\nexec %q "$url" "$o" "$h"\n' "$T/gh/serve" >"$T/gh/curl"
+printf '#!/bin/bash\nurl="" o="" h=""\nwhile (($#)); do case $1 in https://*) url=$1 ;; -O) o=$2; shift ;; --header=*) h=${1#--header=} ;; esac; shift; done\nexec %q "$url" "$o" "$h"\n' "$T/gh/serve" >"$T/ghw/wget"
+printf '#!/bin/sh\necho "$1" >>%q\n' "$T/sleep.log" >"$T/gh/sleep"
+cp "$T/gh/sleep" "$T/ghw/sleep"
+chmod +x "$T/gh/serve" "$T/gh/curl" "$T/ghw/wget" "$T/gh/sleep" "$T/ghw/sleep"
+mkdir -p "$T/nocurl" "$T/nojq"
+for d in /usr/bin /bin; do
+	for f in "$d"/*; do
+		n=${f##*/}
+		[[ ! -x $f ]] && continue
+		[[ $n == curl || $n == wget || -e $T/nocurl/$n ]] || ln -s "$f" "$T/nocurl/$n"
+		[[ $n == jq || -e $T/nojq/$n ]] || ln -s "$f" "$T/nojq/$n"
+	done
+done
+# ghinst VAR=VALUE...: install from the default (GitHub) base through the stand-ins.
+ghinst() {
+	fresh; rm -f "$T/gh.log" "$T/sleep.log" "$T/gh"/n.*
+	inst env -u REVIVE_RELEASE_BASE PATH="$T/gh:$T/ib:$PATH" "$@" sh "$T/repo/install.sh" --no-config; rc=$?
+}
+api_used() { grep -q '^https://api.github.com/repos/odysseyalive/tmux-revive/releases/assets/' "$T/gh.log"; }
+ghinst GH_FAIL=2
+check "a download that fails twice is tried again, and installs" "((rc == 0)) && installed 1.1.0 && said 'signed by the release key'"
+check "after waiting 2 s, then 5 s, for each file" "[[ \$(tr '\\n' ' ' <$T/sleep.log) == '2 5 2 5 2 5 ' ]]"
+check "and no need for GitHub's API" "! api_used && ! said \"through GitHub's API\""
+ghinst GH_DOWN=1
+check "github.com never serving it: GitHub's API does, and it installs" \
+	"((rc == 0)) && installed 1.1.0 && api_used && said \"github.com didn't serve tmux-revive-1.1.0.tar.gz; downloaded it through GitHub's API instead\""
+check "after trying github.com four times, waiting 2, 5 and 10 s" "[[ \$(head -n 3 $T/sleep.log | tr '\\n' ' ') == '2 5 10 ' ]] && (( \$(grep -c 'releases/latest/download/SHA256SUMS\$' $T/gh.log) == 4 ))"
+check "the API is asked about the latest release, then the tag it names" \
+	"grep -qx 'https://api.github.com/repos/odysseyalive/tmux-revive/releases/latest' $T/gh.log && grep -qx 'https://api.github.com/repos/odysseyalive/tmux-revive/releases/tags/v1.1.0' $T/gh.log"
+ghinst GH_DOWN=1 REVIVE_VERSION=1.0.0
+check "a pinned version comes through the API by its tag" "((rc == 0)) && installed 1.0.0 && api_used && ! grep -q 'releases/latest' $T/gh.log"
+fresh; rm -f "$T/gh.log" "$T/sleep.log"
+inst env -u REVIVE_RELEASE_BASE PATH="$T/gh:$T/ib:$T/nojq" GH_DOWN=1 sh "$T/repo/install.sh" --no-config
+check "without jq the API's answer is still read, and the files still check out" \
+	"api_used && said 'SHA256SUMS of release v1.1.0 is signed' && grep -q 'assets/[0-9]' $T/gh.log && said 'jq not found' && ! said 'download failed'"
+bad; printf x >>"$B/tmux-revive-1.1.0.tar.gz"
+ghinst GH_DOWN=1 GH_API_SRC="$T/bad"
+check "a tampered tarball from the API is refused, nothing installed" \
+	"((rc != 0)) && api_used && said \"doesn't match its signed checksum\" && [[ ! -e $APP && ! -e $H/.local/bin/tmux-revive ]]"
+bad; rm "$B/SHA256SUMS.sig"; ssh-keygen -q -Y sign -f "$T/other" -n tmux-revive-release "$B/SHA256SUMS"
+ghinst GH_DOWN=1 GH_API_SRC="$T/bad"
+check "and so is a SHA256SUMS signed by another key" "((rc != 0)) && api_used && said 'NOT signed by the tmux-revive release key' && [[ ! -e $APP ]]"
+fresh; rm -f "$T/gh.log" "$T/sleep.log" "$T/gh"/n.*
+inst env -u REVIVE_RELEASE_BASE PATH="$T/ghw:$T/ib:$T/nocurl" GH_DOWN=1 sh "$T/repo/install.sh" --no-config; rc=$?
+check "with wget and no curl, the same: through the API, and it installs" "((rc == 0)) && installed 1.1.0 && api_used"
+ghinst GH_DOWN=1 REVIVE_RELEASE_BASE=https://example.com/rel
+check "a release base of your own never falls back to GitHub's API" "((rc != 0)) && ! grep -q api.github.com $T/gh.log"
+ghinst GH_DOWN=1 REVIVE_VERSION=9.9.9
+check "a release that isn't there at all is still refused, by name" "((rc != 0)) && said 'no release v9.9.9' && [[ ! -e $APP ]]"
+
 # Following main: a stand-in curl answers GitHub's API with a commit and serves this
 # repo's tarball and installer, so the unsigned path runs offline.
 echo "follow main"

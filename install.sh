@@ -50,9 +50,9 @@ warn() { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; }
 die() { printf '\033[1;31mxx\033[0m  %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-fetch() { # fetch URL FILE
-	if have curl; then curl -fsSL "$1" -o "$2"
-	elif have wget; then wget -qO "$2" "$1"
+fetch() { # fetch URL FILE [HEADER]
+	if have curl; then curl -fsSL ${3:+-H} ${3:+"$3"} "$1" -o "$2"
+	elif have wget; then wget -q ${3:+"--header=$3"} -O "$2" "$1"
 	else die "need curl or wget"; fi
 }
 
@@ -111,8 +111,49 @@ release_base() {
 	esac
 	RB=${RB%/}
 }
-# get URL FILE: fetch, or copy when the release base is a local directory.
-get() { case $1 in /*) cp "$1" "$2" 2>/dev/null ;; *) fetch "$1" "$2" 2>/dev/null ;; esac; }
+# get URL FILE [HEADER]: fetch, or copy when the release base is a local directory. A
+# download that fails is tried again after 2, 5 and 10 seconds: GitHub's release downloads
+# have answered 504 for minutes at a time while the rest of GitHub worked.
+get() {
+	case $1 in /*) cp "$1" "$2" 2>/dev/null; return ;; esac
+	for gw in 2 5 10 ""; do
+		fetch "$1" "$2" "${3:-}" 2>/dev/null && return 0
+		[ -z "$gw" ] || sleep "$gw"
+	done
+	return 1
+}
+# asset_id NAME <RELEASE-JSON: the id of the release's asset called NAME, with jq if there is
+# one, else by reading GitHub's JSON field by field (an asset's "url" comes before its "name").
+asset_id() {
+	j=$(jq_bin)
+	if [ -n "$j" ]; then
+		"$j" -r --arg n "$1" '.assets[]? | select(.name == $n) | .id' 2>/dev/null | head -n 1
+	else
+		tr ',{}' '\n\n\n' | awk -v n="$1" '
+			/^[[:space:]]*"url":[[:space:]]*"https:\/\/api\.github\.com\/repos\/[^"]*\/releases\/assets\/[0-9]+"/ {
+				id = $0; sub(/"[[:space:]]*$/, "", id); sub(/.*\//, "", id); next }
+			id != "" && /^[[:space:]]*"name":/ {
+				v = $0; sub(/^[^:]*:[[:space:]]*"/, "", v); sub(/"[[:space:]]*$/, "", v)
+				if (v == n) { print id; exit }
+				id = "" }'
+	fi
+}
+# rget RELEASE NAME FILE: asset NAME of RELEASE (tags/vX.Y.Z, or latest) into FILE, from
+# $RB. If github.com won't serve it, GitHub's API is asked for the same file, the way
+# `gh release download` gets it: only from the real GitHub, and whichever of the two
+# answered, the file is checked just the same.
+rget() {
+	case $1 in latest) ru=$RB/latest/download/$2 ;; *) ru=$RB/download/${1#tags/}/$2 ;; esac
+	get "$ru" "$3" && return 0
+	[ "$RB" = "https://github.com/$REPO/releases" ] || return 1
+	api=https://api.github.com/repos/$REPO/releases
+	get "$api/$1" "$3.json" || return 1
+	id=$(asset_id "$2" <"$3.json")
+	rm -f "$3.json"
+	case $id in "" | *[!0-9]*) return 1 ;; esac
+	get "$api/assets/$id" "$3" 'Accept: application/octet-stream' || return 1
+	warn "github.com didn't serve $2; downloaded it through GitHub's API instead"
+}
 
 # fetch_release DIR: the signed release PIN (or the latest) unpacked in DIR, its version in
 # VER. Each step that fails stops the install: the signature over SHA256SUMS, then the
@@ -125,8 +166,8 @@ fetch_release() {
 	ssh-keygen '-?' 2>&1 | grep -q -- '-Y verify' ||
 		follow_main "this ssh-keygen is too old to check signatures (it needs -Y verify, OpenSSH 8.1 or later); update OpenSSH and rerun"
 	release_base
-	if [ -n "$PIN" ]; then at=$RB/download/v$PIN; else at=$RB/latest/download; fi
-	if ! get "$at/SHA256SUMS" "$rd/SHA256SUMS"; then
+	if [ -n "$PIN" ]; then at=$RB/download/v$PIN rel=tags/v$PIN; else at=$RB/latest/download rel=latest; fi
+	if ! rget "$rel" SHA256SUMS "$rd/SHA256SUMS"; then
 		[ -z "$PIN" ] || follow_main "no release v$PIN of $REPO (couldn't download $at/SHA256SUMS)"
 		case $RB in https://github.com/*)
 			if have git && tags=$(git ls-remote --tags "https://github.com/$REPO.git" 'refs/tags/v*' 2>/dev/null) && [ -z "$tags" ]; then
@@ -135,7 +176,7 @@ fetch_release() {
 		esac
 		follow_main "couldn't download the latest release of $REPO ($at/SHA256SUMS); no release yet, or offline"
 	fi
-	get "$at/SHA256SUMS.sig" "$rd/SHA256SUMS.sig" ||
+	rget "$rel" SHA256SUMS.sig "$rd/SHA256SUMS.sig" ||
 		die "the release has no signature (SHA256SUMS.sig); refusing to install it"
 	printf '%s\n' "$ALLOWED_SIGNERS" >"$rd/allowed_signers"
 	if ! good=$(ssh-keygen -Y verify -f "$rd/allowed_signers" -I "$NS" -n "$NS" -s "$rd/SHA256SUMS.sig" <"$rd/SHA256SUMS" 2>&1); then
@@ -153,7 +194,7 @@ fetch_release() {
   To go back on purpose:  tmux-revive update --version $VER"
 	fi
 	say "SHA256SUMS of release v$VER is signed by the release key ($(printf '%s' "$good" | sed -n 's/.* key \(SHA256:[^ ]*\).*/\1/p'))"
-	get "$RB/download/v$VER/$file" "$rd/$file" || die "download failed: $RB/download/v$VER/$file"
+	rget "tags/v$VER" "$file" "$rd/$file" || die "download failed: $RB/download/v$VER/$file"
 	[ "$(sha256 "$rd/$file")" = "$want" ] || die "$file doesn't match its signed checksum; refusing to install it"
 	mkdir -p "$1/src"
 	tar xzf "$rd/$file" -C "$1/src" --strip-components=1 || die "couldn't unpack $file"
