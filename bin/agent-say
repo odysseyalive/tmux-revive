@@ -308,7 +308,8 @@ queue_local() { # queue_local FROM TO MESSAGE
 ssh_to() { # ssh_to HOST REMOTE-COMMAND (stdin passes through)
 	[[ "$1" != -* ]] || die "not a host: $1"
 	mkdir -p "$STATE"
-	$SSH "${SSH_OPTS[@]}" "$1" "$2"
+	pin_opts "$1" || return 255
+	$SSH "${SSH_OPTS[@]}" "${PIN_OPTS[@]}" "$1" "$2"
 }
 
 # --- logging in --------------------------------------------------------------------------
@@ -328,22 +329,91 @@ master_up() { $SSH -o "$CONTROL" -O check "$1" >/dev/null 2>&1 </dev/null; }
 # pin_keys HOST FINGERPRINTS: the key lines (type key) of HOST's keys whose fingerprints are
 # given, one per line. They come from known_hosts or, failing that, ssh-keyscan; either way a
 # key is kept only if its fingerprint is one confirmed, so whatever answers can't add its own.
+# Returns 1 when keys were found and none is one confirmed, 2 when none was found at all.
 pin_keys() {
-	local src t k fp got=""
+	local src t k fp got="" seen=""
 	kh_find "$1"
 	for src in kh scan; do
 		while read -r _ t k _; do
 			[[ -n $t && -n $k && $t != \#* ]] || continue
+			seen=1
 			fp="$(ssh-keygen -lf - <<<"$PIN_ALIAS $t $k" 2>/dev/null | awk '{print $2, $NF}')"
 			[[ -n $fp ]] && grep -qxF -- "$fp" <<<"$2" && { echo "$t $k"; got=1; }
 		done < <(if [[ $src == kh ]]; then
 			for f in "${KH_FILES[@]}"; do [[ -r $f ]] && ssh-keygen -F "$KH_KEY" -f "$f" 2>/dev/null; done | grep -v '^[#@]'
 		else
-			${AGENT_SAY_KEYSCAN:-ssh-keyscan} -T 5 -p "$KH_PORT" -- "$KH_NAME" 2>/dev/null </dev/null | grep -v '^[#@]'
+			kh_scan_lines
 		fi | sort -u)
 		[[ -n $got ]] && return 0
 	done
-	return 1
+	[[ -n $seen ]] && return 1
+	return 2
+}
+# A linked host's every connection is bound to the keys you confirmed for it, the way the login
+# is: ssh checks the key it is shown against links/<host>/pin, a known_hosts file of its own
+# (PIN_ALIAS lines, built from the confirmed fingerprints, rebuilt when they change), strictly,
+# and nothing else. So whatever ssh config has (UserKnownHostsFile /dev/null,
+# StrictHostKeyChecking no), a computer without that key is turned away by ssh itself, on the
+# connection that carries the messages. The key lines come from known_hosts or ssh-keyscan,
+# kept only if their fingerprint is one confirmed, so that can only ever confirm.
+# Revocation is looked at on every connection, not only when the pin is built: a key confirmed
+# and then revoked (@revoked in known_hosts) is refused from then on. The pin carries the
+# @revoked lines too, so ssh itself refuses those keys.
+# link_pin HOST [FINGERPRINTS] -> PIN: 0 pinned, 3 nothing confirmed (not pinned), 1 none of
+# its keys is one confirmed, 2 no key of it found (not reached), 4 a key confirmed is revoked.
+link_pin() {
+	local d="$STATE/links/$1" fps="${2:-}" lines rc=0 rev
+	PIN=""
+	[[ -n $fps ]] || fps="$(cat "$d/fingerprint" 2>/dev/null || true)"
+	[[ -n $fps ]] || return 3
+	kh_find "$1"
+	rev="$(kh_revoked)"
+	# Refused: no pin is left behind for anything to use.
+	[[ -n $rev ]] && grep -qxF -f <(printf '%s\n' "$rev") <<<"$fps" && { rm -f "$d/pin" "$d/pin.fps" "$d/pin.rev"; return 4; }
+	if [[ ! -s "$d/pin" || "$(cat "$d/pin.fps" 2>/dev/null || true)" != "$fps" || "$(cat "$d/pin.rev" 2>/dev/null || true)" != "$rev" ]]; then
+		lines="$(pin_keys "$1" "$fps" | sort -u)" || rc=$?
+		((rc == 0)) || { rm -f "$d/pin" "$d/pin.fps" "$d/pin.rev"; return $rc; }
+		mkdir -p "$d"
+		(umask 077 && { sed "s/^/$PIN_ALIAS /" <<<"$lines"
+			kh_revoked_lines | awk -v a="$PIN_ALIAS" '{print "@revoked", a, $3, $4}'; } >"$d/pin.$$") && mv "$d/pin.$$" "$d/pin"
+		printf '%s\n' "$fps" >"$d/pin.fps.$$" && mv "$d/pin.fps.$$" "$d/pin.fps"
+		printf '%s\n' "$rev" >"$d/pin.rev.$$" && mv "$d/pin.rev.$$" "$d/pin.rev"
+	fi
+	PIN="$d/pin"
+}
+# Trust on first use, for a link with no key recorded (linked with none found, or from before
+# keys were kept): once a connection has been made, the key ssh itself accepted for it (in the
+# known_hosts files ssh -G names) is recorded, logged in links.log, and the link is bound to it
+# from then on. With known_hosts off for it, there is none to take, and nothing is recorded.
+tofu_record() { # tofu_record HOST
+	local d="$STATE/links/$1" now
+	[[ -s "$d/fingerprint" ]] && return 0
+	kh_find "$1"
+	now="$(not_revoked "$(kh_keys)" "$(kh_revoked)")"
+	[[ -n $now ]] || return 0
+	mkdir -p "$d"
+	printf '%s\n' "$now" >"$d/fingerprint.new" && mv "$d/fingerprint.new" "$d/fingerprint"
+	printf "%s recorded %s's host key on first use: %s\n" "$(date -u +%FT%TZ)" "$1" "$(paste -sd, - <<<"$now")" >>"$STATE/links.log"
+}
+# pin_opts HOST -> PIN_OPTS, the ssh options that bind a connection to HOST to its pin (none for
+# a host with no key confirmed: it connects as ssh is set up). PIN_FPS, when set, is the keys to
+# bind to instead of the recorded ones (agent-say link, before it records them). Fails, saying
+# why on stderr as ssh would, when it can't be bound to them.
+pin_opts() {
+	local rc=0
+	PIN_OPTS=()
+	link_pin "$1" "${PIN_FPS:-}" || rc=$?
+	case $rc in
+		0) PIN_OPTS=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$PIN" -o GlobalKnownHostsFile=/dev/null
+			-o HostKeyAlias=$PIN_ALIAS -o CheckHostIP=no -o UpdateHostKeys=no) ;;
+		3) ;;
+		2) echo "agent-say: couldn't read $1's host key to bind the connection to the one you confirmed (not in known_hosts, and ssh-keyscan got no answer)" >&2
+			return 1 ;;
+		4) echo "agent-say: Host key verification failed: the key you confirmed for $1 is revoked (@revoked in known_hosts)" >&2
+			return 1 ;;
+		*) echo "agent-say: Host key verification failed: none of $1's keys is the one you confirmed" >&2
+			return 1 ;;
+	esac
 }
 ssh_login() { # ssh_login HOST FINGERPRINTS (one per line: the keys you confirmed for it)
 	local lines pin rc=0
@@ -373,7 +443,8 @@ ssh_login() { # ssh_login HOST FINGERPRINTS (one per line: the keys you confirme
 # Did ssh fail at logging in, not at reaching the host? needs_login HOST STATUS STDERR-FILE.
 # Both fail with 255; what ssh said tells them apart: a refused login, or, for a host never
 # linked, a host key ssh would have asked to accept (none in known_hosts). For a link, a host
-# key ssh didn't take is a key problem, never a login to ask for.
+# key ssh didn't take is a key problem, never a login to ask for (its connections are bound to
+# the key you confirmed, so ssh turning it away means another key answered).
 needs_login() {
 	(($2 == 255)) || return 1
 	grep -qE 'Permission denied|Too many authentication failures' "$3" 2>/dev/null && return 0
@@ -410,15 +481,18 @@ link_running() {
 }
 
 # The host keys ssh checks a host against, as fingerprints ("SHA256:... (ED25519)", sorted),
-# from the known_hosts files ssh itself reads for it. host_keys HOST [scan]: with scan, a host
-# not in them is asked with ssh-keyscan instead, so a first link has something to show.
-kh_find() { # kh_find HOST -> KH_KEY (as known_hosts names it) and KH_FILES
-	local name=$1 port=22 k v f
+# from the known_hosts files ssh itself reads for it (kh_keys after kh_find); a host not in
+# them is asked with ssh-keyscan instead (kh_scan), so a first link has something to show.
+# All of it as ssh resolves HOST (ssh -G): its HostName and Port, the known_hosts files it reads,
+# and the name it looks the key up by in them (HostKeyAlias as is, else name or [name]:port).
+kh_find() { # kh_find HOST -> KH_KEY (as known_hosts names it), KH_FILES, KH_NAME and KH_PORT
+	local name=$1 port=22 alias="" k v f
 	KH_FILES=()
 	while read -r k v; do
 		case $k in
 			hostname) name=$v ;;
 			port) port=$v ;;
+			hostkeyalias) alias=$v ;;
 			userknownhostsfile | globalknownhostsfile) for f in $v; do KH_FILES+=("${f/#\~/$HOME}"); done ;;
 		esac
 	done < <(timeout 5 $SSH -G "$1" 2>/dev/null </dev/null)
@@ -427,6 +501,7 @@ kh_find() { # kh_find HOST -> KH_KEY (as known_hosts names it) and KH_FILES
 	((${#KH_FILES[@]})) || KH_FILES=("$HOME/.ssh/known_hosts" "$HOME/.ssh/known_hosts2" /etc/ssh/ssh_known_hosts)
 	KH_KEY=$name KH_NAME=$name KH_PORT=$port
 	[[ $port == 22 ]] || KH_KEY="[$name]:$port"
+	[[ -z $alias || $alias == none ]] || KH_KEY=$alias
 }
 kh_keys() { # fingerprints for KH_KEY in KH_FILES
 	local f
@@ -434,15 +509,23 @@ kh_keys() { # fingerprints for KH_KEY in KH_FILES
 		[[ -r $f ]] && ssh-keygen -F "$KH_KEY" -f "$f" 2>/dev/null
 	done | grep -v '^@revoked' | ssh-keygen -lf - 2>/dev/null | awk '{print $2, $NF}' | sort -u || true
 }
-host_keys() {
-	local keys
-	kh_find "$1"
-	keys="$(kh_keys)"
-	if [[ -z $keys && ${2:-} == scan ]]; then
-		keys="$(${AGENT_SAY_KEYSCAN:-ssh-keyscan} -T 5 -p "$KH_PORT" -- "$KH_NAME" 2>/dev/null </dev/null |
-			ssh-keygen -lf - 2>/dev/null | awk '{print $2, $NF}' | sort -u || true)"
-	fi
-	printf '%s' "$keys"
+# What ssh-keyscan of the HostName and Port ssh -G resolved shows (after kh_find): the key lines
+# (host type key), or their fingerprints. Whatever answers says these itself, so they are only
+# ever shown for you to confirm, or matched against a key you confirmed; never taken alone.
+kh_scan_lines() { ${AGENT_SAY_KEYSCAN:-ssh-keyscan} -T 5 -p "$KH_PORT" -- "$KH_NAME" 2>/dev/null </dev/null | grep -v '^[#@]' || true; }
+kh_scan() { kh_scan_lines | ssh-keygen -lf - 2>/dev/null | awk '{print $2, $NF}' | sort -u || true; }
+# Keys you revoked: every @revoked line in the known_hosts files ssh reads for the host (after
+# kh_find), whatever host it names. kh_revoked gives their fingerprints. A revoked key is never
+# bound to, shown as a host's key, or taken as unchanged.
+kh_revoked_lines() { local f; for f in "${KH_FILES[@]}"; do [[ -r $f ]] && grep -h '^@revoked[[:space:]]' "$f" 2>/dev/null; done || true; }
+kh_revoked() {
+	local l
+	l="$(kh_revoked_lines)"
+	[[ -n $l ]] || return 0
+	awk '{print "x", $3, $4}' <<<"$l" | ssh-keygen -lf - 2>/dev/null | awk '{print $2, $NF}' | sort -u || true
+}
+not_revoked() { # not_revoked FINGERPRINTS REVOKED: those not revoked
+	if [[ -n $2 ]]; then grep -vxF -f <(printf '%s\n' "$2") <<<"$1" || true; else printf '%s' "$1"; fi
 }
 # Has the key changed from the one confirmed? Only if one confirmed is gone: ssh adds a host's
 # other keys to known_hosts by itself (UpdateHostKeys), and that is no change of computer.
@@ -452,6 +535,37 @@ keys_changed() { # keys_changed CONFIRMED NOW
 	[[ -n $1 ]] || return 1
 	[[ -n $2 ]] || return 0
 	[[ -n "$(grep -vxF -f <(printf '%s\n' "$2") <<<"$1")" ]]
+}
+# Does linking HOST need you to confirm its key? Only where ssh itself would ask, or the key is
+# not the one you confirmed. key_state HOST -> KEY_STATE, and KEYS (one per line: the keys the
+# link is bound to and records, and a password may go to; for changed and unknown, the ones to
+# show you).
+#   recorded  linked before: bound to the key you confirmed then, nothing asked (should another
+#             key answer, the connection itself is turned away, and link shows you that one)
+#   trusted   never linked, but ssh trusts it (a key in a known_hosts file ssh reads for it)
+#             and wouldn't ask: nothing asked, and that key is the one recorded
+#   changed   linked before, and known_hosts has another key for it now: asked, with a warning
+#   unknown   ssh would ask too (no known_hosts key for it, none recorded): from ssh-keyscan
+# A key confirmed and since revoked counts as changed; a revoked key is never one shown.
+key_state() {
+	local was now rev
+	was="$(cat "$STATE/links/$1/fingerprint" 2>/dev/null || true)"
+	kh_find "$1"
+	rev="$(kh_revoked)"
+	if [[ -n $was ]]; then
+		now="$(kh_keys)"
+		KEY_STATE=recorded KEYS=$was
+		if [[ -n $rev ]] && grep -qxF -f <(printf '%s\n' "$rev") <<<"$was"; then
+			KEY_STATE=changed
+			[[ -n $now ]] || now="$(kh_scan)"
+			KEYS="$(not_revoked "$now" "$rev")"
+		elif [[ -n $now ]] && keys_changed "$was" "$now"; then
+			KEY_STATE=changed KEYS=$now
+		fi
+		return 0
+	fi
+	KEY_STATE=trusted KEYS="$(kh_keys)"
+	[[ -n $KEYS ]] || KEY_STATE=unknown KEYS="$(not_revoked "$(kh_scan)" "$rev")"
 }
 
 # Where else a name lives: "name@host" for each linked machine that has a pane by that name.
@@ -484,19 +598,32 @@ relay_for() {
 
 # Senders a linked machine relayed to us ($STATE/peers/<label>/senders, name@host as it
 # calls them): an answer to one goes back through that machine, never by this machine's
-# own idea of that host.
+# own idea of that host. Lines "NAME@HOST WHEN" (epoch seconds of the last one): each lapses a
+# day after its last message, with the rest of what is kept about sessions (cull_sessions);
+# a reply after that is refused, never sent another way (see send_message). Fails, saying so,
+# when it can't be written: the message it came with is then not delivered either.
 remember_sender() { # remember_sender LABEL NAME@HOST
-	local f="$STATE/peers/$1/senders"
-	grep -qxF -- "$2" "$f" 2>/dev/null && return 0
-	{ tail -n 499 "$f" 2>/dev/null || true; echo "$2"; } >"$f.$$" && mv "$f.$$" "$f"
-	return 0
+	local f="$STATE/peers/$1/senders" now
+	printf -v now '%(%s)T' -1
+	index_lock || { echo "agent-say: couldn't record the way back to $2 (the permission list is busy)" >&2; return 1; }
+	{ awk -v s="$2" '$1 != s' "$f" 2>/dev/null | tail -n 499 || true; echo "$2 $now"; } >"$f.$$" && mv "$f.$$" "$f" ||
+		{ index_unlock; echo "agent-say: couldn't record the way back to $2" >&2; return 1; }
+	index_unlock
 }
 sender_route() { # sender_route NAME@HOST -> the machine that relayed it to us, if one did
 	local d
+	cull_sessions
 	for d in "$STATE"/peers/*/; do
-		grep -qxF -- "$1" "$d/senders" 2>/dev/null && { basename "$d"; return 0; }
+		awk -v s="$1" '$1 == s {f = 1} END {exit !f}' "$d/senders" 2>/dev/null && { basename "$d"; return 0; }
 	done
 	return 0
+}
+route_expired() { # route_expired NAME@HOST: was it relayed here once, by a way back since lapsed?
+	local d
+	for d in "$STATE"/peers/*/; do
+		awk -v s="$1" '$1 == s {f = 1} END {exit !f}' "$d/senders.expired" 2>/dev/null && return 0
+	done
+	return 1
 }
 # The session sending this, from the calling process only (its pane, found by walking up
 # from this process), never from the name it says it sends as. Outside tmux: none, so the
@@ -589,9 +716,79 @@ tell() { # tell HOST NAME TEXT
 # pair both ways, so the answers need no second one. A session is as its machine reports it;
 # its host is the link it came in on, stamped here. Without a session (an older agent-say
 # there), its name@host stands in.
-#   $STATE/grants                  lines "allow|deny SENDER-SESSION RECIPIENT-SESSION SENDER RECIPIENT"
-#   $STATE/intros/<id>/{from,to,from-session,to-session,intro,held/0001...}  one per pair
+#   $STATE/grants                  lines "allow|deny SENDER-SESSION RECIPIENT-SESSION SENDER RECIPIENT WHEN"
+#   $STATE/intros/<id>/{from,to,from-session,to-session,created,intro,held/0001...}  one per pair
+# What is kept about sessions lasts a day (SESSION_TTL; WHEN and created are epoch seconds):
+# an agent session that runs longer than that is rare, and if one does, something is wrong.
+# So a permission lapses a day after you gave it, and the next message is an introduction
+# again; an introduction nobody answered lapses with what it held; so do the senders a linked
+# machine relayed to us. A line from before these were timed counts as lapsed.
 GRANTS="$STATE/grants" INTROS="$STATE/intros"
+SESSION_TTL="${AGENT_SAY_SESSION_TTL:-86400}" CULL_EVERY="${AGENT_SAY_CULL_EVERY:-60}"
+[[ $SESSION_TTL =~ ^[1-9][0-9]{0,9}$ ]] || SESSION_TTL=86400
+[[ $CULL_EVERY =~ ^[0-9]{1,9}$ ]] || CULL_EVERY=60
+left_text() { if (($1 <= 0)); then echo 0m; elif (($1 >= 3600)); then echo "$(($1 / 3600))h$(($1 % 3600 / 60))m"; elif (($1 >= 60)); then echo "$(($1 / 60))m"; else echo "$1s"; fi; }
+ttl_text() { if (($1 % 3600 == 0)); then echo "$(($1 / 3600))h"; elif (($1 % 60 == 0)); then echo "$(($1 / 60))m"; else echo "$1s"; fi; }
+# The index (grants, intros, senders) is written by whole files (temp, then mv), one writer at
+# a time: a mkdir lock, the pid inside so one left by a killed process is cleared.
+index_lock() {
+	local lock="$STATE/index.lock" owner _
+	mkdir -p "$STATE"
+	for _ in $(seq 1 50); do
+		mkdir "$lock" 2>/dev/null && { echo $$ >"$lock/pid"; return 0; }
+		owner="$(cat "$lock/pid" 2>/dev/null || true)"
+		if [[ -n "$owner" ]] && { ! kill -0 "$owner" 2>/dev/null || [[ "$(ps -ww -o args= -p "$owner" 2>/dev/null)" != *agent-say* ]]; }; then
+			rm -rf "$lock"
+			continue
+		fi
+		sleep 0.1
+	done
+	return 1
+}
+index_unlock() { rm -rf "$STATE/index.lock"; }
+# Clear what has lapsed. Cheap in the common case: one read of the stamp, and nothing more
+# within CULL_EVERY seconds of the last cull. Each one culled is logged in grants.log, which
+# is kept to its last 1000 lines and its last 7 days.
+cull_sessions() {
+	local stamp="$STATE/cull.stamp" now last="" cut f d t id iso
+	[[ -d "$STATE" ]] || return 0
+	printf -v now '%(%s)T' -1
+	{ read -r last <"$stamp"; } 2>/dev/null || true
+	[[ $last =~ ^[0-9]+$ ]] && ((now - last < CULL_EVERY && now >= last)) && return 0
+	index_lock || return 0
+	echo "$now" >"$stamp.$$" && mv "$stamp.$$" "$stamp"
+	cut=$((now - SESSION_TTL)) t="$(ttl_text "$SESSION_TTL")"
+	iso="$(date -u +%FT%TZ)"
+	if [[ -f "$GRANTS" ]]; then
+		awk -v c="$cut" -v t="$t" -v d="$iso" '!($6 ~ /^[0-9]+$/ && $6 > c) {
+			printf "%s expired after %s: %s %s and %s (%s %s)\n", d, t, ($1 == "allow" ? "allowed" : "declined"), $4, $5, $2, $3 }' \
+			"$GRANTS" >>"$GRANTS.log"
+		awk -v c="$cut" '$6 ~ /^[0-9]+$/ && $6 > c' "$GRANTS" >"$GRANTS.$$" && mv "$GRANTS.$$" "$GRANTS"
+	fi
+	for d in "$INTROS"/*/; do
+		[[ -d "$d" ]] || continue
+		f="" id="$(basename "$d")"
+		{ read -r f <"$d/created"; } 2>/dev/null || true
+		[[ $f =~ ^[0-9]+$ ]] && ((f > cut)) && continue
+		printf '%s expired after %s: introduction %s from %s to %s, with %s held\n' "$iso" "$t" "$id" \
+			"$(head -n 1 "$d/from" 2>/dev/null)" "$(head -n 1 "$d/to" 2>/dev/null)" \
+			"$(find "$d/held" -type f 2>/dev/null | wc -l | tr -d ' ')" >>"$GRANTS.log"
+		rm -rf "$d"
+	done
+	# A sender's way back that lapses is kept a week as lapsed (senders.expired, "NAME@HOST
+	# WHEN"), so a reply to it is refused as expired, never sent some other way.
+	for f in "$STATE"/peers/*/senders; do
+		[[ -f "$f" ]] || continue
+		{ [[ -f "$f.expired" ]] && awk -v c="$((now - 604800))" '$2 ~ /^[0-9]+$/ && $2 > c' "$f.expired"
+			awk -v c="$cut" -v n="$now" '!($2 ~ /^[0-9]+$/ && $2 > c) {print $1, n}' "$f"; } >"$f.expired.$$" && mv "$f.expired.$$" "$f.expired"
+		awk -v c="$cut" '$2 ~ /^[0-9]+$/ && $2 > c' "$f" >"$f.$$" && mv "$f.$$" "$f"
+	done
+	if [[ -f "$GRANTS.log" ]]; then
+		d="$(date -u -d "@$((now - 604800))" +%FT%TZ 2>/dev/null || date -u -r "$((now - 604800))" +%FT%TZ)"
+		tail -n 1000 "$GRANTS.log" | awk -v c="$d" '$1 >= c' >"$GRANTS.log.$$" && mv "$GRANTS.log.$$" "$GRANTS.log"
+	fi
+	index_unlock
+}
 HOLD_MAX="${AGENT_SAY_HOLD_MAX:-5}" INTRO_MAX=300
 PENDING_HOST_MAX=3 PENDING_MAX=20 # introductions waiting at once: from one linked machine, in all
 pair_id() { printf '%s %s' "$1" "$2" | sha256sum | cut -c1-32; } # an introduction's id, by its pair
@@ -602,11 +799,16 @@ valid_key() { [[ "$1" =~ ^[sn]:[A-Za-z0-9][A-Za-z0-9._:%-]{0,127}@[A-Za-z0-9][A-
 # A session is what its machine says it is: within one server it is a claim, not proof. So an
 # allow holds only for the pane names it was given to as well (SENDER RECIPIENT, name@host).
 grant_state() { # grant_state SENDER-SESSION RECIPIENT-SESSION ORIGIN-LINK [SENDER RECIPIENT] -> allowed, pending, denied or none
-	local g=""
+	local g="" now
 	# Every send passes through here (send_message, before it types; the hub's poller, before
-	# it relays). A send on this machine, or one a link brings straight in, is let through for now.
+	# it relays), so what has lapsed is cleared here. A send on this machine, or one a link
+	# brings straight in, is let through for now.
+	cull_sessions
 	[[ "$3" == local ]] && { echo allowed; return; }
-	[[ -f "$GRANTS" ]] && g="$(awk -v s="$1" -v r="$2" -v sn="${4:-}" -v rn="${5:-}" '
+	# A lapsed line counts for nothing even before it is culled.
+	printf -v now '%(%s)T' -1
+	[[ -f "$GRANTS" ]] && g="$(awk -v s="$1" -v r="$2" -v sn="${4:-}" -v rn="${5:-}" -v c="$((now - SESSION_TTL))" '
+		!($6 ~ /^[0-9]+$/ && $6 > c) {next}
 		$1 == "deny" && $2 == s && $3 == r {d = 1}
 		$1 == "allow" && (($2 == s && $3 == r && $4 == sn && $5 == rn) || ($2 == r && $3 == s && $4 == rn && $5 == sn)) {a = 1}
 		END {print d ? "denied" : a ? "allowed" : ""}' "$GRANTS")"
@@ -615,11 +817,13 @@ grant_state() { # grant_state SENDER-SESSION RECIPIENT-SESSION ORIGIN-LINK [SEND
 	else echo none; fi
 }
 grant_set() { # grant_set allow|deny|none SENDER-SESSION RECIPIENT-SESSION [SENDER RECIPIENT]: none forgets the pair, either way
-	local t="$GRANTS.$$"
-	mkdir -p "$STATE"
+	local t="$GRANTS.$$" now
+	printf -v now '%(%s)T' -1
+	index_lock || die "the permission list is busy; try again"
 	{ [[ -f "$GRANTS" ]] && awk -v s="$2" -v r="$3" '!(($2 == s && $3 == r) || ($2 == r && $3 == s))' "$GRANTS"
-		[[ $1 == none ]] || echo "$1 $2 $3 ${4:-$2} ${5:-$3}"; } >"$t"
+		[[ $1 == none ]] || echo "$1 $2 $3 ${4:-$2} ${5:-$3} $now"; } >"$t"
 	mv "$t" "$GRANTS"
+	index_unlock
 	# Every change, with what made it, so one you didn't make shows (agent-say intros).
 	printf '%s %s %s %s %s %s by pid %s (%s) under %s\n' "$(date -u +%FT%TZ)" "$1" "${4:-$2}" "${5:-$3}" "$2" "$3" "$$" \
 		"$(ps -o args= -p $$ 2>/dev/null | head -c 80)" "$(ps -o args= -p "$PPID" 2>/dev/null | head -c 80)" >>"$GRANTS.log"
@@ -641,6 +845,7 @@ hold() { # hold SENDER-SESSION RECIPIENT-SESSION SENDER RECIPIENT TEXT -> new (a
 		printf '%s\n' "$2" >"$d/to-session"
 		printf '%s\n' "$3" >"$d/from"
 		printf '%s\n' "$4" >"$d/to"
+		printf '%(%s)T\n' -1 >"$d/created"
 		n="$(printable "$5")"
 		printf '%s' "${n:0:INTRO_MAX}" >"$d/intro"
 	elif [[ "$(head -n 1 "$d/from-session" 2>/dev/null)" != "$1" || "$(head -n 1 "$d/to-session" 2>/dev/null)" != "$2" ]]; then
@@ -691,9 +896,11 @@ decline() { # decline ID: refuse the pair from now on, drop what waited, tell th
 revoke() { # revoke A B: forget what was said for the pair (sessions or name@host), either way
 	local t="$GRANTS.$$" n
 	[[ -f "$GRANTS" ]] || die "no permissions given (see: agent-say intros)"
+	index_lock || die "the permission list is busy; try again"
 	awk -v a="$1" -v b="$2" '!((($2 == a || $4 == a) && ($3 == b || $5 == b)) || (($2 == b || $4 == b) && ($3 == a || $5 == a)))' "$GRANTS" >"$t"
 	n=$(($(wc -l <"$GRANTS") - $(wc -l <"$t")))
 	mv "$t" "$GRANTS"
+	index_unlock
 	((n)) || die "nothing given for $1 and $2 (see: agent-say intros)"
 	echo "revoked: $1 and $2 need your permission again"
 }
@@ -774,6 +981,9 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 		# itself calls that host. Otherwise a linked machine that checks in with us takes it
 		# from its outbox, or one linked to it sends it on.
 		hub="$(sender_route "$to")"
+		# Relayed here once, and that way back has lapsed: refused before any other way is tried.
+		[[ -n "$hub" ]] || ! route_expired "$to" ||
+			die "that sender's route has expired; ask them to message you again ($to not sent)"
 		if [[ -z "$hub" ]]; then
 			if peer_alive "$host"; then
 				queue_for_peer "$host" "$name" "$from" "$msg"
@@ -798,8 +1008,13 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 			queue_for_peer "$hub" "$name@$host" "$from" "$msg" "$SENDER_SID"
 			return
 		fi
-		# Otherwise hand the message to agent-say on that host over ssh. The message travels
-		# on stdin, so no shell quoting of its content is needed.
+		# Otherwise hand the message to agent-say on that host over ssh: only a host linked here,
+		# whose connections are bound to the key you confirmed. Any other name@host is someone a
+		# linked machine relayed here once, whose way back has lapsed (after a day): never sent
+		# to that host directly, by whatever this machine calls it.
+		[[ -f "$STATE/links/$host/on" ]] ||
+			die "no way to reach $to: $host isn't linked here, and if $to wrote to you through a linked computer, that route has expired; ask them to message you again"
+		# The message travels on stdin, so no shell quoting of its content is needed.
 		printf '%s' "$msg" | ssh_to "$host" "$REMOTE_CMD --from $(printf %q "$from") $(printf %q "$name") -"
 		return
 	fi
@@ -812,8 +1027,9 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	# The permission check every delivery here passes (see grant_state).
 	[[ "$(grant_state "$from" "$to" local)" == allowed ]] || die "$from may not message $to; not sent"
 	# Remember who a linked machine relayed to us, so an answer goes back through it.
-	[[ -n "${AGENT_SAY_VIA:-}" ]] && valid_host "$AGENT_SAY_VIA" && [[ -d "$STATE/peers/$AGENT_SAY_VIA" && "$from" == *@* ]] &&
-		remember_sender "$AGENT_SAY_VIA" "$from"
+	if [[ -n "${AGENT_SAY_VIA:-}" ]] && valid_host "$AGENT_SAY_VIA" && [[ -d "$STATE/peers/$AGENT_SAY_VIA" && "$from" == *@* ]]; then
+		remember_sender "$AGENT_SAY_VIA" "$from" || die "not delivered: the way back to $from couldn't be recorded; try again"
+	fi
 	queue_to="$to" # from here, a pane that can't take it yet queues it (soft_die)
 	take_pane_lock "$target"
 	check_target "$target" "$to"
@@ -955,18 +1171,23 @@ case "$cmd" in
 			[[ "$d" == */peers/* && -f "$d/via" ]] && awk -v h="$h" '{print "-  " $1 "@" $2 "  (via " h ")"}' "$d/via"
 		done ;;
 	link)
-		host="" yes="" ro="" allow="" set_allow=""
+		host="" yes="" ro="" allow="" set_allow="" given="" no_key=""
 		shift
 		while (($#)); do
 			case $1 in
 				--yes | -y) yes=1 ;;
+				# The keys you confirmed elsewhere (the panel shows them, you pick one): the link is
+				# bound to exactly these, never to whatever is scanned now.
+				--fingerprint) [[ ${2:-} =~ $FP_RE ]] || die "not a key fingerprint: ${2:-} (as 'SHA256:... (TYPE)')"; given+="$2"$'\n'; shift ;;
+				# You chose to link with no key found: nothing scanned later is taken for one.
+				--no-key) no_key=1 ;;
 				--read-only) ro=on ;;
 				--read-write) ro=off ;;
 				--allow) allow="${2:-}" set_allow=1; [[ -n $allow ]] || die "--allow needs names: --allow name1,name2"; shift ;;
 				--allow=*) allow="${1#--allow=}" set_allow=1; [[ -n $allow ]] || die "--allow needs names: --allow name1,name2" ;;
 				--allow-all) allow="" set_allow=1 ;;
 				-*) die "unknown option $1 (see: agent-say)" ;;
-				*) [[ -z $host ]] || die "usage: agent-say link [ssh-host] [--yes] [--read-only|--read-write] [--allow name,...|--allow-all]"; host=$1 ;;
+				*) [[ -z $host ]] || die "usage: agent-say link [ssh-host] [--yes] [--fingerprint 'SHA256:... (TYPE)'] [--read-only|--read-write] [--allow name,...|--allow-all]"; host=$1 ;;
 			esac
 			shift
 		done
@@ -995,27 +1216,51 @@ case "$cmd" in
 			done <<<"$allow"
 		fi
 		d="$STATE/links/$host"
-		# The host key, seen and confirmed the first time, and again if it changed since. The
-		# link's ssh connections check known_hosts on their own; this makes you look at it once.
-		keys="$(host_keys "$host" scan)"
+		# The host key, confirmed where ssh itself would ask you (a host it has no key for), and
+		# again if it changed since you linked it. A host ssh already trusts, or one linked before
+		# that still has the key you confirmed, links as it is: ssh -G says how ssh reaches it.
+		# Either way, its connections are bound to the keys confirmed (see link_pin).
 		was="$(cat "$d/fingerprint" 2>/dev/null || true)"
-		pins=$was # the keys a password may go to: the ones confirmed, now or when it was linked
-		if [[ ! -f "$d/fingerprint" ]] || [[ -n $keys && -z $was ]] || keys_changed "$was" "$keys"; then
-			pins=$keys
+		key_state "$host"
+		# The keys the link is bound to and records, and a password may go to: the ones you
+		# confirmed, when it was linked or just now.
+		keys=$KEYS
+		# confirm_keys [strict]: strict, --yes doesn't do (a key you haven't seen, on a host that
+		# had one you confirmed): only your answer on a terminal, or --fingerprint naming it. One
+		# rule: a host with a key recorded whose key is now another, for any reason (another key
+		# answers, it was revoked, known_hosts has another), is always strict.
+		confirm_keys() {
+			[[ $KEY_STATE == changed && -n $was ]] && set -- strict
 			if [[ -n $keys ]]; then
 				echo "$host's host key:"; sed 's/^/  /' <<<"$keys"
 			else
 				echo "$host's host key: none found (not in known_hosts, and ssh-keyscan got no answer)"
 			fi
-			if keys_changed "$was" "$keys"; then
+			if [[ $KEY_STATE == changed ]]; then
 				echo "agent-say: WARNING: that is not the key $host had when you linked it:" >&2
 				sed 's/^/  /' <<<"$was" >&2
 			fi
-			if [[ -z $yes ]]; then
+			if [[ ${1:-} == strict ]]; then
+				[[ -t 0 ]] || die "$host's host key isn't the one you confirmed; check it, then link again and confirm the new key (agent-say link $host on a terminal, or --fingerprint 'SHA256:... (TYPE)' naming it)"
+				read -r -p "Is that $host's key? Link it? [y/N] " a || a=""
+				[[ $a == [yY]* ]] || die "not linked"
+			elif [[ -z $yes ]]; then
 				[[ -t 0 ]] || die "not linked: confirm $host's host key above, then run: agent-say link $host --yes"
 				read -r -p "Is that $host's key? Link it? [y/N] " a || a=""
 				[[ $a == [yY]* ]] || die "not linked"
 			fi
+		}
+		if [[ -n $given ]]; then
+			# Confirmed in the panel: bound to exactly those, whatever is scanned now. A host that
+			# doesn't hold one of them is turned away below, before anything is sent or asked.
+			keys="${given%$'\n'}" KEY_STATE=given
+		elif [[ -n $no_key && $KEY_STATE == unknown ]]; then
+			keys="" # you linked it with no key found: none taken now that you weren't shown
+		elif [[ -n $no_key && $KEY_STATE == changed ]]; then
+			die "$host's host key changed since you linked it; confirm the new one (agent-say link $host); not linked"
+		else
+			[[ $KEY_STATE == trusted ]] && { echo "$host's host key, as ssh already trusts it (known_hosts):"; sed 's/^/  /' <<<"$keys"; }
+			[[ $KEY_STATE == changed || $KEY_STATE == unknown ]] && confirm_keys
 		fi
 		mkdir -p "$d"
 		# Its limits first: the check below already hands it names (V lines) by its allowlist.
@@ -1037,12 +1282,32 @@ case "$cmd" in
 			rm -f "$d/check.out"
 			return "$rc"
 		}
+		PIN_FPS=$keys
 		rc=0; link_check || rc=$?
+		# Bound to the key you confirmed, and turned away: another key answers to it now. What
+		# it shows now is shown to you, as for a changed key, and the link is bound to that only
+		# if you confirm it on a terminal (--yes is not enough), or name it with --fingerprint.
+		if ((rc)) && [[ $KEY_STATE == recorded ]] && grep -q 'Host key verification failed' "$d/check.err"; then
+			KEY_STATE=changed
+			kh_find "$host"; keys="$(not_revoked "$(kh_scan)" "$(kh_revoked)")"
+			# (ssh-keyscan showing nothing, or only the key you confirmed, has no other to show.)
+			[[ -n "$(grep -vxF -f <(printf '%s\n' "$was") <<<"$keys")" ]] ||
+				{ cat "$d/check.err" >&2; rm -f "$d/check.err"; die "$host's host key isn't the one you confirmed; not linked"; }
+			confirm_keys strict
+			PIN_FPS=$keys
+			rc=0; link_check || rc=$?
+		fi
+		# Bound to keys you confirmed (or ssh trusts) and turned away for its key: a key problem,
+		# never a login to ask for.
+		if ((rc)) && [[ -n $keys ]] && grep -q 'Host key verification failed' "$d/check.err"; then
+			cat "$d/check.err" >&2; rm -f "$d/check.err"
+			die "$host's host key isn't the one you confirmed; not linked"
+		fi
 		if ((rc)) && needs_login "$host" "$rc" "$d/check.err"; then
 			rm -f "$d/check.err"
 			[[ -t 0 ]] || die "$host needs a login (a password, or its host key accepted): run agent-say link $host on a terminal, or press L in the panel"
 			echo "$host asks for a password: ssh asks you for it now, once; the link keeps that connection open."
-			ssh_login "$host" "$pins" || die "not logged in to $host; not linked"
+			ssh_login "$host" "$keys" || die "not logged in to $host; not linked"
 			rc=0; link_check || rc=$?
 		fi
 		if ((rc)); then
@@ -1050,11 +1315,10 @@ case "$cmd" in
 			die "couldn't run agent-say on $host over ssh. It needs ssh to log in (with a key, or once with its password), and agent-say installed there (run the tmux-revive installer on $host)."
 		fi
 		rm -f "$d/check.err"
-		# The key ssh had for it just now, if known_hosts has one by now (a first ssh adds it).
-		kh_find "$host"; now="$(kh_keys)"
-		# (Nothing to compare when no key was found to confirm and you linked it anyway.)
-		[[ -n $keys ]] && keys_changed "$now" "$keys" && die "$host's host key changed while linking; not linked (run it again to see the new one)"
-		printf '%s\n' "${now:-$keys}" | sed '/^$/d' >"$d/fingerprint.new" && mv "$d/fingerprint.new" "$d/fingerprint"
+		# The keys it was bound to. Linked with none found: none scanned is taken for one, but the
+		# key ssh itself accepted for it just now (in its known_hosts), on first use.
+		printf '%s\n' "$keys" | sed '/^$/d' >"$d/fingerprint.new" && mv "$d/fingerprint.new" "$d/fingerprint"
+		[[ -n $keys ]] || { tofu_record "$host" && [[ -s "$d/fingerprint" ]] && echo "recorded $host's host key on first use: $(paste -sd, "$d/fingerprint")"; } || true
 		was_on=""; [[ -f "$d/on" ]] && was_on=1
 		touch "$d/on"
 		rm -f "$d/error" "$d/login"
@@ -1073,17 +1337,36 @@ case "$cmd" in
 		[[ -n "$pid" && "$(ps -ww -o args= -p "$pid" 2>/dev/null)" == *"_poll $2"* ]] && kill "$pid" 2>/dev/null
 		# Tell the other side, so what it still holds for us is marked NOT DELIVERED there
 		# instead of waiting for a check-in that won't come.
-		echo B | timeout 15 $SSH "${SSH_OPTS[@]}" "$2" "$REMOTE_CMD _sync $(printf %q "$LABEL")" >/dev/null 2>&1 ||
+		# Bound to its confirmed key, as every connection to it is.
+		{ pin_opts "$2" 2>/dev/null && echo B | timeout 15 $SSH "${SSH_OPTS[@]}" "${PIN_OPTS[@]}" "$2" "$REMOTE_CMD _sync $(printf %q "$LABEL")" >/dev/null 2>&1; } ||
 			echo "agent-say: couldn't tell $2; messages it holds for here wait until you link again" >&2
 		# Its connection, a login kept open included, closes with it.
 		$SSH -o "$CONTROL" -O exit "$2" >/dev/null 2>&1 </dev/null || true
 		rm -rf "$d"
 		echo "unlinked $2" ;;
 	_host-keys)
-		# For the panel, which asks you to confirm a key before it links: what link would show.
-		valid_host "${2:-}" || die "usage: agent-say _host-keys <ssh-host>"
-		host_keys "$2" scan
-		echo ;;
+		# For the panel, which asks you to confirm a key before it links only where link would:
+		# "state: <key_state>" (recorded, trusted, changed, unknown), then its keys.
+		# --new: for a link turned away for its key, the keys ssh-keyscan shows now that aren't
+		# the one recorded, to show you as a changed key ("state: changed"; none: no other to show).
+		valid_host "${2:-}" || die "usage: agent-say _host-keys <ssh-host> [--new]"
+		if [[ ${3:-} == --new ]]; then
+			was="$(cat "$STATE/links/$2/fingerprint" 2>/dev/null || true)"
+			kh_find "$2"; keys="$(not_revoked "$(kh_scan)" "$(kh_revoked)")"
+			echo "state: changed"
+			if [[ -n $was ]]; then grep -vxF -f <(printf '%s\n' "$was") <<<"$keys" || true; else printf '%s\n' "$keys"; fi | sed '/^$/d'
+			exit 0
+		fi
+		key_state "$2"
+		echo "state: $KEY_STATE"
+		printf '%s\n' "$KEYS" | sed '/^$/d' ;;
+	_pin)
+		# For the panel, whose ssh to a linked host is bound to its confirmed key as agent-say's
+		# is: (re)build links/<host>/pin from the recorded fingerprint. Exit 3: none recorded.
+		valid_host "${2:-}" || die "usage: agent-say _pin <ssh-host>"
+		rc=0; link_pin "$2" || rc=$?
+		((rc == 0)) && echo "$PIN"
+		exit "$rc" ;;
 	_login)
 		# The panel's L for a host that wants a password, run in a popup over the panel: ssh's own
 		# prompts, typed straight into ssh. --check: is a login open for it? The keys a password
@@ -1121,21 +1404,15 @@ case "$cmd" in
 		fi
 		echo $$ >"$d/pid"
 		touch "$d/acks"
-		# The host key confirmed at link time. Looked at again whenever a known_hosts file
-		# changes: a different key there means a different computer answers to that name, so
-		# the link stops until you look at it (agent-say link HOST). A link from before keys
-		# were kept takes the key it has now.
-		kh_find "$host"
-		[[ -f "$d/fingerprint" ]] || { kh_keys >"$d/fingerprint.new" && mv "$d/fingerprint.new" "$d/fingerprint"; }
-		rm -f "$d/keycheck"
+		# Every check-in is bound to the host key confirmed at link time (ssh_to, link_pin): a
+		# different key on the connection means a different computer answers to that name, so
+		# ssh turns it away and the link stops until you look at it (agent-say link HOST). A link
+		# from before keys were kept takes the key known_hosts has for it now.
+		# A link with no key recorded takes the one ssh accepted for it (tofu_record), now and
+		# after each check-in until it has one; from then on it is bound to it.
+		tofu_record "$host"
+		rm -f "$d/keycheck" # (what an older agent-say kept here)
 		while [[ -f "$d/on" ]]; do
-			if [[ ! -e "$d/keycheck" || -n "$(find "${KH_FILES[@]}" -newer "$d/keycheck" 2>/dev/null)" ]]; then
-				touch "$d/keycheck"
-				if keys_changed "$(cat "$d/fingerprint")" "$(kh_keys)"; then
-					echo "stopped: $host's host key changed since you linked it; if that's expected, see the new one with: agent-say link $host" >"$d/error"
-					break
-				fi
-			fi
 			if ! tmux list-sessions >/dev/null 2>&1; then
 				# No tmux here: nothing to deliver to. tmux-revive restarts the link with tmux.
 				((++fails >= 3)) && break
@@ -1149,12 +1426,12 @@ case "$cmd" in
 			fi
 			# Acks live on disk until the other side has them, so a restart can't redeliver.
 			cp "$d/acks" "$d/acks.sent"
-			# Introductions nobody answered in a day lapse, with what they held.
-			[[ -d "$INTROS" ]] && find "$INTROS" -mindepth 1 -maxdepth 1 -type d -mmin +1440 -exec rm -rf {} + 2>/dev/null
-			true
+			# Permissions, introductions (with what they held) and senders lapse after a day.
+			cull_sessions
 			if out="$( { local_names | sed 's/^/N /'; via_names "$host"; sed 's/^/A /' "$d/acks.sent"; } |
 				ssh_to "$host" "$REMOTE_CMD _sync $(printf %q "$LABEL")" 2>"$d/error.new")"; then
 				rm -f "$d/error" "$d/error.new" "$d/login"
+				[[ -s "$d/fingerprint" ]] || tofu_record "$host"
 				grep -vxFf "$d/acks.sent" "$d/acks" >"$d/acks.new" || true
 				mv "$d/acks.new" "$d/acks"
 				# Each "|| true": a filter loop ends in a failed test when its last line is dropped, and
@@ -1251,6 +1528,12 @@ case "$cmd" in
 				sleep "$LINK_INTERVAL"
 			else
 				rc=$?
+				# Turned away for its host key: it isn't the computer you confirmed. The link stops.
+				if [[ -s "$d/fingerprint" ]] && grep -q 'Host key verification failed' "$d/error.new" 2>/dev/null; then
+					echo "stopped: $host's host key changed since you linked it; if that's expected, see the new one with: agent-say link $host" >"$d/error"
+					rm -f "$d/error.new" "$d/login"
+					break
+				fi
 				# Its login dropped (or it never had one): say so, and wait for one. Only you open it.
 				if needs_login "$host" "$rc" "$d/error.new"; then
 					echo "needs login: $host asks for a password; press L in the panel, or run: agent-say link $host" >"$d/error"
@@ -1336,19 +1619,32 @@ case "$cmd" in
 			printf 'M %s %s %s %s\n' "$(basename "$f")" "$mto" "$mfrom" "$(tail -n +3 "$f" | base64 | tr -d '\n')"
 		done ;;
 	intros)
-		# What waits for your permission here, and what you've allowed or declined.
+		# What waits for your permission here, and what you've allowed or declined, each with the
+		# time it has left (see cull_sessions).
+		cull_sessions
+		printf -v now '%(%s)T' -1
 		for d in "$INTROS"/*/; do
 			[[ -f "$d/from" ]] || continue
-			printf 'waiting  %s  %s wants to talk with %s (%s held): %s\n' "$(basename "$d")" "$(head -n 1 "$d/from")" \
-				"$(head -n 1 "$d/to")" "$(find "$d/held" -type f | wc -l | tr -d ' ')" "$(cat "$d/intro")"
+			c="$(head -n 1 "$d/created" 2>/dev/null || true)"
+			[[ $c =~ ^[0-9]+$ ]] || c=0
+			printf 'waiting  %s  %s wants to talk with %s (%s held, %s left): %s\n' "$(basename "$d")" "$(head -n 1 "$d/from")" \
+				"$(head -n 1 "$d/to")" "$(find "$d/held" -type f | wc -l | tr -d ' ')" "$(left_text $((c + SESSION_TTL - now)))" "$(cat "$d/intro")"
 		done
-		[[ -f "$GRANTS" ]] && awk '{printf "%-8s %s and %s  (%s %s)\n", ($1 == "allow" ? "allowed" : "declined"), $4, $5, $2, $3}' "$GRANTS"
+		[[ -f "$GRANTS" ]] && while read -r g s r sn rn w _; do
+			[[ $w =~ ^[0-9]+$ ]] && ((w + SESSION_TTL > now)) || continue
+			printf '%-8s %s and %s  (%s %s)  %s left\n' "$([[ $g == allow ]] && echo allowed || echo declined)" "$sn" "$rn" "$s" "$r" \
+				"$(left_text $((w + SESSION_TTL - now)))"
+		done <"$GRANTS"
 		# And who changed them lately: one you didn't make shows here.
 		[[ -f "$GRANTS.log" ]] && { echo "recent changes:"; tail -n 10 "$GRANTS.log" | sed 's/^/  /'; }
 		exit 0 ;;
 	revoke)
 		[[ -n "${3:-}" ]] || die "usage: agent-say revoke <sender> <recipient> (as agent-say intros shows them)"
 		revoke "$2" "$3" ;;
+	_cull)
+		# For the panel, before it lists introductions and permissions: clear what has lapsed.
+		cull_sessions
+		echo "$SESSION_TTL" ;;
 	_tell)
 		valid_host "${2:-}" && valid_name "${3:-}" || die "usage: agent-say _tell <host> <name> <text>"
 		printf '%s' "${4:-}" | ssh_to "$2" "AGENT_SAY_LOCAL_ONLY=1 AGENT_SAY_NOTICE=1 $REMOTE_CMD --from $(printf %q "agent-say@$LABEL") $(printf %q "$3") -" >/dev/null 2>&1 || true ;;

@@ -586,16 +586,19 @@ popup_square() {
 check "the popup's edges line up on every row" "popup_square"
 tm send-keys -t work:sshpanel Escape
 check "Esc closes the popup" "wait_ssh 'link cancelled' && ! sshscreen | grep -q 'LINK AGENTS ON'"
-# Linking asks you to confirm the host's key first; No (the first choice, so a bare Enter) links nothing.
+# Linking a host ssh has no key for asks you to confirm one first, as ssh would; No (the first
+# choice, so a bare Enter) links nothing.
 ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey"
-printf 'devbox.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >"$T/known_hosts"
+: >"$T/known_hosts"
 fp=$(ssh-keygen -lf "$T/hostkey.pub" | awk '{print $2}')
 tm send-keys -t work:sshpanel l; sleep 0.7; tm send-keys -t work:sshpanel Enter
-check "picking a host shows its key to confirm" "wait_ssh 'HOST KEY OF devbox.example' && wait_ssh 'its key is $fp (ED25519)' && wait_ssh \"No, don't link\""
+check "picking a host ssh has no key for asks first" "wait_ssh 'HOST KEY OF devbox.example' && wait_ssh 'no key found in known_hosts' && wait_ssh \"No, don't link\""
 tm send-keys -t work:sshpanel Enter
 check "No links nothing" "wait_ssh 'link cancelled' && [[ ! -e $(dirname "$AGENT_SAY_MAILBOX")/links/devbox.example ]]"
-tm send-keys -t work:sshpanel l; sleep 0.7; tm send-keys -t work:sshpanel Enter; wait_ssh 'HOST KEY OF' >/dev/null; tm send-keys -t work:sshpanel 2
-check "Yes links the chosen host and shows what happened" "wait_ssh \"couldn't run agent-say on devbox.example\""
+# A host ssh already trusts (its key in known_hosts) links as ssh would reach it: no question.
+printf 'devbox.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >"$T/known_hosts"
+tm send-keys -t work:sshpanel l; sleep 0.7; tm send-keys -t work:sshpanel Enter
+check "a host ssh already trusts links with no question, and shows what happened" "wait_ssh \"couldn't run agent-say on devbox.example\" && ! sshscreen | grep -q 'HOST KEY OF'"
 # Pretend the link is up, then take it down with U.
 st=$(dirname "$AGENT_SAY_MAILBOX"); mkdir -p "$st/links/devbox.example"; touch "$st/links/devbox.example/on"
 # What the link lets that computer do shows beside it.
@@ -654,6 +657,20 @@ check "a linked computer's panes show with their state" "grep -q 'far-top *top *
 check "numbered by their window.pane over there" "grep -q '\[0\.1\] *far-top ' <<<\"\$out\" && grep -q '\[0\.0\] *far-sh ' <<<\"\$out\""
 check "and its shell panes too" "grep -A3 'FAR.EXAMPLE' <<<\"\$out\" | grep -q 'bash *· shell'"
 check "the whole frame still fits" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
+# With a key confirmed for the link, the panel's calls are bound to it, as agent-say's are; a key
+# revoked since the pin was built is refused on the very next call.
+printf '#!/bin/bash\n[[ $1 == -G ]] || echo "$*" >>%q\nexec %q "$@"\n' "$T/far.calls" "$T/fakessh" >"$T/logssh"; chmod +x "$T/logssh"
+printf 'far.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >>"$T/known_hosts"
+echo "$fp (ED25519)" >"$st/links/far.example/fingerprint"
+rm -f "$st/panel/far.example.rows"*
+out=$(far "$T/logssh")
+check "with a key confirmed, the panel's calls to it are bound to the link's pin" "grep -q 'far-top' <<<\"\$out\" && grep -q 'StrictHostKeyChecking=yes -o UserKnownHostsFile=$st/links/far.example/pin ' $T/far.calls && [[ -s $st/links/far.example/pin ]]"
+printf '@revoked * %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >>"$T/known_hosts"
+: >"$T/far.calls"; rm -f "$st/panel/far.example.rows"*
+far "$T/logssh" >/dev/null
+check "a key revoked after the pin was built: the next call refuses, and the pin is gone" "[[ ! -s $T/far.calls && ! -e $st/links/far.example/pin ]]"
+grep -v '^@revoked \|^far.example ' "$T/known_hosts" >"$T/known_hosts.new" && mv "$T/known_hosts.new" "$T/known_hosts"
+rm -f "$st/links/far.example/fingerprint" "$st/links/far.example/pin"* "$st/panel/far.example.rows"*
 # Agents there show the state that computer's own panel gives them. Stand-ins for Claude Code
 # (copies of bash named claude): one working with no session record to go by (an older Claude
 # Code, or a record kept where that panel can't see it), one whose record says busy, one
@@ -985,7 +1002,9 @@ case " $* " in
 	echo 'Permission denied, please try again.' >&2; exit 255 ;;
 esac
 if [[ ! -e $m ]]; then
-	holds "$T/known_hosts" || { echo 'Host key verification failed.' >&2; exit 255; }
+	kh=$T/known_hosts # a link's own calls are bound to its pin instead
+	[[ " $* " == *" StrictHostKeyChecking=yes "* ]] && kh=$(sed -n 's/.*UserKnownHostsFile=\([^ ]*\).*/\1/p' <<<"$*")
+	holds "$kh" || { echo 'Host key verification failed.' >&2; exit 255; }
 	echo 'me@pw.example: Permission denied (publickey,password).' >&2; exit 255
 fi
 cmd=${!#}
@@ -1019,9 +1038,9 @@ login_typed() {
 }
 wait_pw 'C O N T R O L' >/dev/null
 wait_pw 'pw.example · ssh in' >/dev/null
+# pw.example is in known_hosts: ssh trusts it, so L asks no key, and the password goes to that key.
 tm send-keys -t work:pwpanel l; wait_pw 'LINK AGENTS ON' >/dev/null; tm send-keys -t work:pwpanel Enter
-wait_pw 'HOST KEY OF pw.example' >/dev/null; tm send-keys -t work:pwpanel 2
-check "L on a host that wants a password opens a login, where ssh asks for it" "login_typed hunter2"
+check "L on a host that wants a password opens a login, where ssh asks for it" "login_typed hunter2 && ! pws | grep -q 'HOST KEY OF'"
 check "and once it's typed, the link is made" "wait_pw 'linked to pw.example' 75 && [[ -e $pwl/on && -e $T/pw.master ]]"
 check "the poller and the panel's calls over it ask nothing more" "wait_pw 'far-top' 75 && [[ \$(grep -c 'ControlMaster=yes' $T/pwssh.log) == 1 ]]"
 check "LINKS shows it linked" "wait_pw 'pw.example · linked' 50"
@@ -1041,7 +1060,7 @@ check "a host with a key (far.example) never got a login" "! grep 'ControlMaster
 ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey9"
 echo "$T/hostkey9.pub" >"$T/pw.presented"
 p=$(prompts); rm -f "$T/pw.master"
-check "a link answered by another key shows the key error, not 'needs login'" "wait_pw 'pw.example Host key verification failed' 75 && ! pws | grep -q 'pw.example · needs login' && [[ ! -e $pwl/login && \$(prompts) == $p ]]"
+check "a link answered by another key stops on the key error, not 'needs login'" "for _ in \$(seq 1 75); do grep -q 'host key changed' $pwl/error 2>/dev/null && break; sleep 0.2; done; grep -q 'host key changed' $pwl/error && wait_pw 'pw.example stopped' 75 && ! pws | grep -q 'pw.example · needs login' && [[ ! -e $pwl/login && \$(prompts) == $p ]]"
 # A first link, pw.example not in known_hosts yet: you confirm the key ssh-keyscan shows, and
 # the login then goes only to a computer holding that key.
 tm send-keys -t work:pwpanel q
@@ -1056,9 +1075,7 @@ link_pw() {
 	wait_pw 'HOST KEY OF pw.example' >/dev/null; tm send-keys -t work:pwpanel 2
 }
 link_pw
-check "with another key presented, the login stops before the password" "for _ in \$(seq 1 50); do w=\$(login_win); [[ -n \$w ]] && tm capture-pane -p -t \$w | grep -q 'Press Enter' && break; sleep 0.2; done; tm capture-pane -p -t \$w | grep -q 'Host key verification failed' && [[ \$(prompts) == $p && ! -e $T/pw.master ]]"
-tm send-keys -t "$(login_win)" Enter
-check "and nothing is linked" "wait_pw 'not logged in to pw.example; not linked' 50 && [[ ! -e $pwl/on ]]"
+check "with another key presented, it stops there: no login opens, nothing is asked or linked" "wait_pw \"pw.example's host key isn't the one you confirmed; not linked\" 50 && [[ -z \$(login_win) && \$(prompts) == $p && ! -e $T/pw.master && ! -e $pwl/on ]]"
 echo "$T/hostkey.pub" >"$T/pw.presented"
 link_pw
 check "with the key you confirmed, ssh asks for the password" "login_typed hunter2 && [[ \$(prompts) == \$(($p + 1)) ]]"

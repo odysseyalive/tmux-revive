@@ -181,7 +181,7 @@ See `@revive-question-alert` and `@revive-question-bell` to turn these off.
 
 When a pane ssh's into another computer, the panel spots it and offers to link
 the agents there: **L** links it (after showing you the computer's host key to
-confirm, and a popup for its password if it takes one), **U** unlinks. Once linked, that computer's panes show up in the list too,
+confirm where ssh itself would ask, and a popup for its password if it takes one), **U** unlinks. Once linked, that computer's panes show up in the list too,
 grouped under its name, with the version of tmux-revive it runs. If that's older than
 yours, its heading says `out of date`: select one of its panes and press **V** to update
 it over ssh, after a yes. **N** names one of its panes the same way, over ssh.
@@ -262,9 +262,19 @@ drops (that server reboots, or the network goes away for a while), the panel
 marks the link `needs login` and **L** asks for the password again. Nothing logs
 in again by itself.
 
-The first time, it shows the server's host key fingerprint and asks you to confirm it
-(from a script, add `--yes` once you've checked it). If that key changes later, the
-link stops and `agent-say link` says so, until you link again and confirm the new one.
+Linking follows your ssh setup: the host is resolved as `ssh -G` resolves it (its
+`HostName`, `Port`, `HostKeyAlias` and known_hosts files). A server ssh already
+trusts (its key is in a known_hosts file ssh reads for it) links with no question,
+and its key is recorded with the link; linking one again that still has the key you
+confirmed asks nothing either. Only where ssh itself would ask (a key it doesn't
+know, or a config with `UserKnownHostsFile /dev/null`) does it show the server's host
+key fingerprint and ask you to confirm it (from a script, add `--yes` once you've
+checked it, or `--fingerprint 'SHA256:... (TYPE)'` to link it to exactly that key). If
+that key changes later, or you revoke it (`@revoked` in known_hosts), the link stops
+and `agent-say link` says so, until you link again and confirm the new one. Every
+connection the link makes is bound to the key you confirmed, whatever your ssh config
+says about known_hosts: ssh itself turns away a server showing any other key, and the
+link stops there.
 
 ### Limits
 
@@ -314,8 +324,13 @@ agent can't write to that one again. Permission is per pair of agent sessions,
 so a new session in a pane asks again, and **I** also lists what you've allowed,
 to revoke. The sending agent is told plainly what happened (`introduction sent`,
 `held`, `declined`). At most 5 messages wait per pair and 3 introductions per
-server, and one nobody answers lapses after a day. `agent-say intros` lists them
-from a terminal.
+server. `agent-say intros` lists them from a terminal.
+
+What is kept about agent sessions lasts 24 hours: a permission lapses a day after you
+gave it (**I** shows the time each has left), and the next message between those two
+is an introduction again; an introduction nobody answers lapses after a day with
+what it held. A session that runs longer than that is rare, and if one does,
+something is wrong. Each lapse is logged (`agent-say intros` shows recent ones).
 
 A message from another server is never typed into the agent's prompt as if you
 had written it: the agent is told one is waiting and reads it with
@@ -417,6 +432,7 @@ agent-say:
 | `AGENT_SAY_MSG_MAX` | `65536` | bytes a message keeps; past that it is cut, with a note |
 | `AGENT_SAY_QUEUE_MAX` | `50` | messages waiting at once |
 | `AGENT_SAY_QUEUE_MAX_AGE` | `86400` | seconds a queued message keeps trying |
+| `AGENT_SAY_SESSION_TTL` | `86400` | seconds a permission, an unanswered introduction or a relayed sender is kept |
 | `AGENT_SAY_HOST` | short hostname | this computer's name, as others address it |
 | `AGENT_SAY_LINK_INTERVAL` | `2` | seconds between link check-ins |
 | `AGENT_SAY_REMOTE_CMD` | `agent-say` in `~/.local/bin` or PATH | how to run agent-say on the other computer |

@@ -944,9 +944,19 @@ remote_run() { # remote_run HOST COMMAND: run it on that computer over the link'
 	# that wants a password) carries these too. While the link waits for one, nothing is tried:
 	# each try would be a refused login in that host's log.
 	[[ -f $ASTATE/links/$1/login ]] && return 255
+	# Bound to the host key you confirmed for the link, as agent-say's own calls are: ssh checks
+	# it against the link's pin, whatever the ssh config says. agent-say _pin checks it afresh
+	# on every call (a key revoked since, the fingerprint changed) and rebuilds it as needed; a
+	# link it refuses gets nothing sent.
+	local l=$ASTATE/links/$1 pin=() p
+	if [[ -s $l/fingerprint ]]; then
+		p=$(timeout 20 "$ASAY" _pin "$1" </dev/null 2>/dev/null) && [[ -s $p ]] || return 255
+		pin=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$p" -o GlobalKnownHostsFile=/dev/null
+			-o HostKeyAlias=agent-say-confirmed -o CheckHostIP=no -o UpdateHostKeys=no)
+	fi
 	# shellcheck disable=SC2086 # AGENT_SAY_SSH may carry its own arguments, as in agent-say
 	timeout "${RTIMEOUT:-8}" ${AGENT_SAY_SSH:-ssh} -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto \
-		-o "ControlPath=$ASTATE/ssh-%C" -o ControlPersist=120 "$1" "$2" </dev/null 2>/dev/null
+		-o "ControlPath=$ASTATE/ssh-%C" -o ControlPersist=120 "${pin[@]}" "$1" "$2" </dev/null 2>/dev/null
 }
 fetch_rows() { remote_run "$1" "$REMOTE_ROWS_CMD"; }
 # rows_get HOST FILE: the rows into FILE, through a temporary file of its own (two panels may
@@ -1678,12 +1688,16 @@ trim_colored() { # trim_colored TEXT WIDTH -> TRIM: cut to WIDTH visible charact
 # ------------------------------------------------------------------ actions
 flash() { FLASH=$1 FLASH_T=$SECONDS; clean FLASH; } # agent-say's reply can quote anything
 
-read_host_keys() { # read_host_keys HOST -> KEYS: its key fingerprints, as agent-say link would show them
+# read_host_keys HOST -> KEYS: its key fingerprints, as agent-say link would show them, and
+# KEY_STATE: whether link would ask you to confirm them (agent-say's key_state: recorded,
+# trusted, changed, unknown; anything else is taken as unknown, so it asks).
+read_host_keys() {
 	local k
-	KEYS=()
+	KEYS=() KEY_STATE=unknown
 	while IFS= read -r k; do
-		[[ $k =~ ^SHA256:[A-Za-z0-9+/=]{1,64}\ \([A-Z0-9-]{1,16}\)$ ]] && KEYS+=("$k")
-	done < <(timeout 20 "$ASAY" _host-keys "$1" </dev/null 2>/dev/null | head -n 8)
+		if [[ $k =~ ^state:\ (recorded|trusted|changed|unknown)$ ]]; then KEY_STATE=${BASH_REMATCH[1]}
+		elif [[ $k =~ ^SHA256:[A-Za-z0-9+/=]{1,64}\ \([A-Z0-9-]{1,16}\)$ ]]; then KEYS+=("$k"); fi
+	done < <(timeout 20 "$ASAY" _host-keys "$1" ${2:+"$2"} </dev/null 2>/dev/null | head -n 9)
 }
 
 # login_window HOST: log in to a host that wants a password, once, for its link. ssh runs in a
@@ -2118,34 +2132,80 @@ act() {
 			if login_window "$h"; then flash "logged in to $h; its link picks up again"; else flash "not logged in to $h"; fi
 			return
 		fi
-		# Its host key first, to confirm (agent-say asks the same on a terminal): say no, and
-		# nothing is linked. No is first, so Enter alone doesn't trust a key.
+		# Its host key first, as ssh itself (and agent-say link on a terminal) would have it: a host
+		# linked before that still has the key you confirmed then, or one ssh already trusts (its
+		# key in a known_hosts file ssh reads for it), links as it is. Only where ssh would ask (a
+		# key it doesn't know), or the key changed, are you asked: say no, and nothing is linked.
+		# No is first, so Enter alone doesn't trust a key.
 		flash "reading $h's host key…"; draw
-		local -a keys
-		local k
+		# What link is told: the keys shown and confirmed here (--fingerprint), so it is bound to
+		# exactly those, never to what it might scan a moment later; or, linking with no key found,
+		# that none is to be taken (--no-key). A relink gives none: it keeps the one recorded, and
+		# refuses another.
+		local -a keys largs=()
+		local k linked_msg=""
 		read_host_keys "$h"
 		keys=("${KEYS[@]}")
 		PREV=()
-		if ((${#keys[@]})); then
+		case $KEY_STATE in
+			recorded)
+				linked_msg="relinked $h; its key is the one you confirmed" ;;
+			trusted)
+				for k in "${keys[@]}"; do largs+=(--fingerprint "$k"); done
+				linked_msg="linked to $h with the key ssh already trusts for it: ${keys[*]}" ;;
+			*)
+				if ((${#keys[@]})); then
+					labels=("No, don't link $h")
+					for k in "${keys[@]}"; do labels+=("Yes, link: its key is $k"); done
+				else
+					labels=("No, don't link $h" "Yes, link (no key found in known_hosts or by ssh-keyscan)")
+				fi
+				if [[ $KEY_STATE == changed ]]; then
+					pick "WARNING: $h's HOST KEY CHANGED since you linked it" "${labels[@]}" && ((PICKED > 0)) || { flash "link cancelled"; return; }
+				else
+					pick "HOST KEY OF $h" "${labels[@]}" && ((PICKED > 0)) || { flash "link cancelled"; return; }
+				fi
+				if ((${#keys[@]})); then
+					keys=("${keys[PICKED - 1]}")
+					largs=(--yes --fingerprint "${keys[0]}")
+				else
+					largs=(--yes --no-key)
+				fi ;;
+		esac
+		flash "linking $h…"; draw
+		link_out() { # what link said: all of it (LOUT), and the line to show (out)
+			LOUT=$(timeout 30 "$ASAY" link "$h" "$@" </dev/null 2>&1)
+			out=$(grep -E '^(linked to|agent-say:)' <<<"$LOUT" | grep -v '^agent-say: WARNING' | head -n 1)
+		}
+		link_out "${largs[@]}"
+		# Relinked, and turned away for its key: another key answers to it now. You see that one,
+		# warned, and the link is bound to it only if you pick it here (by its fingerprint).
+		if [[ $LOUT == *"check it, then link again and confirm the new key"* ]]; then
+			read_host_keys "$h" --new
+			keys=("${KEYS[@]}")
+			((${#keys[@]})) || { flash "$h's host key isn't the one you confirmed, and ssh-keyscan shows no other; not linked"; return; }
 			labels=("No, don't link $h")
 			for k in "${keys[@]}"; do labels+=("Yes, link: its key is $k"); done
-		else
-			labels=("No, don't link $h" "Yes, link (no key found in known_hosts or by ssh-keyscan)")
+			pick "WARNING: $h's HOST KEY CHANGED since you linked it" "${labels[@]}" && ((PICKED > 0)) || { flash "link cancelled"; return; }
+			keys=("${keys[PICKED - 1]}") KEY_STATE=changed linked_msg=""
+			largs=(--yes --fingerprint "${keys[0]}")
+			flash "linking $h…"; draw
+			link_out "${largs[@]}"
 		fi
-		pick "HOST KEY OF $h" "${labels[@]}" && ((PICKED > 0)) || { flash "link cancelled"; return; }
-		flash "linking $h…"; draw
-		out=$(timeout 30 "$ASAY" link "$h" --yes </dev/null 2>&1 | grep -E '^(linked to|agent-say:)' | head -n 1)
 		# A host that wants a password: you log in once, in a popup, and the link is made over
 		# that login. The password can only go to a computer holding a key you just confirmed
 		# (agent-say's login checks it strictly before ssh asks), so none confirmed, no login.
+		# Relinked, it is the key the link recorded (login_window with none given takes that).
 		if [[ $out == *"$h needs a login"* ]]; then
 			((${#keys[@]})) || { flash "no host key of $h to confirm, so no password is sent to it; not linked"; return; }
+			[[ $KEY_STATE == recorded ]] && keys=()
 			flash "logging in to $h…"; draw
 			login_window "$h" "${keys[@]}" || { flash "not logged in to $h; not linked"; return; }
 			flash "linking $h…"; draw
-			out=$(timeout 30 "$ASAY" link "$h" --yes </dev/null 2>&1 | grep -E '^(linked to|agent-say:)' | head -n 1)
+			link_out "${largs[@]}"
 		fi
 		clean out
+		[[ -n $linked_msg && $out == "linked to "* ]] && out=$linked_msg
 		flash "${out#agent-say: }" ;;
 	u | U | d | D)
 		local hosts=() labels=() d h
@@ -2183,20 +2243,27 @@ act() {
 	i | I)
 		# Introductions waiting for you, then the permissions you gave (to revoke). Only here,
 		# by a key you press, can two agents on linked computers be let to talk.
-		local ids=() labels=() d f t txt g a b
+		# Each lasts SESSION_TTL (a day) from when it was given, and shows the time it has left;
+		# agent-say clears what has lapsed first.
+		local ids=() labels=() d f t txt g a b w ttl now
+		ttl=$(timeout 10 "$ASAY" _cull 2>/dev/null)
+		[[ $ttl =~ ^[1-9][0-9]{0,9}$ ]] || ttl=86400
+		printf -v now '%(%s)T' -1
 		for d in "$ASTATE"/intros/*/; do
 			[[ -f $d/from ]] || continue
 			f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to")
 			clean f t
 			ids+=("i $(basename "$d")") labels+=("${f:0:30} wants to talk with ${t:0:30}")
 		done
-		while read -r g a b f t; do
+		while read -r g a b f t w _; do
 			[[ $g == allow || $g == deny ]] || continue
+			[[ $w =~ ^[0-9]{1,12}$ ]] && ((w + ttl > now)) || continue
 			clean f t
-			ids+=("g $a $b") labels+=("$([[ $g == allow ]] && echo allowed || echo declined): ${f:0:30} and ${t:0:30}")
+			w=$((w + ttl - now))
+			ids+=("g $a $b") labels+=("$([[ $g == allow ]] && echo allowed || echo declined): ${f:0:30} and ${t:0:30} · $((w / 3600))h$((w % 3600 / 60))m left")
 		done < <(cat "$ASTATE/grants" 2>/dev/null)
 		((${#ids[@]})) || { flash "no introductions waiting, and no permissions given"; return; }
-		pick "INTRODUCTIONS" "${labels[@]}" || return
+		pick "INTRODUCTIONS · permissions last $((ttl / 3600))h" "${labels[@]}" || return
 		read -r g a b <<<"${ids[PICKED]}"
 		if [[ $g == i ]]; then
 			d="$ASTATE/intros/$a"
