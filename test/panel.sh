@@ -25,6 +25,8 @@ cleanup() {
 	rm -rf "$T"
 }
 trap cleanup EXIT
+# Cut short (timeout's TERM, Ctrl-C, a closed terminal): still clean up the private servers.
+trap 'exit 1' INT TERM HUP
 plain() { sed 's/\x1b\[[0-9;]*m//g'; }
 screen() { tm capture-pane -p -t work:panel; }
 wait_screen() { for _ in $(seq 1 30); do screen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
@@ -370,7 +372,7 @@ done
 tm kill-session -t other
 tm kill-window -t work:twelve
 gitw() { cframe "$1" | awk '/ NAME .* GIT /{print index($0, " CPU") - index($0, " GIT"); exit}'; }
-check "a panel 70 columns wider gives GIT all 70 ($(gitw 130) -> $(gitw 200))" "[[ -n \$(gitw 130) ]] && (( \$(gitw 200) == \$(gitw 130) + 70 ))"
+check "a panel 70 columns wider gives GIT all 70 ($(gitw 160) -> $(gitw 230))" "[[ -n \$(gitw 160) ]] && (( \$(gitw 230) == \$(gitw 160) + 70 ))"
 echo '{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":500000}}}' >>"$H/.claude/projects/-w/s-1.jsonl"
 out=$(cframe)
 check "a Claude 5 model has a million-token window (500k: 50% left)" "grep -q 'claude .* 50%' <<<\"\$out\""
@@ -677,7 +679,7 @@ mkdir -p "$st/links/far.example"; touch "$st/links/far.example/on"; printf 'far-
 far() { tm run-shell "AGENT_SAY_SSH=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
 out=$(far "$T/fakessh")
 check "panes are grouped by computer" "grep -q 'this computer' <<<\"\$out\" && grep -q 'FAR.EXAMPLE · linked' <<<\"\$out\""
-check "a linked computer's panes show with their state" "grep -q 'far-top *top *▸ running' <<<\"\$out\""
+check "a linked computer's panes show with their state" "grep -q 'far-top .*top *▸ running' <<<\"\$out\""
 check "numbered by their window.pane over there" "grep -q '\[0\.1\] *far-top ' <<<\"\$out\" && grep -q '\[0\.0\] *far-sh ' <<<\"\$out\""
 check "and its shell panes too" "grep -A3 'FAR.EXAMPLE' <<<\"\$out\" | grep -q 'bash *· shell'"
 check "the whole frame still fits" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
@@ -744,14 +746,14 @@ check "--rows there: idle with a command still running under it, its output stal
 check "--rows there: with only stale output, no such line" "! grep -B1 $'\x1fcl-stale\x1f' <<<\"\$rows\" | grep -q '^#agents' && grep -q $'\x1fcl-stale\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
 check "--rows there: busy, or asking, with fresh output: no such line" "[[ \$(grep -c '^#agents' <<<\"\$rows\") == 2 ]] && grep -q $'\x1fcl-bgask\x1fclaude\x1fasking\x1f' <<<\"\$rows\""
 out=$(far "$T/fakessh")
-check "here: a linked agent working with no record shows WORKING" "grep -q 'cl-none *claude *. WORKING' <<<\"\$out\""
-check "here: one whose record says busy shows WORKING" "grep -q 'cl-busy *claude *. WORKING' <<<\"\$out\""
-check "here: one whose record says idle shows WAITING ON YOU" "grep -q 'cl-idle *claude *◆ WAITING ON YOU' <<<\"\$out\""
-check "here: one asking a question shows NEEDS ANSWER" "grep -q 'cl-ask *claude *? NEEDS ANSWER' <<<\"\$out\""
-check "here: idle with agents working in the background shows WORKING" "grep -q 'cl-bg *claude *. WORKING ' <<<\"\$out\""
-check "here: idle with a command still running under it shows WORKING" "grep -q 'cl-snap *claude *. WORKING ' <<<\"\$out\""
-check "here: idle with only stale output shows WAITING ON YOU" "grep -q 'cl-stale *claude *◆ WAITING ON YOU' <<<\"\$out\""
-check "here: a question still wins over agents in the background" "grep -q 'cl-bgask *claude *? NEEDS ANSWER' <<<\"\$out\""
+check "here: a linked agent working with no record shows WORKING" "grep -q 'cl-none .*claude *. WORKING' <<<\"\$out\""
+check "here: one whose record says busy shows WORKING" "grep -q 'cl-busy .*claude *. WORKING' <<<\"\$out\""
+check "here: one whose record says idle shows WAITING ON YOU" "grep -q 'cl-idle .*claude *◆ WAITING ON YOU' <<<\"\$out\""
+check "here: one asking a question shows NEEDS ANSWER" "grep -q 'cl-ask .*claude *? NEEDS ANSWER' <<<\"\$out\""
+check "here: idle with agents working in the background shows WORKING" "grep -q 'cl-bg .*claude *. WORKING ' <<<\"\$out\""
+check "here: idle with a command still running under it shows WORKING" "grep -q 'cl-snap .*claude *. WORKING ' <<<\"\$out\""
+check "here: idle with only stale output shows WAITING ON YOU" "grep -q 'cl-stale .*claude *◆ WAITING ON YOU' <<<\"\$out\""
+check "here: a question still wins over agents in the background" "grep -q 'cl-bgask .*claude *? NEEDS ANSWER' <<<\"\$out\""
 check "and the frame is still exactly 140 wide" "[[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
 for w in cl-bg cl-stale cl-snap cl-bgask; do far_tm kill-window -t far:$w; done # room for the rows below
 # Their CPU and context left, drawn as this computer's own are. A busy pane there; a Claude
@@ -814,56 +816,36 @@ printf '%s s-hook 70 %s 1\n' "$hpane" "$(date +%s)" >"$cf"
 rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
 check "--rows there: nor one from another process than the pane's Claude Code" "[[ -z \$(rctx \"\$rows\" cl-hook) ]]"
 far_tm kill-window -t far:cl-hook
-# A Claude Code running as another user (root, from sudo -i in a link user's pane) whose hook
-# hasn't reported: --rows asks panel.sh --ctx-of through sudo -n, where sudo allows it without
-# a password. Another user stands in as a ps that gives that process another uid; sudo as one
-# that runs what it's given after -n (and logs it), or refuses. Its record and transcript are
-# under its own HOME, which the panel's HOME doesn't reach.
-mkdir -p "$T/roothome/.claude/sessions" "$T/roothome/.claude/projects/-root" "$T/sudoyes" "$T/sudono" "$T/uidps"
-far_tm new-window -d -t far -n cl-root -e HOME="$T/roothome" "$T/bin/claude -c 'sleep 300; :'"
-far_tm set-option -p -t far:cl-root @agent cl-root
-rpid=$(far_tm display -p -t far:cl-root '#{pane_pid}')
-printf '{"pid":%s,"sessionId":"s-root","status":"idle"}\n' "$rpid" >"$T/roothome/.claude/sessions/$rpid.json"
-turn 40000 >"$T/roothome/.claude/projects/-root/s-root.jsonl" # 80% left
+# Whose each pane is: --rows says, on a line before its row, the user its agent (or the program
+# in it) runs as, and whether that user has tmux-revive there: owner (the tmux owner's own), the
+# version that user's install recorded (agent-say _user-installed), or -. Other users stand in as
+# a ps that gives a pane's process another uid (uid 0, and one named deploy by a getent).
+mkdir -p "$T/uidps"
+: >"$T/uidmap"
 {
 	printf '#!/bin/bash\n[[ $* == *uid=* ]] || exec %q "$@"\n' "$(command -v ps)"
-	printf '%q "$@" | awk -v p=%s -v u=%s '\''$1 == p {$3 = u} 1'\''\n' "$(command -v ps)" "$rpid" $((UID + 4242))
+	printf '%q "$@" | awk -v m=%q '\''BEGIN { while ((getline l < m) > 0) { split(l, a, " "); u[a[1]] = a[2] } } ($1 in u) { $3 = u[$1] } 1'\''\n' "$(command -v ps)" "$T/uidmap"
 } >"$T/uidps/ps"
-printf '#!/bin/sh\n[ "$1" = -n ] || exit 1\nshift\necho "$*" >>%q\nexec "$@"\n' "$T/sudo.log" >"$T/sudoyes/sudo"
-printf '#!/bin/sh\necho "sudo: a password is required" >&2\nexit 1\n' >"$T/sudono/sudo"
-chmod +x "$T/uidps/ps" "$T/sudoyes/sudo" "$T/sudono/sudo"
-# Through sudo it runs root's own copy (install.sh keeps it in /usr/local/lib/tmux-revive/app),
-# never this user's files. REVIVE_TEST_ROOT_PREFIX stands in for that folder, owned by you,
-# standing in for root (REVIVE_TEST_ROOT_UID another uid: a copy root doesn't own).
-RLIB=$T/usrlocal/lib RCOPY=$T/usrlocal/lib/tmux-revive/app
-mkdir -p "$RCOPY/scripts" "$RCOPY/bin"
-cp "$ROOT"/scripts/* "$RCOPY/scripts/" && cp "$ROOT/bin/agent-say" "$RCOPY/bin/"
-chmod 755 "$T/usrlocal" "$RLIB" "$RLIB/tmux-revive" "$RCOPY" "$RCOPY/scripts" "$RCOPY/bin" "$RCOPY"/scripts/* "$RCOPY/bin/agent-say"
-rootrows() { PATH="$T/uidps:$T/$1:$PATH" REVIVE_TEST_ROOT_PREFIX=$RLIB/tmux-revive REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows 2>"$T/rootrows.err"; }
-rows=$(rootrows sudono)
-check "--rows there: another user's Claude Code with sudo refused: no context, no error" "[[ -z \$(rctx \"\$rows\" cl-root) && ! -s $T/rootrows.err ]] && grep -q $'\x1fcl-root\x1f' <<<\"\$rows\""
-rows=$(rootrows sudoyes)
-check "--rows there: another user's Claude Code, through sudo -n and root's copy of panel.sh --ctx-of ($(rctx "$rows" cl-root))" "[[ \$(rctx \"\$rows\" cl-root) == 80 && ! -s $T/rootrows.err ]] && grep -qx \"true\" $T/sudo.log && grep -qx \"$RCOPY/scripts/panel.sh --ctx-of $rpid\" $T/sudo.log && ! grep -qF \"$ROOT/\" $T/sudo.log"
-check "--rows there: sudo asked whether it may once a run" "[[ \$(grep -cx true $T/sudo.log) == 1 ]]"
-# refused ROWS: no context, no error, and sudo never asked to run anything.
-refused() { : >"$T/sudo.log"; rows=$(rootrows sudoyes); [[ -z $(rctx "$rows" cl-root) && ! -s $T/rootrows.err && ! -s $T/sudo.log ]]; }
-check "--rows there: root's copy owned by someone else than root isn't run" "REVIVE_TEST_ROOT_UID=$((UID + 4242)) refused"
-chmod g+w "$RCOPY/scripts/common.sh"
-check "--rows there: nor with a file in it others may write to" "refused"
-chmod g-w "$RCOPY/scripts/common.sh"
-chmod o+w "$RLIB"
-check "--rows there: nor under a folder others may write to, two above it" "refused"
-chmod o-w "$RLIB"
-ln -s "$T/rhome" "$RCOPY/scripts/link"
-check "--rows there: nor with a link in it" "refused"
-rm "$RCOPY/scripts/link"
-mv "$RCOPY" "$RCOPY.away"
-check "--rows there: nor with no copy at all" "refused"
-mv "$RCOPY.away" "$RCOPY"
-check "--rows there: and with it put back, root's copy is run again" "! refused && grep -qx \"$RCOPY/scripts/panel.sh --ctx-of $rpid\" $T/sudo.log"
-out=$(bash "$ROOT/scripts/panel.sh" --ctx-of "$rpid"; bash "$ROOT/scripts/panel.sh" --ctx-of '1;id' 2>&1; bash "$ROOT/scripts/panel.sh" --ctx-of $$)
-check "--ctx-of prints only a number, and takes only a process id, and only a Claude Code's ($out)" "[[ \$out == \$'80\nusage: panel.sh --ctx-of PID' ]]"
-far_tm kill-window -t far:cl-root
+DEPLOY_UID=$((UID + 4243))
+printf '#!/bin/sh\n[ "$1" = passwd ] && [ "$2" = %s ] && { echo "deploy:x:%s:%s::/home/deploy:/bin/sh"; exit 0; }\nexec %q "$@"\n' \
+	"$DEPLOY_UID" "$DEPLOY_UID" "$DEPLOY_UID" "$(command -v getent)" >"$T/uidps/getent"
+chmod +x "$T/uidps/ps" "$T/uidps/getent"
+far_tm new-window -d -t far -n as-root "sleep 300"
+far_tm new-window -d -t far -n as-deploy "sleep 300"
+far_tm set-option -p -t far:as-root @agent as-root
+far_tm set-option -p -t far:as-deploy @agent as-deploy
+printf '%s 0\n%s %s\n' "$(far_tm display -p -t far:as-root '#{pane_pid}')" "$(far_tm display -p -t far:as-deploy '#{pane_pid}')" "$DEPLOY_UID" >"$T/uidmap"
+rid() { far_tm display -p -t "far:$1" '#{pane_id}'; }
+mkdir -p "$T/rst2/agent-say/users"
+echo 1.0.9 >"$T/rst2/agent-say/users/deploy"
+urows() { PATH="$T/uidps:$PATH" AGENT_SAY_MAILBOX=$T/rst2/agent-say/mailbox.md REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows; }
+rows=$(urows)
+check "--rows says whose tmux it is" "grep -qx '#owner $(id -un)' <<<\"\$rows\""
+check "--rows: a pane running as another user with no tmux-revive: its user, and -" "grep -qx \"#user $(rid as-root) root -\" <<<\"\$rows\""
+check "--rows: one whose user recorded a version: that version" "grep -qx \"#user $(rid as-deploy) deploy 1.0.9\" <<<\"\$rows\""
+check "--rows: the owner's own: owner" "grep -qx \"#user $(rid 0.1) $(id -un) owner\" <<<\"\$rows\""
+check "--rows: the line comes before its row, and a context line still sits right above the row" "grep -A1 \"^#user $(rid as-deploy) \" <<<\"\$rows\" | grep -q $'\x1fas-deploy\x1f'"
+far_tm kill-window -t far:as-root; far_tm kill-window -t far:as-deploy
 # Asked again a little later, it measures since the last ask, kept over there, in one look.
 sleep 1.2
 rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
@@ -892,27 +874,31 @@ check "a tmux-revive there too old to peek says so" "grep -q 'far-sh' <<<\"\$out
 rm -f "$st/panel/far.example.rows"
 out=$(farsel "$T/deadssh" far-top@far.example | plain)
 check "and an unreachable one has no peek either" "peekbox <<<\"\$out\" | grep -qF 'on far.example: no peek'"
-# Versions: a linked computer's rows say its version, and its heading compares it with this one's.
+# Versions: a linked computer's rows say its version, which its owner's panes show in VER, in the
+# warn colour when it's older than this one's. The headings say no version.
 echo 1.1.0 >"$T/remote-version"; echo 1.2.0 >"$T/local-version"
-farv() { rm -f "$st/panel/far.example.rows"*; tm run-shell "AGENT_SAY_SSH=$1 REVIVE_VERSION_FILE=$T/${2:-local-version} COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
-out=$(farv "$T/fakessh")
-check "an older linked computer shows its version, out of date" "grep -c 'FAR.EXAMPLE · linked · v1.1.0 · out of date' <<<\"\$out\" >/dev/null && grep -c 'this computer · v1.2.0' <<<\"\$out\" >/dev/null"
+farv() { rm -f "$st/panel/far.example.rows"*; tm run-shell "AGENT_SAY_SSH=$1 REVIVE_VERSION_FILE=$T/${2:-local-version} COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
+me=$(id -un)
+raw=$(farv "$T/fakessh") out=$(plain <<<"$raw")
+check "a linked computer's panes show their user, and its version in VER, older in the warn colour" "grep -c 'far-top *$me *1\.1\.0 *top' <<<\"\$out\" >/dev/null && grep -cF $'\\e[93m1.1.0' <<<\"\$raw\" >/dev/null"
+check "this computer's own panes show this one's version" "grep -c ' $me *1\.2\.0 *bash' <<<\"\$out\" >/dev/null"
+check "the headings say no version" "grep -c 'FAR.EXAMPLE · linked *║' <<<\"\$out\" >/dev/null && grep -c 'this computer *║' <<<\"\$out\" >/dev/null && ! grep -c 'out of date' <<<\"\$out\" >/dev/null"
 echo 1.2.0 >"$T/remote-version"
-out=$(farv "$T/fakessh")
-check "the same version isn't" "grep -c 'FAR.EXAMPLE · linked · v1.2.0 *║' <<<\"\$out\" >/dev/null"
+raw=$(farv "$T/fakessh")
+check "the same version isn't in the warn colour" "grep -cF $'\\e[90m1.2.0' <<<\"\$raw\" >/dev/null && ! grep -cF $'\\e[93m1.2.0' <<<\"\$raw\" >/dev/null"
 echo 1.1.0 >"$T/remote-version"
-out=$(farv "$T/fakessh" no-such-file)
-check "with this computer's version unknown, nothing is called out of date" "grep -c 'FAR.EXAMPLE · linked · v1.1.0 *║' <<<\"\$out\" >/dev/null && ! grep -c 'out of date' <<<\"\$out\" >/dev/null"
-out=$(farv "$T/norowssh")
-check "one that answers no rows is too old to tell" "grep -c 'FAR.EXAMPLE · linked · too old to tell' <<<\"\$out\" >/dev/null && grep -c 'far-two *◌ linked' <<<\"\$out\" >/dev/null"
+raw=$(farv "$T/fakessh" no-such-file)
+check "with this computer's version unknown, none is in the warn colour" "grep -cF $'\\e[90m1.1.0' <<<\"\$raw\" >/dev/null && ! grep -cF $'\\e[93m1.1.0' <<<\"\$raw\" >/dev/null"
+out=$(farv "$T/norowssh" | plain)
+check "one that answers no rows shows its names, with no user or version" "grep -c 'FAR.EXAMPLE · linked *║' <<<\"\$out\" >/dev/null && grep -c 'far-two *◌ linked' <<<\"\$out\" >/dev/null"
 # Its pane names alone carry no window.pane: those rows are counted instead.
 check "and its names-only rows are numbered by their count" "grep -q '║ \[[1-9]\] *far-two ' <<<\"\$out\" && ! grep -q '\[[0-9]*\.[0-9]*\] *far-two' <<<\"\$out\""
-out=$(farv "$T/deadssh")
-check "one that can't be reached isn't called old" "grep -c 'FAR.EXAMPLE · linked *║' <<<\"\$out\" >/dev/null"
+out=$(farv "$T/deadssh" | plain)
+check "one that can't be reached still has its heading" "grep -c 'FAR.EXAMPLE · linked *║' <<<\"\$out\" >/dev/null"
 printf '#version 1.2.3;touch %s/pwn\n' "$T" >"$T/badver"; head -c 2000 /dev/zero | tr '\0' 9 >>"$T/badver"; printf '\n' >>"$T/badver"
 printf '#!/bin/bash\n%q "$@" | sed 1d | cat %q -\n' "$T/fakessh" "$T/badver" >"$T/badverssh"; chmod +x "$T/badverssh"
-out=$(farv "$T/badverssh")
-check "a version line that isn't one is ignored" "grep -c 'FAR.EXAMPLE · linked · too old to tell' <<<\"\$out\" >/dev/null && grep -c 'far-top' <<<\"\$out\" >/dev/null && ! grep -c '1.2.3' <<<\"\$out\" >/dev/null && [[ ! -e $T/pwn ]]"
+out=$(farv "$T/badverssh" | plain)
+check "a version line that isn't one is ignored" "grep -c 'far-top *$me  *top' <<<\"\$out\" >/dev/null && ! grep -c '1.2.3' <<<\"\$out\" >/dev/null && [[ ! -e $T/pwn ]]"
 check "--rows says its version first" "[[ \$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data REVIVE_VERSION_FILE=$T/remote-version bash $ROOT/scripts/panel.sh --rows | head -n 1) == '#version 1.1.0' ]]"
 # A panel from before versions reads those rows as before: the version line is skipped.
 mkdir -p "$T/old/scripts"
@@ -920,7 +906,7 @@ if git -C "$ROOT" show d621bda:scripts/panel.sh >"$T/old/scripts/panel.sh" 2>/de
 	cp "$ROOT/scripts/common.sh" "$T/old/scripts/"
 	rm -f "$st/panel/far.example.rows"*
 	out=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $T/old/scripts/panel.sh --once" | plain)
-	check "an older panel skips the version line" "grep -c 'far-top *top *▸ running' <<<\"\$out\" >/dev/null && ! grep -c 'version' <<<\"\$out\" >/dev/null"
+	check "an older panel skips the version line" "grep -c 'far-top .*top *▸ running' <<<\"\$out\" >/dev/null && ! grep -c 'version' <<<\"\$out\" >/dev/null"
 fi
 rm -f "$st/panel/far.example.rows"*
 # --peek itself: only a pane id and a line count get through.
@@ -985,7 +971,7 @@ check "its peek tracks that pane's screen live" "for _ in \$(seq 1 30); do farsc
 check "on a linked computer's pane, J fades and N doesn't" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\" && bar | grep -qF $'\\e[93mN' && ! bar | grep -qF $'\\e[90m[N]ame'"
 check "while keys that still work stay lit" "bar | grep -qF \"\$lit\""
 # V: update tmux-revive over there, once confirmed, with a fixed command.
-check "on a linked computer's pane, V offers an update" "bar | grep -cF $'\\e[93mV' >/dev/null && farscreen | grep -c 'out of date' >/dev/null"
+check "on a linked computer's pane, V offers an update" "bar | grep -cF $'\\e[93mV' >/dev/null && farscreen | grep -cF '[V] update' >/dev/null"
 tm send-keys -t work:farpanel v
 check "V asks first" "for _ in \$(seq 1 20); do farscreen | grep -c 'Update tmux-revive on far.example?' >/dev/null && break; sleep 0.2; done; farscreen | grep -c 'Yes, update it over ssh' >/dev/null"
 tm send-keys -t work:farpanel Escape
@@ -1039,6 +1025,46 @@ rm -f "$T/show.cmd"; rt kill-window -t far:elsewhere
 tm send-keys -t work:farpanel 0
 check "back on a pane here, J lights up again" "for _ in \$(seq 1 25); do farscreen | grep -q '\[0\.0\] ▶' && ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; farscreen | grep -q '\[0\.0\] ▶' && ! bar | grep -qF \"\$grey\""
 tm send-keys -t work:farpanel q
+tm kill-window -t work:farpanel 2>/dev/null
+# Another user's pane on a linked computer (deploy, a stand-in as above): V runs nothing over
+# ssh for them. It shows the command to run in their pane there, and copies it. The owner's pane
+# there keeps V's update over ssh. A sudo here that logs anything asked of it.
+INSTALL_CMD=$(grep -m1 -x 'curl -fsSL https://raw.githubusercontent.com/.*/install.sh | sh' "$ROOT/README.md")
+mkdir -p "$T/usudo"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>%q\nexit 1\n' "$T/usudo.log" >"$T/usudo/sudo"
+chmod +x "$T/usudo/sudo"
+far_tm new-window -d -t far -n as-deploy "sleep 300"
+far_tm set-option -p -t far:as-deploy @agent as-deploy
+printf '%s %s\n' "$(far_tm display -p -t far:as-deploy '#{pane_pid}')" "$DEPLOY_UID" >>"$T/uidmap"
+rm -f "$st/panel/far.example.rows"* "$st/users/deploy" "$T/far.calls"
+echo 1.1.0 >"$T/remote-version"
+tm new-window -d -t work -n vpanel "env PATH=$T/uidps:$T/usudo:\$PATH AGENT_SAY_SSH=$T/logssh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+rscreen() { tm capture-pane -p -t work:vpanel; }
+wait_r() { for _ in $(seq 1 ${2:-60}); do rscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
+gone_r() { for _ in $(seq 1 20); do rscreen | grep -q -- "$1" || return 0; sleep 0.25; done; return 1; }
+rsel() { for _ in $(seq 1 40); do rscreen | grep -q "▶ $1 " && return 0; tm send-keys -t work:vpanel Down; sleep 0.3; done; return 1; }
+check "a linked computer's pane of a user without tmux-revive shows [V]" "wait_r 'as-deploy *deploy *\[V\]'"
+rsel as-deploy
+check "and the bar offers V: install" "rscreen | grep -qF '[V] install'"
+tm send-keys -t work:vpanel v
+check "V there shows the install command for that user's pane, copied" "wait_r \"Run this in deploy's pane:\" && rscreen | grep -qF -- '$INSTALL_CMD' && [[ \$(tm show-buffer) == '$INSTALL_CMD' ]]"
+tm send-keys -t work:vpanel x
+gone_r "Run this in deploy's pane:" >/dev/null
+mkdir -p "$st/users" && echo 1.0.0 >"$st/users/deploy"
+rm -f "$st/panel/far.example.rows"*
+check "one with an older version there shows it (once its rows are asked for again)" "wait_r 'as-deploy *deploy *1\.0\.0' 160"
+rsel as-deploy
+tm send-keys -t work:vpanel v
+check "and V shows tmux-revive update" "wait_r \"Run this in deploy's pane:\" && [[ \$(tm show-buffer) == 'tmux-revive update' ]]"
+tm send-keys -t work:vpanel x
+gone_r "Run this in deploy's pane:" >/dev/null
+check "nothing went over ssh for that user: no ssh -t, no sudo there or here" "[[ -s $T/far.calls ]] && ! grep -qE -- ' -t |sudo|tmux-revive update' $T/far.calls && [[ ! -e $T/usudo.log ]]"
+rsel far-top
+check "on the linked computer's owner's pane, V still updates that computer as before" "rscreen | grep -qF '[V] update' && { tm send-keys -t work:vpanel v; wait_r 'Update tmux-revive on far.example?'; }"
+tm send-keys -t work:vpanel Escape
+tm kill-window -t work:vpanel
+rm -f "$st/users/deploy"
+far_tm kill-window -t far:as-deploy
 # A row from the link's names alone has no pane id over there: J only jumps here, as before.
 printf '#!/bin/bash\nprintf "%%s\\n" "${!#}" >>%q\nexit 1\n' "$T/ssh.log" >"$T/logssh"; chmod +x "$T/logssh"
 sleep 0.5; rm -f "$st/panel/far.example.rows"*
@@ -1321,6 +1347,63 @@ check "a pane that isn't an agent is never announced" "[[ \$(grep -c 'question:'
 kill "$dpid" 2>/dev/null
 tm kill-window -t work:client 2>/dev/null
 at kill-server 2>/dev/null
+
+echo "other users in this tmux"
+# Panes where another user works (sudo -i or su in one of your panes): USER says whose each is,
+# VER which tmux-revive that user has, or [V] when they have none. V there runs nothing: it shows
+# the command to run in their pane, and copies it. Stand-ins as above: the ps giving those
+# panes' processes uid 0 and deploy's uid; a sudo and an ssh that log anything asked of them.
+me=$(id -un)
+mkdir -p "$T/umail/users"
+tm new-window -d -t work -n lroot "sleep 300"; tm set-option -p -t work:lroot @agent l-root
+tm new-window -d -t work -n ldeploy "sleep 300"; tm set-option -p -t work:ldeploy @agent l-deploy
+printf '%s 0\n%s %s\n' "$(tm display -p -t work:lroot '#{pane_pid}')" "$(tm display -p -t work:ldeploy '#{pane_pid}')" "$DEPLOY_UID" >>"$T/uidmap"
+echo 1.0.0 >"$T/umail/users/deploy"
+echo 1.2.0 >"$T/local-version"
+uframe() { tm run-shell "PATH=$T/uidps:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_PANEL_PEEK=0 COLUMNS=${2:-140} LINES=50 REVIVE_PANEL_SEL=${1:-none} REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md bash $ROOT/scripts/panel.sh --once"; }
+raw=$(uframe) out=$(plain <<<"$raw")
+check "USER and VER come right after NAME" "grep -q ' NAME *USER *VER *APP ' <<<\"\$out\""
+check "a pane where root works with no tmux-revive: root, and [V] in the warn colour" "grep -q 'l-root *root *\[V\] *sleep' <<<\"\$out\" && grep -qF $'\\e[93m[V]' <<<\"\$raw\""
+check "one whose user has an older tmux-revive: that version, in the warn colour" "grep -q 'l-deploy *deploy *1\.0\.0 *sleep' <<<\"\$out\" && grep -qF $'\\e[93m1.0.0' <<<\"\$raw\""
+check "your own panes: you, and this panel's version" "grep -q \" $me *1\.2\.0 *bash\" <<<\"\$out\""
+lbar() { plain | grep -F 'ump' | tail -1; }
+check "on root's pane the command bar offers V: install" "uframe \$(tm display -p -t work:lroot '#{pane_id}') | lbar | grep -qF '[V] install'"
+check "on deploy's pane, V: update" "uframe \$(tm display -p -t work:ldeploy '#{pane_id}') | lbar | grep -qF '[V] update'"
+check "on your own pane, no V" "! uframe \$(tm display -p -t work:0.0 '#{pane_id}') | lbar | grep -qF '[V]'"
+for c in 80 120 160 200; do
+	out=$(uframe none "$c" | plain)
+	check "at $c columns every row is still exactly $c wide" "[[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
+done
+out=$(uframe none 120 | plain)
+check "at 120 columns USER and VER still show" "grep -q 'l-root *root *\[V\]' <<<\"\$out\""
+
+tm new-window -d -t work -n upanel "env PATH=$T/uidps:$T/usudo:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+uscreen() { tm capture-pane -p -t work:upanel; }
+wait_u() { for _ in $(seq 1 40); do uscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
+usel() { for _ in $(seq 1 30); do uscreen | grep -q "▶ $1 " && return 0; tm send-keys -t work:upanel Down; sleep 0.3; done; return 1; }
+gone_u() { for _ in $(seq 1 20); do uscreen | grep -q -- "$1" || return 0; sleep 0.25; done; return 1; }
+wait_u 'l-root'
+usel l-root
+tm set-buffer -- before
+tm send-keys -t work:upanel v
+check "V on root's pane shows the install command to run in root's pane" "wait_u \"Run this in root's pane:\" && uscreen | grep -qF -- '$INSTALL_CMD'"
+check "and copies it" "[[ \$(tm show-buffer) == '$INSTALL_CMD' ]] && wait_u 'Copied'"
+tm send-keys -t work:upanel x
+check "a key closes it" "gone_u \"Run this in root's pane:\""
+usel l-deploy
+tm send-keys -t work:upanel v
+check "V on deploy's pane, with an older version: tmux-revive update, copied" "wait_u \"Run this in deploy's pane:\" && uscreen | grep -q '│* *tmux-revive update *║' && [[ \$(tm show-buffer) == 'tmux-revive update' ]]"
+tm send-keys -t work:upanel x
+gone_u "Run this in deploy's pane:" >/dev/null
+check "nothing is run as another user: no sudo" "[[ ! -e $T/usudo.log ]]"
+# Each user's own install or update keeps their version (agent-say _user-installed, run as the
+# owner): two users in one tmux, each with their own.
+echo 1.1.0 >"$T/umail/users/root"
+check "two users in one tmux show their own versions" "wait_u 'l-root *root *1\.1\.0' && uscreen | grep -q 'l-deploy *deploy *1\.0\.0'"
+echo 1.2.0 >"$T/umail/users/deploy"
+check "one that's up to date gets no V" "wait_u 'l-deploy *deploy *1\.2\.0' && usel l-deploy && sleep 0.5 && ! uscreen | grep -F 'ump' | grep -qF '[V]'"
+tm kill-window -t work:upanel; tm kill-window -t work:lroot; tm kill-window -t work:ldeploy
+
 
 echo "$pass passed, $fail failed"
 ((fail == 0))

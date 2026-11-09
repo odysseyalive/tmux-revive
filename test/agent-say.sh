@@ -498,10 +498,10 @@ check "a send to a pane in the same tmux is typed in ($out)" "[[ '$out' == *'sen
 id=$(sed -n 's/^## \[live-root -> cx .*\] #\([0-9-]*\)$/\1/p' "$T/rstate/agent-say/mailbox.md" | tail -n 1)
 out=$(run 1$LR "$ASROOT $ROOT/bin/agent-say show $id" 2>&1)
 check "show reads the owner's mailbox ($id)" "[[ -n '$id' && '$out' == *'root here, next door'* ]]"
-# Root's Claude Code reports its context left from its hook (claude-hook.sh ctx, registered in
-# root's settings pointing at root's own copy, which install.sh keeps in
-# /usr/local/lib/tmux-revive/app): agent-say _ctx, the copy's, run as root, follows the tmux
-# owner and keeps the value in the owner's state, for the owner's panel. A stand-in Claude
+# Root's Claude Code reports its context left from its hook (claude-hook.sh ctx, which root's
+# own install of tmux-revive registers in root's settings): agent-say _ctx, root's, run as root,
+# follows the tmux owner and keeps the value in the owner's state, for the owner's panel. A
+# stand-in Claude
 # Code: a copy of bash named claude running each line written to its fifo.
 mkdir -p "$T/rootlib/app/scripts" "$T/rootlib/app/bin"
 cp "$ROOT"/scripts/*.sh "$T/rootlib/app/scripts/" && cp "$ROOT/bin/agent-say" "$T/rootlib/app/bin/"
@@ -520,6 +520,20 @@ cf=$T/rstate/agent-say/ctx/${CL#%}
 check "root's ctx hook, from root's copy, files its context left in the owner's state, for its own pane ($(cat "$cf" 2>/dev/null))" "read -r a b c d e <$cf && [[ \$a == $CL && \$b == s-root && \$c == 85 && \$e == $clpid ]] && (( \$(date +%s) - d < 60 ))"
 "$T/rbin/tmux" kill-pane -t "$CL"
 check "nothing was written in root's own home" "[[ ! -e $T/roothome ]]"
+# Root's install (install.sh calls agent-say _user-installed VERSION): the owner's state keeps
+# which tmux-revive root has, under root's own name, for the owner's panel.
+me=$(id -un) uf=$T/rstate/agent-say/users
+run 1$LR "$ASROOT $ROOT/bin/agent-say _user-installed 1.2.5" >/dev/null
+check "a user's install in the owner's tmux keeps its version in the owner's state, under its own name" "[[ \$(cat $uf/$me 2>/dev/null) == 1.2.5 && ! -e $T/roothome ]]"
+run 1$LR "$ASROOT $ROOT/bin/agent-say _user-installed 1.2.6 deploy" >/dev/null
+check "and only its own: a name given after it is ignored" "[[ ! -e $uf/deploy && \$(cat $uf/$me) == 1.2.6 ]]"
+out=$(run 1$LR "$ASROOT $ROOT/bin/agent-say _user-installed '1.2;touch $T/pwn'" 2>&1)
+check "a version that isn't one is refused ($out)" "[[ '$out' == *'usage: agent-say _user-installed'* && ! -e $T/pwn && \$(cat $uf/$me) == 1.2.6 ]]"
+run 1$LR "$ASROOT $ROOT/bin/agent-say _user-installed -" >/dev/null
+check "its uninstall takes it away" "[[ -d $uf && ! -e $uf/$me ]]"
+say _user-installed 1.2.7 >/dev/null
+say _user-installed 1.2.7 deploy >/dev/null
+check "the owner's own install records nothing, nor can it name anyone" "[[ ! -e $(dirname "$AGENT_SAY_MAILBOX")/users ]]"
 out=$(run 1$LR "$AS PATH=$T/rootbin:$T/sudobin:\$PATH $ROOT/bin/agent-say list" 2>&1)
 check "someone else who may sudo -n to the owner gets the same names ($out)" "[[ '$out' == *'dev-root@dev.example.com  (via laptop)'* ]]"
 out=$(run 1$LR "$AS PATH=$T/rootbin:$T/nosudobin:\$PATH $ROOT/bin/agent-say dev-root 'not root'" 2>&1)

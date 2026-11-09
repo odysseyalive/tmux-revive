@@ -138,6 +138,9 @@ over, sized to your pane.
 Each pane is numbered the way tmux's status bar numbers it, window then pane:
 `[3.1]` is pane 1 in window 3.
 
+**USER** is the user working in the pane, and **VER** the tmux-revive that user
+has, in yellow when it's older than yours. `[V]` means they don't have it yet.
+
 **CTX LEFT** shows how much of each agent's context window is still free. It goes
 green, then yellow at 40%, then red at 15%. It reads Claude Code's and Codex's own
 session records, and other agents show a dash. Claude Code doesn't record its
@@ -165,7 +168,7 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 | Enter (or Tab) | answer the question the selected agent is asking |
 | `L` | link a computer you ssh into |
 | `U` (or `D`) | unlink a computer |
-| `V` | update tmux-revive on a linked computer |
+| `V` | update tmux-revive on a linked computer, or copy the command that installs or updates it for the pane's user |
 | `I` | introductions waiting for you, and permissions you gave |
 | `A` | swap the artwork |
 | `S` | save right now |
@@ -192,9 +195,9 @@ the computer's host key to confirm wherever ssh itself would ask, and pops up a
 box for the password if the server takes one.
 
 Once linked, that computer's panes show up in the list too, grouped under its
-name, along with the version of tmux-revive it runs. If that's older than yours,
-its heading says `out of date`. Select one of its panes and press **V** to update
-it over ssh, after a yes. **N** names one of its panes the same way, over ssh.
+name, with their USER and VER. Select one of your panes there and press **V** to
+update tmux-revive there over ssh, after a yes. On another user's pane there, **V**
+gives you the command to run in it (see Several users in one tmux). **N** names one of its panes over ssh.
 
 **J** on one of its panes jumps to your pane that's ssh'd into that computer, and
 has tmux over there switch to the pane you picked. If your ssh runs in a terminal
@@ -267,20 +270,8 @@ The same hook also reports the session's context left after each tool call and
 each turn, for the panel's CTX LEFT. `--no-config` skips it, uninstall takes it
 out, and `tmux-revive doctor` shows whether it's there.
 
-If you install as a user who can `sudo` without a password, the installer adds the
-hook to root's Claude Code config too, if root has one, so sessions started with
-`sudo -i` in your panes get it as well. It never asks for a password. Without that
-`sudo`, it tells you root's sessions won't get the hook unless tmux-revive is
-installed as root too. For a root session with no fresh report, the panel's
-`--rows` (what a linked computer's panel asks for) reads its context left through
-`sudo -n` the same way, and shows a dash when `sudo` would need a password.
-
-Root never runs files from your home folder for this, since you could change them.
-Instead, the installer keeps a copy in `/usr/local/lib/tmux-revive` that only root
-can change, and root's hook and `--rows` run that copy. Every install and update
-replaces it, and uninstall removes it. If root doesn't own that folder and every
-folder above it, or anyone else can write to one of them, root gets no hook and
-`--rows` shows a dash.
+Sessions started as another user, like root after `sudo -i`, get the hook from
+that user's own tmux-revive (see below).
 
 ### Several users in one tmux
 
@@ -294,8 +285,15 @@ other and anyone on its links.
 - Install tmux-revive once, as the user who starts tmux.
 - Link to that computer as that same user. A link logs in as one user and only
   sees that user's tmux.
-- root in your tmux needs nothing more. If root has no `agent-say` of its own, the
-  messages its agents get show the full path to run.
+- Every other user working in your tmux can have tmux-revive too, so their
+  agents get the agent-say note and report their context left. Until they do,
+  their VER in the panel shows `[V]`. Select one of their panes and press **V**
+  for the command to run in that pane. It's copied, ready to paste. On an older
+  version, **V** gives you `tmux-revive update` instead.
+- Their install tells your tmux which version they have. A user other than root
+  needs the same `sudo` as for `agent-say` below, or VER keeps showing `[V]`.
+- Without their own, their agents can still message: the messages they get show
+  the full path to run.
 - A user other than root, in someone else's tmux, needs permission to run commands
   as the tmux owner with `sudo` and no password. Without it, `agent-say` says so
   and does nothing.

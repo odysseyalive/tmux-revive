@@ -423,7 +423,7 @@ inst() { # inst TMUX-WRAPPER [OPTION]: run install.sh in the sandbox, stdout+std
 	mkdir -p "$T/ih" "$T/ib"
 	cp "$1" "$T/ib/tmux"
 	env -u REVIVE_DIR -u ZDOTDIR -u XDG_CONFIG_HOME -u CLAUDE_CONFIG_DIR HOME="$T/ih" XDG_DATA_HOME="$T/ih/.local/share" \
-		TMUX_TMPDIR="$T/ih" CODEX_HOME="$T/ih/.codex" REVIVE_SOURCE="$ROOT" PATH="$T/ib:$PATH" REVIVE_TEST_ROOT_HOME="$T/roothome" REVIVE_TEST_ROOT_PREFIX="$T/usrlocal/lib/tmux-revive" \
+		TMUX_TMPDIR="$T/ih" CODEX_HOME="$T/ih/.codex" REVIVE_SOURCE="$ROOT" PATH="$T/ib:$PATH" REVIVE_TEST_ROOT_PREFIX="$T/usrlocal/lib/tmux-revive" \
 		sh "$ROOT/install.sh" "${@:2}" >"$T/inst.out" 2>&1
 }
 mkdir -p "$T/ih" && : >"$T/ih/.bashrc"
@@ -446,7 +446,7 @@ EOF
 chmod +x "$T/tmux-ok" "$T/tmux-bad" "$T/tmux-half"
 # Started with the sandbox PATH: revive.tmux's own `tmux` calls must reach this server.
 mkdir -p "$T/ib" && cp "$T/tmux-ok" "$T/ib/tmux"
-# Never your sudo: the installer uses it to reach root's Claude Code config. One that refuses,
+# Never your sudo, though the installer should never ask it for anything. One that refuses,
 # and one that runs what it's given after -n (as root would, here as you), logging it.
 mkdir -p "$T/sudoyes"
 printf '#!/bin/sh\necho "sudo: a password is required" >&2\nexit 1\n' >"$T/sudono"
@@ -514,57 +514,65 @@ printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s"}]}]
 inst "$T/tmux-ok" --uninstall
 check "a settings.json that held only our hook is left with no hooks key" "jq -e '. == {}' $CS >/dev/null"
 
-# Root's Claude Code (sudo -i in a pane), when installing as someone else: through sudo -n where
-# that needs no password, root's config folder gets the hooks, running root's own copy of the
-# files they need, never this user's. REVIVE_TEST_ROOT_HOME stands in for root's home,
-# REVIVE_TEST_ROOT_PREFIX for /usr/local/lib/tmux-revive (owned by you, standing in for root's).
-RCS=$T/roothome/.claude/settings.json RLIB=$T/usrlocal/lib RCOPY=$T/usrlocal/lib/tmux-revive/app
-mkdir -p "$T/roothome/.claude" "$RLIB" && chmod 755 "$T/usrlocal" "$RLIB"
-printf '{"theme":"light","hooks":{"Stop":[{"hooks":[{"type":"command","command":"rootstop.sh"}]}]}}\n' >"$RCS"
-cp "$RCS" "$T/rcs.seed"
-inst "$T/tmux-ok"
-check "without sudo, root's config is left alone, and one line says what that means" "cmp -s $T/rcs.seed $RCS && [[ \$(grep -c \"root's Claude Code sessions won't report their context left or get the agent-say note unless tmux-revive is installed as root too\" $T/inst.out) == 1 ]] && [[ ! -e $RCOPY ]]"
+# 1.2.4, installed by a user who could sudo without a password, kept a copy of tmux-revive for
+# root in /usr/local/lib/tmux-revive. That's gone: no install asks sudo for anything, and root's
+# own install removes the copy. REVIVE_TEST_ROOT=1 stands in for being root,
+# REVIVE_TEST_ROOT_PREFIX for the copy's folder.
+OLDCOPY=$T/usrlocal/lib/tmux-revive
+mkdir -p "$OLDCOPY/app/scripts"
 cp "$T/sudoyes/sudo" "$T/ib/sudo"
+: >"$T/sudo.log"
 inst "$T/tmux-ok"; rc=$?
-rours() { jq --arg t "'$RCOPY/scripts/claude-hook.sh'" '[.hooks[]?[]?.hooks[]? | select(.command | startswith($t))] | length' "$RCS"; }
-users() { jq --arg t "$T/ih/" '[.hooks[]?[]?.hooks[]? | select(.command | contains($t))] | length' "$RCS"; }
-check "with sudo -n, root's Claude Code gets the hooks, running root's copy, not this user's script" "((rc == 0)) && grep -q \"Claude Code in $T/roothome/.claude is told about agent-say\" $T/inst.out && [[ \$(rours) == 3 && \$(users) == 0 ]] && jq -e '.theme == \"light\" and .hooks.Stop[0].hooks[0].command == \"rootstop.sh\"' $RCS >/dev/null && grep -qxF \"sh $T/ih/.local/share/tmux-revive/app/install.sh --root-hooks add $HOOK\" $T/sudo.log"
-copied() { local f; for f in scripts/claude-hook.sh scripts/common.sh scripts/panel.sh scripts/help.sh bin/agent-say VERSION; do cmp -s "$ROOT/$f" "$RCOPY/$f" || return 1; done; [[ -z $(find "$RCOPY" \( -type l -o -perm -g+w -o -perm -o+w \) -print) && $(stat -c %a "$RCOPY") == 755 && $(stat -c %a "$RCOPY/scripts/panel.sh") == 755 ]]; }
-check "root's copy holds the hook, what it sources and runs, and the panel, written by no one else" "copied"
-check "root's settings.json was backed up first" "cmp -s $T/rcs.seed \"\$(ls $RCS.bak-revive-* | head -n 1)\""
-cp "$RCS" "$T/rcs.once"
-: >"$RCOPY/stale" && printf 'old\n' >"$RCOPY/scripts/common.sh"
-inst "$T/tmux-ok"
-check "and not again on the next install" "cmp -s $T/rcs.once $RCS && ! grep -q 'roothome/.claude is told' $T/inst.out"
-check "which makes root's copy afresh" "[[ ! -e $RCOPY/stale && ! -e $RCOPY.new && ! -e $RCOPY.old ]] && copied"
-# Hooks an older version put in root's config, running this user's own script, are replaced.
-printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s"}]}],"Stop":[{"hooks":[{"type":"command","command":"%s ctx"}]}]}}\n' "'$HOOK'" "'$HOOK'" >"$RCS"
-inst "$T/tmux-ok"
-check "hooks that ran this user's script are swapped for root's copy" "[[ \$(rours) == 3 && \$(users) == 0 ]]"
-# A folder on the way that a group or anyone may write to: no copy, and no hooks.
-chmod g+w "$RLIB"
-inst "$T/tmux-ok"; rc=$?
-check "a folder above root's copy that others may write to: no hooks, and one line says so" "((rc == 0)) && grep -qF \"couldn't make root's own copy in $T/usrlocal/lib/tmux-revive\" $T/inst.out && [[ \$(rours) == 0 && \$(users) == 0 ]]"
-chmod g-w "$RLIB"
-cp "$T/rcs.once" "$RCS"
-inst "$T/tmux-ok"
-doctor() { env HOME="$T/ih" XDG_DATA_HOME="$T/ih/.local/share" PATH="$T/ib:$PATH" REVIVE_TEST_ROOT_HOME="$T/roothome" bash "$T/ih/.local/share/tmux-revive/app/bin/tmux-revive" doctor 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
-dr=$(doctor)
-check "doctor says root's Claude Code has them" "grep -qF \"ok   root's Claude Code is told about agent-say and reports its context left\" <<<\"\$dr\""
-printf '{}\n' >"$RCS"
-dr=$(doctor)
-check "and says so when they're missing" "grep -qF \"no   root's Claude Code isn't told about agent-say\" <<<\"\$dr\""
-printf '{"hooks": ' >"$RCS"
-inst "$T/tmux-ok"
-check "a root settings.json that isn't valid JSON is left alone, with a warning" "[[ \$(cat $RCS) == '{\"hooks\": ' ]] && grep -qF \"$RCS isn't valid JSON\" $T/inst.out"
-cp "$T/rcs.once" "$RCS"
+check "a user's install never asks sudo, and leaves the old copy to root" "((rc == 0)) && [[ ! -s $T/sudo.log && -d $OLDCOPY ]] && ! grep -qi 'root' $T/inst.out"
 inst "$T/tmux-ok" --uninstall; rc=$?
-check "uninstall takes them out of root's config through sudo -n, and only them, and root's copy" "((rc == 0)) && [[ ! -e $T/usrlocal/lib/tmux-revive && -d $RLIB ]] && grep -qF \"removed the agent-say hook from $RCS\" $T/inst.out && jq -e '. == {theme: \"light\", hooks: {Stop: [{hooks: [{type: \"command\", command: \"rootstop.sh\"}]}]}}' $RCS >/dev/null"
+check "and so does its uninstall" "((rc == 0)) && [[ ! -s $T/sudo.log && -d $OLDCOPY ]]"
+REVIVE_TEST_ROOT=1 inst "$T/tmux-ok"; rc=$?
+check "root's own install removes the old copy" "((rc == 0)) && [[ ! -e $OLDCOPY && -d $T/usrlocal/lib && ! -s $T/sudo.log ]]"
 cp "$T/sudono" "$T/ib/sudo"
 inst "$T/tmux-ok"
-cp "$T/rcs.once" "$RCS"
-inst "$T/tmux-ok" --uninstall; rc=$?
-check "uninstall without sudo leaves root's config alone, without an error" "((rc == 0)) && cmp -s $T/rcs.once $RCS && ! grep -qi 'sudo' $T/inst.out"
+doctor() { env HOME="$T/ih" XDG_DATA_HOME="$T/ih/.local/share" PATH="$T/ib:$PATH" bash "$T/ih/.local/share/tmux-revive/app/bin/tmux-revive" doctor 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
+dr=$(doctor)
+check "doctor says nothing about root's Claude Code" "grep -qF 'Claude Code is told about agent-say' <<<\"\$dr\" && ! grep -qi 'root' <<<\"\$dr\""
+
+# Installed inside someone else's tmux: that server is theirs, so nothing is loaded into it,
+# set on it or saved from it. The tests can't be another user: REVIVE_TEST_UID stands in for
+# this user's uid, and a tmux that logs what it's asked shows what reached the server.
+printf '#!/bin/sh\necho "$*" >>%q\nexec %q "$@"\n' "$T/tmux.log" "$T/tmux-ok" >"$T/tmux-log"
+chmod +x "$T/tmux-log"
+snaps() { find "$T/ih/.local/share/tmux-revive/snapshots" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l; }
+s0=$(snaps)
+: >"$T/tmux.log"
+REVIVE_TEST_UID=$((UID + 4242)) inst "$T/tmux-log"; rc=$?
+check "inside another user's tmux, the installer says it's theirs" "((rc == 0)) && grep -qF \"inside $(id -un)'s tmux, so it's left to $(id -un)'s tmux-revive\" $T/inst.out && ! grep -q 'is protected' $T/inst.out"
+check "and loads nothing into it, sets nothing on it, takes no snapshot" "! grep -qE '^(run-shell|set-option|set-hook|set )' $T/tmux.log && [[ \$(snaps) == $s0 ]]"
+: >"$T/tmux.log"
+REVIVE_TEST_UID=$((UID + 4242)) inst "$T/tmux-log" --uninstall; rc=$?
+check "nor does its uninstall touch that server" "((rc == 0)) && ! grep -qE '^(set-option|set-hook|set )' $T/tmux.log"
+inst "$T/tmux-ok"
+
+# Installed by a user working inside someone else's tmux (sudo -i or su in one of the owner's
+# panes): the owner's state keeps which tmux-revive that user has, for the owner's panel, and
+# each install or update by that user says so again. The tests can't be another user:
+# AGENT_SAY_TEST_OWNER stands in for the owner (name:home), AGENT_SAY_TEST_ROOT=1 for root.
+"$T/tmux-ok" set-environment -g XDG_STATE_HOME "$T/ownerstate"
+mkdir -p "$T/ownerhome"
+other_inst() { # other_inst [SOURCE] [OPTION]: install.sh in a pane of the owner's tmux, as "another user"
+	local src=${1:-$ROOT}
+	rm -f "$T/other.done"
+	"$T/tmux-ok" new-window -d -t i -n other "env -u REVIVE_DIR -u ZDOTDIR -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u CLAUDE_CONFIG_DIR -u TMUX HOME=$(printf %q "$T/ih") XDG_DATA_HOME=$(printf %q "$T/ih/.local/share") TMUX_TMPDIR=$(printf %q "$T/ih") CODEX_HOME=$(printf %q "$T/ih/.codex") REVIVE_SOURCE=$(printf %q "$src") PATH=$(printf %q "$T/ib"):\$PATH AGENT_SAY_TEST_OWNER=owner:$(printf %q "$T/ownerhome") AGENT_SAY_TEST_ROOT=1 sh $(printf %q "$src/install.sh") ${2:-} >$(printf %q "$T/inst.out") 2>&1; touch $(printf %q "$T/other.done")"
+	for _ in $(seq 300); do [[ -f $T/other.done ]] && break; sleep 0.1; done
+}
+me=$(id -un)
+other_inst
+check "a user's install inside someone else's tmux records its version in the owner's state" "[[ \$(cat $T/ownerstate/agent-say/users/$me 2>/dev/null) == \$(cat $ROOT/VERSION) ]]"
+check "and nothing in its own" "[[ ! -e $T/ih/.local/state/agent-say/users ]]"
+mkdir -p "$T/newer"
+(cd "$ROOT" && git ls-files -co --exclude-standard -z | xargs -0 tar cf - 2>/dev/null) | (cd "$T/newer" && tar xf -)
+echo 9.8.7 >"$T/newer/VERSION"
+other_inst "$T/newer"
+check "an update by that user records the new version" "[[ \$(cat $T/ownerstate/agent-say/users/$me 2>/dev/null) == 9.8.7 ]]"
+other_inst "" --uninstall
+check "and its uninstall takes the record away" "[[ -d $T/ownerstate/agent-say/users && ! -e $T/ownerstate/agent-say/users/$me ]]"
 "$T/tmux-ok" kill-server
 
 echo "$pass passed, $fail failed"

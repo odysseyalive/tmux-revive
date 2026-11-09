@@ -365,135 +365,39 @@ hook_add() {
 	fi
 }
 
-# Root's Claude Code, when not installing as root: sessions started with sudo -i in a pane run
-# as root, with root's settings, so they'd have none of the hooks. Where sudo lets this user
-# run commands as root without a password (never asked for), this installer, as root, adds
-# them to root's Claude Code config (if root has one), running root's own copy (root_copy);
-# uninstall takes them out again. Without that sudo, one line says what's missing.
-root_hooks() { # root_hooks add|del
-	[ "$(id -u)" = 0 ] && return 0
-	if have sudo && sudo -n true </dev/null >/dev/null 2>&1; then
-		sudo -n sh "$APP/install.sh" --root-hooks "$1" "$APP/scripts/claude-hook.sh" </dev/null || true
-	elif [ "$1" = add ] && root_runs_claude; then
-		say "root's Claude Code sessions won't report their context left or get the agent-say note unless tmux-revive is installed as root too"
-	fi
+# 1.2.4, installed by a user who could sudo without a password, kept a copy of tmux-revive for
+# root in /usr/local/lib/tmux-revive, with hooks running it in root's Claude Code config. Root's
+# own install takes its place: its hooks replace those (they carry HOOK_TAG too), and this
+# removes the copy. Only ever as root. The tests can't be root: REVIVE_TEST_ROOT=1 stands in for
+# it, REVIVE_TEST_ROOT_PREFIX for the folder; never when really root.
+old_root_copy() {
+	if [ "$(id -u)" = 0 ]; then pf=/usr/local/lib/tmux-revive
+	elif [ "${REVIVE_TEST_ROOT:-}" = 1 ]; then pf=${REVIVE_TEST_ROOT_PREFIX:-}
+	else return 0; fi
+	case $pf in /?*) [ ! -d "$pf" ] || rm -rf "$pf" ;; esac
 }
-# Is there a sign that root runs Claude Code here: one running as root now, or root's config
-# folder where this user can see it?
-root_runs_claude() {
-	[ -d "$(root_home)/.claude" ] && return 0
-	ps -eo uid=,args= 2>/dev/null | awk '$1 == 0 && (index($0, "/claude ") || $2 == "claude" || $0 ~ /\/claude$/) { f = 1 } END { exit !f }'
+
+# tmux_owner: the uid of the tmux server a plain tmux command reaches (its socket's owner), or
+# nothing when there's none. my_uid: this user's; the tests can't be another user, so
+# REVIVE_TEST_UID stands in for it, never when really root.
+tmux_owner() {
+	ts=${TMUX:-}
+	ts=${ts%%,*}
+	[ -n "$ts" ] || ts=$(tmux list-sessions -F '#{socket_path}' 2>/dev/null | head -n 1)
+	[ -S "$ts" ] || return 0
+	stat -c %u "$ts" 2>/dev/null || stat -f %u "$ts" 2>/dev/null || :
 }
-# root's home. The tests can't be root: REVIVE_TEST_ROOT_HOME stands in for it, never as root.
-root_home() {
-	if [ "$(id -u)" != 0 ] && [ -n "${REVIVE_TEST_ROOT_HOME:-}" ]; then printf '%s' "$REVIVE_TEST_ROOT_HOME"
-	else
-		rh=~root
-		case $rh in /*) printf '%s' "$rh" ;; esac
-	fi
+my_uid() {
+	mu=$(id -u)
+	[ "$mu" = 0 ] || [ -z "${REVIVE_TEST_UID:-}" ] || mu=$REVIVE_TEST_UID
+	printf '%s' "$mu"
 }
-# Root's hooks, and the panel's --rows through sudo, never run files in a user's home: root
-# would go on running them after that user's sudo is taken away. They run a copy root owns in
-# ROOT_PREFIX/app, made fresh on each install and update. The tests can't be root:
-# REVIVE_TEST_ROOT_PREFIX stands in for the folder, REVIVE_TEST_ROOT_UID (default: you) for
-# root's uid, and the check stops at the folder above it (/tmp is anyone's); never as root.
-ROOT_PREFIX=/usr/local/lib/tmux-revive
-root_prefix() {
-	if [ "$(id -u)" = 0 ]; then printf '%s' "$ROOT_PREFIX"
-	else case ${REVIVE_TEST_ROOT_PREFIX:-} in /?*) printf '%s' "$REVIVE_TEST_ROOT_PREFIX" ;; esac
-	fi
-}
-# root_only PATH: PATH and every folder above it, up to /, are root's, none is a symbolic link,
-# and no group or other user may write to any of them.
-root_only() {
-	ru=0 top=/
-	if [ "$(id -u)" != 0 ] && [ -n "${REVIVE_TEST_ROOT_PREFIX:-}" ]; then
-		ru=${REVIVE_TEST_ROOT_UID:-$(id -u)} top=$(dirname "$REVIVE_TEST_ROOT_PREFIX")
-	fi
-	ro=$1
-	case $ro in /*) ;; *) return 1 ;; esac
-	while :; do
-		[ ! -L "$ro" ] && [ -n "$(find "$ro" -maxdepth 0 -user "$ru" ! -perm -g+w ! -perm -o+w 2>/dev/null)" ] || return 1
-		if [ "$ro" = "$top" ] || [ "$ro" = / ]; then return 0; fi
-		ro=$(dirname "$ro")
-	done
-}
-# root_copy APP: APP's bin, scripts, vendor tools and VERSION, as root's own files that only root
-# can change, in the root prefix's app. Made in app.new and swapped in whole.
-root_copy() {
-	pf=$(root_prefix)
-	[ -n "$pf" ] || return 1
-	own="-o 0 -g 0" # $own: those two options, or none
-	[ "$(id -u)" = 0 ] || own=""
-	# The folder above first, so nothing is left in one root doesn't own (Homebrew's /usr/local).
-	{ [ ! -d "$(dirname "$pf")" ] || root_only "$(dirname "$pf")"; } || return 1
-	# shellcheck disable=SC2086
-	install -d $own -m 0755 "$pf" && root_only "$pf" || return 1
-	new=$pf/app.new
-	rm -rf "$new" "$pf/app.old" || return 1
-	# shellcheck disable=SC2086
-	install -d $own -m 0755 "$new" "$new/bin" "$new/scripts" || return 1
-	# shellcheck disable=SC2086
-	[ ! -d "$1/vendor/bin" ] || install -d $own -m 0755 "$new/vendor" "$new/vendor/bin" || return 1
-	for f in "$1"/bin/* "$1"/scripts/* "$1"/vendor/bin/* "$1/VERSION"; do
-		[ -f "$f" ] && [ ! -L "$f" ] || continue
-		# shellcheck disable=SC2086
-		install $own -m 0755 "$f" "$new/${f#"$1"/}" || { rm -rf "$new"; return 1; }
-	done
-	[ -f "$new/scripts/claude-hook.sh" ] && [ -f "$new/bin/agent-say" ] || { rm -rf "$new"; return 1; }
-	{ [ ! -e "$pf/app" ] || mv "$pf/app" "$pf/app.old"; } && mv "$new" "$pf/app" || return 1
-	rm -rf "$pf/app.old"
-}
-# root_hooks_off DIRS HOOK...: the hooks that run any HOOK, out of the settings.json in DIRS.
-root_hooks_off() {
-	ds=$1
-	shift
-	for h in "$@"; do
-		printf '%s\n' "$ds" | while IFS= read -r d; do
-			f=$d/settings.json
-			[ -n "$d" ] && grep -qF "$h" "$f" 2>/dev/null || continue
-			if json_edit "$f" --arg t "$h" "$HOOK_DEL"; then
-				say "removed the agent-say hook from $f"
-			fi
-		done
-	done
-}
-# install.sh --root-hooks add|del HOOK, run as root by root_hooks: root's own copy of HOOK's
-# tmux-revive (HOOK is another user's claude-hook.sh) made, and hooks running it put into root's
-# Claude Code config folders; or both taken out again, with older ones that ran HOOK itself.
-# Only the folders that are there: root's ~/.claude, and any other ~/.claude* that has run
-# Claude. Root with its own tmux-revive keeps its own hooks.
-root_hooks_here() {
-	[ "$(id -u)" = 0 ] || [ -n "${REVIVE_TEST_ROOT_HOME:-}" ] || return 0
-	hook=$2
-	case $hook in /*/scripts/claude-hook.sh) ;; *) return 0 ;; esac
-	APP=${hook%/scripts/claude-hook.sh}
-	pf=$(root_prefix)
-	rh=$(root_home)
-	[ -n "$rh" ] && [ -n "$pf" ] || return 0
-	dirs=$(for d in "$rh"/.claude*; do
-		[ -d "$d" ] && { [ "$d" = "$rh/.claude" ] || [ -d "$d/sessions" ]; } && printf '%s\n' "$d"
-	done; :)
-	case $1 in
-	add)
-		[ -n "$dirs" ] || return 0
-		[ -e "$rh/.local/share/tmux-revive/app/scripts/claude-hook.sh" ] && return 0
-		if [ ! -r "$hook" ] || [ ! -x "$hook" ]; then
-			warn "root can't run $hook, so root's Claude Code sessions won't report their context left or get the agent-say note"
-			return 0
-		fi
-		if ! root_copy "$APP"; then
-			warn "couldn't make root's own copy in $pf, so root's Claude Code won't get the hooks"
-			root_hooks_off "$dirs" "$hook" "$pf/app/scripts/claude-hook.sh"
-			return 0
-		fi
-		APP=$pf/app
-		printf '%s\n' "$dirs" | while IFS= read -r d; do hook_add "$d"; done ;;
-	del)
-		root_hooks_off "$dirs" "$pf/app/scripts/claude-hook.sh" "$hook"
-		rm -rf "$pf/app" "$pf/app.new" "$pf/app.old"
-		rmdir "$pf" 2>/dev/null || : ;;
-	esac
+# tmux_ours: that server is this user's own, or there's none. Inside someone else's tmux (sudo
+# -i or su in one of their panes), it's theirs: their tmux-revive looks after it, and nothing
+# here sets options or hooks on it, loads into it or saves it.
+tmux_ours() {
+	to=$(tmux_owner)
+	[ -z "$to" ] || [ "$to" = "$(my_uid)" ]
 }
 
 # agent_note FILE START-COMMAND: tell an agent, in its own instructions file, what an
@@ -545,7 +449,6 @@ RULES
 		fi
 	done
 	hook_dirs | while IFS= read -r d; do hook_add "$d"; done
-	root_hooks add
 }
 
 agent_unsetup() {
@@ -570,7 +473,6 @@ agent_unsetup() {
 			say "removed the agent-say hook from $f"
 		fi
 	done
-	root_hooks del
 }
 
 pkg_install() { # best effort with whatever package manager is here
@@ -703,7 +605,7 @@ uninstall() {
 			say "removed tmux-revive from $rc"
 		fi
 	done
-	if have tmux && tmux info >/dev/null 2>&1; then
+	if have tmux && tmux_ours && tmux info >/dev/null 2>&1; then
 		for h in client-detached pane-exited after-kill-pane window-unlinked session-closed; do
 			tmux set-hook -gu "$h[77]" 2>/dev/null || true
 		done
@@ -712,7 +614,9 @@ uninstall() {
 		pkill -f "$APP/scripts/daemon.sh" 2>/dev/null || true
 	fi
 	agent_unsetup
+	"$APP/bin/agent-say" _user-installed - </dev/null >/dev/null 2>&1 || true
 	rm -f "$BIN/tmux-revive" "$BIN/agent-say"
+	old_root_copy
 	[ "$(id -u)" = 0 ] && grep -q "$AS_MARK" "$SHARED_AS" 2>/dev/null && rm -f "$SHARED_AS"
 	rm -rf "$APP"
 	if [ "${1:-}" = purge ]; then
@@ -728,7 +632,6 @@ uninstall() {
 # Everything that does something runs from main, called on the last line: a download cut
 # off part way through (curl | sh) is then a syntax error, not half an install.
 main() {
-	if [ "${1:-}" = --root-hooks ]; then root_hooks_here "${2:-}" "${3:-}"; exit 0; fi
 	wire_config=1
 	for a in "$@"; do
 		case $a in
@@ -860,6 +763,11 @@ main() {
 	now=$(cat "$APP/VERSION" 2>/dev/null) || now="?"
 	if [ -n "$was" ]; then say "tmux-revive $was -> $now, $origin"; else say "tmux-revive $now, $origin"; fi
 	if [ -n "${sha:-}" ]; then say "installed $REPO commit $sha to $APP"; else say "installed to $APP"; fi
+	# Inside someone else's tmux (sudo -i or su in one of their panes), their panel shows which
+	# tmux-revive this user has: agent-say keeps it in that user's state. Outside tmux, or in
+	# your own, nothing is kept.
+	! is_version "$now" || "$APP/bin/agent-say" _user-installed "$now" </dev/null >/dev/null 2>&1 || true
+	old_root_copy
 
 	# ------------------------------------------------------------ tmux config
 	wrapped=0 # the `tmux` hand-off went into a shell rc file
@@ -900,7 +808,12 @@ EOF
 	# revive.tmux sets @revive-loaded as its very last step, so a run that stopped
 	# partway (a run-shell failing under set -e would end the install without a word)
 	# doesn't pass for one that finished.
-	if tmux info >/dev/null 2>&1; then
+	if ! tmux_ours; then
+		ou=$(tmux_owner)
+		on=$(getent passwd "$ou" 2>/dev/null | cut -d: -f1)
+		[ -n "$on" ] || on=$(id -un "$ou" 2>/dev/null) || on="user $ou"
+		say "inside $on's tmux, so it's left to $on's tmux-revive"
+	elif tmux info >/dev/null 2>&1; then
 		prev=$(tmux show-option -gqv @revive-loaded 2>/dev/null) || prev=""
 		tmux set-option -gu @revive-loaded 2>/dev/null || true
 		if out=$(tmux run-shell "$(sq "$APP/revive.tmux" | sed 's/#/##/g')" 2>&1) &&
