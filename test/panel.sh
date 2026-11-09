@@ -781,13 +781,15 @@ ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey"
 : >"$T/known_hosts"
 fp=$(ssh-keygen -lf "$T/hostkey.pub" | awk '{print $2}')
 tm send-keys -t work:sshpanel l; sleep 0.7; tm send-keys -t work:sshpanel Enter
-check "picking a host ssh has no key for asks first" "wait_ssh 'HOST KEY OF devbox.example' && wait_ssh 'no key found in known_hosts' && wait_ssh \"No, don't link\""
+check "picking a host ssh has no key for asks yes or no, and says none was found" "wait_ssh 'LINK devbox.example?' && wait_ssh 'no key found (not in known_hosts' && wait_ssh \"No, don't link\" && wait_ssh 'Yes, link devbox.example'"
 tm send-keys -t work:sshpanel Enter
 check "No links nothing" "wait_ssh 'link cancelled' && [[ ! -e $(dirname "$AGENT_SAY_MAILBOX")/links/devbox.example ]]"
-# A host ssh already trusts (its key in known_hosts) links as ssh would reach it: no question.
+# A host ssh already trusts (its key in known_hosts): only yes or no, Yes first, its key shown.
 printf 'devbox.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >"$T/known_hosts"
 tm send-keys -t work:sshpanel l; sleep 0.7; tm send-keys -t work:sshpanel Enter
-check "a host ssh already trusts links with no question, and shows what happened" "wait_ssh \"couldn't run agent-say on devbox.example\" && ! sshscreen | grep -q 'HOST KEY OF'"
+check "a host ssh already trusts: one yes or no, with the key from your known_hosts, no list of keys" "wait_ssh 'LINK devbox.example?' && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -q '1 *Yes, link devbox.example' && ! sshscreen | grep -q 'its key is'"
+tm send-keys -t work:sshpanel Enter
+check "Enter links it, and shows what happened" "wait_ssh \"couldn't run agent-say on devbox.example\""
 # Pretend the link is up, then take it down with U.
 st=$(dirname "$AGENT_SAY_MAILBOX"); mkdir -p "$st/links/devbox.example"; touch "$st/links/devbox.example/on"
 # What the link lets that computer do shows beside it.
@@ -798,6 +800,42 @@ tm send-keys -t work:sshpanel u; sleep 0.7
 check "U opens a popup listing the links" "wait_ssh 'UNLINK' && sshscreen | grep -q 'devbox.example  ·'"
 tm send-keys -t work:sshpanel 1
 check "a number picks from the list and unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $st/links/devbox.example ]]"
+# A link that fails (here: stopped on another key than the one linked). L offers to link it again:
+# it unlinks, then links with the key ssh uses now, after one yes or no. Or unlinks it.
+sk=$st/links/devbox.example
+ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/oldkey"
+broken() { mkdir -p "$sk"; touch "$sk/on"; echo "$(ssh-keygen -lf "$T/oldkey.pub" | awk '{print $2}') (ED25519)" >"$sk/fingerprint"
+	echo "stopped: host key changed since you linked it. Press L to link it again" >"$sk/error"; }
+broken
+check "LINKS says the failing link's error plainly" "wait_ssh 'devbox.example stopped: host key changed'"
+tm send-keys -t work:sshpanel l; sleep 0.7
+check "L offers the failing link, to link again" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q 'devbox.example  · stopped: host key changed.* · link again'"
+tm send-keys -t work:sshpanel Enter
+check "picking it asks: leave it, link it again, or unlink it" "wait_ssh 'LINK devbox.example AGAIN?' && wait_ssh 'No, leave it as it is' && wait_ssh 'Yes, link devbox.example again' && wait_ssh 'Unlink devbox.example'"
+tm send-keys -t work:sshpanel 2
+check "linking again shows the key ssh uses now, as one yes or no" "wait_ssh 'LINK devbox.example?' && wait_ssh 'key from your known_hosts: $fp (ED25519)'"
+tm send-keys -t work:sshpanel Enter
+check "and yes unlinks the old one and links again (its old key and error gone)" "wait_ssh \"couldn't run agent-say on devbox.example\" && [[ ! -e $sk/on && ! -e $sk/error && ! -e $sk/fingerprint ]]"
+broken
+tm send-keys -t work:sshpanel l; sleep 0.7; wait_ssh 'link again' >/dev/null; tm send-keys -t work:sshpanel Enter
+wait_ssh 'LINK devbox.example AGAIN?' >/dev/null; tm send-keys -t work:sshpanel 1
+check "No there leaves it as it was" "wait_ssh 'link cancelled' && [[ -e $sk/on && -s $sk/error ]]"
+tm send-keys -t work:sshpanel l; sleep 0.7; wait_ssh 'link again' >/dev/null; tm send-keys -t work:sshpanel Enter
+wait_ssh 'LINK devbox.example AGAIN?' >/dev/null; tm send-keys -t work:sshpanel 3
+check "Unlink there unlinks the failing link" "wait_ssh 'unlinked devbox.example' && [[ ! -e $sk ]]"
+broken
+tm send-keys -t work:sshpanel u; sleep 0.7; wait_ssh 'UNLINK' >/dev/null; tm send-keys -t work:sshpanel 1
+check "and so does U" "wait_ssh 'unlinked devbox.example' && [[ ! -e $sk ]]"
+# A link stopped on a failure (paused): LINKS says why, and L tries it once more, with its key.
+mkdir -p "$sk"; touch "$sk/on" "$sk/paused"; echo "$fp (ED25519)" >"$sk/fingerprint"
+echo "can't reach (connection timed out) · L to try again" >"$sk/error"
+check "LINKS shows a stopped link's reason, and that L tries again" "wait_ssh \"devbox.example can't reach (connection timed out)\""
+tm send-keys -t work:sshpanel l; sleep 0.7
+check "L offers it, to try again" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q \"devbox.example  · can't reach (connection timed out) · try again\""
+tm send-keys -t work:sshpanel Enter
+check "picking it tries once, with no questions, and says why it failed again" "wait_ssh 'devbox.example: ssh to devbox.example failed' && ! sshscreen | grep -q 'AGAIN?' && [[ -e $sk/paused && -e $sk/on ]] && grep -q 'L to try again' $sk/error"
+tm send-keys -t work:sshpanel u; sleep 0.7; wait_ssh 'UNLINK' >/dev/null; tm send-keys -t work:sshpanel 1
+check "U unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $sk ]]"
 tm send-keys -t work:sshpanel q
 tm kill-window -t work:remote 2>/dev/null
 
@@ -849,7 +887,7 @@ check "and its shell panes too" "grep -A3 'FAR.EXAMPLE' <<<\"\$out\" | grep -q '
 check "the whole frame still fits" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
 # With a key confirmed for the link, the panel's calls are bound to it, as agent-say's are; a key
 # revoked since the pin was built is refused on the very next call.
-printf '#!/bin/bash\n[[ $1 == -G ]] || echo "$*" >>%q\nexec %q "$@"\n' "$T/far.calls" "$T/fakessh" >"$T/logssh"; chmod +x "$T/logssh"
+printf '#!/bin/bash\n[[ $1 == -G || $1 == -O ]] || echo "$*" >>%q\nexec %q "$@"\n' "$T/far.calls" "$T/fakessh" >"$T/logssh"; chmod +x "$T/logssh"
 printf 'far.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >>"$T/known_hosts"
 echo "$fp (ED25519)" >"$st/links/far.example/fingerprint"
 rm -f "$st/panel/far.example.rows"*
@@ -1376,9 +1414,10 @@ login_typed() {
 }
 wait_pw 'C O N T R O L' >/dev/null
 wait_pw 'pw.example · ssh in' >/dev/null
-# pw.example is in known_hosts: ssh trusts it, so L asks no key, and the password goes to that key.
+# pw.example is in known_hosts: ssh trusts it, so L asks only yes or no, and the password goes to that key.
 tm send-keys -t work:pwpanel l; wait_pw 'LINK AGENTS ON' >/dev/null; tm send-keys -t work:pwpanel Enter
-check "L on a host that wants a password opens a login, where ssh asks for it" "login_typed hunter2 && ! pws | grep -q 'HOST KEY OF'"
+wait_pw 'key from your known_hosts' >/dev/null; tm send-keys -t work:pwpanel Enter
+check "L on a host that wants a password opens a login, where ssh asks for it" "login_typed hunter2"
 check "and once it's typed, the link is made" "wait_pw 'linked to pw.example' 75 && [[ -e $pwl/on && -e $T/pw.master ]]"
 check "the poller and the panel's calls over it ask nothing more" "wait_pw 'far-top' 75 && [[ \$(grep -c 'ControlMaster=yes' $T/pwssh.log) == 1 ]]"
 check "LINKS shows it linked" "wait_pw 'pw.example · linked' 50"
@@ -1410,7 +1449,7 @@ login_win() { tm list-windows -t work -F '#{window_id} #{window_name}' | awk '$2
 link_pw() {
 	wait_pw 'pw.example · ssh in' 50 >/dev/null
 	tm send-keys -t work:pwpanel l; wait_pw 'LINK AGENTS ON' >/dev/null; tm send-keys -t work:pwpanel Enter
-	wait_pw 'HOST KEY OF pw.example' >/dev/null; tm send-keys -t work:pwpanel 2
+	wait_pw 'new host: first key seen' >/dev/null; tm send-keys -t work:pwpanel 2
 }
 link_pw
 check "with another key presented, it stops there: no login opens, nothing is asked or linked" "wait_pw \"pw.example's host key isn't the one you confirmed; not linked\" 50 && [[ -z \$(login_win) && \$(prompts) == $p && ! -e $T/pw.master && ! -e $pwl/on ]]"

@@ -208,9 +208,12 @@ off.
 ### Linked computers in the panel
 
 When a pane ssh's into another computer, the panel spots it and offers to link the
-agents there. **L** links it and **U** unlinks it. Before linking, it shows you
-the computer's host key to confirm wherever ssh itself would ask, and pops up a
-box for the password if the server takes one.
+agents there. **L** links it and **U** unlinks it. Linking is one yes or no: the
+panel finds the key ssh already uses for that computer (your known_hosts, or the
+ssh connection you have open to it) and shows it, and pops up a box for the
+password if the server takes one. A link that stops working shows why in LINKS,
+and **L** on it tries it once more. **L** on a working link links it again or
+unlinks it.
 
 Once linked, that computer's panes show up in the list too, grouped under its
 name, with their USER and VER. Select one of your panes there and press **V** to
@@ -341,11 +344,21 @@ with its `HostName`, `Port`, `HostKeyAlias` and known_hosts files.
 
 If ssh already trusts the server (its key is in a known_hosts file ssh reads for
 it), it links with no questions, and that key is recorded with the link. Linking
-it again while it still has the key you confirmed asks nothing either. Only where
-ssh itself would ask, like a key it doesn't know or a config with
-`UserKnownHostsFile /dev/null`, does it show you the server's host key fingerprint
-and ask you to confirm it. From a script, add `--yes` once you've checked it, or
-`--fingerprint 'SHA256:... (TYPE)'` to link it to exactly that key.
+it again while it still has the key you confirmed asks nothing either. With no
+key in known_hosts (say `UserKnownHostsFile /dev/null`) but an ssh connection of
+yours open to it through a `ControlMaster`, it reads the server's key through that
+connection and links with that, and the link uses that connection too while it is
+open. Only for a server you've never connected to does it show you a fingerprint
+(the key type ssh would pick) and ask you to confirm it. From a script, add
+`--yes` once you've checked it, or `--fingerprint 'SHA256:... (TYPE)'` to link it
+to exactly that key.
+
+A link that can't reach its server doesn't keep trying, so a server's fail2ban
+never takes it for an attack. If a working link drops, it tries once more right
+away, then stops and LINKS says why, like `can't reach (connection timed out) · L
+to try again`. Nothing reconnects by itself after that, not even when tmux starts
+again. **L** in the panel, or `agent-say link <host>`, tries once more. ssh's own
+error is kept in `links/<host>/log` in agent-say's state folder.
 
 If that key changes later, or you revoke it (`@revoked` in known_hosts), the link
 stops and `agent-say link` says so. It stays stopped until you link again and

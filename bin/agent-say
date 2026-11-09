@@ -169,9 +169,8 @@ LINK_INTERVAL="${AGENT_SAY_LINK_INTERVAL:-2}"
 # panel's calls over a link use the same socket, so they share it too.
 CONTROL="ControlPath=$STATE/ssh-%C"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ControlMaster=auto -o "$CONTROL" -o ControlPersist=120)
-# A link to a host that wants a password tries again on its own this often (seconds) while no
-# login is open: each try is one refused login in that host's log, so not every 2 s.
-LOGIN_RETRY="${AGENT_SAY_LOGIN_RETRY:-300}"
+# Where a server keeps its host keys, read through an ssh connection you already have open.
+HOSTKEY_FILES="${AGENT_SAY_HOSTKEY_FILES:-/etc/ssh/ssh_host_*_key.pub}"
 
 # Pane of the caller: walk up the process tree until we reach a pane's shell.
 # $TMUX_PANE is only a fallback: Codex runs commands in a shared app-server daemon whose
@@ -428,8 +427,42 @@ queue_local() { # queue_local FROM TO MESSAGE
 ssh_to() { # ssh_to HOST REMOTE-COMMAND (stdin passes through)
 	[[ "$1" != -* ]] || die "not a host: $1"
 	mkdir -p "$STATE"
+	# An ssh connection of your own already open to it (your config's ControlPath): ride that,
+	# with no new connection, once it shows the key confirmed (see riding).
+	if riding "$1"; then
+		$SSH "${MUX_OPTS[@]}" "$1" "$2"
+		return
+	fi
 	pin_opts "$1" || return 255
 	$SSH "${SSH_OPTS[@]}" "${PIN_OPTS[@]}" "$1" "$2"
+}
+# Your own ssh's open connection to HOST (a ControlMaster your config names): its pid, or fails.
+user_master() { $SSH -O check "$1" 2>&1 </dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | grep . || return 1; }
+# Through that connection only: never a new one (ProxyCommand false), and nothing to decide
+# about a key on it (no key ever accepted: known_hosts /dev/null, strictly).
+MUX_OPTS=(-o BatchMode=yes -o ControlMaster=no -o ProxyCommand=false -o StrictHostKeyChecking=yes
+	-o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null)
+# master_keys HOST: the host's key lines ("x type key"), read from its key files through that
+# open connection: the computer you are logged into, with no new connection made.
+master_keys() {
+	timeout 15 $SSH "${MUX_OPTS[@]}" "$1" "cat $HOSTKEY_FILES" 2>/dev/null </dev/null |
+		awk '$1 ~ /^(ssh-|ecdsa-|sk-)/ && NF >= 2 {print "x", $1, $2}' | sort -u || true
+}
+# riding HOST: may a link's ssh go through your own open connection to it? Only when one is open,
+# and its host shows a key confirmed for the link, not revoked (looked at once per connection,
+# by its pid): a connection through it makes no key check of its own.
+riding() {
+	local d="$STATE/links/$1" pid fps mark
+	pid="$(user_master "$1")" || return 1
+	fps="${PIN_FPS:-$(cat "$d/fingerprint" 2>/dev/null || true)}"
+	kh_find "$1"
+	fps="$(not_revoked "$fps" "$(kh_revoked)")"
+	[[ -n $fps ]] || return 1
+	mark="$pid $(paste -sd, - <<<"$fps")"
+	[[ "$(cat "$d/ride" 2>/dev/null || true)" == "$mark" ]] && return 0
+	master_keys "$1" | ssh-keygen -lf - 2>/dev/null | awk '{print $2, $NF}' | grep -qxF -f <(printf '%s\n' "$fps") || return 1
+	[[ -d $d ]] && echo "$mark" >"$d/ride"
+	return 0
 }
 
 # --- logging in --------------------------------------------------------------------------
@@ -600,19 +633,48 @@ link_running() {
 	pid="$(cat "$d/pid" 2>/dev/null)" && [[ -n "$pid" && "$(ps -ww -o args= -p "$pid" 2>/dev/null)" == *"_poll $1"* ]]
 }
 
+# A link's check-in that failed: what ssh said, kept whole in links/<host>/log (its last 200
+# lines), and in a few plain words for the panel's LINKS and agent-say link.
+link_log() { # link_log STDERR-FILE (in the link's dir)
+	local f=$1 log
+	log="$(dirname "$f")/log"
+	[[ -s $f ]] || return 0
+	sed "s/^/$(date -u +%FT%TZ) /" "$f" >>"$log"
+	(($(wc -l <"$log") > 200)) && { tail -n 200 "$log" >"$log.$$" && mv "$log.$$" "$log"; }
+	return 0
+}
+link_why() { # link_why HOST STATUS STDERR-FILE
+	local e
+	e="$(cat "$3" 2>/dev/null || true)"
+	(($2 == 127)) && { echo "agent-say isn't installed there"; return; }
+	case $e in
+		*"timed out"*) echo "can't reach (connection timed out)" ;;
+		*"Connection refused"*) echo "can't reach (connection refused)" ;;
+		*"Could not resolve hostname"* | *"Name or service not known"* | *"nodename nor servname"*) echo "can't reach (no such host name)" ;;
+		*"No route to host"* | *"Network is unreachable"*) echo "can't reach (no network route)" ;;
+		*"Connection closed"* | *"Connection reset"* | *"kex_exchange_identification"* | *"Broken pipe"*) echo "can't reach (connection closed)" ;;
+		*"Host key verification failed"*) echo "host key doesn't match: press L to link again" ;;
+		*"Permission denied"* | *"Too many authentication failures"*) echo "login refused (key)" ;;
+		"agent-say: "*) e="${e#agent-say: }"; echo "${e%%$'\n'*}" ;;
+		"") echo "ssh to $1 failed (status $2)" ;;
+		*) e="${e%%$'\n'*}"; echo "${e:0:80}" ;;
+	esac
+}
+
 # The host keys ssh checks a host against, as fingerprints ("SHA256:... (ED25519)", sorted),
 # from the known_hosts files ssh itself reads for it (kh_keys after kh_find); a host not in
 # them is asked with ssh-keyscan instead (kh_scan), so a first link has something to show.
 # All of it as ssh resolves HOST (ssh -G): its HostName and Port, the known_hosts files it reads,
 # and the name it looks the key up by in them (HostKeyAlias as is, else name or [name]:port).
-kh_find() { # kh_find HOST -> KH_KEY (as known_hosts names it), KH_FILES, KH_NAME and KH_PORT
+kh_find() { # kh_find HOST -> KH_KEY (as known_hosts names it), KH_FILES, KH_NAME, KH_PORT, KH_ALGS
 	local name=$1 port=22 alias="" k v f
-	KH_FILES=()
+	KH_FILES=() KH_ALGS=""
 	while read -r k v; do
 		case $k in
 			hostname) name=$v ;;
 			port) port=$v ;;
 			hostkeyalias) alias=$v ;;
+			hostkeyalgorithms) KH_ALGS=$v ;;
 			userknownhostsfile | globalknownhostsfile) for f in $v; do KH_FILES+=("${f/#\~/$HOME}"); done ;;
 		esac
 	done < <(timeout 5 $SSH -G "$1" 2>/dev/null </dev/null)
@@ -665,11 +727,16 @@ keys_changed() { # keys_changed CONFIRMED NOW
 #   trusted   never linked, but ssh trusts it (a key in a known_hosts file ssh reads for it)
 #             and wouldn't ask: nothing asked, and that key is the one recorded
 #   changed   linked before, and known_hosts has another key for it now: asked, with a warning
+#   live      never linked, ssh keeps no key for it, but a connection of yours is open to it:
+#             the key it uses, read through that connection, nothing new connected
 #   unknown   ssh would ask too (no known_hosts key for it, none recorded): from ssh-keyscan
 # A key confirmed and since revoked counts as changed; a revoked key is never one shown.
+# KEYS go first-preferred first (prefer_keys); for live and unknown, only that one. KEY_FRESH
+# set: as for a host never linked (the panel's "link again", before it unlinks).
 key_state() {
 	local was now rev
-	was="$(cat "$STATE/links/$1/fingerprint" 2>/dev/null || true)"
+	was=""
+	[[ -n ${KEY_FRESH:-} ]] || was="$(cat "$STATE/links/$1/fingerprint" 2>/dev/null || true)"
 	kh_find "$1"
 	rev="$(kh_revoked)"
 	if [[ -n $was ]]; then
@@ -684,8 +751,31 @@ key_state() {
 		fi
 		return 0
 	fi
-	KEY_STATE=trusted KEYS="$(kh_keys)"
-	[[ -n $KEYS ]] || KEY_STATE=unknown KEYS="$(not_revoked "$(kh_scan)" "$rev")"
+	KEY_STATE=trusted KEYS="$(prefer_keys "$(kh_keys)")"
+	[[ -z $KEYS ]] && user_master "$1" >/dev/null &&
+		KEY_STATE=live KEYS="$(prefer_keys "$(not_revoked "$(master_keys "$1" | ssh-keygen -lf - 2>/dev/null | awk '{print $2, $NF}' | sort -u)" "$rev")" | head -n 1)"
+	[[ -n $KEYS ]] || KEY_STATE=unknown KEYS="$(prefer_keys "$(not_revoked "$(kh_scan)" "$rev")" | head -n 1)"
+}
+# prefer_keys FINGERPRINTS: in the order ssh would pick their types (ssh -G's hostkeyalgorithms,
+# after kh_find), the one it would use first.
+prefer_keys() {
+	local a t order="" fp
+	[[ -n $1 ]] || return 0
+	for a in ${KH_ALGS//,/ } ssh-ed25519 ecdsa-sha2-nistp256 sk-ssh-ed25519@openssh.com sk-ecdsa-sha2-nistp256@openssh.com rsa-sha2-512 ssh-dss; do
+		case ${a%%-cert-v01@openssh.com} in
+			ssh-ed25519) t=ED25519 ;;
+			sk-ssh-ed25519@openssh.com) t=ED25519-SK ;;
+			ecdsa-sha2-*) t=ECDSA ;;
+			sk-ecdsa-sha2-*) t=ECDSA-SK ;;
+			rsa-sha2-* | ssh-rsa) t=RSA ;;
+			ssh-dss) t=DSA ;;
+			*) continue ;;
+		esac
+		[[ " $order " == *" $t "* ]] || order+=" $t"
+	done
+	for t in $order; do grep -F -- "($t)" <<<"$1" || true; done
+	# Any of a type not named above, last.
+	while read -r fp; do t=${fp##*(}; [[ -z $fp || " $order " == *" ${t%)} "* ]] || echo "$fp"; done <<<"$1"
 }
 
 # Where else a name lives: "name@host" for each linked machine that has a pane by that name.
@@ -1639,6 +1729,7 @@ case "$cmd" in
 			die "$host's host key changed since you linked it, so it's not linked. Confirm the new one with agent-say link $host"
 		else
 			[[ $KEY_STATE == trusted ]] && { echo "$host's host key, as ssh already trusts it (known_hosts):"; sed 's/^/  /' <<<"$keys"; }
+			[[ $KEY_STATE == live ]] && { echo "$host's host key, read through your open ssh connection to it:"; sed 's/^/  /' <<<"$keys"; }
 			[[ $KEY_STATE == changed || $KEY_STATE == unknown ]] && confirm_keys
 		fi
 		mkdir -p "$d"
@@ -1690,6 +1781,9 @@ case "$cmd" in
 			rc=0; link_check || rc=$?
 		fi
 		if ((rc)); then
+			# Tried once, and that's all: a link there already says why, and stays stopped.
+			link_log "$d/check.err"
+			[[ -f "$d/on" ]] && echo "$(link_why "$host" "$rc" "$d/check.err") · L to try again" >"$d/error" && touch "$d/paused"
 			cat "$d/check.err" >&2; rm -f "$d/check.err"
 			die "couldn't run agent-say on $host over ssh. It needs ssh to log in (with a key, or once with its password), and agent-say installed there (run the tmux-revive installer on $host)."
 		fi
@@ -1700,7 +1794,7 @@ case "$cmd" in
 		[[ -n $keys ]] || { tofu_record "$host" && [[ -s "$d/fingerprint" ]] && echo "recorded $host's host key on first use: $(paste -sd, "$d/fingerprint")"; } || true
 		was_on=""; [[ -f "$d/on" ]] && was_on=1
 		touch "$d/on"
-		rm -f "$d/error" "$d/login"
+		rm -f "$d/error" "$d/login" "$d/paused"
 		start_poller "$host"
 		echo "linked to $host as '$LABEL'. Its panes: $(tr '\n' ' ' <"$d/names")"
 		[[ -f "$d/read-only" ]] && echo "Read-only: what its agents send here is held in the mailbox (agent-say read), not typed in."
@@ -1713,11 +1807,18 @@ case "$cmd" in
 		[[ -d "$d" ]] || die "no link to $2"
 		rm -f "$d/on"
 		pid="$(cat "$d/pid" 2>/dev/null || true)"
-		[[ -n "$pid" && "$(ps -ww -o args= -p "$pid" 2>/dev/null)" == *"_poll $2"* ]] && kill "$pid" 2>/dev/null
+		if [[ -n "$pid" && "$(ps -ww -o args= -p "$pid" 2>/dev/null)" == *"_poll $2"* ]]; then
+			# The poller and what it runs (an ssh waiting on a host that doesn't answer, say): its
+			# whole process group when it leads one (started by setsid), else itself.
+			pg="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+			if [[ -n $pg && "$(ps -ww -o args= -p "$pg" 2>/dev/null)" == *"_poll $2"* ]]; then kill -- "-$pg" 2>/dev/null; else kill "$pid" 2>/dev/null; fi
+		fi
 		# Tell the other side, so what it still holds for us is marked NOT DELIVERED there
 		# instead of waiting for a check-in that won't come.
-		# Bound to its confirmed key, as every connection to it is.
-		{ pin_opts "$2" 2>/dev/null && echo B | timeout 15 $SSH "${SSH_OPTS[@]}" "${PIN_OPTS[@]}" "$2" "$REMOTE_CMD _sync $(printf %q "$LABEL")" >/dev/null 2>&1; } ||
+		# Bound to its confirmed key, as every connection to it is (or through your own open one).
+		# Not for a link stopped on a failure: that would be one more failed try on its server.
+		{ [[ ! -f "$d/paused" ]] && if riding "$2"; then echo B | timeout 15 $SSH "${MUX_OPTS[@]}" "$2" "$REMOTE_CMD _sync $(printf %q "$LABEL")" >/dev/null 2>&1
+		else pin_opts "$2" 2>/dev/null && echo B | timeout 15 $SSH -o ConnectTimeout=5 "${SSH_OPTS[@]}" "${PIN_OPTS[@]}" "$2" "$REMOTE_CMD _sync $(printf %q "$LABEL")" >/dev/null 2>&1; fi; } ||
 			echo "agent-say: couldn't tell $2; messages it holds for here wait until you link again" >&2
 		# Its connection, a login kept open included, closes with it.
 		$SSH -o "$CONTROL" -O exit "$2" >/dev/null 2>&1 </dev/null || true
@@ -1728,7 +1829,10 @@ case "$cmd" in
 		# "state: <key_state>" (recorded, trusted, changed, unknown), then its keys.
 		# --new: for a link turned away for its key, the keys ssh-keyscan shows now that aren't
 		# the one recorded, to show you as a changed key ("state: changed"; none: no other to show).
-		valid_host "${2:-}" || die "usage: agent-say _host-keys <ssh-host> [--new]"
+		# --fresh: as if it had never been linked (the panel's "link again", before it unlinks).
+		# Its keys go first-preferred first, the one ssh would use.
+		valid_host "${2:-}" || die "usage: agent-say _host-keys <ssh-host> [--new | --fresh]"
+		[[ ${3:-} == --fresh ]] && KEY_FRESH=1
 		if [[ ${3:-} == --new ]]; then
 			was="$(cat "$STATE/links/$2/fingerprint" 2>/dev/null || true)"
 			kh_find "$2"; keys="$(not_revoked "$(kh_scan)" "$(kh_revoked)")"
@@ -1746,6 +1850,12 @@ case "$cmd" in
 		rc=0; link_pin "$2" || rc=$?
 		((rc == 0)) && echo "$PIN"
 		exit "$rc" ;;
+	_ride)
+		# For the panel: may its calls to a linked host go through your own open ssh connection
+		# to it (it shows the key confirmed for the link)? Then it uses the options printed.
+		valid_host "${2:-}" && [[ -s "$STATE/links/$2/fingerprint" ]] || exit 1
+		riding "$2" || exit 1
+		printf '%s\n' "${MUX_OPTS[@]}" ;;
 	_login)
 		# The panel's L for a host that wants a password, run in a popup over the panel: ssh's own
 		# prompts, typed straight into ssh. --check: is a login open for it? The keys a password
@@ -1768,19 +1878,22 @@ case "$cmd" in
 		[[ -t 0 ]] && { read -r -p "Not logged in to $host. Press Enter to close. " _ || true; }
 		exit 1 ;;
 	_resume-links)
-		# After a reboot (run by tmux-revive when tmux starts): restart every link that was on.
+		# After a reboot (run by tmux-revive when tmux starts): restart every link that was on,
+		# but one stopped on a failure: that waits for you (L, or agent-say link HOST).
 		for d in "$STATE"/links/*/; do
-			[[ -f "$d/on" ]] && start_poller "$(basename "$d")"
+			[[ -f "$d/on" && ! -f "$d/paused" ]] && start_poller "$(basename "$d")"
 		done
 		exit 0 ;;
 	_poll)
-		host="$2" d="$STATE/links/$2" fails=0 retry_at=0
+		host="$2" d="$STATE/links/$2" fails=0 worked="" retried=""
 		valid_host "$host" && [[ -d "$d" ]] || exit 1
-		# One poller per link: a second one (two tmux starts at once) leaves.
-		if command -v flock >/dev/null; then
-			exec {lockfd}>"$d/lock"
-			flock -n "$lockfd" || exit 0
+		# One poller per link: a second one (two tmux starts at once) leaves. The lock is held by
+		# flock itself, around this poller (-o: not handed to it), so nothing the poller starts in
+		# the background (a message waiting for a busy pane, for a day) holds it after it ends.
+		if command -v flock >/dev/null && [[ -z ${AGENT_SAY_POLL_LOCKED:-} ]]; then
+			AGENT_SAY_POLL_LOCKED=1 exec flock -n -o "$d/lock" "$0" _poll "$host"
 		fi
+		unset AGENT_SAY_POLL_LOCKED
 		echo $$ >"$d/pid"
 		touch "$d/acks"
 		# Every check-in is bound to the host key confirmed at link time (ssh_to, link_pin): a
@@ -1799,8 +1912,8 @@ case "$cmd" in
 			fi
 			fails=0
 			# Waiting for a login (press L in the panel): nothing goes over the network until one
-			# is open, but for a try every LOGIN_RETRY seconds (a key that comes back, say).
-			if [[ -f "$d/login" ]] && ((SECONDS < retry_at)) && ! master_up "$host"; then
+			# is open. Each try would be a refused login in that host's log.
+			if [[ -f "$d/login" ]] && ! master_up "$host"; then
 				sleep 2; continue
 			fi
 			# Acks live on disk until the other side has them, so a restart can't redeliver.
@@ -1810,6 +1923,7 @@ case "$cmd" in
 			if out="$( { local_names | sed 's/^/N /'; via_names "$host"; sed 's/^/A /' "$d/acks.sent"; } |
 				ssh_to "$host" "$REMOTE_CMD _sync $(printf %q "$LABEL")" 2>"$d/error.new")"; then
 				rm -f "$d/error" "$d/error.new" "$d/login"
+				worked=1 retried=""
 				[[ -s "$d/fingerprint" ]] || tofu_record "$host"
 				grep -vxFf "$d/acks.sent" "$d/acks" >"$d/acks.new" || true
 				mv "$d/acks.new" "$d/acks"
@@ -1927,9 +2041,11 @@ case "$cmd" in
 			else
 				rc=$?
 				# Turned away for its host key: it isn't the computer you confirmed. The link stops.
+				link_log "$d/error.new"
 				if [[ -s "$d/fingerprint" ]] && grep -q 'Host key verification failed' "$d/error.new" 2>/dev/null; then
-					echo "stopped: $host's host key changed since you linked it. If you expected that, see the new one with agent-say link $host" >"$d/error"
+					echo "stopped: host key changed since you linked it. Press L to link it again" >"$d/error"
 					rm -f "$d/error.new" "$d/login"
+					touch "$d/paused"
 					break
 				fi
 				# Its login dropped (or it never had one): say so, and wait for one. Only you open it.
@@ -1937,12 +2053,22 @@ case "$cmd" in
 					echo "needs login: $host asks for a password; press L in the panel, or run: agent-say link $host" >"$d/error"
 					rm -f "$d/error.new"
 					touch "$d/login"
-					retry_at=$((SECONDS + LOGIN_RETRY))
 					sleep 2; continue
 				fi
 				rm -f "$d/login"
-				[[ -s "$d/error.new" ]] && mv "$d/error.new" "$d/error" || echo "ssh to $host failed" >"$d/error"
-				sleep 10
+				# A link that was working and drops: one more try, at once (a connection that closed
+				# under it, say). Otherwise, or failing again, it stops: a server whose fail2ban counts
+				# failed connections would shut you out. It tries again only when you say (L, or
+				# agent-say link HOST). What went wrong, in a few words; ssh's own are in its log.
+				if [[ -n $worked && -z $retried ]]; then
+					retried=1
+					rm -f "$d/error.new"
+					continue
+				fi
+				echo "$(link_why "$host" "$rc" "$d/error.new") · L to try again" >"$d/error"
+				rm -f "$d/error.new"
+				touch "$d/paused"
+				break
 			fi
 		done
 		rm -f "$d/pid" ;;

@@ -1017,12 +1017,22 @@ remote_run() { # remote_run HOST COMMAND: run it on that computer over the link'
 	# The same socket as agent-say's link (its CONTROL), so a login opened for the link (a host
 	# that wants a password) carries these too. While the link waits for one, nothing is tried:
 	# each try would be a refused login in that host's log.
-	[[ -f $ASTATE/links/$1/login ]] && return 255
+	# Nor while it is stopped on a failure: each try would be one more failed connection there
+	# (a server's fail2ban counts them). It waits for you to press L.
+	[[ -f $ASTATE/links/$1/login || -f $ASTATE/links/$1/paused ]] && return 255
 	# Bound to the host key you confirmed for the link, as agent-say's own calls are: ssh checks
 	# it against the link's pin, whatever the ssh config says. agent-say _pin checks it afresh
 	# on every call (a key revoked since, the fingerprint changed) and rebuilds it as needed; a
 	# link it refuses gets nothing sent.
 	local l=$ASTATE/links/$1 pin=() p
+	# Or through your own open ssh connection to it, as the link's poller goes (agent-say _ride
+	# says when, and how: it shows the key confirmed for the link, and no new connection is made).
+	if [[ -s $l/fingerprint ]] && mapfile -t pin < <(timeout 20 "$ASAY" _ride "$1" </dev/null 2>/dev/null) && ((${#pin[@]})); then
+		# shellcheck disable=SC2086
+		timeout "${RTIMEOUT:-8}" ${AGENT_SAY_SSH:-ssh} "${pin[@]}" "$1" "$2" </dev/null 2>/dev/null
+		return
+	fi
+	pin=()
 	if [[ -s $l/fingerprint ]]; then
 		p=$(timeout 20 "$ASAY" _pin "$1" </dev/null 2>/dev/null) && [[ -s $p ]] || return 255
 		pin=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$p" -o GlobalKnownHostsFile=/dev/null
@@ -2050,14 +2060,15 @@ code_popup() {
 	rm -f "$out"
 }
 
-# read_host_keys HOST -> KEYS: its key fingerprints, as agent-say link would show them, and
-# KEY_STATE: whether link would ask you to confirm them (agent-say's key_state: recorded,
-# trusted, changed, unknown; anything else is taken as unknown, so it asks).
+# read_host_keys HOST [--new | --fresh] -> KEYS: its key fingerprints, the one ssh would use
+# first, and KEY_STATE: where they came from (agent-say's key_state: recorded, trusted (your
+# known_hosts), live (read through your open ssh connection), changed, unknown (first seen by
+# ssh-keyscan); anything else is taken as unknown).
 read_host_keys() {
 	local k
 	KEYS=() KEY_STATE=unknown
 	while IFS= read -r k; do
-		if [[ $k =~ ^state:\ (recorded|trusted|changed|unknown)$ ]]; then KEY_STATE=${BASH_REMATCH[1]}
+		if [[ $k =~ ^state:\ (recorded|trusted|live|changed|unknown)$ ]]; then KEY_STATE=${BASH_REMATCH[1]}
 		elif [[ $k =~ ^SHA256:[A-Za-z0-9+/=]{1,64}\ \([A-Z0-9-]{1,16}\)$ ]]; then KEYS+=("$k"); fi
 	done < <(timeout 20 "$ASAY" _host-keys "$1" ${2:+"$2"} </dev/null 2>/dev/null | head -n 9)
 }
@@ -2512,8 +2523,9 @@ act() {
 		flash "${out#agent-say: }" ;;
 	l | L)
 		# Links waiting for their login first, then every ssh host not linked yet (the selected
-		# pane's first), then "other host...".
-		local hosts=() labels=() seen=" " h i j d
+		# pane's first), then the links there are to link again (one that fails first), then
+		# "other host...".
+		local hosts=() labels=() seen=" " h i j d e pass
 		for d in "$ASTATE"/links/*/; do
 			[[ -f $d/on && -f $d/login ]] || continue
 			h=$(basename "$d")
@@ -2531,6 +2543,22 @@ act() {
 			[[ $seen != *" $h "* ]] && ! linked "$h" || continue
 			seen+="$h " hosts+=("$h") labels+=("$h  · ssh in ${X_WHERE[i]}")
 		done
+		for pass in error ok; do
+			for d in "$ASTATE"/links/*/; do
+				h=$(basename "$d")
+				[[ -f $d/on && $seen != *" $h "* && $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
+				e=$(head -n 1 "$d/error" 2>/dev/null)
+				e=${e% · L to try again}
+				clean e
+				if [[ $pass == error && -f $d/paused ]]; then
+					seen+="$h " hosts+=("$h") labels+=("$h  · ${e:0:40} · try again")
+				elif [[ $pass == error && -n $e ]]; then
+					seen+="$h " hosts+=("$h") labels+=("$h  · ${e:0:40} · link again")
+				elif [[ $pass == ok && -z $e ]]; then
+					seen+="$h " hosts+=("$h") labels+=("$h  · linked · link again")
+				fi
+			done
+		done
 		hosts+=("") labels+=("other host… (type its name)")
 		pick "LINK AGENTS ON" "${labels[@]}" || { flash "link cancelled"; return; }
 		h=${hosts[PICKED]}
@@ -2546,46 +2574,73 @@ act() {
 			if login_window "$h"; then flash "logged in to $h; its link picks up again"; else flash "not logged in to $h"; fi
 			return
 		fi
-		# Its host key first, as ssh itself (and agent-say link on a terminal) would have it: a host
-		# linked before that still has the key you confirmed then, or one ssh already trusts (its
-		# key in a known_hosts file ssh reads for it), links as it is. Only where ssh would ask (a
-		# key it doesn't know), or the key changed, are you asked: say no, and nothing is linked.
-		# No is first, so Enter alone doesn't trust a key.
+		# A link there already (working or not): link it again, fresh, with the key ssh uses for it
+		# now, or unlink it. Nothing changes until you say which.
+		# A link stopped on a failure is tried again, once, with the key it has (should another key
+		# answer, you are shown that one, as below).
+		local again="" was=""
+		if linked "$h" && [[ -f $ASTATE/links/$h/paused ]]; then
+			flash "trying $h again…"; draw
+		elif linked "$h"; then
+			pick "LINK $h AGAIN?" "${NOTE}It unlinks, then links again with the key ssh uses now." \
+				"No, leave it as it is" "Yes, link $h again" "Unlink $h" && ((PICKED > 1)) || { flash "link cancelled"; return; }
+			if ((PICKED == 3)); then
+				flash "unlinking $h…"; draw
+				out=$(timeout 30 "$ASAY" unlink "$h" 2>&1 | tail -n 1)
+				clean out
+				[[ -d $ASTATE/links/$h ]] || rm -f "$RDIR/$h.rows"
+				flash "${out#agent-say: }"
+				return
+			fi
+			again=1 was=$(cat "$ASTATE/links/$h/fingerprint" 2>/dev/null)
+		fi
+		# Its host key, found the way ssh itself has it: the one in your known_hosts, else the one
+		# your open ssh connection to it uses, else (a host never connected to) the one ssh-keyscan
+		# shows first, of the type ssh would pick. You only say yes or no to linking; a key ssh
+		# hasn't seen before, or one that changed, has No first, so Enter alone doesn't take it.
 		flash "reading $h's host key…"; draw
-		# What link is told: the keys shown and confirmed here (--fingerprint), so it is bound to
-		# exactly those, never to what it might scan a moment later; or, linking with no key found,
-		# that none is to be taken (--no-key). A relink gives none: it keeps the one recorded, and
-		# refuses another.
-		local -a keys largs=()
-		local k linked_msg=""
-		read_host_keys "$h"
+		# What link is told: the keys shown here (--fingerprint), so it is bound to exactly those,
+		# never to what it might scan a moment later; or, linking with no key found, that none is
+		# to be taken (--no-key). A relink gives none: it keeps the one recorded, and refuses another.
+		local -a keys largs=() yn
+		local k linked_msg="" note title
+		read_host_keys "$h" ${again:+--fresh}
 		keys=("${KEYS[@]}")
 		PREV=()
-		case $KEY_STATE in
-			recorded)
-				linked_msg="relinked $h with the key you confirmed" ;;
-			trusted)
+		if [[ $KEY_STATE == recorded ]]; then
+			linked_msg="relinked $h with the key you confirmed"
+		else
+			title="LINK $h?" yn=("No, don't link $h" "Yes, link $h")
+			case $KEY_STATE in
+				trusted) note="key from your known_hosts" yn=("${yn[1]}" "${yn[0]}") ;;
+				live) note="key read through your open ssh connection" yn=("${yn[1]}" "${yn[0]}") ;;
+				changed) note="its key now"; title="WARNING: $h's HOST KEY CHANGED since you linked it" ;;
+				*) note="new host: first key seen" ;;
+			esac
+			# Linked before with another key, and none of yours vouches for this one: say so.
+			if [[ -n $was && $KEY_STATE != trusted && $KEY_STATE != live ]] && ((${#keys[@]})) && ! grep -qxF -- "${keys[0]}" <<<"$was"; then
+				title="WARNING: $h's HOST KEY CHANGED since you linked it" yn=("No, don't link $h" "Yes, link $h")
+			fi
+			if ((${#keys[@]})); then note+=": ${keys[0]}"; else note="no key found (not in known_hosts, no answer to ssh-keyscan)"; fi
+			pick "$title" "$NOTE$note" "${yn[@]}" || { flash "link cancelled"; return; }
+			[[ ${yn[PICKED - 1]} == Yes* ]] || { flash "link cancelled"; return; }
+			if [[ $KEY_STATE == trusted ]]; then
 				for k in "${keys[@]}"; do largs+=(--fingerprint "$k"); done
-				linked_msg="linked to $h with the key ssh already trusts for it: ${keys[*]}" ;;
-			*)
-				if ((${#keys[@]})); then
-					labels=("No, don't link $h")
-					for k in "${keys[@]}"; do labels+=("Yes, link: its key is $k"); done
-				else
-					labels=("No, don't link $h" "Yes, link (no key found in known_hosts or by ssh-keyscan)")
-				fi
-				if [[ $KEY_STATE == changed ]]; then
-					pick "WARNING: $h's HOST KEY CHANGED since you linked it" "${labels[@]}" && ((PICKED > 0)) || { flash "link cancelled"; return; }
-				else
-					pick "HOST KEY OF $h" "${labels[@]}" && ((PICKED > 0)) || { flash "link cancelled"; return; }
-				fi
-				if ((${#keys[@]})); then
-					keys=("${keys[PICKED - 1]}")
-					largs=(--yes --fingerprint "${keys[0]}")
-				else
-					largs=(--yes --no-key)
-				fi ;;
-		esac
+				linked_msg="linked to $h with the key from your known_hosts: ${keys[0]}"
+			elif ((${#keys[@]})); then
+				keys=("${keys[0]}")
+				largs=(--yes --fingerprint "${keys[0]}")
+				[[ $KEY_STATE == live ]] && linked_msg="linked to $h with the key its open ssh connection uses: ${keys[0]}"
+			else
+				largs=(--yes --no-key)
+			fi
+			KEY_STATE=given
+		fi
+		if [[ -n $again ]]; then
+			flash "unlinking $h…"; draw
+			timeout 30 "$ASAY" unlink "$h" >/dev/null 2>&1
+			rm -f "$RDIR/$h.rows"
+		fi
 		flash "linking $h…"; draw
 		link_out() { # what link said: all of it (LOUT), and the line to show (out)
 			LOUT=$(timeout 30 "$ASAY" link "$h" "$@" </dev/null 2>&1)
@@ -2598,10 +2653,9 @@ act() {
 			read_host_keys "$h" --new
 			keys=("${KEYS[@]}")
 			((${#keys[@]})) || { flash "$h's host key isn't the one you confirmed, and ssh-keyscan shows no other, so it's not linked"; return; }
-			labels=("No, don't link $h")
-			for k in "${keys[@]}"; do labels+=("Yes, link: its key is $k"); done
-			pick "WARNING: $h's HOST KEY CHANGED since you linked it" "${labels[@]}" && ((PICKED > 0)) || { flash "link cancelled"; return; }
-			keys=("${keys[PICKED - 1]}") KEY_STATE=changed linked_msg=""
+			pick "WARNING: $h's HOST KEY CHANGED since you linked it" "${NOTE}its key now: ${keys[0]}" "No, don't link $h" "Yes, link $h" &&
+				((PICKED == 2)) || { flash "link cancelled"; return; }
+			keys=("${keys[0]}") KEY_STATE=changed linked_msg=""
 			largs=(--yes --fingerprint "${keys[0]}")
 			flash "linking $h…"; draw
 			link_out "${largs[@]}"
@@ -2620,6 +2674,12 @@ act() {
 		fi
 		clean out
 		[[ -n $linked_msg && $out == "linked to "* ]] && out=$linked_msg
+		# Tried once and failed: why, in a few words, as LINKS shows it.
+		if [[ $out != "linked to "* && -f $ASTATE/links/$h/paused ]]; then
+			out=$(head -n 1 "$ASTATE/links/$h/error" 2>/dev/null)
+			clean out
+			out="$h: $out"
+		fi
 		flash "${out#agent-say: }" ;;
 	u | U | d | D)
 		local hosts=() labels=() d h

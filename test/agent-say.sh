@@ -874,7 +874,7 @@ check "named with --fingerprint, the link runs again and what waited arrives" "w
 rm -f "$T/scan.presented"
 
 say _resume-links; say _resume-links; sleep 0.5
-check "starting the link twice runs one poller" "[[ \$(pollers devbox -c) -eq 1 ]]"
+check "starting the link twice runs one poller (one process tree: flock, the poller and what it runs)" "[[ \$(pollers devbox | xargs -r ps -o sid= -p | sort -u | wc -l) -eq 1 ]]"
 
 # Stop the poller (as a reboot would), then queue: the message waits, and unlink marks it.
 pkill -f " $ROOT/bin/agent-say _poll devbox\$"; sleep 0.3
@@ -1024,10 +1024,11 @@ check "when ssh-keyscan shows the new key, linking again shows it, warns, and wa
 # No key to bind it to (no pin yet, and no answer from ssh-keyscan): unreachable, never
 # changed, never 'needs login', and no ssh to it.
 echo "$T/hostkey1.pub" >"$T/presented.nullbox"
-rm -f "$T/scan.presented" "$nl/error" "$nl/pin" "$nl/pin.fps"
+check "stopped on its key, it stays stopped: tmux starting again doesn't restart it" "[[ -e $nl/paused ]] && nb _resume-links && sleep 0.5 && ! pollers nullbox >/dev/null"
+rm -f "$T/scan.presented" "$nl/error" "$nl/pin" "$nl/pin.fps" "$nl/paused"
 n=$(nb_tries)
 nb _resume-links
-check "with no key to bind it to, it is unreachable, not changed or 'needs login'" "for _ in \$(seq 40); do grep -q \"couldn't read nullbox's host key\" $nl/error 2>/dev/null && break; sleep 0.25; done; grep -q \"couldn't read nullbox's host key\" $nl/error && pollers nullbox >/dev/null && [[ ! -e $nl/login ]] && ! nb link | grep 'nullbox' | grep -q 'needs login\|host key changed'"
+check "with no key to bind it to, it is unreachable, not changed or 'needs login', and stops" "for _ in \$(seq 40); do grep -q \"couldn't read nullbox's host key\" $nl/error 2>/dev/null && break; sleep 0.25; done; grep -q \"couldn't read nullbox's host key.*· L to try again\" $nl/error && for _ in \$(seq 20); do pollers nullbox >/dev/null || break; sleep 0.25; done; ! pollers nullbox >/dev/null && [[ -e $nl/paused && ! -e $nl/login ]] && ! nb link | grep 'nullbox' | grep -q 'needs login\|host key changed'"
 check "and nothing is sent to it meanwhile" "[[ \$(nb_tries) == $n ]]"
 nb unlink nullbox >/dev/null 2>&1
 check "unlink stops it" "! pollers nullbox >/dev/null"
@@ -1078,6 +1079,114 @@ echo "$T/hostkey2.pub" >"$T/presented.tofubox"
 check "so another key after that stops it on 'host key changed'" "for _ in \$(seq 40); do pollers tofubox >/dev/null || break; sleep 0.25; done; ! pollers tofubox >/dev/null && grep -q 'host key changed' $tl/error"
 tb unlink tofubox >/dev/null 2>&1
 rm -f "$T/presented.tofubox"
+
+echo "the key a link takes is the one ssh uses, found without asking you to pick"
+# A host never connected to: of the keys ssh-keyscan shows, the one whose type comes first in
+# ssh -G's hostkeyalgorithms, and only that one.
+ssh-keygen -q -t ecdsa -N '' -C '' -f "$T/hostkey_ec"
+fpe=$(ssh-keygen -lf "$T/hostkey_ec.pub" | awk '{print $2}')
+cat >"$T/bin/twoscan" <<EOF
+#!/usr/bin/env bash
+for k in $T/hostkey1.pub $T/hostkey_ec.pub; do echo "\${!#} \$(cut -d' ' -f1,2 "\$k")"; done
+EOF
+cat >"$T/bin/algssh" <<EOF
+#!/usr/bin/env bash
+if [[ " \$* " == *" -G "* ]]; then
+	printf '%s\n' 'hostname algbox' 'userknownhostsfile /dev/null' "hostkeyalgorithms \$(cat $T/algs)"
+	exit 0
+fi
+exec $T/bin/fakessh "\$@"
+EOF
+chmod +x "$T/bin/twoscan" "$T/bin/algssh"
+ab() { AGENT_SAY_KNOWN_HOSTS='' AGENT_SAY_SSH=$T/bin/algssh AGENT_SAY_KEYSCAN=$T/bin/twoscan say "$@"; }
+echo 'ecdsa-sha2-nistp256-cert-v01@openssh.com,ssh-ed25519,ecdsa-sha2-nistp256,rsa-sha2-512' >"$T/algs"
+out=$(ab _host-keys algbox)
+check "a new host: the one key of the type ssh -G puts first (ECDSA here), not a list ($out)" "[[ \$out == \$'state: unknown\n$fpe (ECDSA)' ]]"
+echo 'ssh-ed25519,ecdsa-sha2-nistp256' >"$T/algs"
+out=$(ab _host-keys algbox)
+check "and with ED25519 first, that one ($out)" "[[ \$out == \$'state: unknown\n$fp1 (ED25519)' ]]"
+out=$(ab link algbox 2>&1 </dev/null)
+check "link shows just that key and, off a terminal, wants --yes ($out)" "[[ \$out == *\"algbox's host key:\"*'$fp1 (ED25519)'*'--yes'* && \$out != *'$fpe'* ]]"
+out=$(say _host-keys devbox)
+check "a host in known_hosts: trusted, that key, nothing scanned ($out)" "[[ \$out == \$'state: trusted\n$fp1 (ED25519)' ]]"
+
+# livebox: ssh keeps no key for it (UserKnownHostsFile /dev/null), and new connections to it
+# time out (a firewall), but you have an ssh connection to it open (a ControlMaster your config
+# names: live.master). Through that, and only that, it is devbox.
+mkdir -p "$T/hk"
+cp "$T/hostkey1.pub" "$T/hk/ssh_host_ed25519_key.pub"; cp "$T/hostkey_ec.pub" "$T/hk/ssh_host_ecdsa_key.pub"
+cat >"$T/bin/livessh" <<EOF
+#!/usr/bin/env bash
+echo "\$(date +%s.%N) \$*" >>$T/live.log
+case " \$* " in
+*" -G "*) printf '%s\n' 'hostname livebox.internal' 'userknownhostsfile /dev/null' 'globalknownhostsfile /dev/null' \\
+	'stricthostkeychecking false' 'hostkeyalgorithms ssh-ed25519,ecdsa-sha2-nistp256'; exit 0 ;;
+*" -O check "*) if [[ -e $T/live.master ]]; then echo 'Master running (pid=4242)' >&2; exit 0; fi
+	echo 'Control socket connect: No such file or directory' >&2; exit 255 ;;
+*" -O exit "*) exit 0 ;;
+*" ControlMaster=no "*)
+	[[ -e $T/live.master && " \$* " == *" ProxyCommand=false "* ]] || { echo 'kex_exchange_identification: Connection closed by remote host' >&2; exit 255; }
+	exec $T/bin/fakessh devbox "\${!#}" ;;
+esac
+echo 'ssh: connect to host livebox.internal port 22: Connection timed out' >&2
+exit 255
+EOF
+chmod +x "$T/bin/livessh"
+lv() { AGENT_SAY_KNOWN_HOSTS='' AGENT_SAY_SSH=$T/bin/livessh AGENT_SAY_HOSTKEY_FILES="$T/hk/ssh_host_*_key.pub" say "$@"; }
+lvl=$(dirname "$AGENT_SAY_MAILBOX")/links/livebox
+rm -f "$T/scan.presented"
+out=$(lv _host-keys livebox)
+check "no connection open, nothing in known_hosts, no scan answer: unknown, no key ($out)" "[[ \$out == 'state: unknown' ]]"
+touch "$T/live.master"
+out=$(lv _host-keys livebox)
+check "with your connection open: live, the key read through it, of the type ssh uses ($out)" "[[ \$out == \$'state: live\n$fp1 (ED25519)' ]]"
+out=$(lv link livebox 2>&1 </dev/null)
+check "it links with no question and no --yes, bound to that key ($out)" "[[ \$out == *'read through your open ssh connection'*'$fp1 (ED25519)'*'linked to livebox'* && \$out != *'--yes'* && \$(cat $lvl/fingerprint) == '$fp1 (ED25519)' ]]"
+check "nothing went over a new connection: every call through yours" "! grep ' livebox\$\| livebox ' $T/live.log | grep -v ' -G \| -O \|ControlMaster=no -o ProxyCommand=false' | grep -q ."
+there "$ROOT/bin/agent-say --from codex me@laptop 'through your own connection'" >/dev/null
+check "and its poller brings messages through it" "wait_seen $LC 'through your own connection'"
+pid=$(cat "$lvl/pid")
+check "the poller doesn't hold its lock (flock does), so nothing it starts can keep the link from restarting" "! ls -l /proc/$pid/fd 2>/dev/null | grep -q '$lvl/lock' && ! flock -n $lvl/lock true"
+check "one poller tree per link: every process of it in the poller's session" "[[ \$(pollers livebox | xargs -r ps -o sid= -p | sort -u | wc -l) == 1 ]]"
+# The connection closes, and new ones time out. A link that was working tries once more at once,
+# then stops: it says why (ssh's own words in the link's log) and tries nothing more on its own.
+echo "$T/hostkey1.pub" >"$T/scan.presented"
+: >"$T/live.log"
+rm -f "$T/live.master"
+tries() { grep -v ' -G \| -O ' "$T/live.log" | grep -c . || true; }
+check "a timeout stops it, saying 'can't reach (connection timed out) · L to try again'" "for _ in \$(seq 40); do [[ -e $lvl/paused ]] && break; sleep 0.25; done; [[ \$(cat $lvl/error) == \"can't reach (connection timed out) · L to try again\" ]] && for _ in \$(seq 20); do pollers livebox >/dev/null || break; sleep 0.25; done; ! pollers livebox >/dev/null"
+check "with ssh's own words kept in the link's log" "grep -q 'ssh: connect to host livebox.internal port 22: Connection timed out' $lvl/log"
+check "it tried twice: when it dropped, and once more at once" "[[ \$(tries) == 2 ]]"
+lv _resume-links; sleep 1.5
+check "then never again, not even when tmux starts again" "[[ \$(tries) == 2 ]] && ! pollers livebox >/dev/null"
+out=$(lv link livebox 2>&1 </dev/null)
+check "trying again (L, or agent-say link) tries once, and stays stopped" "[[ \$(tries) == 3 ]] && grep -q 'timed out.*L to try again' $lvl/error && [[ -e $lvl/paused ]] && ! pollers livebox >/dev/null"
+# A link that hasn't got through since it started (tmux started again, say): one try, then stops.
+rm -f "$lvl/paused" "$lvl/error"
+lv _resume-links
+check "a link that hasn't worked since it started tries once, then stops" "for _ in \$(seq 40); do [[ -e $lvl/paused ]] && break; sleep 0.25; done; sleep 1; [[ -e $lvl/paused && \$(tries) == 4 ]] && ! pollers livebox >/dev/null"
+out=$(lv unlink livebox 2>&1)
+check "a link stopped on a failure can be unlinked, with no try to tell its server ($out)" "[[ \$out == *'unlinked livebox'* && ! -e $lvl && \$(tries) == 4 ]] && ! pollers livebox >/dev/null"
+touch "$T/live.master"
+out=$(lv link livebox 2>&1 </dev/null)
+there "$ROOT/bin/agent-say --from codex me@laptop 'back again'" >/dev/null
+check "and linked again, its poller runs and messages come ($out)" "[[ \$out == *'linked to livebox'* ]] && wait_seen $LC 'back again' && pollers livebox >/dev/null && [[ ! -e $lvl/paused && ! -s $lvl/error ]]"
+# Riding your connection is only for a host that shows the key the link was bound to.
+cp "$T/hostkey2.pub" "$T/hk/ssh_host_ed25519_key.pub"; rm -f "$T/hk/ssh_host_ecdsa_key.pub" "$T/scan.presented" "$lvl/ride"
+: >"$T/live.log"
+check "a connection of yours to a host showing another key isn't ridden" "for _ in \$(seq 40); do [[ -s $lvl/error ]] && break; sleep 0.25; done; [[ -s $lvl/error ]] && ! grep -q 'ControlMaster=no -o ProxyCommand=false .* livebox _sync\|ControlMaster=no.*_sync' $T/live.log"
+lv unlink livebox >/dev/null 2>&1
+rm -f "$T/live.master"
+
+echo "a link's error, in plain words"
+lw() { printf '%s\n' "$3" >"$T/why.err"; bash -c 'source "$1"; link_why "$2" "$3" "$4"' _ "$ROOT/bin/agent-say" "$1" "$2" "$T/why.err"; }
+check "connection timed out" "[[ \$(lw h 255 'ssh: connect to host 5.78.159.151 port 22: Connection timed out') == \"can't reach (connection timed out)\" ]]"
+check "connection refused" "[[ \$(lw h 255 'ssh: connect to host h port 22: Connection refused') == \"can't reach (connection refused)\" ]]"
+check "no such host" "[[ \$(lw h 255 'ssh: Could not resolve hostname h: Name or service not known') == \"can't reach (no such host name)\" ]]"
+check "host key" "[[ \$(lw h 255 'Host key verification failed.') == \"host key doesn't match: press L to link again\" ]]"
+check "login refused" "[[ \$(lw h 255 'me@h: Permission denied (publickey).') == 'login refused (key)' ]]"
+check "agent-say missing there" "[[ \$(lw h 127 'bash: agent-say: command not found') == \"agent-say isn't installed there\" ]]"
+check "agent-say's own words, without its name" "[[ \$(lw h 255 \"agent-say: couldn't read h's host key\") == \"couldn't read h's host key\" ]]"
 
 echo "a reply goes back the way its sender came, or not at all"
 out=$(AGENT_SAY_PANE=$LC say ghost@farhost 'are you there' 2>&1)
