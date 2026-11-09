@@ -24,6 +24,8 @@ NS=tmux-revive-release
 DATA=${XDG_DATA_HOME:-$HOME/.local/share}/tmux-revive
 APP=$DATA/app
 BIN=$HOME/.local/bin
+SHARED_AS=/usr/local/bin/agent-say # root's install only: agent-say for every user
+AS_MARK='^# agent-say: let agent CLIs' # its first comment line: that file is ours
 JQ_VERSION=1.7.1
 # SHA-256 of each jq $JQ_VERSION release asset, pinned here rather than read from the same
 # release as the binary, so a tampered release can't vouch for itself.
@@ -475,6 +477,7 @@ uninstall() {
 	fi
 	agent_unsetup
 	rm -f "$BIN/tmux-revive" "$BIN/agent-say"
+	[ "$(id -u)" = 0 ] && grep -q "$AS_MARK" "$SHARED_AS" 2>/dev/null && rm -f "$SHARED_AS"
 	rm -rf "$APP"
 	if [ "${1:-}" = purge ]; then
 		rm -rf "$DATA"
@@ -610,6 +613,11 @@ main() {
 	mkdir -p "$BIN"
 	ln -sf "$APP/bin/tmux-revive" "$BIN/tmux-revive"
 	ln -sf "$APP/bin/agent-say" "$BIN/agent-say"
+	# Installed as root: a copy every user can run, for the users who work inside root's tmux
+	# (root's own home is closed to them). Never over an agent-say that isn't ours.
+	if [ "$(id -u)" = 0 ] && [ -d /usr/local/bin ] && { [ ! -e "$SHARED_AS" ] || grep -q "$AS_MARK" "$SHARED_AS" 2>/dev/null; }; then
+		install -m 0755 "$APP/bin/agent-say" "$SHARED_AS" && say "agent-say is in /usr/local/bin too, for every user"
+	fi
 	# One line, for `tmux-revive version`.
 	printf '%s\n' "$origin" >"$APP/INSTALLED"
 	now=$(cat "$APP/VERSION" 2>/dev/null) || now="?"
