@@ -43,6 +43,8 @@ I built Claude Workforce because I wanted my AI to get more done, and to show it
 - Ask for several things at once. Each job goes to a helper in the background, and a work list keeps track, so an interruption doesn't lose your place.
 - Every helper proves its work with a check that passes or fails.
 - Plan in auto mode with /blueprint. Nothing gets built until you say so.
+- Hire agents who know their job well, each with its own handbook, so you build a team instead of leaning on one generalist.
+- When a new model comes out, audit your skills and agents so you know what still works and where you can trim.
 .button i Install Claude Workforce
 .end
 

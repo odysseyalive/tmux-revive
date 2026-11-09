@@ -146,8 +146,8 @@ HART_talk=( # two agents talking: a message each way, trailing off where it came
 	"██▀▀▀██   ◄██▓▓▒▒░░       ██▀▀▀██"
 	" ▀▀▀▀▀                     ▀▀▀▀▀ "
 )
-HART_talk_ink=(
-	"   Y                         Y   "
+HART_talk_ink=( # 1 and 2: the two beacons, taking turns (see HB1)
+	"   1                         2   "
 	" CCkCC                     MMkMM "
 	"CCCCCCC       CCCCCCCCC   MMMMMMM"
 	"CCCCCCC   MMMMMMMMM       MMMMMMM"
@@ -165,9 +165,10 @@ HART_satellite_ink=(
 	" BbBbBbBbBkkYYYYYyykkBbBbBbBbB "
 	" bbbbbbbbb  yyykyyy  bbbbbbbbb "
 )
-# The satellite's light: a red no other ink uses, so help_frame can find it and let it go dark
-# between blinks. It's lit one panel tick in three, a couple of seconds every few.
-HLIT=$'\e[38;5;196m'
+# The beacons: colours no other ink uses, so help_frame can find them and let them go dark
+# between blinks. The two agents' beacons take turns, one panel tick (about 2 s) each. The
+# satellite's light comes on now and then: two ticks in seven, unevenly spaced.
+HB1=$'\e[38;5;226m' HB2=$'\e[38;5;227m' HLIT=$'\e[38;5;196m'
 # hart NAME: the picture HART_NAME, painted, for the section it follows the title of. Beside
 # the section's text when the page is wide enough for both (hart_close puts it there), above
 # the text when it's only wide enough for the picture, and left out when it isn't, or in a box.
@@ -176,7 +177,7 @@ hart() {
 	((HBOX)) && return 0
 	local -n g=HART_$1 p=HART_$1_ink
 	local -A pal=([b]=$BLU [B]=$BBLU [c]=$CYN [C]=$BCYN [m]=$MAG [M]=$BMAG [y]=$YEL [Y]=$BYEL
-		[g]=$GRN [G]=$BGRN [r]=$BRED [k]=$GRY [L]=$HLIT)
+		[g]=$GRN [G]=$BGRN [r]=$BRED [k]=$GRY [L]=$HLIT [1]=$HB1 [2]=$HB2)
 	local i j c last s w=${#g[0]}
 	local -a rows=()
 	for i in "${!g[@]}"; do
@@ -337,7 +338,7 @@ help_build() {
 # help_frame LINES BANNER-ROWS: draw() hands over here after the banner while the help page is
 # open. The page fills the rest, with its keys on the bar at the bottom, and is painted.
 help_frame() {
-	local view=$(($1 - $2 - 5)) n i k last
+	local view=$(($1 - $2 - 5)) n i k last t
 	((HELP_W == IW)) || help_build "$IW"
 	n=${#HROWS[@]}
 	((view < 1)) && view=1
@@ -347,7 +348,9 @@ help_frame() {
 	sect "HELP · HOW TO USE REVIVE"
 	for ((i = 0; i < view; i++)); do
 		k=${HROWS[HELP_TOP + i]:-}
-		((${TICK:-0} % 3)) && k=${k//"$HLIT"/"$GRY"}
+		t=${TICK:-0}
+		if ((t % 2)); then k=${k//"$HB1"/"$GRY"}; else k=${k//"$HB2"/"$GRY"}; fi
+		((t % 7 == 0 || t % 7 == 3)) || k=${k//"$HLIT"/"$GRY"}
 		row "$k"
 	done
 	last=$((HELP_TOP + view < n ? HELP_TOP + view : n))

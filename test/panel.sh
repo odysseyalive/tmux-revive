@@ -309,12 +309,14 @@ out=$(hframe 80)
 check "at 80 they go above the words instead" "grep -q '^║  $talk  *║\$' <<<\"\$out\" && grep -q '^║   $sat  *║\$' <<<\"\$out\" && ! grep -q 'Got agents.*█▒█' <<<\"\$out\""
 # The satellite's light blinks with the panel's clock: lit one tick in three, dark between.
 lit() { tm run-shell "REVIVE_PANEL_TICK=$1 REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=200 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | grep -c $'\e\\[38;5;196m'; }
-check "the satellite's light is lit on a tick in three, and dark on the others" "[[ \$(lit 0) -ge 1 && \$(lit 1) == 0 && \$(lit 2) == 0 && \$(lit 3) -ge 1 ]]"
+check "the satellite's light comes on now and then, and is dark between" "[[ \$(lit 0) -ge 1 && \$(lit 1) == 0 && \$(lit 2) == 0 && \$(lit 3) -ge 1 ]]"
+beacon() { tm run-shell "REVIVE_PANEL_TICK=$1 REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=200 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | grep -c $'\e\\[38;5;'"$2"'m'; }
+check "the two agents' beacons take turns" "[[ \$(beacon 0 226) -ge 1 && \$(beacon 0 227) == 0 && \$(beacon 1 226) == 0 && \$(beacon 1 227) -ge 1 ]]"
 # A few suggestions to get going, not a reference: the keys are on the panel already.
 out=$(hframe 160)
 check "it has no key reference or column list" "! grep -qiE 'key reference|What the columns mean|Remember the old BBS|^║ +\\[[^]]+\\] {2,}[A-Z]' <<<\"\$out\" && grep -q 'shop-dev' <<<\"\$out\" && grep -q 'press L' <<<\"\$out\""
-hp=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=52 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
-check "at 160x52 it fits on one screen ($hp)" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]]"
+hp=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=55 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
+check "at 160x55 it fits on one screen ($hp)" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]]"
 
 echo "context left"
 # Stand-in agents (copies of bash named claude and codex) with the records the real ones keep:
