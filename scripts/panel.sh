@@ -1459,6 +1459,16 @@ links_saves() { # -> SIDE lines: saves, then links
 		clean h
 		if [[ -n $(find "$d/alive" -mmin -1 2>/dev/null) ]]; then SIDE+=("$BGRN◌$R $BWHT$h$R $GRY· checks in here$R"); fi
 	done
+	# Agents on two linked computers asking to talk through this one: yours to allow (I).
+	local f t gn
+	for d in "$ASTATE"/intros/*/; do
+		[[ -f $d/from ]] || continue
+		f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to")
+		clean f t
+		SIDE+=("$BMAG⚑$R $BWHT${f:0:30}$R $GRY→$R $BWHT${t:0:30}$R $BBLU[$B${BYEL}I$R$BBLU]$R${BWHT}ntro$R")
+	done
+	gn=$(grep -c . "$ASTATE/grants" 2>/dev/null)
+	((gn)) && SIDE+=("$GRY  $gn permission(s) given · $R$BBLU[$B${BYEL}I$R$BBLU]$R$GRY to see$R")
 	# ssh connections in panes that aren't linked yet: offered for linking with L.
 	local i seen=" "
 	for i in "${!P_SSH[@]}"; do
@@ -2177,6 +2187,58 @@ act() {
 		else flash "on $h: update failed${last:+: $last}"; fi
 		RFETCH_T[$h]=0 # and ask it for its rows, and so its version, again
 		;;
+	i | I)
+		# Introductions waiting for you, then the permissions you gave (to revoke). Only here,
+		# by a key you press, can two agents on linked computers be let to talk.
+		local ids=() labels=() d f t txt g a b
+		for d in "$ASTATE"/intros/*/; do
+			[[ -f $d/from ]] || continue
+			f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to")
+			clean f t
+			ids+=("i $(basename "$d")") labels+=("${f:0:30} wants to talk with ${t:0:30}")
+		done
+		while read -r g a b f t; do
+			[[ $g == allow || $g == deny ]] || continue
+			clean f t
+			ids+=("g $a $b") labels+=("$([[ $g == allow ]] && echo allowed || echo declined): ${f:0:30} and ${t:0:30}")
+		done < <(cat "$ASTATE/grants" 2>/dev/null)
+		((${#ids[@]})) || { flash "no introductions waiting, and no permissions given"; return; }
+		pick "INTRODUCTIONS" "${labels[@]}" || return
+		read -r g a b <<<"${ids[PICKED]}"
+		if [[ $g == i ]]; then
+			d="$ASTATE/intros/$a"
+			[[ $a =~ ^[0-9a-f]{32}$ && -f $d/from ]] || { flash "that introduction is gone"; return; }
+			f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to") txt=$(head -c 300 "$d/intro")
+			clean f t txt
+			# Its words first, cut in lines; No before Yes, so Enter alone doesn't allow it.
+			labels=()
+			while [[ -n $txt ]]; do labels+=("│ ${txt:0:60}"); txt=${txt:60}; done
+			# What this does and doesn't keep out, said where you decide.
+			labels+=("│ (agents on other computers can't allow this; one running as you here could)")
+			local nt=${#labels[@]}
+			labels+=("No, decline ${f:0:30}" "Yes, allow ${f:0:30} to talk with ${t:0:30}")
+			pick "${f:0:24} → ${t:0:24}" "${labels[@]}" && ((PICKED >= nt)) || { flash "left waiting"; return; }
+			if ((PICKED == nt + 1)); then
+				# A code shown only in a popup, typed back there: a popup isn't a pane, so no
+				# agent can read it or type into it with send-keys. The popup's own shell then
+				# allows it, by agent-say's approve; no command does that.
+				local pc
+				pc=$(printf '%q ' bash -c 'c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); printf "\n  Allow %s to talk with %s?\n\n  Type %s and Enter to allow (anything else: no): " "$1" "$2" "$c"; IFS= read -r r; [[ $r == "$c" ]] || exit 1; export AGENT_SAY_MAILBOX="$3" AGENT_SAY_APPROVE_CODE="$c"; source "$4" && approve "$5" "$c" >"$6" 2>&1' _ "$f" "$t" "$AMAIL" "$ASAY" "$a" "$ASTATE/intros/.allow.out")
+				rm -f "$ASTATE/intros/.allow.out"
+				tm display-popup -E -w 76 -h 9 "$pc" 2>/dev/null
+				PREV=()
+				out=$(tail -n 1 "$ASTATE/intros/.allow.out" 2>/dev/null || true)
+				rm -f "$ASTATE/intros/.allow.out"
+				[[ -n $out ]] || out="not allowed: the code didn't match; it's still waiting"
+			else
+				out=$("$ASAY" _intro deny "$a" 2>&1 | tail -n 1)
+			fi
+		else
+			pick "Revoke ${labels[PICKED]:0:50}?" "No" "Yes, revoke it: they need your permission again" && ((PICKED == 1)) || return
+			out=$("$ASAY" revoke "$a" "$b" 2>&1 | tail -n 1)
+		fi
+		clean out
+		flash "${out#agent-say: }" ;;
 	p | P) PEEK=$((!PEEK)) ;;
 	x | X) if ((FULL)); then FULL=0; else FULL=1 PEEK=1; fi ;; # the peek over the whole art, and back
 	c | C) FULL=0 ;;

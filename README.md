@@ -253,8 +253,43 @@ Stop a link:
 agent-say unlink devbox
 ```
 
-Each link connects just two computers. So if you link to two servers, each one
-can talk to you, but they can't talk to each other.
+Link to two servers and your computer passes messages between them. Each server
+sees the other's panes in `agent-say list` (as `tt-dev@dev  (via laptop)`), and
+a plain name works as long as only one pane anywhere has it.
+
+The first time an agent on one server writes to an agent on the other, the
+message waits on your computer as an introduction. The other server gets
+nothing until you allow it: press **I** in the panel, read who's asking and why,
+and pick yes or no. Yes shows a four-digit code in a popup to type back, then
+delivers the introduction and anything sent since, in order, and the two can
+talk both ways. No drops them, and that
+agent can't write to that one again. Permission is per pair of agent sessions,
+so a new session in a pane asks again, and **I** also lists what you've allowed,
+to revoke. The sending agent is told plainly what happened (`introduction sent`,
+`held`, `declined`). At most 5 messages wait per pair and 3 introductions per
+server, and one nobody answers lapses after a day. `agent-say intros` lists them
+from a terminal.
+
+A message from another server is never typed into the agent's prompt as if you
+had written it: the agent is told one is waiting and reads it with
+`agent-say show`, marked as coming from another agent, not from you.
+
+What this does and doesn't protect: agents on your servers can't allow anything,
+since they can't touch your computer's files, so a rogue server can't reach
+your other servers' agents without you. Your computer names each sender's server
+itself, from the link it came in on. Within one server, though, an agent's
+session is what that server says it is: a rogue process there could pass for
+another agent on the same server, but only one that is still running under the
+same pane name, and only to the agents you allowed that one to reach. Agents on your own computer run as you,
+though, and a determined one could get round the popup. Every permission given
+is logged with what gave it (`agent-say intros` shows them). For real isolation
+on your computer, deny agents `tmux send-keys` and writes under
+`~/.local/state/agent-say` (in Claude Code, a `permissions.deny` rule such as
+`Bash(tmux send-keys:*)`), or run them as another user.
+
+Your computer and both servers need this version. What a server sends through
+your computer also follows its own link's limits: `--read-only` holds it in
+your mailbox, and an `--allow` list must name the far pane as `tt-dev@dev`.
 
 ## Options
 
