@@ -438,7 +438,9 @@ one still running under the same pane name, and only to the agents you allowed
 that one to reach.
 
 Agents on your own computer run as you, and a determined one could get around the
-popup, or around agent-say altogether. It could type `agent-say` into a shell pane
+popup (for Approve and Refresh alike), or around agent-say altogether. The popup's
+code stops keys typed into the panel and agents on other computers, not an agent here
+that sets out to get past it. It could type `agent-say` into a shell pane
 of yours with `tmux send-keys`, or run it over `ssh` to its own computer, and pass
 for you. Every permission given is logged with what gave it (`agent-say intros`
 shows them). For real isolation on your computer, deny agents `tmux send-keys` and

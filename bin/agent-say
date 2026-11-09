@@ -1151,12 +1151,16 @@ intro_read() { # intro_read ID -> I_DIR I_FROM I_TO I_FSID I_TSID, checked
 		valid_key "$I_FSID" && valid_key "$I_TSID" ||
 		die "introduction $1 is damaged"
 }
+# Is this the panel's popup, with the code it showed you and you typed back? approve and
+# grant_refresh are only ever run there, sourced, never as a command (_intro allow and _grant
+# refresh refuse); the popup sets AGENT_SAY_APPROVE_CODE and passes the code. That keeps out
+# keys typed into the panel (send-keys), agents on other computers, and casual misuse here.
+# Both values come from the caller, so an agent running as you that sources agent-say on
+# purpose could still get round it. typed_code CODE
+typed_code() { [[ -n "${1:-}" && "${AGENT_SAY_APPROVE_CODE:-}" == "$1" ]]; }
 approve() { # approve ID CODE: allow the pair, then deliver what waited, in order
 	local f first=1 text fcur tcur err
-	# Only the panel's popup calls this, with the code it showed you and you typed back
-	# (AGENT_SAY_APPROVE_CODE, which it set). A local agent running as you could still get
-	# round that; it keeps out agents on other computers, and casual misuse here.
-	[[ -n "${2:-}" && "${AGENT_SAY_APPROVE_CODE:-}" == "$2" ]] || die "only you can allow that, in the panel (press G there)"
+	typed_code "${2:-}" || die "only you can allow that, in the panel (press G there)"
 	intro_read "$1"
 	# Allowed for the agent sessions in those two panes now, which may not be the ones there
 	# when it asked (an agent restarted meanwhile). Only you get here, with the popup's code,
@@ -1214,8 +1218,7 @@ revoke() { # revoke A B: forget what was said for the pair (sessions or name@hos
 }
 grant_refresh() { # grant_refresh A B CODE: an allow for the pair (sessions, either way), still running, counts from now
 	local t="$GRANTS.$$" now n
-	# Only from the panel's popup, with the code you typed back there, as approve.
-	[[ -n "${3:-}" && "${AGENT_SAY_APPROVE_CODE:-}" == "$3" ]] || die "only you can refresh that, in the panel (press G there)"
+	typed_code "${3:-}" || die "only you can refresh that, in the panel (press G there)"
 	# Only one still running: a lapsed one is gone, not brought back.
 	cull_sessions
 	printf -v now '%(%s)T' -1
