@@ -599,6 +599,9 @@ claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting
 	claude_record "$1"
 	[[ -n $RECORD ]] || return 0
 	IFS=$'\t' read -r CST sid < <(jq -r '[.status // "", .sessionId // ""] | @tsv' "$RECORD" 2>/dev/null)
+	# "shell": its turn is over but a background shell it started still runs. That's work in
+	# the background, the same as idle with a command still running under it.
+	[[ $CST == shell ]] && { CST=idle CBG=1; return 0; }
 	# Only idle: "waiting" is a dialog of its own open, which needs you whatever else runs.
 	[[ $CST == idle ]] || return 0
 	snapshot_cmd "$1" && { CBG=1; return 0; }

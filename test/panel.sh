@@ -423,6 +423,10 @@ check "and its peek says it still takes input" "grep -q 'PEEK · .*agents busy, 
 printf '{"pid":%s,"sessionId":"s-1","status":"busy"}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
 out=$(bgframe)
 check "a record saying busy is WORKING, without the takes-input peek" "grep -q 'claude *. WORKING ' <<<\"\$out\" && ! grep -q 'takes input' <<<\"\$out\""
+# Claude Code says "shell" once its turn is over while a background shell it started still runs.
+printf '{"pid":%s,"sessionId":"s-1","status":"shell"}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
+out=$(bgframe)
+check "a record saying shell (a background shell still running) is WORKING, and takes input" "grep -q 'claude *. WORKING ' <<<\"\$out\" && grep -q 'takes input' <<<\"\$out\""
 printf '{"pid":%s,"sessionId":"s-1","status":"idle"}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
 snap=$(pgrep -P "$clpid" -f 'source .*snapshot-x')
 pkill -P "$snap"; kill "$snap"; sleep 0.3
