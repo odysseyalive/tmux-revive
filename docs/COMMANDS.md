@@ -382,9 +382,13 @@ access**, and the asking agent's STATE
 blinks **[G]RANT ACCESS**. Press **G** to grant access,
 pick it, read why it's asking, and choose Approve or Deny.
 
+The same goes for every pair of agents, not only across servers: two agents on
+your computer, an agent on a server and one on your computer, either way. What you
+send yourself, from a shell or the panel, needs no permission.
+
 Approve shows a four-digit code in a popup for you to type back. Then it delivers
 the introduction and anything sent since, in order, and the two can talk both ways.
-Deny drops them, and the asking agent can't write to the other one again.
+Deny drops them, and the asking agent can't write to the other one again, nor the other to it.
 
 An agent can restart while it waits. Approve covers whoever is in those two panes
 now. If the recipient restarted, it still gets what waited. If the sender restarted,
@@ -418,9 +422,11 @@ mailbox, and an `--allow` list has to name the far pane as `tt-dev@dev`.
 
 ### What this does and doesn't protect
 
-Agents on your servers can't allow anything, since they can't touch your
-computer's files. So a rogue server can't reach your other servers' agents without
-you. Your computer names each sender's server itself, from the link it came in on.
+Every agent needs your permission to talk with another, on one computer or across
+two. Agents on your servers can't allow anything, since they can't touch your
+computer's files. So a rogue server can't reach your computer's agents or your
+other servers' agents without you. Your computer names each sender's server itself,
+from the link it came in on.
 
 Within one server, though, an agent's session is whatever that server says it is.
 A rogue process there could pass for another agent on the same server, but only
@@ -428,7 +434,7 @@ one still running under the same pane name, and only to the agents you allowed
 that one to reach.
 
 Agents on your own computer run as you, and a determined one could get around the
-popup. Every permission given is logged with what gave it (`agent-say intros`
+popup, or around agent-say altogether. Every permission given is logged with what gave it (`agent-say intros`
 shows them). For real isolation on your computer, deny agents `tmux send-keys` and
 writes under `~/.local/state/agent-say` (in Claude Code, a `permissions.deny` rule
 such as `Bash(tmux send-keys:*)`), or run them as another user.
