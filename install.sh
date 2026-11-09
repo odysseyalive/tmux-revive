@@ -483,7 +483,7 @@ root_hooks_here() {
 			return 0
 		fi
 		if ! root_copy "$APP"; then
-			warn "couldn't make root's own copy in $pf, so root's Claude Code doesn't get the hooks"
+			warn "couldn't make root's own copy in $pf, so root's Claude Code won't get the hooks"
 			root_hooks_off "$dirs" "$hook" "$pf/app/scripts/claude-hook.sh"
 			return 0
 		fi
