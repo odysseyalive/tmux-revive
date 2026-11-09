@@ -266,6 +266,14 @@ each tool call and each turn, reports the session's context left for the panel's
 CTX LEFT. `--no-config` skips it, uninstall takes it out, and
 `tmux-revive doctor` shows whether it's there.
 
+Installed as a user who can `sudo` without a password, the installer also adds
+the hook to root's Claude Code config, if root has one, so sessions started with
+`sudo -i` in your panes get it too. It never asks for a password: without that
+`sudo`, it says root's sessions won't get the hook unless tmux-revive is
+installed as root too. For a root session with no fresh report, the panel's
+`--rows` (what a linked computer's panel asks for) reads its context left through
+`sudo -n` the same way, and shows a dash when `sudo` would need a password.
+
 ### Several users in one tmux
 
 Names, links and the mailbox belong to whoever started tmux. Other users can work
