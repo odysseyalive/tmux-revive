@@ -1478,11 +1478,20 @@ question_parts() {
 	done
 }
 
-messages() { # -> MSG lines for the message center
+messages() { # -> MSG lines for the message center; INTRO_ON
 	MSG=()
-	local h b from to when id rest qn why k i j
-	local -a H=() B=()
-	local -A last=()
+	local h b from to when id rest qn why k i j d c f t gn now more
+	local -a H=() BS=() WAIT=() ASKS=()
+	local -A asks=() last=() shown=()
+	# Access waiting on you, by its introduction's time: a held message's id starts with it.
+	INTRO_ON=0 # anything for G: access waiting, or approved and not yet lapsed (the key bar offers G)
+	for d in "$ASTATE"/intros/*/; do
+		[[ -f $d/from ]] || continue
+		INTRO_ON=1
+		ASKS+=("$d")
+		c=$(head -n 1 "$d/created" 2>/dev/null)
+		[[ $c =~ ^[0-9]{1,12}$ ]] && asks[$c]=1
+	done
 	if [[ -f $AMAIL ]]; then
 		# A held message gets a row when it's held and another when its fate is known, under
 		# the same id: only the last one for each is shown, so its row says what became of it.
@@ -1492,14 +1501,19 @@ messages() { # -> MSG lines for the message center
 			k="${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[4]}"
 			j=${last[$k]:-}; [[ -n $j ]] && H[j]="" # superseded (j is a number set here, never text)
 			last[$k]=${#H[@]}
-			H+=("$h") B+=("$b")
+			H+=("$h") BS+=("$b")
 		done < <(tail -n 600 "$AMAIL" 2>/dev/null | awk '/^## \[/{h=$0; getline b; print h "\t" b}' | tail -n 40)
 		for i in "${!H[@]}"; do
 			[[ -n ${H[i]} ]] || continue
 			[[ ${H[i]} =~ ^\#\#\ \[([^ ]+)\ -\>\ ([^ ]+)\ ([^]]+)\]\ \#([^ ]+)(.*)$ ]] || continue
-			from=${BASH_REMATCH[1]} to=${BASH_REMATCH[2]} when=${BASH_REMATCH[3]} rest=${BASH_REMATCH[5]} b=${B[i]}
+			from=${BASH_REMATCH[1]} to=${BASH_REMATCH[2]} when=${BASH_REMATCH[3]} id=${BASH_REMATCH[4]} rest=${BASH_REMATCH[5]} b=${BS[i]}
 			when=${when:11:5}
-			if [[ $rest == *"NOT DELIVERED"* ]]; then
+			c=${id#h} c=${c%%.*} c=${c:-x}
+			if [[ $rest == " (held: waiting for access)" && -n ${asks[$c]:-} ]]; then
+				# Not failed: waiting on you. "waiting" first, so a narrow panel cuts the pair, not it.
+				shown[$c]=1
+				WAIT+=("$GRY$when$R $BMAG⚑$R $B${BMAG}waiting for [G]rant access$R $BWHT$from$R$GRY→$R$BWHT$to$R $GRY· $b$R")
+			elif [[ $rest == *"NOT DELIVERED"* ]]; then
 				# Why, short: an agent whose session changed has restarted.
 				why=${rest#*NOT DELIVERED: } why=${why%)}
 				[[ $why == *"has changed since it was given permission"* ]] && why="${to%@*} restarted"
@@ -1512,7 +1526,28 @@ messages() { # -> MSG lines for the message center
 		done
 		((${#MSG[@]} > 4)) && MSG=("${MSG[@]: -4}") # the last four
 	fi
-	((${#MSG[@]})) || MSG+=("$GRY no messages yet · ask an agent to use agent-say$R")
+	# One waiting whose held rows are older than the ones read: from its introduction instead.
+	for d in "${ASKS[@]}"; do
+		c=$(head -n 1 "$d/created" 2>/dev/null)
+		[[ -n $c && -n ${shown[$c]:-} ]] && continue
+		f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to") b=$(head -c 200 "$d/intro" 2>/dev/null)
+		clean f t b
+		[[ $c =~ ^[0-9]{1,12}$ ]] && TZ=UTC printf -v when '%(%H:%M)T' "$c" || when="--:--"
+		WAIT+=("$GRY$when$R $BMAG⚑$R $B${BMAG}waiting for [G]rant access$R $BWHT$f$R$GRY→$R$BWHT$t$R${b:+ $GRY· $b$R}")
+	done
+	# Waiting ones first, so other messages never push them off: a few, then a count.
+	if ((${#WAIT[@]} > 3)); then
+		more=$((${#WAIT[@]} - 2))
+		WAIT=("${WAIT[@]:0:2}" "$BMAG⚑$R $B$BMAG$more more waiting for [G]rant access$R")
+	fi
+	((${#WAIT[@]} + ${#MSG[@]})) || MSG+=("$GRY no messages yet · ask an agent to use agent-say$R")
+	MSG=("${WAIT[@]}" "${MSG[@]}")
+	# Approved: allow lines within their day (agent-say culls the rest when G is pressed).
+	local ttl=${AGENT_SAY_SESSION_TTL:-86400}
+	[[ $ttl =~ ^[1-9][0-9]{0,9}$ ]] || ttl=86400
+	printf -v now '%(%s)T' -1
+	gn=$(awk -v c="$((now - ttl))" '$1 == "allow" && $6 ~ /^[0-9]+$/ && $6 > c {n++} END {print n + 0}' "$ASTATE/grants" 2>/dev/null)
+	((gn)) && INTRO_ON=1 && MSG+=("$BGRN✓$R $GRY$gn approved · $R$BBLU[$B${BYEL}G$R$BBLU]$R$GRY to see$R")
 	qn=$(find "$ASTATE/queue" -maxdepth 1 -name 'msg.*' ! -name '*.err' 2>/dev/null | wc -l)
 	((qn)) && MSG+=("$BYEL⧗ $qn queued, waiting for a busy pane$R")
 }
@@ -1561,23 +1596,7 @@ links_saves() { # -> SIDE lines: saves, then links
 		clean h
 		if [[ -n $(find "$d/alive" -mmin -1 2>/dev/null) ]]; then SIDE+=("$BGRN◌$R $BWHT$h$R $GRY· checks in here$R"); fi
 	done
-	# Agents on two linked computers asking to talk through this one: access, yours to grant (G).
-	local f t gn now
-	INTRO_ON=0 # anything for G: access waiting, or approved and not yet lapsed (the key bar offers G)
-	for d in "$ASTATE"/intros/*/; do
-		[[ -f $d/from ]] || continue
-		INTRO_ON=1
-		f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to")
-		clean f t
-		# "waiting" first: a long pair is cut at its end, never the word.
-		SIDE+=("$BMAG⚑$R ${BYEL}waiting$R $BWHT${f:0:30}$R $GRY→$R $BWHT${t:0:30}$R")
-	done
-	# Approved: allow lines within their day (agent-say culls the rest when I is pressed).
-	local ttl=${AGENT_SAY_SESSION_TTL:-86400}
-	[[ $ttl =~ ^[1-9][0-9]{0,9}$ ]] || ttl=86400
-	printf -v now '%(%s)T' -1
-	gn=$(awk -v c="$((now - ttl))" '$1 == "allow" && $6 ~ /^[0-9]+$/ && $6 > c {n++} END {print n + 0}' "$ASTATE/grants" 2>/dev/null)
-	((gn)) && INTRO_ON=1 && SIDE+=("$BGRN✓$R $GRY$gn approved$R")
+	# Access waiting and approved shows in MESSAGES (messages()), not here.
 	# ssh connections in panes that aren't linked yet: offered for linking with L.
 	local i seen=" "
 	for i in "${!P_SSH[@]}"; do

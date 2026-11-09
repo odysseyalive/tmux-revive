@@ -377,7 +377,8 @@ a plain name works as long as only one pane anywhere has it.
 
 The first time an agent on one server writes to an agent on the other, the message
 waits on your computer as an introduction. The other server gets nothing until you
-allow it. The panel's Links area shows it as waiting, and the asking agent's STATE
+allow it. The panel's MESSAGES area shows it at the top as **waiting for [G]rant
+access**, and the asking agent's STATE
 blinks **[G]RANT ACCESS**. Press **G** to grant access,
 pick it, read why it's asking, and choose Approve or Deny.
 
@@ -388,9 +389,10 @@ Deny drops them, and the asking agent can't write to the other one again.
 An agent can restart while it waits. Approve covers whoever is in those two panes
 now. If the recipient restarted, it still gets what waited. If the sender restarted,
 what it sent earlier is dropped, because it may have sent it again. The panel tells
-you before you choose. MESSAGES shows each waiting message as held, then as delivered
-or not delivered with the reason, and a sender whose message didn't get through is
-told so it can send it again.
+you before you choose. MESSAGES shows each waiting message as waiting, then as
+delivered or not delivered with the reason, and a sender whose message didn't get
+through is told so it can send it again. While any approval is in force, MESSAGES
+ends with one line counting them.
 
 Permission is per pair of agent sessions, so a new session in a pane asks again.
 **G** also lists what you've approved: pick one to Refresh it (another 24 hours)

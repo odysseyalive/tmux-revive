@@ -435,14 +435,17 @@ check "with that command ended (an MCP server still running under it), WAITING O
 tm kill-window -t work:cl; tm kill-window -t work:cx; tm kill-window -t work:cl2
 
 echo "access"
-# The key bar offers I only while the Links area has something for it: access waiting, or
-# approved and not lapsed. A declined one isn't something for I.
+# The key bar offers G only while there's something for it: access waiting, or approved and
+# not lapsed. A declined one isn't something for G. Access shows in MESSAGES; LINKS · SAVES
+# (the right-hand column, after the last │) keeps to links and saves.
+side() { grep -F ' │ ' | sed 's/.* │ //'; }
 iid=0123456789abcdef0123456789abcdef
 check "with nothing waiting or approved, the bar has no [G]rant access" "! frame 200 50 | grep -qF '[G]rant access'"
 mkdir -p "$T/mail/intros/$iid" && echo "x@far" >"$T/mail/intros/$iid/from" && echo "y@near" >"$T/mail/intros/$iid/to"
 out=$(frame 200 50)
 check "with one waiting, the bar offers [G]rant access" "grep -qF '[G]rant access' <<<\"\$out\""
-check "and Links shows it in one short line" "grep -qF '⚑ waiting x@far → y@near' <<<\"\$out\" && ! grep -qF 'ntro' <<<\"\$out\""
+check "and MESSAGES shows it waiting, not failed" "grep -qF '⚑ waiting for [G]rant access x@far→y@near' <<<\"\$out\" && ! grep -qF '✗' <<<\"\$out\""
+check "and LINKS · SAVES has no access lines" "side <<<\"\$out\" | grep -qF 'SAVED' && ! side <<<\"\$out\" | grep -qE '⚑|waiting|approved|rant access'"
 rm -rf "$T/mail/intros/$iid"
 # The agent waiting for access shows it in its STATE, by its name@host: here, a pane named
 # acc-sh on this computer.
@@ -453,11 +456,26 @@ rm -rf "$T/mail/intros/$iid"
 check "and once it's answered, its STATE is back" "! frame 200 50 | grep -cF 'RANT ACCESS' >/dev/null"
 tm set-option -p -u -t work:0.0 @agent
 printf 'deny s:c1@h s:d1@h c@h d@h %s\nallow s:a1@h s:b1@h a@h b@h %s\n' "$(date +%s)" $(($(date +%s) - 90000)) >"$T/mail/grants"
-check "a declined one, or an approval that has lapsed, isn't offered" "! frame 200 50 | grep -qF '[G]rant access'"
+out=$(frame 200 50)
+check "a declined one, or an approval that has lapsed, isn't offered, and has no approved line" "! grep -qF '[G]rant access' <<<\"\$out\" && ! grep -qF ' approved' <<<\"\$out\""
 printf 'allow s:a1@h s:b1@h a@h b@h %s\n' "$(date +%s)" >>"$T/mail/grants"
 out=$(frame 200 50)
-check "an approved one is, with one summary line in Links" "grep -qF '[G]rant access' <<<\"\$out\" && grep -qF '✓ 1 approved' <<<\"\$out\""
+check "an approved one is, with one summary line in MESSAGES" "grep -qF '[G]rant access' <<<\"\$out\" && [[ \$(grep -cF '✓ 1 approved · [G] to see' <<<\"\$out\") == 1 ]] && ! side <<<\"\$out\" | grep -qF 'approved'"
 rm -f "$T/mail/grants"
+# A held message waiting for access says so in MESSAGES: not failed, waiting on you. It stays
+# at the top however many messages come after it, and goes once it's delivered.
+mkdir -p "$T/mail/intros/$iid" && echo "lr@far" >"$T/mail/intros/$iid/from" && echo "dr@near" >"$T/mail/intros/$iid/to" && echo 1 >"$T/mail/intros/$iid/created"
+mv "$AGENT_SAY_MAILBOX" "$T/mailbox.keep" 2>/dev/null
+printf '## [lr@far -> dr@near 2026-11-09T19:00:00Z] #h1.0001 (held: waiting for access)\nplease run it\n\n' >"$AGENT_SAY_MAILBOX"
+for m in 1 2 3 4 5 6 7 8 9 10; do printf '## [a@h -> b@h 2026-11-09T19:%02d:00Z] #m%s\nnote %s\n\n' "$m" "$m" "$m" >>"$AGENT_SAY_MAILBOX"; done
+out=$(frame 200 50)
+check "a held message shows waiting for [G]rant access, not ✗" "grep -qF '⚑ waiting for [G]rant access lr@far→dr@near · please run it' <<<\"\$out\" && ! grep -qF '✗' <<<\"\$out\" && ! grep -qF 'held ·' <<<\"\$out\""
+check "and with many messages after it, it's still there, first" "grep -qF 'note 10' <<<\"\$out\" && ! grep -qF 'note 6' <<<\"\$out\" && grep -A1 'MESSAGES ▓▒░' <<<\"\$out\" | grep -qF 'waiting for [G]rant access lr@far'"
+printf '## [lr@far -> dr@near 2026-11-09T19:54:00Z] #h1.0001 (delivered)\nplease run it\n\n' >>"$AGENT_SAY_MAILBOX"
+rm -rf "$T/mail/intros/$iid"
+out=$(frame 200 50)
+check "once delivered, a plain delivered row" "grep -qF '✉ lr@far→dr@near please run it' <<<\"\$out\" && ! grep -qF 'waiting for' <<<\"\$out\""
+rm -f "$AGENT_SAY_MAILBOX"; mv "$T/mailbox.keep" "$AGENT_SAY_MAILBOX" 2>/dev/null
 # A held message's row says what became of it: held, then delivered (no ✗), under one id. One
 # refused for an agent session that changed says the agent restarted, not the raw error.
 mv "$AGENT_SAY_MAILBOX" "$T/mailbox.keep" 2>/dev/null
@@ -506,7 +524,7 @@ gone_a() { for _ in $(seq 1 30); do ascreen | grep -cF -- "$1" >/dev/null || ret
 akey() { tm send-keys -t work:acc "$@"; sleep 0.4; }
 state() { { cat "$T/mail/grants"; ls "$T/mail/intros"; } 2>/dev/null | md5sum; }
 wait_a 'C O N T R O L' >/dev/null
-check "Links shows each waiting one, and the approved ones as a count" "wait_a 'waiting live-root@far.invalid → dev-root@near' && wait_a 'waiting cx@far.invalid → dev-root@near' && wait_a '✓ 1 approved'"
+check "MESSAGES shows each waiting one, and the approved ones as a count" "wait_a 'waiting for [G]rant access live-root@far.invalid→dev' && wait_a 'waiting for [G]rant access cx@far.invalid→dev-root@near' && wait_a '✓ 1 approved · [G] to see'"
 check "the bar offers [G]rant access" "wait_a '[G]rant access'"
 before=$(state)
 akey g
@@ -535,7 +553,7 @@ akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; ake
 check "the code typed back approves it" "wait_a 'allowed live-root@far.invalid to talk with dev-root@near.invalid' && [[ ! -e $T/mail/intros/$ia ]] && grep -q '^allow s:$ia@far.invalid s:to$ia@near.invalid live-root@far.invalid dev-root@near.invalid [0-9]*\$' $T/mail/grants"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '2  Deny' >/dev/null; akey 2
 check "Deny declines it" "wait_a 'declined cx@far.invalid to dev-root@near.invalid' && [[ ! -e $T/mail/intros/$ib ]] && grep -q '^deny s:$ib@far.invalid ' $T/mail/grants"
-check "with nothing waiting, Links has no waiting line" "gone_a '⚑ waiting' && wait_a '✓ 2 approved'"
+check "with nothing waiting, MESSAGES has no waiting line" "gone_a 'waiting for [G]rant access' && wait_a '✓ 2 approved'"
 before=$(state)
 akey g; wait_a 'APPROVED' >/dev/null
 check "with nothing waiting, ACCESS lists only APPROVED" "! ascreen | grep -qF 'WAITING' && ascreen | grep -qF '1  ann@far.invalid → bob@near.invalid'"
