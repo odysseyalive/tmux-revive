@@ -399,7 +399,7 @@ through is told so it can send it again. While any approval is in force, MESSAGE
 ends with one line counting them.
 
 Permission is per pair of agent sessions, so a new session in a pane asks again.
-**G** also lists what you've approved: pick one to Refresh it (another 24 hours)
+**G** also lists what you've approved: pick one to Refresh it (another 24 hours, with a code as for Approve)
 or Cancel it. Esc closes without changing anything. The sending agent is
 told plainly what happened (`introduction sent`, `held`, `declined`). At most 5
 messages wait per pair, and 3 introductions per server. `agent-say intros` lists
@@ -419,6 +419,10 @@ marked as coming from another agent, not from you.
 Your computer and both servers need this version. What a server sends through your
 computer also follows its own link's limits. `--read-only` holds it in your
 mailbox, and an `--allow` list has to name the far pane as `tt-dev@dev`.
+
+A Mac can't tell a login over ssh from an agent that left its pane, so there a
+message sent from outside any tmux pane is refused, including what your computer
+hands a Mac server it links to.
 
 ### What this does and doesn't protect
 

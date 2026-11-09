@@ -561,6 +561,10 @@ akey 1
 check "an approved one offers Refresh or Cancel" "wait_a '1  Refresh' && wait_a '2  Cancel'"
 akey Escape
 check "Esc there changes nothing" "gone_a '2  Cancel' && [[ \$(state) == '$before' ]]"
+echo wrong >"$T/popup.code"; : >"$T/popup.log"
+akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '1  Refresh' >/dev/null; akey 1
+check "Refresh asks for the code in the same popup; a wrong one refreshes nothing" "wait_a \"not refreshed: the code didn't match\" && grep -q '^display-popup ' $T/popup.log && [[ \$(state) == '$before' ]]"
+echo right >"$T/popup.code"
 start=$(date +%s)
 akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '1  Refresh' >/dev/null; akey 1
 check "Refresh restarts its day" "wait_a 'refreshed: ann@far.invalid → bob@near.invalid · 24h left' && awk -v s=$start '\$4 == \"ann@far.invalid\" && \$6 >= s {f = 1} END {exit !f}' $T/mail/grants"

@@ -145,6 +145,7 @@ follow_tmux_owner() {
 }
 # Not when sourced (the panel's popup, run as you): only a command run is followed.
 CALLER=""
+own_delivery="" # set only by deliver_here, never from the environment (see sending_agent)
 [[ "${BASH_SOURCE[0]}" != "$0" ]] || follow_tmux_owner "$@"
 
 MAILBOX="${AGENT_SAY_MAILBOX:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-say/mailbox.md}"
@@ -403,12 +404,13 @@ soft_die() {
 }
 
 # Run agent-say in the background, out of this process group, so it outlives its caller. By
-# its own path, not $0: the panel's popup sources it to approve, and $0 is then a shell.
+# its own path, not $0: the panel's popup sources it to approve, and $0 is then a shell. With
+# the key that marks it as agent-say's own work (internal_key), which _queued and _tell require.
 detach() {
 	if command -v setsid >/dev/null; then
-		setsid -f "${BASH_SOURCE[0]}" "$@" </dev/null >/dev/null 2>&1
+		AGENT_SAY_INTERNAL="$(internal_key)" setsid -f "${BASH_SOURCE[0]}" "$@" </dev/null >/dev/null 2>&1
 	else
-		nohup "${BASH_SOURCE[0]}" "$@" </dev/null >/dev/null 2>&1 &
+		AGENT_SAY_INTERNAL="$(internal_key)" nohup "${BASH_SOURCE[0]}" "$@" </dev/null >/dev/null 2>&1 &
 	fi
 }
 
@@ -420,7 +422,7 @@ queue_local() { # queue_local FROM TO MESSAGE
 	(($(find "$STATE/queue" -maxdepth 1 -name 'msg.*' ! -name '*.err' | wc -l) < QUEUE_MAX)) || return 1
 	q="$(mktemp "$STATE/queue/msg.XXXXXX")"
 	printf '%s' "$3" >"$q"
-	AGENT_SAY_INTERNAL="$(internal_key)" detach --from "$1" _queued "$2" "$q"
+	detach --from "$1" _queued "$2" "$q"
 }
 
 ssh_to() { # ssh_to HOST REMOTE-COMMAND (stdin passes through)
@@ -766,36 +768,64 @@ sender_identity() { # -> SENDER_PANE SENDER_SID
 	SENDER_SID="$(session_id "$SENDER_PANE")"
 	return 0
 }
-# agent-say's own deliveries (the link's poller, a queued message, one you allowed in the
-# panel, its notices) carry a key the sending check knows them by (AGENT_SAY_INTERNAL), never
-# by where they run: $STATE/internal.key, readable only by you, made on first use. An agent
-# running as you can read it too: it keeps out casual misuse, not a determined agent.
+# agent-say's own background work (agent-say _queued, _tell, run by detach) is known by a key
+# kept in the tmux it delivers into (@agent-say-key), handed to it in AGENT_SAY_INTERNAL. Not
+# a file in the state dir, which whoever runs agent-say can point elsewhere; a caller that
+# points it at another tmux delivers only into that one. An agent running as you can read the
+# key too: it keeps out casual misuse, not a determined agent.
 internal_key() {
-	local f="$STATE/internal.key" k
-	if [[ ! -s $f ]]; then
-		mkdir -p "$STATE"
+	local k
+	k="$(tmux show-options -gqv @agent-say-key 2>/dev/null)"
+	if [[ ! $k =~ ^[0-9a-f]{32}$ ]]; then
 		k="$(od -An -N16 -tx1 /dev/urandom | tr -dc 0-9a-f)"
-		(umask 077 && printf '%s\n' "$k" >"$f.$$") && mv -n "$f.$$" "$f"
-		rm -f "$f.$$"
+		# -o: only if none is set yet, so two at once agree on one.
+		tmux set-option -gq -o @agent-say-key "$k" 2>/dev/null || tmux set-option -gq @agent-say-key "$k" 2>/dev/null
+		k="$(tmux show-options -gqv @agent-say-key 2>/dev/null)"
 	fi
-	head -n 1 "$f" 2>/dev/null
+	[[ $k =~ ^[0-9a-f]{32}$ ]] && echo "$k"
 }
-internal_caller() { [[ -n "${AGENT_SAY_INTERNAL:-}" && -s "$STATE/internal.key" && "$AGENT_SAY_INTERNAL" == "$(head -n 1 "$STATE/internal.key")" ]]; }
+internal_caller() { local k; k="$(internal_key)" && [[ -n $k && "${AGENT_SAY_INTERNAL:-}" == "$k" ]]; }
+
+# Is PID a login's ssh server (sshd, or sshd-session since OpenSSH 9.8)? By the program it
+# runs (/proc/PID/exe), which root installed, never by its name, which any process can set.
+# Without /proc (macOS) it can't be told, so never: a send there from outside any pane is refused.
+ssh_server_pid() {
+	local exe
+	exe="$(readlink "/proc/$1/exe" 2>/dev/null)" || return 1
+	[[ ${exe##*/} == sshd || ${exe##*/} == sshd-session ]] || return 1
+	[[ "$(stat -c %u -- "$exe" 2>/dev/null)" == 0 ]] # installed by root
+}
+
+# A message for a pane here that agent-say delivers itself, in this process: what a link
+# brings in (its poller asked your permission first), what you allowed in the panel, what
+# waited in the queue, its own notices. In a subshell, so a refusal ends only this delivery.
+# own_delivery is set only here; it is cleared when agent-say starts, so no caller can set it.
+# deliver_here FROM TO TEXT [RECIPIENT-SESSION [notice]] -> 0 delivered, 75 busy, else refused
+deliver_here() {
+	(
+		from=$1 own_delivery=1 DELIVER=1 AGENT_SAY_LOCAL_ONLY=1 MODE_WAIT=0 TYPING_WAIT=0
+		AGENT_SAY_TO_SESSION=${4:-} AGENT_SAY_NOTICE=${5:+1}
+		valid_sender "$from" && valid_target "$2" || die "not a pane here: $2"
+		printf '%s' "$3" | send_message "$2" -
+	)
+}
 
 # Is an agent sending this? Every message from one agent session to another needs your
 # permission; one a person sends (agent-say typed in a shell, the panel's M) doesn't. Told
 # apart only by walking up from this process, never by --from or AGENT_SAY_PANE, and it fails
-# closed. A person is one in a pane with no agent anywhere in it, no agent between them, or
-# one logged in over ssh outside any pane (on a server: what the computer that links it hands
-# it, which asked you there itself). An agent is one among the callers, in the pane it runs
-# in, or else the agent running in the pane this comes from. -> AGENT_PANE AGENT_SID, both
-# empty for a person or agent-say's own deliveries (internal_caller). Returns 1 when which it
-# is can't be told: outside any pane and not over ssh (a process that left its pane, say).
+# closed. A person is one in a pane with no agent anywhere in it and none between them, or one
+# logged in over ssh outside any pane with no agent anywhere above it (on a server: also what
+# the computer that links it hands it, which asked you there itself). An agent is one among
+# the callers, in the pane it runs in, or else the agent running in the pane this comes from.
+# -> AGENT_PANE AGENT_SID, both empty for a person or agent-say's own delivery (deliver_here).
+# Returns 1 when which it is can't be told: outside any pane and not a login over ssh (a
+# process that left its pane, say).
 sending_agent() {
 	local pid=$$ panes hit="" agent="" sshd="" anc=" " apid args AK
 	AGENT_PANE="" AGENT_SID=""
-	internal_caller && return 0
+	[[ -n $own_delivery ]] && return 0
 	panes="$(tmux list-panes -a -F '#{pane_pid} #{pane_id}' 2>/dev/null)" || return 1
+	# Up to the pane, or else all the way: an agent anywhere above counts.
 	while [[ -n "$pid" && "$pid" -gt 1 ]]; do
 		anc+="$pid "
 		args="$(ps -ww -o args= -p "$pid" 2>/dev/null)"
@@ -805,15 +835,14 @@ sending_agent() {
 			[[ -n $AGENT_PANE ]] && AGENT_SID="$(session_id "$AGENT_PANE")" && [[ -n $AGENT_SID ]] && return 0
 			return 1
 		fi
-		# A login over ssh: what is above it is the ssh server's, not the caller's.
-		[[ "$args" == sshd* || "$args" == */sshd* ]] && { sshd=1; break; }
 		agent_cmd "$args"; [[ -n $AK ]] && agent=1
+		ssh_server_pid "$pid" && sshd=1
 		hit="$(awk -v p="$pid" '$1 == p {print $2; exit}' <<<"$panes")"
 		[[ -n $hit ]] && break
 		pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
 	done
 	if [[ -z $hit ]]; then
-		[[ -n $sshd && -z $agent ]] && return 0 # logged in over ssh, no agent in between
+		[[ -n $sshd && -z $agent ]] && return 0 # a login over ssh, no agent anywhere above
 		return 1
 	fi
 	if [[ -z $agent ]]; then
@@ -885,7 +914,7 @@ relay_send() { # relay_send FROM NAME@HOST TEXT [RECIPIENT-KEY (see stamp)]
 	s="${s#s:}"; s="${s%@*}"
 	[[ "${4:-}" == s:* ]] && valid_session "$s" || s=""
 	if [[ "${2#*@}" == "$LABEL" ]]; then
-		printf '%s' "$3" | AGENT_SAY_TO_SESSION="$s" AGENT_SAY_INTERNAL="$(internal_key)" "${BASH_SOURCE[0]}" --from "${1%"@$LABEL"}" _deliver "${2%@*}" >/dev/null || rc=$?
+		deliver_here "${1%"@$LABEL"}" "${2%@*}" "$3" "$s" >/dev/null || rc=$?
 		((rc == 75)) || return "$rc"
 		AGENT_SAY_TO_SESSION="$s" queue_local "${1%"@$LABEL"}" "${2%@*}" "$3" || { echo "agent-say: ${2%@*} is busy, and $QUEUE_MAX messages already wait in the queue" >&2; return 1; }
 		return 0
@@ -1183,13 +1212,17 @@ revoke() { # revoke A B: forget what was said for the pair (sessions or name@hos
 	((n)) || die "nothing given for $1 and $2 (see: agent-say intros)"
 	echo "revoked: $1 and $2 need your permission again"
 }
-grant_refresh() { # grant_refresh A B: an allow for the pair (sessions, either way) counts from now
+grant_refresh() { # grant_refresh A B CODE: an allow for the pair (sessions, either way), still running, counts from now
 	local t="$GRANTS.$$" now n
+	# Only from the panel's popup, with the code you typed back there, as approve.
+	[[ -n "${3:-}" && "${AGENT_SAY_APPROVE_CODE:-}" == "$3" ]] || die "only you can refresh that, in the panel (press G there)"
+	# Only one still running: a lapsed one is gone, not brought back.
+	cull_sessions
 	printf -v now '%(%s)T' -1
 	[[ -f "$GRANTS" ]] || die "nothing allowed for $1 and $2"
 	index_lock || die "the permission list is busy, so try again in a moment"
-	n=$(awk -v a="$1" -v b="$2" -v w="$now" -v o="$t" '
-		$1 == "allow" && (($2 == a && $3 == b) || ($2 == b && $3 == a)) {$6 = w; n++}
+	n=$(awk -v a="$1" -v b="$2" -v w="$now" -v c="$((now - SESSION_TTL))" -v o="$t" '
+		$1 == "allow" && (($2 == a && $3 == b) || ($2 == b && $3 == a)) && $6 ~ /^[0-9]+$/ && $6 > c {$6 = w; n++}
 		{print >o} END {print n + 0}' "$GRANTS")
 	if ((n)); then mv "$t" "$GRANTS"; else rm -f "$t"; fi
 	index_unlock
@@ -1876,7 +1909,7 @@ case "$cmd" in
 						fi
 						if [[ -z $why && -z $held ]]; then
 							rc=0
-							printf '%s' "$text" | AGENT_SAY_TO_SESSION="$rs" AGENT_SAY_INTERNAL="$(internal_key)" "$0" --from "$mfrom" _deliver "$to" >/dev/null 2>"$d/deliver.err" || rc=$?
+							deliver_here "$mfrom" "$to" "$text" "$rs" >/dev/null 2>"$d/deliver.err" || rc=$?
 							# Someone typing there, or the like: delivered here once the pane is free.
 							if ((rc == 75)); then
 								if AGENT_SAY_TO_SESSION="$rs" queue_local "$mfrom" "$to" "$text"; then rc=0; else rc=1; echo "busy, and $QUEUE_MAX messages already wait in the queue" >"$d/deliver.err"; fi
@@ -1914,7 +1947,9 @@ case "$cmd" in
 		# Background half of a send the pane couldn't take yet: try every 2 seconds until it
 		# is delivered. It gives up if the pane can never take it (gone, or no agent there) or
 		# after QUEUE_MAX_AGE, and then the message goes into the mailbox marked NOT DELIVERED.
-		# The file must be one queue_local wrote: this reads it out and then deletes it.
+		# The file must be one queue_local wrote: this reads it out and then deletes it. Only
+		# agent-say's own (detach gives it the key): what it delivers was asked about when sent.
+		internal_caller || die "agent-say _queued is agent-say's own; not run"
 		q="${3:-}"
 		qdir="$(cd "$STATE/queue" 2>/dev/null && pwd -P)" || qdir=""
 		valid_sender "$from" && valid_target "${2:-}" && [[ -n "$qdir" && "$(basename -- "$q")" =~ ^msg\.[A-Za-z0-9]+$ &&
@@ -1922,7 +1957,7 @@ case "$cmd" in
 			die "usage: agent-say --from <sender> _queued <to> <file in $STATE/queue>"
 		while :; do
 			rc=0
-			"$0" --from "$from" _deliver "$2" <"$q" >/dev/null 2>"$q.err" || rc=$?
+			deliver_here "$from" "$2" "$(cat "$q")" "${AGENT_SAY_TO_SESSION:-}" >/dev/null 2>"$q.err" || rc=$?
 			((rc == 75 && SECONDS < QUEUE_MAX_AGE)) && { sleep 2; continue; }
 			if ((rc != 0)); then
 				why="$(tr '\n' ' ' <"$q.err")"
@@ -2016,18 +2051,18 @@ case "$cmd" in
 		cull_sessions
 		echo "$SESSION_TTL" ;;
 	_tell)
+		# agent-say's own notice (tell, through detach, which gives it the key), not anyone's.
+		internal_caller || die "agent-say _tell is agent-say's own; not run"
 		valid_host "${2:-}" && valid_name "${3:-}" || die "usage: agent-say _tell <host> <name> <text>"
 		if [[ "$2" == "$LABEL" ]]; then # a pane here (an agent here you declined)
-			printf '%s' "${4:-}" | AGENT_SAY_LOCAL_ONLY=1 AGENT_SAY_NOTICE=1 AGENT_SAY_INTERNAL="$(internal_key)" "$0" --from "agent-say@$LABEL" "$3" - >/dev/null 2>&1 || true
+			deliver_here "agent-say@$LABEL" "$3" "${4:-}" "" notice >/dev/null 2>&1 || true
 			exit 0
 		fi
 		printf '%s' "${4:-}" | ssh_to "$2" "AGENT_SAY_LOCAL_ONLY=1 AGENT_SAY_NOTICE=1 $REMOTE_CMD --from $(printf %q "agent-say@$LABEL") $(printf %q "$3") -" >/dev/null 2>&1 || true ;;
 	_grant)
-		# For the panel only: Refresh restarts an approval's day from now.
-		case "${2:-}" in
-			refresh) [[ -n "${4:-}" ]] && grant_refresh "$3" "$4" ;;
-			*) false ;;
-		esac || die "usage: agent-say _grant refresh <sender> <recipient>" ;;
+		# Refreshing is done only in the panel's popup, by grant_refresh once you've typed back
+		# its code, as allowing is: no command does it.
+		die "only you can refresh that, in the panel (press G there)" ;;
 	_intro)
 		# Declining (it only takes access away). There is no command that allows: that is done
 		# only in the panel's popup, by approve itself, once you've typed back its code.
@@ -2086,8 +2121,9 @@ case "$cmd" in
 			keep {buf[c] = buf[c] $0 "\n"}
 			END{s = c - n + 1; if (s < 1) s = 1; for (i = s; i <= c; i++) printf "%s", buf[i]}' "$MAILBOX" ;;
 	_deliver)
-		# A message a link brought in (stdin), for a pane on this machine only. Its own
-		# command, so a pane named like a command (read, list...) can't turn it into one.
+		# A message (stdin) for a pane on this machine only, from an older agent-say's poller.
+		# Its own command, so a pane named like a command (read, list...) can't turn it into
+		# one. It is asked about like any send: agent-say's own deliveries use deliver_here.
 		DELIVER=1 AGENT_SAY_LOCAL_ONLY=1 MODE_WAIT=0 TYPING_WAIT=0
 		valid_target "${2:-}" || die "usage: agent-say --from <sender> _deliver <name or %pane-id here>"
 		send_message "$2" - ;;

@@ -1810,6 +1810,20 @@ trim_colored() { # trim_colored TEXT WIDTH -> TRIM: cut to WIDTH visible charact
 
 # ------------------------------------------------------------------ actions
 flash() { FLASH=$1 FLASH_T=$SECONDS; clean FLASH; } # agent-say's reply can quote anything
+# A code shown only in a popup, typed back there: a popup isn't a pane, so no agent can read
+# it or type into it with send-keys. The popup's own shell then runs agent-say's FUNCTION
+# ARGS... CODE (approve, grant_refresh), which refuses without that code; no command does it.
+# code_popup QUESTION VERB FUNCTION ARGS... -> the last line it said, or nothing (no match)
+code_popup() {
+	local q=$1 verb=$2 out="$ASTATE/intros/.allow.out" pc
+	shift 2
+	mkdir -p "$ASTATE/intros"
+	pc=$(printf '%q ' bash -c 'c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); printf "\n  %s\n\n  Type %s and Enter to %s (anything else: no): " "$1" "$c" "$2"; IFS= read -r r; [[ $r == "$c" ]] || exit 1; export AGENT_SAY_MAILBOX="$3" AGENT_SAY_APPROVE_CODE="$c"; o=$4 s=$5; shift 5; source "$s" && "$@" "$c" >"$o" 2>&1' _ "$q" "$verb" "$AMAIL" "$out" "$ASAY" "$@")
+	rm -f "$out"
+	tm display-popup -E -w 76 -h 9 "$pc" 2>/dev/null
+	tail -n 1 "$out" 2>/dev/null || true
+	rm -f "$out"
+}
 
 # read_host_keys HOST -> KEYS: its key fingerprints, as agent-say link would show them, and
 # KEY_STATE: whether link would ask you to confirm them (agent-say's key_state: recorded,
@@ -2471,16 +2485,8 @@ act() {
 			PREV=(); draw # the list away first, so the two boxes never overlap
 			pick "${f:0:24} → ${t:0:24}" "${labels[@]}" "Approve" "Deny" || { PREV=(); return; } # PREV: all of it drawn again over the box
 			if ((PICKED == nt)); then
-				# A code shown only in a popup, typed back there: a popup isn't a pane, so no
-				# agent can read it or type into it with send-keys. The popup's own shell then
-				# allows it, by agent-say's approve; no command does that.
-				local pc
-				pc=$(printf '%q ' bash -c 'c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); printf "\n  Allow %s to talk with %s?\n\n  Type %s and Enter to allow (anything else: no): " "$1" "$2" "$c"; IFS= read -r r; [[ $r == "$c" ]] || exit 1; export AGENT_SAY_MAILBOX="$3" AGENT_SAY_APPROVE_CODE="$c"; source "$4" && approve "$5" "$c" >"$6" 2>&1' _ "$f" "$t" "$AMAIL" "$ASAY" "$a" "$ASTATE/intros/.allow.out")
-				rm -f "$ASTATE/intros/.allow.out"
-				tm display-popup -E -w 76 -h 9 "$pc" 2>/dev/null
+				out=$(code_popup "Allow $f to talk with $t?" allow approve "$a")
 				PREV=()
-				out=$(tail -n 1 "$ASTATE/intros/.allow.out" 2>/dev/null || true)
-				rm -f "$ASTATE/intros/.allow.out"
 				[[ -n $out ]] || out="not approved: the code didn't match, so it's still waiting"
 			else
 				out=$("$ASAY" _intro deny "$a" 2>&1 | tail -n 1)
@@ -2491,7 +2497,11 @@ act() {
 			PREV=(); draw
 			pick "$lt" "Refresh" "Cancel" || { PREV=(); return; }
 			if ((PICKED == 0)); then
-				out=$("$ASAY" _grant refresh "$a" "$b" 2>&1) && out="refreshed: $l · $((ttl / 3600))h left"
+				# The same code popup as Approve: no agent can refresh its own access.
+				out=$(code_popup "Refresh $l for another day?" refresh grant_refresh "$a" "$b")
+				PREV=()
+				if [[ $out == refreshed:* ]]; then out="refreshed: $l · $((ttl / 3600))h left"
+				elif [[ -z $out ]]; then out="not refreshed: the code didn't match"; fi
 			else
 				out=$("$ASAY" revoke "$a" "$b" 2>&1) && out="cancelled: $l"
 			fi
