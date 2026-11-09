@@ -14,6 +14,7 @@ set -eu
 
 REPO=${REVIVE_REPO:-odysseyalive/tmux-revive}
 REF=${REVIVE_REF:-}
+REF_ASKED=$REF # REF as given, before main picks one
 PIN=${REVIVE_VERSION:-}
 # A release is trusted only if its SHA256SUMS is signed by this key. It lives here, not in
 # the release, so a tampered release can't vouch for itself. MAINTAINER: replace this line
@@ -344,6 +345,116 @@ pkg_install() { # best effort with whatever package manager is here
 	else return 1; fi
 }
 
+# The oldest tmux tmux-revive runs on: its status and panel keys open with display-popup -E,
+# which came in tmux 3.2.
+TMUX_MIN=3.2
+
+# tmux_how: how to get tmux on this system, in HOW_SYS (the system's name), HOW (the exact
+# command, or empty when there isn't one), HOW_PRE (a step before it, lowercase) and HOW_NOTE (a line
+# after it), each empty when there's nothing to say.
+# REVIVE_OS_RELEASE stands in for /etc/os-release, for tests.
+tmux_how() {
+	HOW_SYS="" HOW="" HOW_PRE="" HOW_NOTE=""
+	su=sudo
+	[ "$(id -u 2>/dev/null)" = 0 ] && su=""
+	if [ -n "${TERMUX_VERSION:-}" ] || case ${PREFIX:-} in *com.termux*) true ;; *) false ;; esac; then
+		HOW_SYS=Termux HOW="pkg install tmux"
+		return
+	fi
+	case $(uname -s 2>/dev/null) in
+	Darwin)
+		HOW_SYS=macOS
+		if have brew; then HOW="brew install tmux"
+		elif have port; then HOW="sudo port install tmux"
+		else HOW="brew install tmux" HOW_PRE="first install Homebrew from https://brew.sh"; fi
+		return ;;
+	FreeBSD) HOW_SYS=FreeBSD HOW="${su:+$su }pkg install tmux"; return ;;
+	OpenBSD) HOW_SYS=OpenBSD HOW_NOTE="tmux is part of OpenBSD's base system: reinstall or upgrade the base sets."; return ;;
+	NetBSD) HOW_SYS=NetBSD HOW="${su:+$su }pkgin install tmux"; return ;;
+	esac
+	osr=${REVIVE_OS_RELEASE:-/etc/os-release}
+	osv() { sed -n "s/^$1=//p" "$osr" 2>/dev/null | head -n 1 | tr -d '"'"'"; }
+	id=$(osv ID) like=$(osv ID_LIKE) HOW_SYS=$(osv NAME)
+	fam=""
+	for w in $id $like; do
+		case $w in
+		nixos) fam=nixos ;;
+		debian | ubuntu | linuxmint | pop | raspbian | elementary | zorin | kali) fam=apt ;;
+		fedora | rhel | centos | rocky | almalinux | ol | amzn) fam=dnf ;;
+		arch | manjaro | endeavouros | omarchy | garuda | artix) fam=pacman ;;
+		opensuse* | suse | sles) fam=zypper ;;
+		alpine) fam=apk ;;
+		void) fam=xbps ;;
+		gentoo) fam=emerge ;;
+		esac
+		[ -z "$fam" ] || break
+	done
+	# No os-release we know: go by the package manager that's here.
+	if [ -z "$fam" ]; then
+		for p in apt-get:apt dnf:dnf yum:dnf pacman:pacman zypper:zypper apk:apk xbps-install:xbps emerge:emerge nix-env:nix; do
+			have "${p%%:*}" && { fam=${p#*:}; break; }
+		done
+	fi
+	case $fam in
+	apt) HOW="sudo apt install tmux" ;;
+	dnf) if ! have dnf && have yum; then HOW="sudo yum install tmux"; else HOW="sudo dnf install tmux"; fi ;;
+	pacman) HOW="sudo pacman -S tmux" ;;
+	zypper) HOW="sudo zypper install tmux" ;;
+	apk) HOW="sudo apk add tmux" ;;
+	xbps) HOW="sudo xbps-install tmux" ;;
+	emerge) HOW="sudo emerge app-misc/tmux" ;;
+	nixos) HOW="nix-env -iA nixos.tmux"
+		HOW_NOTE="Or add tmux to environment.systemPackages in /etc/nixos/configuration.nix." ;;
+	nix) HOW="nix-env -iA nixpkgs.tmux" ;;
+	esac
+	[ "$su" = sudo ] || HOW=${HOW#sudo }
+}
+
+# need_tmux missing | need_tmux old VERSION: stop, saying how to get tmux on this system.
+# All the words a person sees about it are here, so they can be edited in one place.
+need_tmux() {
+	tmux_how
+	sys=${HOW_SYS:+ on $HOW_SYS}
+	if [ "$1" = missing ]; then
+		printf '\033[1;31mxx\033[0m  %s\n\n' "tmux isn't installed. tmux-revive runs inside tmux, so it needs tmux first." >&2
+		get="To install tmux$sys, run:"
+	else
+		printf '\033[1;31mxx\033[0m  %s\n\n' "This tmux is $2, which is too old. tmux-revive needs tmux $TMUX_MIN or newer." >&2
+		get="To get a newer tmux$sys, run:"
+	fi
+	{
+		if [ -n "$HOW_PRE" ]; then printf '  %s\n' "${get%, run:}, $HOW_PRE."; get="After that, run:"; fi
+		if [ -n "$HOW" ]; then printf '  %s\n    %s\n' "$get" "$HOW"; fi
+		if [ -n "$HOW_NOTE" ]; then printf '  %s\n' "$HOW_NOTE"; fi
+		if [ -z "$HOW$HOW_NOTE" ]; then printf '  %s\n' "Install tmux with your package manager."; fi
+		if [ -z "$HOW$HOW_NOTE" ] || [ "$1" != missing ]; then
+			printf '  %s\n' "If that tmux is older than $TMUX_MIN, see https://github.com/tmux/tmux/wiki/Installing"
+		fi
+		printf '\n  %s\n    %s\n\n' "Then run the install command again:" "$(rerun_cmd)"
+	} >&2
+	exit 1
+}
+
+# rerun_cmd: the one-liner that runs this install again, as it was asked for.
+rerun_cmd() {
+	u="curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh |"
+	if [ -n "$PIN" ]; then printf '%s REVIVE_VERSION=%s sh' "$u" "$PIN"
+	elif [ -n "$REF_ASKED" ]; then printf '%s REVIVE_REF=%s sh' "$u" "$REF_ASKED"
+	else printf '%s sh' "$u"; fi
+}
+
+# check_tmux: tmux is here and new enough, or stop. A version tmux -V doesn't give in a
+# form we know (a build from git, say) gets the benefit of the doubt.
+check_tmux() {
+	have tmux || need_tmux missing
+	tv=$(tmux -V 2>/dev/null | sed -n 's/^[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1) || tv=""
+	if [ -z "$tv" ]; then
+		warn "couldn't tell which tmux this is ($(tmux -V 2>&1 | head -n 1)); tmux-revive needs $TMUX_MIN or newer"
+	elif older "$tv" "$TMUX_MIN"; then
+		need_tmux old "$(tmux -V 2>/dev/null | head -n 1 | sed 's/^tmux //')"
+	fi
+}
+
 uninstall() {
 	conf=$(tmux_conf)
 	if grep -qxF "$BEGIN" "$conf" 2>/dev/null && set_block "$conf" "$BEGIN" "$END"; then
@@ -412,10 +523,7 @@ main() {
 	grep -qi microsoft /proc/version 2>/dev/null && say "WSL detected"
 
 	# ------------------------------------------------------------- dependencies
-	if ! have tmux; then
-		say "tmux not found, installing it"
-		pkg_install tmux || die "install tmux with your package manager, then rerun"
-	fi
+	check_tmux
 	if [ "$OS" = Darwin ]; then
 		ok=0
 		for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && ok=1; done

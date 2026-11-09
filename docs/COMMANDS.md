@@ -35,6 +35,11 @@ irm https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.ps1 
 If tmux is already running, it's protected from now on. The installer backs up
 every file before it touches it, and `tmux-revive uninstall` undoes all of it.
 
+tmux-revive needs tmux 3.2 or newer. The installer checks for it before it
+downloads anything. If tmux is missing or too old, it stops and prints the
+command that installs tmux on your system, such as `sudo apt install tmux` on
+Ubuntu or `brew install tmux` on macOS. Run that, then run the installer again.
+
 Installer options go after `sh -s --`:
 
 | Option | What it does |

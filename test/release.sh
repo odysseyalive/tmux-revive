@@ -32,9 +32,9 @@ git -C "$T/repo" add -A
 git -C "$T/repo" -c user.name=t -c user.email=t@localhost commit -q -m base
 REPO_SHA=$(git -C "$T/repo" rev-parse HEAD)
 
-# No server anywhere: the installer finds no tmux to load into.
+# No server anywhere: the installer finds no tmux to load into (a new enough one, though).
 mkdir -p "$T/ib"
-printf '#!/bin/sh\nexit 1\n' >"$T/ib/tmux"
+printf '#!/bin/sh\n[ "$1" = -V ] && { echo "tmux 3.4"; exit 0; }\nexit 1\n' >"$T/ib/tmux"
 chmod +x "$T/ib/tmux"
 H=$T/h APP=$T/h/.local/share/tmux-revive/app
 # inst [VAR=VALUE...] CMD...: run CMD in the sandbox home, stdout+stderr to $T/out.
@@ -159,6 +159,51 @@ for d in /usr/bin /bin; do
 done
 inst env PATH="$T/ib:$T/nossh" sh "$T/repo/install.sh" --no-config; rc=$?
 check "no ssh-keygen: a clear error" "((rc != 0)) && said 'needs ssh-keygen' && [[ ! -e $APP ]]"
+
+# No tmux, or one too old: the installer stops before it fetches anything, saying how to
+# get tmux on this system. PATH is the system's commands less tmux and package managers;
+# uname and os-release are faked per system.
+echo "tmux missing or too old"
+mkdir -p "$T/notmux" "$T/mac" "$T/osr" "$T/tmux29"
+for d in /usr/bin /bin; do
+	for f in "$d"/*; do
+		n=${f##*/}
+		[[ $n =~ ^(tmux|brew|port|apt-get|dnf|yum|pacman|zypper|apk|xbps-install|emerge|nix-env)$ || -e $T/notmux/$n || ! -x $f ]] || ln -s "$f" "$T/notmux/$n"
+	done
+done
+printf '#!/bin/sh\n[ "$1" = -s ] && { echo Darwin; exit 0; }\nexec %q "$@"\n' "$(command -v uname)" >"$T/mac/uname"
+printf '#!/bin/sh\necho "tmux 2.9"\n' >"$T/tmux29/tmux"
+chmod +x "$T/mac/uname" "$T/tmux29/tmux"
+printf 'NAME="Ubuntu"\nID=ubuntu\nID_LIKE=debian\n' >"$T/osr/ubuntu"
+printf 'NAME="Arch Linux"\nID=arch\n' >"$T/osr/arch"
+printf 'NAME="Fedora Linux"\nID=fedora\n' >"$T/osr/fedora"
+printf 'NAME="Linux Mint"\nID=linuxmint\nID_LIKE="ubuntu debian"\n' >"$T/osr/mint"
+printf 'NAME="Plan 10"\nID=plan10\n' >"$T/osr/odd"
+stops() { # stops WHAT EXPECTED-TEXT VAR=VALUE...: install with those; it stops and says the text
+	local what=$1 want=$2
+	shift 2
+	fresh
+	inst env "$@" sh "$T/repo/install.sh" --no-config; rc=$?
+	check "$what" "((rc != 0)) && said \"\$want\" && said 'run the install command again' && [[ ! -e $H/.local/share/tmux-revive && ! -e $H/.local/bin ]]"
+}
+stops "no tmux on Ubuntu: stops, nothing installed, says apt" "sudo apt install tmux" PATH="$T/notmux" REVIVE_OS_RELEASE="$T/osr/ubuntu"
+check "and says tmux isn't installed, on what, and the install line" \
+	"said \"tmux isn't installed\" && said 'To install tmux on Ubuntu, run:' && said 'odysseyalive/tmux-revive/main/install.sh | sh'"
+stops "no tmux on Arch: pacman" "sudo pacman -S tmux" PATH="$T/notmux" REVIVE_OS_RELEASE="$T/osr/arch"
+stops "no tmux on Fedora: dnf" "sudo dnf install tmux" PATH="$T/notmux" REVIVE_OS_RELEASE="$T/osr/fedora"
+stops "no tmux on Linux Mint (like ubuntu): apt" "sudo apt install tmux" PATH="$T/notmux" REVIVE_OS_RELEASE="$T/osr/mint"
+stops "no tmux on a system it doesn't know: tmux's install page" "github.com/tmux/tmux/wiki/Installing" PATH="$T/notmux" REVIVE_OS_RELEASE="$T/osr/odd"
+stops "no tmux on macOS without Homebrew: Homebrew first" "https://brew.sh" PATH="$T/mac:$T/notmux"
+check "then brew install tmux" "said 'To install tmux on macOS' && said 'brew install tmux'"
+printf '#!/bin/sh\nexit 0\n' >"$T/mac/brew" && chmod +x "$T/mac/brew"
+stops "no tmux on macOS with Homebrew: brew install tmux" "brew install tmux" PATH="$T/mac:$T/notmux"
+check "and no Homebrew detour" "! said 'brew.sh'"
+rm "$T/mac/brew"
+stops "tmux 2.9: too old, stops, nothing installed" "too old" PATH="$T/tmux29:$T/notmux" REVIVE_OS_RELEASE="$T/osr/ubuntu"
+check "and says what it needs and how to get it" "said 'tmux is 2.9' && said '3.2 or newer' && said 'sudo apt install tmux'"
+stops "a pinned version is asked for again the same way" "| REVIVE_VERSION=1.0.0 sh" PATH="$T/notmux" REVIVE_OS_RELEASE="$T/osr/arch" REVIVE_VERSION=1.0.0
+inst env PATH="$T/notmux" sh "$T/repo/install.sh" --uninstall; rc=$?
+check "uninstall doesn't need tmux" "((rc == 0)) && said 'uninstalled'"
 
 # Following main: a stand-in curl answers GitHub's API with a commit and serves this
 # repo's tarball and installer, so the unsigned path runs offline.

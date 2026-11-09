@@ -431,6 +431,7 @@ printf '#!/bin/sh\nexec %q -S %q -f /dev/null "$@"\n' "$real_tmux" "$T/sock4" >"
 cat >"$T/tmux-bad" <<'EOF'
 #!/bin/sh
 case $1 in
+-V) echo 'tmux 3.4' ;;
 run-shell) printf 'boom: revive.tmux is broken\033]52;c;cHduZWQ=\a\302\2332J\033[2J\n' >&2; exit 1 ;;
 show-option) exit 0 ;;
 esac
