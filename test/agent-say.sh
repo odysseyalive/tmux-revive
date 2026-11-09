@@ -416,7 +416,7 @@ out=$(in1 $LR "$ROOT/bin/agent-say --from live-root dev-root 'I am live-root on 
 check "a bare name on the other server resolves and goes to the hub ($out)" "[[ '$out' == *'queued for dev-root@dev.example.com through laptop'* ]]"
 check "it waits at the hub as an introduction" "wait_intro 'live-root@devbox wants to talk with dev-root@dev.example.com'"
 mkdir -p "$T/revive"
-check "and shows in the panel's links" "tmux run-shell 'REVIVE_PANEL_PEEK=0 COLUMNS=230 LINES=60 REVIVE_DIR=$T/revive AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once' | sed 's/\x1b\[[0-9;]*m//g' | grep '⚑ waiting live-root@devbox → dev-root@dev.example.com' >/dev/null"
+check "and shows in the panel's messages" "tmux run-shell 'REVIVE_PANEL_PEEK=0 COLUMNS=230 LINES=60 REVIVE_DIR=$T/revive AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once' | sed 's/\x1b\[[0-9;]*m//g' | grep -F 'waiting for [G]rant access live-root@devbox→dev-root@dev.example.com' >/dev/null"
 check "the sender is told, plainly" "wait_seen1 $LR '[agent-say notice from laptop' && seen1 $LR 'introduction sent to dev-root@dev.example.com; waiting for the user on laptop to allow it.'"
 in1 $LR "$ROOT/bin/agent-say --from live-root dev-root 'second'" >/dev/null
 in1 $LR "$ROOT/bin/agent-say --from live-root dev-root 'third'" >/dev/null
