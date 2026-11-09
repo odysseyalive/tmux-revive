@@ -10,6 +10,8 @@
 #   panel.sh --keys %ID KEY...   keys for a question on that pane, sent from another computer's panel
 #   panel.sh --show %ID  that pane shown in tmux here (its window and pane), for another computer's J
 #   panel.sh --asking   the panes whose agent is asking a question now: id, place, name (daemon.sh)
+#   panel.sh --ctx-of PID   the context left of that Claude Code process, as a number: run by
+#                       --rows through sudo -n for one running as another user (see ctx_left)
 #
 # REVIVE_PANEL_POPUP=1 (set by @revive-panel-key) closes the panel after a jump, since a popup
 # would otherwise sit on top of the pane you jumped to.
@@ -36,6 +38,13 @@ fi
 # --keys is checked key by key once key_ok is defined, before anything is sent.
 [[ ${1:-} == --keys ]] && KEYSMODE=1
 [[ ${1:-} == --show ]] && SHOWMODE=1
+# --ctx-of reads, prints one number and exits once the functions it needs are defined (below
+# ctx_left). Run as root through sudo: nothing but a process id gets through, and it writes nothing.
+CTXOF=""
+if [[ ${1:-} == --ctx-of ]]; then
+	[[ ${2:-} =~ ^[1-9][0-9]{0,9}$ ]] || { echo "usage: panel.sh --ctx-of PID" >&2; exit 2; }
+	CTXOF=$2
+fi
 
 # Widths below are counted in characters, which needs a UTF-8 locale.
 if [[ $(locale charmap 2>/dev/null) != UTF-8 ]]; then
@@ -47,7 +56,7 @@ fi
 ASAY="$REVIVE_ROOT/bin/agent-say"
 AMAIL="${AGENT_SAY_MAILBOX:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-say/mailbox.md}"
 ASTATE=$(dirname "$AMAIL")
-DIR=$(revive_dir)
+[[ -n $CTXOF ]] || DIR=$(revive_dir)
 REFRESH=${REVIVE_PANEL_REFRESH:-2}
 CLK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 HOST=$(hostname -s 2>/dev/null || uname -n)
@@ -680,6 +689,7 @@ claude_transcript() { # claude_transcript PID -> TRANSCRIPT, or nothing
 		done
 		return 0
 	fi
+	[[ -z $CTXOF ]] || return 0 # see ctx_of
 	cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null)
 	[[ -n $cwd ]] || return 0
 	# Another Claude Code in the same folder could own the newest transcript there.
@@ -725,6 +735,8 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 		[[ -n $RECORD ]] && sid=$(jq -r '.sessionId // empty' "$RECORD" 2>/dev/null)
 		ctx_reported "$pane" "$apid" "$sid"
 		[[ -n $CTX ]] && return 0
+		ctx_by_sudo "$apid"
+		[[ -n $CTX ]] && return 0
 		if [[ -z $RECORD ]]; then
 			claude_transcript "$apid"
 			[[ -n $TRANSCRIPT ]] && ctx_cached "$TRANSCRIPT" claude_ctx_file
@@ -742,6 +754,47 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 		done ;;
 	esac
 }
+
+# A Claude Code running as another user (root, from sudo -i in a pane of a link's user) with
+# no fresh report from its hook: its files can't be read from here, so --rows asks this same
+# script to read them as root, through sudo -n (never a password prompt), where sudo allows
+# that without one. Whether it does is asked once a run.
+SUDO_OK=""
+ctx_by_sudo() { # ctx_by_sudo AGENT_PID -> CTX
+	local out
+	((ROWS)) && [[ -n ${PUID[$1]:-} && ${PUID[$1]} != "$UID" ]] || return 0
+	if [[ -z $SUDO_OK ]]; then
+		SUDO_OK=0
+		command -v sudo >/dev/null && timeout 5 sudo -n true </dev/null >/dev/null 2>&1 && SUDO_OK=1
+	fi
+	((SUDO_OK)) || return 0
+	out=$(timeout 10 sudo -n "$REVIVE_ROOT/scripts/panel.sh" --ctx-of "$1" </dev/null 2>/dev/null | head -c 8)
+	[[ $out =~ ^[0-9]{1,3}$ ]] && ((out <= 100)) && CTX=$out
+	return 0
+}
+# panel.sh --ctx-of PID: what ctx_left finds for that Claude Code process, looked for as the
+# user it runs as (its HOME and CLAUDE_CONFIG_DIR, from its own environment), and printed as a
+# number, or nothing. A working folder shared with another Claude Code can't be told apart
+# here (no other processes are looked at), so none is guessed from one.
+ctx_of() {
+	local e kind
+	kind=$(agent_kind "$(ps -ww -o args= -p "$1" 2>/dev/null)")
+	[[ $kind == claude ]] || return 0
+	unset CLAUDE_CONFIG_DIR
+	while IFS= read -r -d '' e; do
+		case $e in
+		HOME=/*) HOME=${e#*=} ;;
+		CLAUDE_CONFIG_DIR=/*) CLAUDE_CONFIG_DIR=${e#*=} ;;
+		esac
+	done <"/proc/$1/environ" 2>/dev/null
+	ctx_left claude "$1" ""
+	[[ $CTX =~ ^[0-9]{1,3}$ ]] && printf '%s\n' "$CTX"
+	return 0
+}
+if [[ -n $CTXOF ]]; then
+	ctx_of "$CTXOF"
+	exit 0
+fi
 
 screen_state() { # screen_state PANE -> asking / working / waiting, read off the bottom of the screen
 	local -a SL

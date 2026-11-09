@@ -814,6 +814,33 @@ printf '%s s-hook 70 %s 1\n' "$hpane" "$(date +%s)" >"$cf"
 rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
 check "--rows there: nor one from another process than the pane's Claude Code" "[[ -z \$(rctx \"\$rows\" cl-hook) ]]"
 far_tm kill-window -t far:cl-hook
+# A Claude Code running as another user (root, from sudo -i in a link user's pane) whose hook
+# hasn't reported: --rows asks panel.sh --ctx-of through sudo -n, where sudo allows it without
+# a password. Another user stands in as a ps that gives that process another uid; sudo as one
+# that runs what it's given after -n (and logs it), or refuses. Its record and transcript are
+# under its own HOME, which the panel's HOME doesn't reach.
+mkdir -p "$T/roothome/.claude/sessions" "$T/roothome/.claude/projects/-root" "$T/sudoyes" "$T/sudono" "$T/uidps"
+far_tm new-window -d -t far -n cl-root -e HOME="$T/roothome" "$T/bin/claude -c 'sleep 300; :'"
+far_tm set-option -p -t far:cl-root @agent cl-root
+rpid=$(far_tm display -p -t far:cl-root '#{pane_pid}')
+printf '{"pid":%s,"sessionId":"s-root","status":"idle"}\n' "$rpid" >"$T/roothome/.claude/sessions/$rpid.json"
+turn 40000 >"$T/roothome/.claude/projects/-root/s-root.jsonl" # 80% left
+{
+	printf '#!/bin/bash\n[[ $* == *uid=* ]] || exec %q "$@"\n' "$(command -v ps)"
+	printf '%q "$@" | awk -v p=%s -v u=%s '\''$1 == p {$3 = u} 1'\''\n' "$(command -v ps)" "$rpid" $((UID + 4242))
+} >"$T/uidps/ps"
+printf '#!/bin/sh\n[ "$1" = -n ] || exit 1\nshift\necho "$*" >>%q\nexec "$@"\n' "$T/sudo.log" >"$T/sudoyes/sudo"
+printf '#!/bin/sh\necho "sudo: a password is required" >&2\nexit 1\n' >"$T/sudono/sudo"
+chmod +x "$T/uidps/ps" "$T/sudoyes/sudo" "$T/sudono/sudo"
+rootrows() { PATH="$T/uidps:$T/$1:$PATH" REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows 2>"$T/rootrows.err"; }
+rows=$(rootrows sudono)
+check "--rows there: another user's Claude Code with sudo refused: no context, no error" "[[ -z \$(rctx \"\$rows\" cl-root) && ! -s $T/rootrows.err ]] && grep -q $'\x1fcl-root\x1f' <<<\"\$rows\""
+rows=$(rootrows sudoyes)
+check "--rows there: another user's Claude Code, through sudo -n panel.sh --ctx-of ($(rctx "$rows" cl-root))" "[[ \$(rctx \"\$rows\" cl-root) == 80 && ! -s $T/rootrows.err ]] && grep -qx \"true\" $T/sudo.log && grep -qx \"$ROOT/scripts/panel.sh --ctx-of $rpid\" $T/sudo.log"
+check "--rows there: sudo asked whether it may once a run" "[[ \$(grep -cx true $T/sudo.log) == 1 ]]"
+out=$(bash "$ROOT/scripts/panel.sh" --ctx-of "$rpid"; bash "$ROOT/scripts/panel.sh" --ctx-of '1;id' 2>&1; bash "$ROOT/scripts/panel.sh" --ctx-of $$)
+check "--ctx-of prints only a number, and takes only a process id, and only a Claude Code's ($out)" "[[ \$out == \$'80\nusage: panel.sh --ctx-of PID' ]]"
+far_tm kill-window -t far:cl-root
 # Asked again a little later, it measures since the last ask, kept over there, in one look.
 sleep 1.2
 rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
