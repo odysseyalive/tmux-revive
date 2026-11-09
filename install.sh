@@ -616,7 +616,7 @@ main() {
 	# Installed as root: a copy every user can run, for the users who work inside root's tmux
 	# (root's own home is closed to them). Never over an agent-say that isn't ours.
 	if [ "$(id -u)" = 0 ] && [ -d /usr/local/bin ] && { [ ! -e "$SHARED_AS" ] || grep -q "$AS_MARK" "$SHARED_AS" 2>/dev/null; }; then
-		install -m 0755 "$APP/bin/agent-say" "$SHARED_AS" && say "agent-say is in /usr/local/bin too, for every user"
+		install -m 0755 "$APP/bin/agent-say" "$SHARED_AS" && say "agent-say is also in /usr/local/bin, so every user can run it"
 	fi
 	# One line, for `tmux-revive version`.
 	printf '%s\n' "$origin" >"$APP/INSTALLED"

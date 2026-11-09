@@ -85,8 +85,8 @@ follow_tmux_owner() {
 		s=$AGENT_SAY_FOLLOWED
 		unset AGENT_SAY_FOLLOWED
 		tmux_server_above && [[ $TS_PID == "$s" && $TS_UID == "$me" ]] ||
-			die "couldn't run as the user whose tmux this pane is in; run agent-say as that user"
-		s="$(server_socket "$TS_PID" "$me")" || die "can't find the socket of the tmux this pane is in"
+			die "couldn't run as the user who owns this pane's tmux. Run agent-say as that user"
+		s="$(server_socket "$TS_PID" "$me")" || die "can't find the socket for this pane's tmux"
 		export TMUX="$s,$TS_PID,0"
 		# The owner's XDG_STATE_HOME, as their tmux was started with it; else the default.
 		if [[ -z ${XDG_STATE_HOME:-} ]]; then
@@ -98,9 +98,9 @@ follow_tmux_owner() {
 		st="${XDG_STATE_HOME:-$HOME/.local/state}/agent-say"
 		[[ ! -L $st ]] || die "$st is a symbolic link; not using it"
 		if [[ -e $st ]]; then
-			[[ -O $st ]] || die "$st doesn't belong to $(id -un); not using it"
+			[[ -O $st ]] || die "$st doesn't belong to $(id -un), so it's not being used"
 			bad="$(find "$st" -xdev ! -user "$me" -print -quit 2>/dev/null || true)"
-			[[ -z $bad ]] || die "$bad doesn't belong to $(id -un), so agent-say can't rewrite it; remove it, then try again"
+			[[ -z $bad ]] || die "$bad doesn't belong to $(id -un), so agent-say can't rewrite it. Remove it, then try again"
 		fi
 		return 0
 	fi
@@ -117,7 +117,7 @@ follow_tmux_owner() {
 		IFS=: read -r name _ _ gid _ home _ < <(getent passwd "$TS_UID" 2>/dev/null) || true
 	fi
 	[[ $name =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ && $home == /* && -d $home ]] ||
-		die "this pane is in the tmux of user $TS_UID, who has no home here; not used"
+		die "this pane is in the tmux of user $TS_UID, who has no home directory here, so it's not used"
 	if [[ $test == root ]]; then
 		: # as root, without becoming anyone
 	elif ((me == 0)) && command -v setpriv >/dev/null && [[ $gid =~ ^[0-9]+$ ]]; then
@@ -127,14 +127,14 @@ follow_tmux_owner() {
 	elif command -v sudo >/dev/null && sudo -n -u "$name" -- true 2>/dev/null; then
 		drop=(sudo -n -u "$name" --)
 	else
-		die "this pane is in $name's tmux, so its links and mailbox are $name's, and $(id -un) can't use them. Run agent-say as $name, or start tmux as $(id -un)."
+		die "this pane is in $name's tmux, so its links and mailbox are $name's and $(id -un) can't use them. Run agent-say as $name, or start tmux as $(id -un)."
 	fi
 	# This agent-say, if the owner may run it (one under /root isn't); else the owner's own.
 	self="$0"
 	[[ $self == /* ]] || self="$PWD/$self"
 	"${drop[@]}" test -r "$self" -a -x "$self" 2>/dev/null || self="$home/.local/bin/agent-say"
 	"${drop[@]}" test -r "$self" -a -x "$self" 2>/dev/null ||
-		die "this pane is in $name's tmux, and $name has no agent-say to run; install tmux-revive as $name"
+		die "this pane is in $name's tmux, but $name has no agent-say to run. Install tmux-revive as $name"
 	env=(HOME="$home" USER="$name" LOGNAME="$name" AGENT_SAY_FOLLOWED="$TS_PID")
 	[[ -d /run/user/$TS_UID && "$(stat -c %u -- "/run/user/$TS_UID" 2>/dev/null)" == "$TS_UID" ]] &&
 		env+=(XDG_RUNTIME_DIR="/run/user/$TS_UID")

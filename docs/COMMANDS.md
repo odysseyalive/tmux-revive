@@ -251,25 +251,25 @@ agents, so treat it the way you'd treat access to your terminal.
 
 ### Several users in one tmux
 
-Names, links and the mailbox belong to the user who started tmux. Other users
-can work inside that tmux too: root after `sudo -i` or `su -` in one of your
-panes, or a user after `su - name` in a pane of root's tmux. When their agents
-run `agent-say`, it runs as the user who owns that tmux, with that user's
-links and mailbox. So everyone in that tmux sees the same names and can message
-each other and anyone on its links.
+Names, links and the mailbox belong to whoever started tmux. Other users can work
+inside that tmux too, like root after `sudo -i` or `su -` in one of your panes, or
+a user after `su - name` in a pane of root's tmux. When their agents run
+`agent-say`, it runs as the user who owns that tmux, with that user's links and
+mailbox. So everyone in that tmux sees the same names, and they can message each
+other and anyone on its links.
 
 - Install tmux-revive once, as the user who starts tmux.
-- Link to that computer as that same user. A link logs in as one user and sees
-  only that user's tmux.
-- root in your tmux needs nothing more. If root has no `agent-say` of its own,
-  the messages its agents get show the full path to run.
-- A user other than root in someone else's tmux needs to be allowed to run
-  commands as the tmux owner with `sudo` without a password. Otherwise
-  `agent-say` says so and does nothing.
+- Link to that computer as that same user. A link logs in as one user and only
+  sees that user's tmux.
+- root in your tmux needs nothing more. If root has no `agent-say` of its own, the
+  messages its agents get show the full path to run.
+- A user other than root, in someone else's tmux, needs permission to run commands
+  as the tmux owner with `sudo` and no password. Without it, `agent-say` says so
+  and does nothing.
 - Installed as root, tmux-revive also puts `agent-say` in `/usr/local/bin`, so
   every user can run it.
 
-Agents still need your permission to talk across links, the same as before.
+Agents still need your permission to talk across links, same as before.
 
 ## Linking computers
 
@@ -515,11 +515,11 @@ Add `--purge` to also delete your saves. The installer's `--uninstall` and
 - Installing a signed release needs OpenSSH 8.1 or later, for `ssh-keygen -Y verify`.
 - A linked server needs `agent-say` in `~/.local/bin` or on its PATH, or set
   `AGENT_SAY_REMOTE_CMD`.
-- An agent running as root (`sudo -i`, `sudo claude`) inside your tmux says
-  "no pane named ..." for names your link knows: update agent-say on that
-  computer. It now uses the links and mailbox of whoever started the tmux it's
-  in. See [Several users in one tmux](#several-users-in-one-tmux).
-- A link reports "tmux here runs as root, not admin: link as root": the agents
-  on that computer are in root's tmux, and the link logs in as admin. Link as
-  the user who starts tmux there (`User root` for that host in
-  `~/.ssh/config`), or start tmux as the user the link logs in as.
+- An agent running as root (`sudo -i`, `sudo claude`) inside your tmux says "no
+  pane named ..." for names your link knows? Update agent-say on that computer. It
+  now uses the links and mailbox of whoever started the tmux it's in. See [Several
+  users in one tmux](#several-users-in-one-tmux).
+- A link reports "tmux here runs as root, not admin: link as root"? The agents on
+  that computer are in root's tmux, but the link logs in as admin. Link as the
+  user who starts tmux there (`User root` for that host in `~/.ssh/config`), or
+  start tmux as the user the link logs in as.

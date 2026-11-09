@@ -509,7 +509,7 @@ out=$(run 1$LR "$ASROOT $ROOT/bin/agent-say list" 2>&1)
 check "an owner's state dir that is a symbolic link is refused ($out)" "[[ '$out' == *'is a symbolic link; not using it'* ]]"
 "$T/rbin/tmux" set-environment -g XDG_STATE_HOME "$T/rstate"
 out=$(AGENT_SAY_FOLLOWED=$$ say list 2>&1)
-check "a run that says it already became the owner, outside any tmux, is refused ($out)" 'grep -qF "couldn'"'"'t run as the user whose tmux this pane is in" <<<"$out"'
+check "a run that says it already became the owner, outside any tmux, is refused ($out)" 'grep -qF "couldn'"'"'t run as the user who owns this pane'"'"'s tmux" <<<"$out"'
 out=$(printf '' | env PATH="$T/rootbin:$PATH" AGENT_SAY_TEST_TMUX_USERS=root XDG_STATE_HOME=$T/nobody AGENT_SAY_MAILBOX=$T/nobody/agent-say/mailbox.md "$ROOT/bin/agent-say" _sync laptop 2>&1)
 check "a link that logs in as a user with no tmux, where root's runs, is told to link as root ($out)" "[[ '$out' == *'tmux here runs as root, not '*': link as root'* ]]"
 
