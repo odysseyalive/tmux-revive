@@ -379,11 +379,21 @@ done
 # A two-digit window widens the # column to its label, and every row still fits exactly, the
 # names still in one column under NAME.
 tm new-window -d -t work:12 -n twelve "sleep 300"; sleep 0.5
-namecol() { awk '/ NAME /{print index($0, " NAME ") + 1} /\[12\.0\]/{print index($0, "work:12")}' <<<"$1" | sort -u | wc -l; }
+namecol() { awk '/ NAME /{print index($0, " NAME ") + 1} /\[12\.0\]/{print index($0, "---")}' <<<"$1" | sort -u | wc -l; }
 for c in 80 120 160 200; do
 	out=$(cframe "$c")
 	check "at $c columns a [12.0] label fits, its name under NAME, every row exactly $c wide" "grep -q '║ \[12\.0\] ' <<<\"\$out\" && [[ \$(namecol \"\$out\") == 1 ]] && grep -q 'codex .* 20% ║\$' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
 done
+# An unnamed pane's NAME is ---: [12.0] already says where it is. With a second tmux session,
+# [12.0] could be in either, so its session's name instead. Every row still exactly fits.
+out=$(cframe 130)
+check "an unnamed pane's NAME is ---, not its place again" "grep -q '\[12\.0\]   --- ' <<<\"\$out\" && ! grep -q 'work:12' <<<\"\$out\""
+tm new-session -d -s other -x 80 -y 24 "sleep 300"; sleep 0.5
+for c in 80 120 160 200; do
+	out=$(cframe "$c")
+	check "at $c columns with two sessions, an unnamed pane's NAME is its session, every row exactly $c wide" "grep -q '\[12\.0\]   work ' <<<\"\$out\" && grep -q '\[0\.0\] .. other ' <<<\"\$out\" && ! grep -q -- ' --- ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
+done
+tm kill-session -t other
 tm kill-window -t work:twelve
 gitw() { cframe "$1" | awk '/ NAME .* GIT /{print index($0, " CPU") - index($0, " GIT"); exit}'; }
 check "a panel 70 columns wider gives GIT all 70 ($(gitw 130) -> $(gitw 200))" "[[ -n \$(gitw 130) ]] && (( \$(gitw 200) == \$(gitw 130) + 70 ))"

@@ -1227,7 +1227,17 @@ state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
 
 draw_panes() {
 	local i n=${#P_ID[@]} name key folder git cells mark wide=1 NW=10 FW=10 GW v KW=3 pad
-	local -a lab=()
+	local -a lab=() nm=()
+	local -A ses=() many=()
+	# An unnamed pane's NAME is a dim ---: the # column already says where it is. Unless its
+	# computer has more than one tmux session, when [0.0] alone could be any of them: then its
+	# session's name. So first, which computers (this one is @) have more than one.
+	for ((i = 0; i < n; i++)); do
+		[[ -n ${P_LOC[i]} ]] || continue
+		v=${P_LOC[i]%%:*} key=@${P_HOST[i]}
+		[[ -z ${ses[$key]+x} ]] && ses[$key]=$v
+		[[ ${ses[$key]} == "$v" ]] || many[$key]=1
+	done
 	# Worked out again on every frame, so a resized terminal gets them too. The name and folder
 	# are as wide as their longest (10 to 29 and 10 to 35); GIT has the rest of the row, so
 	# CTX LEFT ends at the panel's right edge. The rest of the row is fixed: the # cell (its
@@ -1236,7 +1246,10 @@ draw_panes() {
 	# The # label: the pane's window.pane (3.1), or where that isn't known (a linked computer
 	# that only gave its pane names) the row's count, 1 to 9.
 	for ((i = 0; i < n; i++)); do
-		name=${P_NAME[i]:-${P_LOC[i]}} folder=${P_DIR[i]/#$HOME/\~} folder=${folder##*/}
+		if [[ -n ${P_NAME[i]} ]]; then nm[i]=${P_NAME[i]}
+		elif [[ -n ${P_LOC[i]} && -n ${many[@${P_HOST[i]}]:-} ]]; then nm[i]=${P_LOC[i]%%:*}
+		else nm[i]=---; fi
+		name=${nm[i]} folder=${P_DIR[i]/#$HOME/\~} folder=${folder##*/}
 		((${#name} > NW)) && NW=${#name}
 		((${#folder} > FW)) && FW=${#folder}
 		if [[ -n ${P_WP[i]:-} ]]; then lab[i]=${P_WP[i]}; elif ((i < 9)); then lab[i]=$((i + 1)); else lab[i]=""; fi
@@ -1285,7 +1298,7 @@ draw_panes() {
 				row "$BLU▓▒░$R $B$BWHT${group^^}$R $GRY· linked$R$v"
 			fi
 		fi
-		name=${P_NAME[i]:-${P_LOC[i]}}
+		name=${nm[i]}
 		printf -v pad '%*s' $((KW - ${#lab[i]} - 2)) ''
 		if [[ -n ${lab[i]} ]]; then key="$BBLU[$BWHT$B${lab[i]}$R$BBLU]$R$pad"; else key="$GRY ·$R$pad"; fi
 		folder=${P_DIR[i]/#$HOME/\~}
@@ -1295,7 +1308,9 @@ draw_panes() {
 		if ((i == SEL)); then mark="$BYEL▶$R"; else mark=" "; fi
 		cells+="$mark "
 		fld "$name" "$NW"
-		if ((i == SEL)); then cells+="$REV$BCYN$FLD$R "; else cells+="$BWHT$FLD$R "; fi
+		if ((i == SEL)); then cells+="$REV$BCYN$FLD$R "
+		elif [[ -z ${P_NAME[i]} ]]; then cells+="$GRY$FLD$R "
+		else cells+="$BWHT$FLD$R "; fi
 		fld "${P_APP[i]}" 9
 		if ((P_AGENT[i])); then cells+="$BCYN$FLD$R "; else cells+="$CYN$FLD$R "; fi
 		state_cell "${P_STATE[i]}"
