@@ -354,7 +354,7 @@ hook_add() {
 	f=$1/settings.json
 	j=$(jq_bin)
 	if [ -s "$f" ] && [ -n "$j" ] && ! "$j" empty "$f" >/dev/null 2>&1; then
-		warn "$f isn't valid JSON, so it was left alone; Claude Code there won't be told about agent-say"
+		warn "$f isn't valid JSON, so it was left alone. Claude Code there won't be told about agent-say"
 		return 0
 	fi
 	mkdir -p "$1" 2>/dev/null

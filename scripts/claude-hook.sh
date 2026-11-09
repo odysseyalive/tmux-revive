@@ -44,17 +44,17 @@ name=""
 [[ -n $pane ]] && name=$(name_of "$pane")
 
 if [[ -n $name ]]; then
-	where="This Claude Code session runs in tmux pane $pane, named \"$name\" for agent-say."
+	where="This Claude Code session is in tmux pane $pane, named \"$name\" for agent-say."
 else
-	where="This Claude Code session runs in a tmux pane with no agent-say name yet; $as name NAME gives it one."
+	where="This Claude Code session is in a tmux pane with no agent-say name yet. Run $as name NAME to give it one."
 fi
 text="$where
-Agents in other tmux panes, and on servers linked with agent-say, are reached with $as through Bash. SendMessage and ListAgents only reach Claude sessions on this same machine, so they can't reach those agents.
-- $as list: every named pane, here and on linked servers (as name@server)
-- $as NAME \"message\": send to one (NAME@server for a linked server)
-- $as show ID: read a message by the id its notice gave
-A message or reply arrives as a prompt starting with [agent-msg from=NAME ...], and ends with the exact command to answer it with.
-The first message to an agent on another server waits as an introduction until the user approves it in the tmux-revive panel."
+To reach agents in other tmux panes, or on servers linked with agent-say, run $as through Bash. SendMessage and ListAgents only reach Claude sessions on this machine, so they can't reach those agents.
+- $as list: every named pane, here and on linked servers (shown as name@server)
+- $as NAME \"message\": send to one (use NAME@server for a linked server)
+- $as show ID: read a message by the id in its notice
+Messages and replies arrive as a prompt that starts with [agent-msg from=NAME ...] and ends with the exact command to answer with.
+Your first message to an agent on another server waits as an introduction until the user approves it in the tmux-revive panel."
 
 jq=$(command -v jq) || jq=$ROOT/vendor/bin/jq
 if [[ -x $jq ]]; then

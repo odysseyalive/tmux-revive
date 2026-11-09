@@ -367,12 +367,12 @@ doctor)
 	if has_hook SessionStart; then
 		ok "Claude Code is told about agent-say when a session starts"
 	else
-		bad "Claude Code isn't told about agent-say ($cs has no tmux-revive hook): run tmux-revive update"
+		bad "Claude Code isn't told about agent-say ($cs has no tmux-revive hook). Run tmux-revive update to add it"
 	fi
 	if has_hook Stop && has_hook PostToolUse; then
 		ok "Claude Code reports its context left to the panel"
 	else
-		bad "Claude Code doesn't report its context left ($cs has no tmux-revive ctx hook): run tmux-revive update"
+		bad "Claude Code doesn't report its context left ($cs has no tmux-revive ctx hook). Run tmux-revive update to add it"
 	fi
 	# Root's Claude Code (sessions started with sudo -i in a pane), when root has a config
 	# folder: read through sudo -n where that needs no password, never asking for one. The tests
@@ -385,7 +385,7 @@ doctor)
 			if has_hook SessionStart /dev/stdin <<<"$rs" && has_hook Stop /dev/stdin <<<"$rs" && has_hook PostToolUse /dev/stdin <<<"$rs"; then
 				ok "root's Claude Code is told about agent-say and reports its context left"
 			else
-				bad "root's Claude Code isn't told about agent-say and doesn't report its context left ($cs has no tmux-revive hook): run tmux-revive update"
+				bad "root's Claude Code isn't told about agent-say and doesn't report its context left ($cs has no tmux-revive hook). Run tmux-revive update to add it"
 			fi
 		fi
 	fi

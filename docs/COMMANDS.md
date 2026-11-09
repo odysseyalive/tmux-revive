@@ -144,11 +144,11 @@ session records, and other agents show a dash. Claude Code doesn't record its
 window size, so the panel assumes a million tokens for models that have one and
 200k otherwise. Set `REVIVE_CLAUDE_WINDOW` to override it.
 
-Claude Code also reports its own context left, through a hook the installer adds
-(see agent-say below), after each tool call and each turn. The panel uses that
-first, so it works even when the panel can't read the session's files, like a
-server where you link in as one user and the agents run as root. A report older
-than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds).
+Claude Code also reports its own context left after each tool call and each turn,
+through a hook the installer adds (more on that under agent-say below). The panel
+trusts that report first, so CTX LEFT works even when the panel can't read the
+session's files, like on a server where you link in as one user and the agents run
+as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds).
 
 ### Keys
 
@@ -256,20 +256,21 @@ A word of caution. Anything that can run `agent-say` can type into your
 agents, so treat it the way you'd treat access to your terminal.
 
 Claude Code has its own SendMessage and ListAgents, but they only reach Claude
-sessions on the same computer, so on their own its agents never think to try
-`agent-say`. The installer adds a small hook to Claude Code's `settings.json`
-(`~/.claude`, or `CLAUDE_CONFIG_DIR`, and root's too when installed as root).
-When a Claude Code session starts in a tmux pane, the hook tells it the pane's
-name, the `agent-say` commands, and that a first message to another server waits
-for your OK in the panel. Outside tmux it says nothing. The same hook, after
-each tool call and each turn, reports the session's context left for the panel's
-CTX LEFT. `--no-config` skips it, uninstall takes it out, and
-`tmux-revive doctor` shows whether it's there.
+sessions on the same computer, so left alone its agents never think to try
+`agent-say`. The installer fixes that with a small hook in Claude Code's
+`settings.json` (`~/.claude`, or `CLAUDE_CONFIG_DIR`, and root's too when
+installed as root). When a Claude Code session starts in a tmux pane, the hook
+tells it the pane's name, the `agent-say` commands, and that a first message to
+another server waits for your OK in the panel. Outside tmux it says nothing.
 
-Installed as a user who can `sudo` without a password, the installer also adds
-the hook to root's Claude Code config, if root has one, so sessions started with
-`sudo -i` in your panes get it too. It never asks for a password: without that
-`sudo`, it says root's sessions won't get the hook unless tmux-revive is
+The same hook also reports the session's context left after each tool call and
+each turn, for the panel's CTX LEFT. `--no-config` skips it, uninstall takes it
+out, and `tmux-revive doctor` shows whether it's there.
+
+If you install as a user who can `sudo` without a password, the installer adds the
+hook to root's Claude Code config too, if root has one, so sessions started with
+`sudo -i` in your panes get it as well. It never asks for a password. Without that
+`sudo`, it tells you root's sessions won't get the hook unless tmux-revive is
 installed as root too. For a root session with no fresh report, the panel's
 `--rows` (what a linked computer's panel asks for) reads its context left through
 `sudo -n` the same way, and shows a dash when `sudo` would need a password.
