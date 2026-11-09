@@ -26,6 +26,7 @@ signer="tmux-revive-release namespaces=\"tmux-revive-release\" $(cut -d' ' -f1,2
 mkdir -p "$T/repo"
 (cd "$ROOT" && git ls-files -co --exclude-standard -z | xargs -0 tar cf - 2>/dev/null) | (cd "$T/repo" && tar xf -)
 sed -i.bak "s|^ALLOWED_SIGNERS=.*|ALLOWED_SIGNERS='$signer'|" "$T/repo/install.sh" && rm "$T/repo/install.sh.bak"
+echo 1.0.0 >"$T/repo/VERSION" # the versions below count up from 1.0.0, whatever this tree is at now
 git -C "$T/repo" init -q -b main
 git -C "$T/repo" add -A
 git -C "$T/repo" -c user.name=t -c user.email=t@localhost commit -q -m base
