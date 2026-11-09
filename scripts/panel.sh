@@ -573,7 +573,25 @@ claude_record() { # claude_record PID -> RECORD: Claude Code's session record fo
 # that says so. Their output files do: each is under its temp folder, as
 # claude-UID/<its folder>/<sessionId>/tasks/*.output, and grows while it runs (an agent's is a
 # link to its transcript). Written to within REVIVE_BG_SECS (20) means work in the background.
+# An agent inside one long command writes nothing for as long as it runs, though. Every command
+# Claude Code runs (its own, its agents', a background shell's) is started under it as
+# `zsh -c source ~/.claude/shell-snapshots/snapshot-…` (or bash): one still running under it is
+# work in the background too, however long it takes. Its other children (MCP servers, the
+# status line, hooks) aren't started that way and don't count.
 BG_SECS=${REVIVE_BG_SECS:-20}
+snapshot_cmd() { # snapshot_cmd PID: a command Claude Code started still runs under PID (from gather's ps)
+	local p
+	local -a q=()
+	# shellcheck disable=SC2206
+	q=(${PCHILD[$1]:-})
+	while ((${#q[@]})); do
+		p=${q[0]} q=("${q[@]:1}")
+		[[ ${PARGS[$p]:-} == *" source "*/shell-snapshots/snapshot-* ]] && return 0
+		# shellcheck disable=SC2206
+		[[ -n ${PCHILD[$p]:-} ]] && q+=(${PCHILD[$p]})
+	done
+	return 1
+}
 claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting) or nothing; CBG=1: background work
 	local sid t m=0 d
 	local -a f=() roots=()
@@ -582,7 +600,9 @@ claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting
 	[[ -n $RECORD ]] || return 0
 	IFS=$'\t' read -r CST sid < <(jq -r '[.status // "", .sessionId // ""] | @tsv' "$RECORD" 2>/dev/null)
 	# Only idle: "waiting" is a dialog of its own open, which needs you whatever else runs.
-	[[ $CST == idle && $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
+	[[ $CST == idle ]] || return 0
+	snapshot_cmd "$1" && { CBG=1; return 0; }
+	[[ $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
 	# Where its temp folder is: CLAUDE_CODE_TMPDIR, else the system's (TMPDIR, else /tmp).
 	for d in ${CLAUDE_CODE_TMPDIR:+"${CLAUDE_CODE_TMPDIR%/}"} ${TMPDIR:+"${TMPDIR%/}"} /tmp; do
 		[[ " ${roots[*]} " == *" $d "* ]] || roots+=("$d")
@@ -846,8 +866,8 @@ gather() {
 			st=$(screen_state "$id")
 			# Claude Code's record says for itself whether it is busy, and outranks the screen.
 			# With nothing in it to go by (no record found for this process, or one with no
-			# status), the screen decides, as it does for the other agents. Idle while agents it
-			# started still work in the background is a state of its own: it takes input.
+			# status), the screen decides, as it does for the other agents. Idle while work it
+			# started goes on in the background is working, but takes input.
 			if [[ $kind == claude && $st != asking ]]; then
 				claude_look "$apid"
 				case $CST in busy) st=working ;; "") ;; *) st=waiting; ((CBG)) && st=agents ;; esac
@@ -1064,8 +1084,9 @@ remote_panes() {
 					((BASH_REMATCH[2] <= 100)) && rctx[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
 					continue
 				fi
-				# A pane waiting while its agents work in the background, likewise: its row says
-				# waiting, which is what a panel from before this shows.
+				# A pane at its prompt while its work goes on in the background, likewise: its row
+				# says working (a panel from before this read waiting there), and this line that it
+				# takes input.
 				if [[ ${id:0:40} =~ ^\#agents\ (%[0-9]{1,9})$ && -z $loc ]]; then
 					rbg[${BASH_REMATCH[1]}]=1
 					continue
@@ -1077,7 +1098,7 @@ remote_panes() {
 				clean loc name app st folder git
 				[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || name=""
 				case $st in asking | working | waiting | agents | shell | program) ;; *) st=program ;; esac
-				[[ $st == waiting && -n ${rbg[$id]:-} ]] && st=agents
+				[[ $st =~ ^(waiting|working)$ && -n ${rbg[$id]:-} ]] && st=agents
 				[[ $st == asking && $f -ot $RDIR/$h.answered-${id#%} ]] && st=waiting # answered from here since
 				[[ $cpu =~ ^[0-9]{1,4}$ ]] || cpu=0
 				[[ $mem =~ ^[0-9]{1,10}$ ]] || mem=0
@@ -1157,7 +1178,9 @@ state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
 	asking) CELL="$B$BMAG$BLINK?$R$B$BMAG NEEDS ANSWER    $R" ;;
 	working) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
 	waiting) CELL="$BGRN◆ WAITING ON YOU  $R" ;;
-	agents) CELL="$YEL◇ AGENTS WORKING  $R" ;;
+	# Idle at its prompt while its work goes on in the background: working all the same (its
+	# peek says it takes input).
+	agents) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
 	shell) CELL="$GRY· shell           $R" ;;
 	self) CELL="$BBLU✦ this panel      $R" ;;
 	linked) CELL="$GRY◌ linked          $R" ;;
@@ -2426,10 +2449,10 @@ if ((ROWS)); then
 		# Context left goes on a line of its own: a panel from before it skips the line, where a
 		# field added to the row would make it drop the row.
 		[[ -n ${P_CTX[i]} ]] && printf '#ctx %s %s\n' "${P_ID[i]}" "${P_CTX[i]}"
-		# Agents working in the background: the row says waiting, as a panel from before this
-		# knows it, and a line before it says the rest.
+		# Work going on in the background: the row says working, as a panel from before this
+		# shows it, and a line before it says it takes input.
 		st=${P_STATE[i]}
-		[[ $st == agents ]] && { printf '#agents %s\n' "${P_ID[i]}"; st=waiting; }
+		[[ $st == agents ]] && { printf '#agents %s\n' "${P_ID[i]}"; st=working; }
 		printf '%s\x1f' "${P_ID[i]}" "${P_LOC[i]}" "${P_NAME[i]}" "${P_APP[i]}" "$st" "$folder" "${P_GIT[i]}" "${P_CPU[i]}" "${P_MEM[i]}"
 		printf '%s\n' "${P_AGENT[i]}"
 	done
