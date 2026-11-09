@@ -499,9 +499,12 @@ id=$(sed -n 's/^## \[live-root -> cx .*\] #\([0-9-]*\)$/\1/p' "$T/rstate/agent-s
 out=$(run 1$LR "$ASROOT $ROOT/bin/agent-say show $id" 2>&1)
 check "show reads the owner's mailbox ($id)" "[[ -n '$id' && '$out' == *'root here, next door'* ]]"
 # Root's Claude Code reports its context left from its hook (claude-hook.sh ctx, registered in
-# root's settings pointing at the owner's install): agent-say _ctx, run as root, follows the
-# tmux owner and keeps the value in the owner's state, for the owner's panel. A stand-in Claude
+# root's settings pointing at root's own copy, which install.sh keeps in
+# /usr/local/lib/tmux-revive/app): agent-say _ctx, the copy's, run as root, follows the tmux
+# owner and keeps the value in the owner's state, for the owner's panel. A stand-in Claude
 # Code: a copy of bash named claude running each line written to its fifo.
+mkdir -p "$T/rootlib/app/scripts" "$T/rootlib/app/bin"
+cp "$ROOT"/scripts/*.sh "$T/rootlib/app/scripts/" && cp "$ROOT/bin/agent-say" "$T/rootlib/app/bin/"
 printf '#!%s\nwhile :; do IFS= read -r line <"$1" && eval "$line"; done\n' "$T/abin/claude" >"$T/bin/clrunner"
 chmod +x "$T/bin/clrunner"
 mkfifo "$T/run.cl"
@@ -511,10 +514,10 @@ sleep 0.3
 mkdir -p "$T/roottr"
 printf '{"type":"assistant","message":{"model":"claude-haiku-4-5","usage":{"input_tokens":30000}}}\n' >"$T/roottr/s-root.jsonl" # 85% left
 hookin=$(printf '{"session_id":"s-root","transcript_path":"%s","hook_event_name":"Stop"}' "$T/roottr/s-root.jsonl")
-out=$(run 1$CL "printf '%s\n' $(printf %q "$hookin") | $ASROOT bash $ROOT/scripts/claude-hook.sh ctx" 2>&1)
+out=$(run 1$CL "printf '%s\n' $(printf %q "$hookin") | $ASROOT bash $T/rootlib/app/scripts/claude-hook.sh ctx" 2>&1)
 clpid=$("$T/rbin/tmux" display -p -t "$CL" '#{pane_pid}')
 cf=$T/rstate/agent-say/ctx/${CL#%}
-check "root's ctx hook files its context left in the owner's state, for its own pane ($(cat "$cf" 2>/dev/null))" "read -r a b c d e <$cf && [[ \$a == $CL && \$b == s-root && \$c == 85 && \$e == $clpid ]] && (( \$(date +%s) - d < 60 ))"
+check "root's ctx hook, from root's copy, files its context left in the owner's state, for its own pane ($(cat "$cf" 2>/dev/null))" "read -r a b c d e <$cf && [[ \$a == $CL && \$b == s-root && \$c == 85 && \$e == $clpid ]] && (( \$(date +%s) - d < 60 ))"
 "$T/rbin/tmux" kill-pane -t "$CL"
 check "nothing was written in root's own home" "[[ ! -e $T/roothome ]]"
 out=$(run 1$LR "$AS PATH=$T/rootbin:$T/sudobin:\$PATH $ROOT/bin/agent-say list" 2>&1)

@@ -759,16 +759,45 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 # no fresh report from its hook: its files can't be read from here, so --rows asks this same
 # script to read them as root, through sudo -n (never a password prompt), where sudo allows
 # that without one. Whether it does is asked once a run.
-SUDO_OK=""
+# As root it runs root's own copy of this script, never this one, which this user can change:
+# the copy install.sh keeps in ROOT_COPY for root's hooks. Only when every file in it is root's,
+# and it and every folder above it, up to /, are root's, none of them a link and none writable by
+# a group or other users; otherwise there's no asking. Checked once a run. The tests can't be
+# root: REVIVE_TEST_ROOT_PREFIX stands in for /usr/local/lib/tmux-revive, REVIVE_TEST_ROOT_UID
+# for root's uid, and the check stops at the folder above it; never as root.
+ROOT_COPY=/usr/local/lib/tmux-revive/app RC_UID=0 RC_TOP=/
+if ((EUID != 0)) && [[ ${REVIVE_TEST_ROOT_PREFIX:-} == /?* ]]; then
+	ROOT_COPY=$REVIVE_TEST_ROOT_PREFIX/app RC_UID=${REVIVE_TEST_ROOT_UID:-$EUID} RC_TOP=$(dirname "$REVIVE_TEST_ROOT_PREFIX")
+fi
+root_only() { # root_only PATH: PATH and every folder above it root's, as install.sh's root_only
+	local p=$1
+	[[ $p == /* ]] || return 1
+	while :; do
+		[[ ! -L $p && -n $(find "$p" -maxdepth 0 -user "$RC_UID" ! -perm -g+w ! -perm -o+w 2>/dev/null) ]] || return 1
+		[[ $p == "$RC_TOP" || $p == / ]] && return 0
+		p=$(dirname "$p")
+	done
+}
+copy_ok() {
+	local bad
+	[[ -f $ROOT_COPY/scripts/panel.sh ]] && root_only "$ROOT_COPY" &&
+		bad=$(find "$ROOT_COPY" \( -type l -o ! -user "$RC_UID" -o -perm -g+w -o -perm -o+w \) -print -quit 2>/dev/null) && [[ -z $bad ]]
+}
+SUDO_OK="" COPY_OK=""
 ctx_by_sudo() { # ctx_by_sudo AGENT_PID -> CTX
 	local out
 	((ROWS)) && [[ -n ${PUID[$1]:-} && ${PUID[$1]} != "$UID" ]] || return 0
+	if [[ -z $COPY_OK ]]; then
+		COPY_OK=0
+		copy_ok && COPY_OK=1
+	fi
+	((COPY_OK)) || return 0
 	if [[ -z $SUDO_OK ]]; then
 		SUDO_OK=0
 		command -v sudo >/dev/null && timeout 5 sudo -n true </dev/null >/dev/null 2>&1 && SUDO_OK=1
 	fi
 	((SUDO_OK)) || return 0
-	out=$(timeout 10 sudo -n "$REVIVE_ROOT/scripts/panel.sh" --ctx-of "$1" </dev/null 2>/dev/null | head -c 8)
+	out=$(timeout 10 sudo -n "$ROOT_COPY/scripts/panel.sh" --ctx-of "$1" </dev/null 2>/dev/null | head -c 8)
 	[[ $out =~ ^[0-9]{1,3}$ ]] && ((out <= 100)) && CTX=$out
 	return 0
 }

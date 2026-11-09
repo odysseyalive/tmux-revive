@@ -423,7 +423,7 @@ inst() { # inst TMUX-WRAPPER [OPTION]: run install.sh in the sandbox, stdout+std
 	mkdir -p "$T/ih" "$T/ib"
 	cp "$1" "$T/ib/tmux"
 	env -u REVIVE_DIR -u ZDOTDIR -u XDG_CONFIG_HOME -u CLAUDE_CONFIG_DIR HOME="$T/ih" XDG_DATA_HOME="$T/ih/.local/share" \
-		TMUX_TMPDIR="$T/ih" CODEX_HOME="$T/ih/.codex" REVIVE_SOURCE="$ROOT" PATH="$T/ib:$PATH" REVIVE_TEST_ROOT_HOME="$T/roothome" \
+		TMUX_TMPDIR="$T/ih" CODEX_HOME="$T/ih/.codex" REVIVE_SOURCE="$ROOT" PATH="$T/ib:$PATH" REVIVE_TEST_ROOT_HOME="$T/roothome" REVIVE_TEST_ROOT_PREFIX="$T/usrlocal/lib/tmux-revive" \
 		sh "$ROOT/install.sh" "${@:2}" >"$T/inst.out" 2>&1
 }
 mkdir -p "$T/ih" && : >"$T/ih/.bashrc"
@@ -515,22 +515,39 @@ inst "$T/tmux-ok" --uninstall
 check "a settings.json that held only our hook is left with no hooks key" "jq -e '. == {}' $CS >/dev/null"
 
 # Root's Claude Code (sudo -i in a pane), when installing as someone else: through sudo -n where
-# that needs no password, root's config folder gets the hooks, pointing at this user's script.
-# REVIVE_TEST_ROOT_HOME stands in for root's home.
-RCS=$T/roothome/.claude/settings.json
-mkdir -p "$T/roothome/.claude"
+# that needs no password, root's config folder gets the hooks, running root's own copy of the
+# files they need, never this user's. REVIVE_TEST_ROOT_HOME stands in for root's home,
+# REVIVE_TEST_ROOT_PREFIX for /usr/local/lib/tmux-revive (owned by you, standing in for root's).
+RCS=$T/roothome/.claude/settings.json RLIB=$T/usrlocal/lib RCOPY=$T/usrlocal/lib/tmux-revive/app
+mkdir -p "$T/roothome/.claude" "$RLIB" && chmod 755 "$T/usrlocal" "$RLIB"
 printf '{"theme":"light","hooks":{"Stop":[{"hooks":[{"type":"command","command":"rootstop.sh"}]}]}}\n' >"$RCS"
 cp "$RCS" "$T/rcs.seed"
 inst "$T/tmux-ok"
-check "without sudo, root's config is left alone, and one line says what that means" "cmp -s $T/rcs.seed $RCS && [[ \$(grep -c \"root's Claude Code sessions won't report their context left or get the agent-say note unless tmux-revive is installed as root too\" $T/inst.out) == 1 ]]"
+check "without sudo, root's config is left alone, and one line says what that means" "cmp -s $T/rcs.seed $RCS && [[ \$(grep -c \"root's Claude Code sessions won't report their context left or get the agent-say note unless tmux-revive is installed as root too\" $T/inst.out) == 1 ]] && [[ ! -e $RCOPY ]]"
 cp "$T/sudoyes/sudo" "$T/ib/sudo"
 inst "$T/tmux-ok"; rc=$?
-rours() { jq --arg t "'$HOOK'" '[.hooks[]?[]?.hooks[]? | select(.command | startswith($t))] | length' "$RCS"; }
-check "with sudo -n, root's Claude Code gets the hooks, running this user's script" "((rc == 0)) && grep -q \"Claude Code in $T/roothome/.claude is told about agent-say\" $T/inst.out && [[ \$(rours) == 3 ]] && jq -e '.theme == \"light\" and .hooks.Stop[0].hooks[0].command == \"rootstop.sh\"' $RCS >/dev/null && grep -qxF \"sh $T/ih/.local/share/tmux-revive/app/install.sh --root-hooks add $HOOK\" $T/sudo.log"
+rours() { jq --arg t "'$RCOPY/scripts/claude-hook.sh'" '[.hooks[]?[]?.hooks[]? | select(.command | startswith($t))] | length' "$RCS"; }
+users() { jq --arg t "$T/ih/" '[.hooks[]?[]?.hooks[]? | select(.command | contains($t))] | length' "$RCS"; }
+check "with sudo -n, root's Claude Code gets the hooks, running root's copy, not this user's script" "((rc == 0)) && grep -q \"Claude Code in $T/roothome/.claude is told about agent-say\" $T/inst.out && [[ \$(rours) == 3 && \$(users) == 0 ]] && jq -e '.theme == \"light\" and .hooks.Stop[0].hooks[0].command == \"rootstop.sh\"' $RCS >/dev/null && grep -qxF \"sh $T/ih/.local/share/tmux-revive/app/install.sh --root-hooks add $HOOK\" $T/sudo.log"
+copied() { local f; for f in scripts/claude-hook.sh scripts/common.sh scripts/panel.sh scripts/help.sh bin/agent-say VERSION; do cmp -s "$ROOT/$f" "$RCOPY/$f" || return 1; done; [[ -z $(find "$RCOPY" \( -type l -o -perm -g+w -o -perm -o+w \) -print) && $(stat -c %a "$RCOPY") == 755 && $(stat -c %a "$RCOPY/scripts/panel.sh") == 755 ]]; }
+check "root's copy holds the hook, what it sources and runs, and the panel, written by no one else" "copied"
 check "root's settings.json was backed up first" "cmp -s $T/rcs.seed \"\$(ls $RCS.bak-revive-* | head -n 1)\""
 cp "$RCS" "$T/rcs.once"
+: >"$RCOPY/stale" && printf 'old\n' >"$RCOPY/scripts/common.sh"
 inst "$T/tmux-ok"
 check "and not again on the next install" "cmp -s $T/rcs.once $RCS && ! grep -q 'roothome/.claude is told' $T/inst.out"
+check "which makes root's copy afresh" "[[ ! -e $RCOPY/stale && ! -e $RCOPY.new && ! -e $RCOPY.old ]] && copied"
+# Hooks an older version put in root's config, running this user's own script, are replaced.
+printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s"}]}],"Stop":[{"hooks":[{"type":"command","command":"%s ctx"}]}]}}\n' "'$HOOK'" "'$HOOK'" >"$RCS"
+inst "$T/tmux-ok"
+check "hooks that ran this user's script are swapped for root's copy" "[[ \$(rours) == 3 && \$(users) == 0 ]]"
+# A folder on the way that a group or anyone may write to: no copy, and no hooks.
+chmod g+w "$RLIB"
+inst "$T/tmux-ok"; rc=$?
+check "a folder above root's copy that others may write to: no hooks, and one line says so" "((rc == 0)) && grep -qF \"couldn't make root's own copy in $T/usrlocal/lib/tmux-revive\" $T/inst.out && [[ \$(rours) == 0 && \$(users) == 0 ]]"
+chmod g-w "$RLIB"
+cp "$T/rcs.once" "$RCS"
+inst "$T/tmux-ok"
 doctor() { env HOME="$T/ih" XDG_DATA_HOME="$T/ih/.local/share" PATH="$T/ib:$PATH" REVIVE_TEST_ROOT_HOME="$T/roothome" bash "$T/ih/.local/share/tmux-revive/app/bin/tmux-revive" doctor 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
 dr=$(doctor)
 check "doctor says root's Claude Code has them" "grep -qF \"ok   root's Claude Code is told about agent-say and reports its context left\" <<<\"\$dr\""
@@ -542,7 +559,7 @@ inst "$T/tmux-ok"
 check "a root settings.json that isn't valid JSON is left alone, with a warning" "[[ \$(cat $RCS) == '{\"hooks\": ' ]] && grep -qF \"$RCS isn't valid JSON\" $T/inst.out"
 cp "$T/rcs.once" "$RCS"
 inst "$T/tmux-ok" --uninstall; rc=$?
-check "uninstall takes them out of root's config through sudo -n, and only them" "((rc == 0)) && grep -qF \"removed the agent-say hook from $RCS\" $T/inst.out && jq -e '. == {theme: \"light\", hooks: {Stop: [{hooks: [{type: \"command\", command: \"rootstop.sh\"}]}]}}' $RCS >/dev/null"
+check "uninstall takes them out of root's config through sudo -n, and only them, and root's copy" "((rc == 0)) && [[ ! -e $T/usrlocal/lib/tmux-revive && -d $RLIB ]] && grep -qF \"removed the agent-say hook from $RCS\" $T/inst.out && jq -e '. == {theme: \"light\", hooks: {Stop: [{hooks: [{type: \"command\", command: \"rootstop.sh\"}]}]}}' $RCS >/dev/null"
 cp "$T/sudono" "$T/ib/sudo"
 inst "$T/tmux-ok"
 cp "$T/rcs.once" "$RCS"

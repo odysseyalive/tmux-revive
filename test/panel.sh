@@ -832,12 +832,35 @@ turn 40000 >"$T/roothome/.claude/projects/-root/s-root.jsonl" # 80% left
 printf '#!/bin/sh\n[ "$1" = -n ] || exit 1\nshift\necho "$*" >>%q\nexec "$@"\n' "$T/sudo.log" >"$T/sudoyes/sudo"
 printf '#!/bin/sh\necho "sudo: a password is required" >&2\nexit 1\n' >"$T/sudono/sudo"
 chmod +x "$T/uidps/ps" "$T/sudoyes/sudo" "$T/sudono/sudo"
-rootrows() { PATH="$T/uidps:$T/$1:$PATH" REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows 2>"$T/rootrows.err"; }
+# Through sudo it runs root's own copy (install.sh keeps it in /usr/local/lib/tmux-revive/app),
+# never this user's files. REVIVE_TEST_ROOT_PREFIX stands in for that folder, owned by you,
+# standing in for root (REVIVE_TEST_ROOT_UID another uid: a copy root doesn't own).
+RLIB=$T/usrlocal/lib RCOPY=$T/usrlocal/lib/tmux-revive/app
+mkdir -p "$RCOPY/scripts" "$RCOPY/bin"
+cp "$ROOT"/scripts/* "$RCOPY/scripts/" && cp "$ROOT/bin/agent-say" "$RCOPY/bin/"
+chmod 755 "$T/usrlocal" "$RLIB" "$RLIB/tmux-revive" "$RCOPY" "$RCOPY/scripts" "$RCOPY/bin" "$RCOPY"/scripts/* "$RCOPY/bin/agent-say"
+rootrows() { PATH="$T/uidps:$T/$1:$PATH" REVIVE_TEST_ROOT_PREFIX=$RLIB/tmux-revive REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows 2>"$T/rootrows.err"; }
 rows=$(rootrows sudono)
 check "--rows there: another user's Claude Code with sudo refused: no context, no error" "[[ -z \$(rctx \"\$rows\" cl-root) && ! -s $T/rootrows.err ]] && grep -q $'\x1fcl-root\x1f' <<<\"\$rows\""
 rows=$(rootrows sudoyes)
-check "--rows there: another user's Claude Code, through sudo -n panel.sh --ctx-of ($(rctx "$rows" cl-root))" "[[ \$(rctx \"\$rows\" cl-root) == 80 && ! -s $T/rootrows.err ]] && grep -qx \"true\" $T/sudo.log && grep -qx \"$ROOT/scripts/panel.sh --ctx-of $rpid\" $T/sudo.log"
+check "--rows there: another user's Claude Code, through sudo -n and root's copy of panel.sh --ctx-of ($(rctx "$rows" cl-root))" "[[ \$(rctx \"\$rows\" cl-root) == 80 && ! -s $T/rootrows.err ]] && grep -qx \"true\" $T/sudo.log && grep -qx \"$RCOPY/scripts/panel.sh --ctx-of $rpid\" $T/sudo.log && ! grep -qF \"$ROOT/\" $T/sudo.log"
 check "--rows there: sudo asked whether it may once a run" "[[ \$(grep -cx true $T/sudo.log) == 1 ]]"
+# refused ROWS: no context, no error, and sudo never asked to run anything.
+refused() { : >"$T/sudo.log"; rows=$(rootrows sudoyes); [[ -z $(rctx "$rows" cl-root) && ! -s $T/rootrows.err && ! -s $T/sudo.log ]]; }
+check "--rows there: root's copy owned by someone else than root isn't run" "REVIVE_TEST_ROOT_UID=$((UID + 4242)) refused"
+chmod g+w "$RCOPY/scripts/common.sh"
+check "--rows there: nor with a file in it others may write to" "refused"
+chmod g-w "$RCOPY/scripts/common.sh"
+chmod o+w "$RLIB"
+check "--rows there: nor under a folder others may write to, two above it" "refused"
+chmod o-w "$RLIB"
+ln -s "$T/rhome" "$RCOPY/scripts/link"
+check "--rows there: nor with a link in it" "refused"
+rm "$RCOPY/scripts/link"
+mv "$RCOPY" "$RCOPY.away"
+check "--rows there: nor with no copy at all" "refused"
+mv "$RCOPY.away" "$RCOPY"
+check "--rows there: and with it put back, root's copy is run again" "! refused && grep -qx \"$RCOPY/scripts/panel.sh --ctx-of $rpid\" $T/sudo.log"
 out=$(bash "$ROOT/scripts/panel.sh" --ctx-of "$rpid"; bash "$ROOT/scripts/panel.sh" --ctx-of '1;id' 2>&1; bash "$ROOT/scripts/panel.sh" --ctx-of $$)
 check "--ctx-of prints only a number, and takes only a process id, and only a Claude Code's ($out)" "[[ \$out == \$'80\nusage: panel.sh --ctx-of PID' ]]"
 far_tm kill-window -t far:cl-root

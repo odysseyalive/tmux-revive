@@ -275,6 +275,13 @@ installed as root too. For a root session with no fresh report, the panel's
 `--rows` (what a linked computer's panel asks for) reads its context left through
 `sudo -n` the same way, and shows a dash when `sudo` would need a password.
 
+Root never runs files in your home for this, since you could change them. The
+installer puts a copy only root can change in `/usr/local/lib/tmux-revive`, and
+root's hook and `--rows` run that copy. Each install and update replaces it, and
+uninstall removes it. If root doesn't own that folder and every folder above it,
+or anyone else can write to one of them, root gets no hook and `--rows` shows a
+dash.
+
 ### Several users in one tmux
 
 Names, links and the mailbox belong to whoever started tmux. Other users can work

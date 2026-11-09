@@ -368,7 +368,7 @@ hook_add() {
 # Root's Claude Code, when not installing as root: sessions started with sudo -i in a pane run
 # as root, with root's settings, so they'd have none of the hooks. Where sudo lets this user
 # run commands as root without a password (never asked for), this installer, as root, adds
-# them to root's Claude Code config (if root has one), pointing at this user's hook script;
+# them to root's Claude Code config (if root has one), running root's own copy (root_copy);
 # uninstall takes them out again. Without that sudo, one line says what's missing.
 root_hooks() { # root_hooks add|del
 	[ "$(id -u)" = 0 ] && return 0
@@ -392,37 +392,107 @@ root_home() {
 		case $rh in /*) printf '%s' "$rh" ;; esac
 	fi
 }
-# install.sh --root-hooks add|del HOOK, run as root by root_hooks: HOOK (another user's
-# claude-hook.sh) into root's Claude Code config folders, or out of them. Only the folders that
-# are there: root's ~/.claude, and any other ~/.claude* that has run Claude. Root with its own
-# tmux-revive keeps its own hooks.
+# Root's hooks, and the panel's --rows through sudo, never run files in a user's home: root
+# would go on running them after that user's sudo is taken away. They run a copy root owns in
+# ROOT_PREFIX/app, made fresh on each install and update. The tests can't be root:
+# REVIVE_TEST_ROOT_PREFIX stands in for the folder, REVIVE_TEST_ROOT_UID (default: you) for
+# root's uid, and the check stops at the folder above it (/tmp is anyone's); never as root.
+ROOT_PREFIX=/usr/local/lib/tmux-revive
+root_prefix() {
+	if [ "$(id -u)" = 0 ]; then printf '%s' "$ROOT_PREFIX"
+	else case ${REVIVE_TEST_ROOT_PREFIX:-} in /?*) printf '%s' "$REVIVE_TEST_ROOT_PREFIX" ;; esac
+	fi
+}
+# root_only PATH: PATH and every folder above it, up to /, are root's, none is a symbolic link,
+# and no group or other user may write to any of them.
+root_only() {
+	ru=0 top=/
+	if [ "$(id -u)" != 0 ] && [ -n "${REVIVE_TEST_ROOT_PREFIX:-}" ]; then
+		ru=${REVIVE_TEST_ROOT_UID:-$(id -u)} top=$(dirname "$REVIVE_TEST_ROOT_PREFIX")
+	fi
+	ro=$1
+	case $ro in /*) ;; *) return 1 ;; esac
+	while :; do
+		[ ! -L "$ro" ] && [ -n "$(find "$ro" -maxdepth 0 -user "$ru" ! -perm -g+w ! -perm -o+w 2>/dev/null)" ] || return 1
+		if [ "$ro" = "$top" ] || [ "$ro" = / ]; then return 0; fi
+		ro=$(dirname "$ro")
+	done
+}
+# root_copy APP: APP's bin, scripts, vendor tools and VERSION, as root's own files that only root
+# can change, in the root prefix's app. Made in app.new and swapped in whole.
+root_copy() {
+	pf=$(root_prefix)
+	[ -n "$pf" ] || return 1
+	own="-o 0 -g 0" # $own: those two options, or none
+	[ "$(id -u)" = 0 ] || own=""
+	# The folder above first, so nothing is left in one root doesn't own (Homebrew's /usr/local).
+	{ [ ! -d "$(dirname "$pf")" ] || root_only "$(dirname "$pf")"; } || return 1
+	# shellcheck disable=SC2086
+	install -d $own -m 0755 "$pf" && root_only "$pf" || return 1
+	new=$pf/app.new
+	rm -rf "$new" "$pf/app.old" || return 1
+	# shellcheck disable=SC2086
+	install -d $own -m 0755 "$new" "$new/bin" "$new/scripts" || return 1
+	# shellcheck disable=SC2086
+	[ ! -d "$1/vendor/bin" ] || install -d $own -m 0755 "$new/vendor" "$new/vendor/bin" || return 1
+	for f in "$1"/bin/* "$1"/scripts/* "$1"/vendor/bin/* "$1/VERSION"; do
+		[ -f "$f" ] && [ ! -L "$f" ] || continue
+		# shellcheck disable=SC2086
+		install $own -m 0755 "$f" "$new/${f#"$1"/}" || { rm -rf "$new"; return 1; }
+	done
+	[ -f "$new/scripts/claude-hook.sh" ] && [ -f "$new/bin/agent-say" ] || { rm -rf "$new"; return 1; }
+	{ [ ! -e "$pf/app" ] || mv "$pf/app" "$pf/app.old"; } && mv "$new" "$pf/app" || return 1
+	rm -rf "$pf/app.old"
+}
+# root_hooks_off DIRS HOOK...: the hooks that run any HOOK, out of the settings.json in DIRS.
+root_hooks_off() {
+	ds=$1
+	shift
+	for h in "$@"; do
+		printf '%s\n' "$ds" | while IFS= read -r d; do
+			f=$d/settings.json
+			[ -n "$d" ] && grep -qF "$h" "$f" 2>/dev/null || continue
+			if json_edit "$f" --arg t "$h" "$HOOK_DEL"; then
+				say "removed the agent-say hook from $f"
+			fi
+		done
+	done
+}
+# install.sh --root-hooks add|del HOOK, run as root by root_hooks: root's own copy of HOOK's
+# tmux-revive (HOOK is another user's claude-hook.sh) made, and hooks running it put into root's
+# Claude Code config folders; or both taken out again, with older ones that ran HOOK itself.
+# Only the folders that are there: root's ~/.claude, and any other ~/.claude* that has run
+# Claude. Root with its own tmux-revive keeps its own hooks.
 root_hooks_here() {
 	[ "$(id -u)" = 0 ] || [ -n "${REVIVE_TEST_ROOT_HOME:-}" ] || return 0
 	hook=$2
 	case $hook in /*/scripts/claude-hook.sh) ;; *) return 0 ;; esac
 	APP=${hook%/scripts/claude-hook.sh}
+	pf=$(root_prefix)
 	rh=$(root_home)
-	[ -n "$rh" ] || return 0
+	[ -n "$rh" ] && [ -n "$pf" ] || return 0
 	dirs=$(for d in "$rh"/.claude*; do
 		[ -d "$d" ] && { [ "$d" = "$rh/.claude" ] || [ -d "$d/sessions" ]; } && printf '%s\n' "$d"
 	done; :)
-	[ -n "$dirs" ] || return 0
 	case $1 in
 	add)
+		[ -n "$dirs" ] || return 0
 		[ -e "$rh/.local/share/tmux-revive/app/scripts/claude-hook.sh" ] && return 0
 		if [ ! -r "$hook" ] || [ ! -x "$hook" ]; then
 			warn "root can't run $hook, so root's Claude Code sessions won't report their context left or get the agent-say note"
 			return 0
 		fi
+		if ! root_copy "$APP"; then
+			warn "couldn't make root's own copy in $pf, so root's Claude Code doesn't get the hooks"
+			root_hooks_off "$dirs" "$hook" "$pf/app/scripts/claude-hook.sh"
+			return 0
+		fi
+		APP=$pf/app
 		printf '%s\n' "$dirs" | while IFS= read -r d; do hook_add "$d"; done ;;
 	del)
-		printf '%s\n' "$dirs" | while IFS= read -r d; do
-			f=$d/settings.json
-			grep -qF "$hook" "$f" 2>/dev/null || continue
-			if json_edit "$f" --arg t "$hook" "$HOOK_DEL"; then
-				say "removed the agent-say hook from $f"
-			fi
-		done ;;
+		root_hooks_off "$dirs" "$pf/app/scripts/claude-hook.sh" "$hook"
+		rm -rf "$pf/app" "$pf/app.new" "$pf/app.old"
+		rmdir "$pf" 2>/dev/null || : ;;
 	esac
 }
 
