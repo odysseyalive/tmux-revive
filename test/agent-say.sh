@@ -416,7 +416,7 @@ out=$(in1 $LR "$ROOT/bin/agent-say --from live-root dev-root 'I am live-root on 
 check "a bare name on the other server resolves and goes to the hub ($out)" "[[ '$out' == *'queued for dev-root@dev.example.com through laptop'* ]]"
 check "it waits at the hub as an introduction" "wait_intro 'live-root@devbox wants to talk with dev-root@dev.example.com'"
 mkdir -p "$T/revive"
-check "and shows in the panel's links" "tmux run-shell 'REVIVE_PANEL_PEEK=0 COLUMNS=230 LINES=60 REVIVE_DIR=$T/revive AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once' | sed 's/\x1b\[[0-9;]*m//g' | grep 'live-root@devbox → dev-root@dev.example.com \[I\]ntro' >/dev/null"
+check "and shows in the panel's links" "tmux run-shell 'REVIVE_PANEL_PEEK=0 COLUMNS=230 LINES=60 REVIVE_DIR=$T/revive AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once' | sed 's/\x1b\[[0-9;]*m//g' | grep '⚑ waiting live-root@devbox → dev-root@dev.example.com' >/dev/null"
 check "the sender is told, plainly" "wait_seen1 $LR '[agent-say notice from laptop' && seen1 $LR 'introduction sent to dev-root@dev.example.com; waiting for the user on laptop to allow it.'"
 in1 $LR "$ROOT/bin/agent-say --from live-root dev-root 'second'" >/dev/null
 in1 $LR "$ROOT/bin/agent-say --from live-root dev-root 'third'" >/dev/null
@@ -593,6 +593,47 @@ in1 $LR "$ROOT/bin/agent-say --from live-root tt-dev 'into the wrong pair'" >/de
 check "a message is never added to another pair's introduction" "wait_mail \"NOT DELIVERED: it doesn't match the introduction already waiting\" && say intros | grep 'live-root@devbox wants to talk with tt-dev@dev.example.com (1 held, ' >/dev/null"
 say _intro deny "$(intro_id 'live-root@devbox wants to talk with tt-dev')" >/dev/null
 say revoke live-root@devbox tt-dev@dev.example.com >/dev/null
+echo "approving after an agent restarted"
+hubst=$(dirname "$AGENT_SAY_MAILBOX")
+sid_now() { awk -v n="$1" '$1 == n {print $2}' "$hubst/links/$2/sessions" 2>/dev/null; }
+restart() { # restart TMUX PANE RUNNER-FIFO NAME HOST: a new agent session in that pane, once the hub has heard
+	local old
+	old=$(sid_now "$4" "$5")
+	"$1" respawn-pane -k -t "$2" "$T/bin/runner $3"
+	for _ in $(seq 80); do [[ -n $(sid_now "$4" "$5") && $(sid_now "$4" "$5") != "$old" ]] && return 0; sleep 0.25; done
+	return 1
+}
+# The recipient restarted: approving binds to its new session, and what was held reaches it.
+in1 $LR "$ROOT/bin/agent-say --from live-root tt-dev 'before tt-dev restarted'" >/dev/null
+check "a held message has a row in the mailbox, held" "wait_intro 'live-root@devbox wants to talk with tt-dev' && wait_mail 'live-root@devbox -> tt-dev@dev.example.com .*#h[0-9]*.0001 (held: waiting for access)'"
+check "(tt-dev restarts)" "restart $T/r2bin/tmux $TT $T/run.tt tt-dev dev.example.com"
+allow_intro "$(intro_id 'live-root@devbox wants to talk with tt-dev')" >/dev/null
+check "approved, it reaches tt-dev's new session" "wait_seen2 $TT 'before tt-dev restarted' && grep -q \"^allow s:.*@devbox s:\$(sid_now tt-dev dev.example.com)@dev.example.com live-root@devbox tt-dev@dev.example.com \" $T/grants"
+check "and its row says delivered" "wait_mail 'live-root@devbox -> tt-dev@dev.example.com .*#h[0-9]*.0001 (delivered)'"
+say revoke live-root@devbox tt-dev@dev.example.com >/dev/null
+# The sender restarted: approving lets its new session talk, but what the old one sent is
+# dropped (it may have sent it again), and the old session isn't told.
+in1 $CX "$ROOT/bin/agent-say --from cx tt-dev 'from the old cx'" >/dev/null
+wait_intro 'cx@devbox wants to talk with tt-dev' >/dev/null
+check "(cx restarts)" "restart $T/rbin/tmux $CX $T/run.cx cx devbox"
+out=$(allow_intro "$(intro_id 'cx@devbox wants to talk with tt-dev')" 2>&1)
+check "approved, it says the sender restarted ($out)" "[[ \$out == *'it restarted since asking, so what it sent before was dropped'* ]]"
+check "what the old session sent isn't delivered, and its row says why" "wait_mail 'cx@devbox -> tt-dev@dev.example.com .*(NOT DELIVERED: cx restarted before approval)' && sleep 2 && ! seen2 $TT 'from the old cx' && ! seen1 $CX \"wasn't delivered\""
+in1 $CX "$ROOT/bin/agent-say --from cx tt-dev 'from the new cx'" >/dev/null
+check "and its new session talks with no new introduction" "wait_seen2 $TT 'from the new cx' && ! say intros | grep waiting >/dev/null"
+say revoke cx@devbox tt-dev@dev.example.com >/dev/null
+# A held message refused on its way (the recipient restarted again before the hub heard): its
+# row says so in short, and the sender is told, so it can send it again.
+in1 $LR "$ROOT/bin/agent-say --from live-root tt-dev 'refused on the way'" >/dev/null
+wait_intro 'live-root@devbox wants to talk with tt-dev' >/dev/null
+pkill -f " $ROOT/bin/agent-say _poll dev.example.com\$"; sleep 0.3
+awk '$1 == "tt-dev" {$2 = "dev:%9:1:gone"} 1' "$hubst/links/dev.example.com/sessions" >"$hubst/s.new" && mv "$hubst/s.new" "$hubst/links/dev.example.com/sessions"
+allow_intro "$(intro_id 'live-root@devbox wants to talk with tt-dev')" >/dev/null
+check "a held message refused on its way: its row says the recipient restarted" "wait_mail 'live-root@devbox -> tt-dev@dev.example.com .*(NOT DELIVERED: tt-dev restarted)' && ! seen2 $TT 'refused on the way'"
+check "and the sender is told, to send it again" "wait_seen1 $LR \"your message to tt-dev@dev.example.com wasn't delivered: tt-dev restarted; send it again.\""
+say revoke live-root@devbox tt-dev@dev.example.com >/dev/null
+say _resume-links
+wait_there dev.example.com "$ROOT/bin/agent-say list" 'live-root@devbox  (via laptop)' || true
 out=$(there2 "AGENT_SAY_LOCAL_ONLY=1 AGENT_SAY_TO_SESSION=someone-else $ROOT/bin/agent-say --from live-root@devbox dev-root 'for an old session'" 2>&1)
 check "a message for one agent session isn't typed into a new one in that pane ($out)" "[[ '$out' == *'session in dev-root has changed'* ]] && ! seen2 $DR 'for an old session'"
 
@@ -922,6 +963,7 @@ out=$(tsay intros)
 check "a permission line from before they were timed is culled; a new one is kept ($out)" "! grep -q ' a@h ' $ts/grants && grep -q ' c@h ' $ts/grants && [[ \$out == *'allowed  c@h and d@h'*'left'* ]]"
 check "and the cull is logged" "grep -q 'expired after 2s: allowed a@h and b@h' $ts/grants.log"
 check "an old introduction goes, with what it held; a new one stays" "[[ ! -e $ts/intros/$iid && -e $ts/intros/$jid/held/0001 ]] && grep -q \"expired after 2s: introduction $iid from x@h to y@$iid, with 1 held\" $ts/grants.log"
+check "and what it held gets its row: not delivered, as no one approved it" "grep -q \"^## \\[x@h -> y@$iid .*\\] #h$((now - 10)).0001 (NOT DELIVERED: no one approved it within 2s)\$\" $ts/mailbox.md"
 check "old senders go, and untimed ones; a new one stays" "[[ \$(cat $ts/peers/far/senders) == 'new@h $now' ]]"
 check "the lapsed ones are kept as lapsed for a week" "grep -q '^old@h [0-9]*\$' $ts/peers/far/senders.expired && grep -q '^legacy@h [0-9]*\$' $ts/peers/far/senders.expired"
 out=$(tsay --from me old@h 'still there?' 2>&1)
@@ -942,6 +984,28 @@ check "though a lapsed line counts for nothing meanwhile" "! tsay intros | grep 
 sleep 2.5
 AGENT_SAY_CULL_EVERY=0 tsay intros >/dev/null
 check "past it, it runs: and the permission given 2 s ago has lapsed too" "! grep -q ' e@h \| c@h ' $ts/grants && grep -q 'expired after 2s: allowed c@h and d@h' $ts/grants.log && [[ ! -e $ts/intros/$jid ]]"
+
+echo "the panel's Refresh: an approval counts from now again"
+tr=$T/refresh
+mkdir -p "$tr"
+rsay() { AGENT_SAY_MAILBOX=$tr/mailbox.md "$ROOT/bin/agent-say" "$@"; }
+now=$(date +%s)
+printf 'allow s:a@h s:b@h a@h b@h %s\nallow s:c@h s:d@h c@h d@h %s\ndeny s:e@h s:f@h e@h f@h %s\n' $((now - 5000)) $((now - 5000)) $((now - 5000)) >"$tr/grants"
+out=$(rsay _grant refresh s:b@h s:a@h 2>&1)
+check "_grant refresh renews that pair's time, either way round ($out)" "[[ \$out == *'refreshed:'* ]] && awk -v s=$now '\$4 == \"a@h\" && \$6 >= s {f = 1} END {exit !f}' $tr/grants"
+check "and no other line" "grep -qx 'allow s:c@h s:d@h c@h d@h $((now - 5000))' $tr/grants && grep -qx 'deny s:e@h s:f@h e@h f@h $((now - 5000))' $tr/grants && [[ \$(wc -l <$tr/grants) == 3 ]]"
+check "and it is logged" "grep -q ' refresh s:b@h s:a@h by pid ' $tr/grants.log"
+cp "$tr/grants" "$tr/grants.before"
+out=$(rsay _grant refresh s:e@h s:f@h 2>&1) && rc=0 || rc=$?
+check "a declined pair isn't refreshed into anything ($out)" "((rc != 0)) && [[ \$out == *'nothing allowed for s:e@h and s:f@h'* ]] && cmp -s $tr/grants $tr/grants.before"
+out=$(rsay _grant refresh s:x@h 2>&1) && rc=0 || rc=$?
+check "without a pair it says how it's used ($out)" "((rc != 0)) && [[ \$out == *'usage: agent-say _grant refresh'* ]] && cmp -s $tr/grants $tr/grants.before"
+bash -c 'exec -a agent-say-holder sleep 30' &
+holder=$!
+mkdir "$tr/index.lock" && echo "$holder" >"$tr/index.lock/pid"
+out=$(rsay _grant refresh s:a@h s:b@h 2>&1) && rc=0 || rc=$?
+check "with the list busy it fails and says so, changing nothing ($out)" "((rc != 0)) && [[ \$out == *'the permission list is busy'* ]] && cmp -s $tr/grants $tr/grants.before"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -rf "$tr/index.lock"
 
 echo "$pass passed, $fail failed"
 ((fail == 0))

@@ -161,7 +161,7 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 |---|---|
 | Up / Down | pick a pane (the list wraps around) |
 | `0`-`9` | go to that window's first pane |
-| `J` | jump to the pane (when the panel is a popup, it closes) |
+| `J` | jump to the pane on this computer (when the panel is a popup, it closes) |
 | `M` | message the pane's agent |
 | `N` | name the pane |
 | `P` | show or hide a quick peek at its screen |
@@ -171,7 +171,7 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 | `L` | link a computer you ssh into |
 | `U` (or `D`) | unlink a computer |
 | `V` | update tmux-revive on a linked computer, or copy the install or update command for another user's pane |
-| `I` | introductions waiting for you, and permissions you gave |
+| `G` | grant access: agents on linked computers waiting to talk, and the ones you approved |
 | `A` | swap the artwork |
 | `S` | save right now |
 | `?` | the help page |
@@ -201,11 +201,8 @@ name, with their USER and VER. Select one of your panes there and press **V** to
 update tmux-revive over ssh, once you say yes. On another user's pane there, **V**
 gives you the command to run in it (see Several users in one tmux). **N** names one of its panes over ssh.
 
-**J** on one of its panes jumps to your pane that's ssh'd into that computer, and
-has tmux over there switch to the pane you picked. If your ssh runs in a terminal
-outside tmux, the panel can't focus that terminal, but tmux over there still
-switches. That takes an up-to-date tmux-revive over there, which **V** takes care
-of.
+**J** is faded on its panes. Nothing there moves your focus, here or in tmux over
+there, so a question on that computer can't pull you away from what you're doing.
 
 ## agent-say: agents talking to each other
 
@@ -380,20 +377,30 @@ a plain name works as long as only one pane anywhere has it.
 
 The first time an agent on one server writes to an agent on the other, the message
 waits on your computer as an introduction. The other server gets nothing until you
-allow it. Press **I** in the panel, read who's asking and why, and pick yes or no.
+allow it. The panel's Links area shows it as waiting, and the asking agent's STATE
+blinks **[G]RANT ACCESS**. Press **G** to grant access,
+pick it, read why it's asking, and choose Approve or Deny.
 
-Yes shows a four-digit code in a popup for you to type back. Then it delivers the
-introduction and anything sent since, in order, and the two can talk both ways. No
-drops them, and that agent can't write to that one again.
+Approve shows a four-digit code in a popup for you to type back. Then it delivers
+the introduction and anything sent since, in order, and the two can talk both ways.
+Deny drops them, and that agent can't write to that one again.
+
+An agent can restart while it waits. Approve covers whoever is in those two panes
+now. If the recipient restarted, it still gets what waited. If the sender restarted,
+what it sent before is dropped, since it may have sent it again; the panel tells you
+before you choose. MESSAGES shows each waiting message as held, then as delivered
+or not delivered with the reason, and a sender whose message didn't get through is
+told so it can send it again.
 
 Permission is per pair of agent sessions, so a new session in a pane asks again.
-**I** also lists what you've allowed, so you can revoke it. The sending agent is
+**G** also lists what you've approved: pick one to Refresh it (another 24 hours)
+or Cancel it. Esc closes without changing anything. The sending agent is
 told plainly what happened (`introduction sent`, `held`, `declined`). At most 5
 messages wait per pair, and 3 introductions per server. `agent-say intros` lists
 them from a terminal.
 
 Anything kept about agent sessions lasts 24 hours. A permission lapses a day after
-you gave it (**I** shows how long each has left), and the next message between
+you gave it (**G** shows how long each has left), and the next message between
 those two is an introduction again. An introduction nobody answers lapses after a
 day, along with what it held. A session that runs longer than that is rare, and if
 one does, something is wrong. Each lapse is logged, and `agent-say intros` shows

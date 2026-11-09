@@ -400,9 +400,9 @@ soft_die() {
 # Run agent-say in the background, out of this process group, so it outlives its caller.
 detach() {
 	if command -v setsid >/dev/null; then
-		setsid -f "$0" "$@" </dev/null >/dev/null 2>&1
+		setsid -f "${BASH_SOURCE[0]}" "$@" </dev/null >/dev/null 2>&1
 	else
-		nohup "$0" "$@" </dev/null >/dev/null 2>&1 &
+		nohup "${BASH_SOURCE[0]}" "$@" </dev/null >/dev/null 2>&1 &
 	fi
 }
 
@@ -862,7 +862,7 @@ index_unlock() { rm -rf "$STATE/index.lock"; }
 # within CULL_EVERY seconds of the last cull. Each one culled is logged in grants.log, which
 # is kept to its last 1000 lines and its last 7 days.
 cull_sessions() {
-	local stamp="$STATE/cull.stamp" now last="" cut f d t id iso
+	local stamp="$STATE/cull.stamp" now last="" cut f d t id iso fr to n
 	[[ -d "$STATE" ]] || return 0
 	printf -v now '%(%s)T' -1
 	{ read -r last <"$stamp"; } 2>/dev/null || true
@@ -885,6 +885,12 @@ cull_sessions() {
 		printf '%s expired after %s: introduction %s from %s to %s, with %s held\n' "$iso" "$t" "$id" \
 			"$(head -n 1 "$d/from" 2>/dev/null)" "$(head -n 1 "$d/to" 2>/dev/null)" \
 			"$(find "$d/held" -type f 2>/dev/null | wc -l | tr -d ' ')" >>"$GRANTS.log"
+		# What it held: marked not delivered, and the sender told, so it can send again.
+		fr="$(head -n 1 "$d/from" 2>/dev/null)" to="$(head -n 1 "$d/to" 2>/dev/null)" n=0
+		if valid_sender "$fr" && valid_sender "$to"; then
+			for f in "$d"/held/*; do [[ -f $f ]] || continue; held_fate "$d" "$f" "$fr" "$to" "NOT DELIVERED: no one approved it within $t"; n=$((n + 1)); done
+			if ((n)); then tell "${fr#*@}" "${fr%@*}" "your message to $to wasn't delivered: no one approved it within $t; send it again."; fi
+		fi
 		rm -rf "$d"
 	done
 	# A sender's way back that lapses is kept a week as lapsed (senders.expired, "NAME@HOST
@@ -967,7 +973,33 @@ hold() { # hold SENDER-SESSION RECIPIENT-SESSION SENDER RECIPIENT TEXT -> new (a
 	((n < HOLD_MAX)) || { echo full; return; }
 	# You may have just answered it in the panel, which removes it: then say so, don't fail.
 	{ printf '%s' "$5" >"$d/held/$(printf %04d $((n + 1)))"; } 2>/dev/null || { echo gone; return; }
+	# A row in the mailbox for it, held; held_fate adds its fate under the same id later.
+	mail "[$3 -> $4 $(date -u +%FT%TZ)] #$(held_key "$d" "$(printf %04d $((n + 1)))") (held: waiting for access)" "$5"
 	((n)) && echo held || echo new
+}
+# A held message's id in the mailbox: its introduction's time and its own number, so a later
+# introduction for the same pair never shares one. held_key INTRO-DIR NNNN
+held_key() { local c=""; { read -r c <"$1/created"; } 2>/dev/null || true; echo "h${c:-0}.$2"; }
+# What became of a held message, as a mailbox row under its id: the panel shows the last one.
+held_fate() { # held_fate INTRO-DIR FILE FROM TO STATUS
+	mail "[$3 -> $4 $(date -u +%FT%TZ)] #$(held_key "$1" "$(basename "$2")")${5:+ ($5)}" "$(cat "$2" 2>/dev/null)"
+}
+# A pane on a link as its agent session is now (see stamp), from what that link last reported;
+# empty when it has no agent running. A side keyed by name (n:, an older agent-say there) has
+# no session to follow, so it stays as it was. current_key NAME@HOST KEY
+current_key() {
+	local sid
+	[[ $2 == n:* ]] && { echo "$2"; return; }
+	sid="$(awk -v n="${1%@*}" '$1 == n {print $2; exit}' "$STATE/links/${1#*@}/sessions" 2>/dev/null)"
+	valid_session "$sid" && stamp "$sid" "${1%@*}" "${1#*@}"
+	return 0
+}
+# A relay's error, short, for the mailbox and the sender.
+short_why() { # short_why NAME ERROR
+	case "$2" in
+		*"has changed since it was given permission"*) echo "$1 restarted" ;;
+		*) local w="${2#agent-say: }"; w="${w//$'\n'/ }"; echo "${w:0:80}" ;;
+	esac
 }
 intro_read() { # intro_read ID -> I_DIR I_FROM I_TO I_FSID I_TSID, checked
 	I_DIR="$INTROS/$1"
@@ -979,28 +1011,51 @@ intro_read() { # intro_read ID -> I_DIR I_FROM I_TO I_FSID I_TSID, checked
 		die "introduction $1 is damaged"
 }
 approve() { # approve ID CODE: allow the pair, then deliver what waited, in order
-	local f first=1 text
+	local f first=1 text fcur tcur err
 	# Only the panel's popup calls this, with the code it showed you and you typed back
 	# (AGENT_SAY_APPROVE_CODE, which it set). A local agent running as you could still get
 	# round that; it keeps out agents on other computers, and casual misuse here.
-	[[ -n "${2:-}" && "${AGENT_SAY_APPROVE_CODE:-}" == "$2" ]] || die "only you can allow that, in the panel (press I there)"
+	[[ -n "${2:-}" && "${AGENT_SAY_APPROVE_CODE:-}" == "$2" ]] || die "only you can allow that, in the panel (press G there)"
 	intro_read "$1"
-	grant_set allow "$I_FSID" "$I_TSID" "$I_FROM" "$I_TO"
+	# Allowed for the agent sessions in those two panes now, which may not be the ones there
+	# when it asked (an agent restarted meanwhile). Only you get here, with the popup's code,
+	# and it names the panes; who is in them is what their own computers report.
+	fcur="$(current_key "$I_FROM" "$I_FSID")" tcur="$(current_key "$I_TO" "$I_TSID")"
+	[[ -n $fcur ]] || die "${I_FROM%@*} has no agent running now, so this still waits; deny it if it's done"
+	[[ -n $tcur ]] || die "${I_TO%@*} has no agent running now, so this still waits"
+	grant_set allow "$fcur" "$tcur" "$I_FROM" "$I_TO"
+	if [[ $fcur != "$I_FSID" ]]; then
+		# The agent that sent these is gone (it may well have sent them again since): they're
+		# dropped, not delivered twice. Nobody to tell; that session is over.
+		for f in "$I_DIR"/held/*; do
+			[[ -f $f ]] || continue; held_fate "$I_DIR" "$f" "$I_FROM" "$I_TO" "NOT DELIVERED: ${I_FROM%@*} restarted before approval"
+		done
+		rm -rf "$I_DIR"
+		echo "allowed $I_FROM to talk with $I_TO; it restarted since asking, so what it sent before was dropped"
+		return 0
+	fi
 	# Anything held while this runs is delivered too: it drains until nothing is left.
 	while f="$(find "$I_DIR/held" -type f 2>/dev/null | sort | head -n 1)" && [[ -n $f ]]; do
 		text="$(cat "$f")"
 		((first)) && text="(introduction, allowed by the user on $LABEL) $text"
 		first=0
-		relay_send "$I_FROM" "$I_TO" "$text" "$I_TSID" 2>"$I_DIR/err" ||
-			mail "[$I_FROM -> $I_TO $(date -u +%FT%TZ)] #$(basename "$f") (NOT DELIVERED: $(tr '\n' ' ' <"$I_DIR/err"))" "$text"
+		if relay_send "$I_FROM" "$I_TO" "$text" "$tcur" 2>"$I_DIR/err"; then
+			held_fate "$I_DIR" "$f" "$I_FROM" "$I_TO" "delivered"
+		else
+			err="$(short_why "${I_TO%@*}" "$(cat "$I_DIR/err")")"
+			held_fate "$I_DIR" "$f" "$I_FROM" "$I_TO" "NOT DELIVERED: $err"
+			tell "${I_FROM#*@}" "${I_FROM%@*}" "your message to $I_TO wasn't delivered: $err; send it again."
+		fi
 		rm -f "$f"
 	done
 	rm -rf "$I_DIR"
 	echo "allowed $I_FROM to talk with $I_TO"
 }
 decline() { # decline ID: refuse the pair from now on, drop what waited, tell the sender
+	local f
 	intro_read "$1"
 	grant_set deny "$I_FSID" "$I_TSID" "$I_FROM" "$I_TO"
+	for f in "$I_DIR"/held/*; do [[ -f $f ]] || continue; held_fate "$I_DIR" "$f" "$I_FROM" "$I_TO" "NOT DELIVERED: declined"; done
 	rm -rf "$I_DIR"
 	tell "${I_FROM#*@}" "${I_FROM%@*}" "declined: the user on $LABEL declined your messages to $I_TO."
 	echo "declined $I_FROM to $I_TO"
@@ -1015,6 +1070,21 @@ revoke() { # revoke A B: forget what was said for the pair (sessions or name@hos
 	index_unlock
 	((n)) || die "nothing given for $1 and $2 (see: agent-say intros)"
 	echo "revoked: $1 and $2 need your permission again"
+}
+grant_refresh() { # grant_refresh A B: an allow for the pair (sessions, either way) counts from now
+	local t="$GRANTS.$$" now n
+	printf -v now '%(%s)T' -1
+	[[ -f "$GRANTS" ]] || die "nothing allowed for $1 and $2"
+	index_lock || die "the permission list is busy, so try again in a moment"
+	n=$(awk -v a="$1" -v b="$2" -v w="$now" -v o="$t" '
+		$1 == "allow" && (($2 == a && $3 == b) || ($2 == b && $3 == a)) {$6 = w; n++}
+		{print >o} END {print n + 0}' "$GRANTS")
+	if ((n)); then mv "$t" "$GRANTS"; else rm -f "$t"; fi
+	index_unlock
+	((n)) || die "nothing allowed for $1 and $2"
+	printf '%s refresh %s %s by pid %s (%s) under %s\n' "$(date -u +%FT%TZ)" "$1" "$2" "$$" \
+		"$(ps -o args= -p $$ 2>/dev/null | head -c 80)" "$(ps -o args= -p "$PPID" 2>/dev/null | head -c 80)" >>"$GRANTS.log"
+	echo "refreshed: $1 and $2 are allowed for $(ttl_text "$SESSION_TTL") from now"
 }
 
 start_poller() {
@@ -1775,12 +1845,18 @@ case "$cmd" in
 	_tell)
 		valid_host "${2:-}" && valid_name "${3:-}" || die "usage: agent-say _tell <host> <name> <text>"
 		printf '%s' "${4:-}" | ssh_to "$2" "AGENT_SAY_LOCAL_ONLY=1 AGENT_SAY_NOTICE=1 $REMOTE_CMD --from $(printf %q "agent-say@$LABEL") $(printf %q "$3") -" >/dev/null 2>&1 || true ;;
+	_grant)
+		# For the panel only: Refresh restarts an approval's day from now.
+		case "${2:-}" in
+			refresh) [[ -n "${4:-}" ]] && grant_refresh "$3" "$4" ;;
+			*) false ;;
+		esac || die "usage: agent-say _grant refresh <sender> <recipient>" ;;
 	_intro)
 		# Declining (it only takes access away). There is no command that allows: that is done
 		# only in the panel's popup, by approve itself, once you've typed back its code.
 		case "${2:-}" in
 			deny) decline "${3:-}" ;;
-			allow) die "only you can allow that, in the panel (press I there)" ;;
+			allow) die "only you can allow that, in the panel (press G there)" ;;
 			*) die "usage: agent-say _intro deny <id>" ;;
 		esac ;;
 	_ctx)

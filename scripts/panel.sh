@@ -8,7 +8,7 @@
 #   panel.sh --rows     this computer's panes as rows for another computer's panel (over a link)
 #   panel.sh --peek %ID N   the last N lines of that pane's screen, for another computer's peek
 #   panel.sh --keys %ID KEY...   keys for a question on that pane, sent from another computer's panel
-#   panel.sh --show %ID  that pane shown in tmux here (its window and pane), for another computer's J
+#   panel.sh --show %ID  retired: changes nothing, and fails (an older computer's J asked for it)
 #   panel.sh --asking   the panes whose agent is asking a question now: id, place, name (daemon.sh)
 #
 # REVIVE_PANEL_POPUP=1 (set by @revive-panel-key) closes the panel after a jump, since a popup
@@ -972,7 +972,6 @@ RDIR="$ASTATE/panel"
 REMOTE_ROWS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --rows'
 REMOTE_PEEK_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --peek'
 REMOTE_KEYS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --keys'
-REMOTE_SHOW_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --show'
 # A fixed command line: nothing from this panel or that computer goes into it.
 REMOTE_UPDATE_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive update </dev/null 2>&1'
 # agent-say name there, for the pane AGENT_SAY_PANE gives. The pane id and the name are
@@ -1218,6 +1217,7 @@ SPIN=(▖ ▘ ▝ ▗)
 state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
 	case $1 in
 	asking) CELL="$B$BMAG$BLINK?$R$B$BMAG NEEDS ANSWER    $R" ;;
+	grant) CELL="$B$BMAG$BLINK⚑ [G]RANT ACCESS$R  " ;; # its agent waits for access (G)
 	working) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
 	waiting) CELL="$BGRN◆ WAITING ON YOU  $R" ;;
 	# Idle at its prompt while its work goes on in the background: working all the same (its
@@ -1234,6 +1234,9 @@ state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
 
 draw_panes() {
 	local i n=${#P_ID[@]} name key folder git cells mark wide=1 NW=10 FW=10 GW v KW=3 pad UW=4 VW=3 us=1 extra
+	# Who waits for access (G): each introduction's sender, as NAME@HOST.
+	local gw=" " st d f
+	for d in "$ASTATE"/intros/*/; do [[ -f $d/from ]] && read -r f <"$d/from" && gw+="$f "; done
 	local -a lab=() nm=() ver=()
 	local -A ses=() many=()
 	# An unnamed pane's NAME is a dim ---: the # column already says where it is. Unless its
@@ -1341,7 +1344,10 @@ draw_panes() {
 		fi
 		fld "${P_APP[i]}" 9
 		if ((P_AGENT[i])); then cells+="$BCYN$FLD$R "; else cells+="$CYN$FLD$R "; fi
-		state_cell "${P_STATE[i]}"
+		# Its agent waiting for access through here: said in its STATE, unless it asks a question.
+		st=${P_STATE[i]}
+		[[ $st != asking && -n ${P_NAME[i]} && $gw == *" ${P_NAME[i]}@${P_HOST[i]:-${AGENT_SAY_HOST:-$HOST}} "* ]] && st=grant
+		state_cell "$st"
 		cells+=$CELL
 		if ((wide)); then
 			fld "$folder" "$FW"
@@ -1414,7 +1420,7 @@ draw_question() { # draw_question LINES
 		kcs Tab " back to panes" "Ctrl-]" " leaves"
 		keys="$B${BMAG}keys go to $name$R  $KC"
 	else
-		kcs Tab " answer" J " open the chat"
+		if [[ -n ${P_HOST[SEL]:-} ]]; then kcs Tab " answer"; else kcs Tab " answer" J " open the chat"; fi
 		keys="$KC  "
 		if ((FULL)); then kc c " collapse"; else kc x " full view"; fi
 		keys+=$KC
@@ -1474,21 +1480,37 @@ question_parts() {
 
 messages() { # -> MSG lines for the message center
 	MSG=()
-	local h b from to when id rest qn
+	local h b from to when id rest qn why k i j
+	local -a H=() B=()
+	local -A last=()
 	if [[ -f $AMAIL ]]; then
+		# A held message gets a row when it's held and another when its fate is known, under
+		# the same id: only the last one for each is shown, so its row says what became of it.
 		while IFS=$'\t' read -r h b; do
 			clean h b
 			[[ $h =~ ^\#\#\ \[([^ ]+)\ -\>\ ([^ ]+)\ ([^]]+)\]\ \#([^ ]+)(.*)$ ]] || continue
-			from=${BASH_REMATCH[1]} to=${BASH_REMATCH[2]} when=${BASH_REMATCH[3]} rest=${BASH_REMATCH[5]}
+			k="${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[4]}"
+			j=${last[$k]:-}; [[ -n $j ]] && H[j]="" # superseded (j is a number set here, never text)
+			last[$k]=${#H[@]}
+			H+=("$h") B+=("$b")
+		done < <(tail -n 600 "$AMAIL" 2>/dev/null | awk '/^## \[/{h=$0; getline b; print h "\t" b}' | tail -n 40)
+		for i in "${!H[@]}"; do
+			[[ -n ${H[i]} ]] || continue
+			[[ ${H[i]} =~ ^\#\#\ \[([^ ]+)\ -\>\ ([^ ]+)\ ([^]]+)\]\ \#([^ ]+)(.*)$ ]] || continue
+			from=${BASH_REMATCH[1]} to=${BASH_REMATCH[2]} when=${BASH_REMATCH[3]} rest=${BASH_REMATCH[5]} b=${B[i]}
 			when=${when:11:5}
 			if [[ $rest == *"NOT DELIVERED"* ]]; then
-				MSG+=("$GRY$when$R $BRED✗$R $BWHT$from$R$GRY→$R$BWHT$to$R $BRED${b}$R")
-			elif [[ $rest == " (held: read-only link)" ]]; then
+				# Why, short: an agent whose session changed has restarted.
+				why=${rest#*NOT DELIVERED: } why=${why%)}
+				[[ $why == *"has changed since it was given permission"* ]] && why="${to%@*} restarted"
+				MSG+=("$GRY$when$R $BRED✗$R $BWHT$from$R$GRY→$R$BWHT$to$R ${BRED}not delivered: ${why:0:60}$R $GRY· $b$R")
+			elif [[ $rest == " (held"* ]]; then
 				MSG+=("$GRY$when$R $BYEL⏸$R $BWHT$from$R$GRY→$R$BWHT$to$R ${BYEL}held ·$R $GRY$b$R")
 			else
 				MSG+=("$GRY$when$R $BGRN✉$R $BWHT$from$R$GRY→$R$BWHT$to$R $GRY$b$R")
 			fi
-		done < <(tail -n 600 "$AMAIL" 2>/dev/null | awk '/^## \[/{h=$0; getline b; print h "\t" b}' | tail -n 4)
+		done
+		((${#MSG[@]} > 4)) && MSG=("${MSG[@]: -4}") # the last four
 	fi
 	((${#MSG[@]})) || MSG+=("$GRY no messages yet · ask an agent to use agent-say$R")
 	qn=$(find "$ASTATE/queue" -maxdepth 1 -name 'msg.*' ! -name '*.err' 2>/dev/null | wc -l)
@@ -1539,19 +1561,23 @@ links_saves() { # -> SIDE lines: saves, then links
 		clean h
 		if [[ -n $(find "$d/alive" -mmin -1 2>/dev/null) ]]; then SIDE+=("$BGRN◌$R $BWHT$h$R $GRY· checks in here$R"); fi
 	done
-	# Agents on two linked computers asking to talk through this one: yours to allow (I).
-	local f t gn
-	INTRO_ON=0 # anything for I: an introduction waiting, or permissions given (the key bar offers I)
+	# Agents on two linked computers asking to talk through this one: access, yours to grant (G).
+	local f t gn now
+	INTRO_ON=0 # anything for G: access waiting, or approved and not yet lapsed (the key bar offers G)
 	for d in "$ASTATE"/intros/*/; do
 		[[ -f $d/from ]] || continue
 		INTRO_ON=1
 		f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to")
 		clean f t
-		SIDE+=("$BMAG⚑$R $BWHT${f:0:30}$R $GRY→$R $BWHT${t:0:30}$R $BBLU[$B${BYEL}I$R$BBLU]$R${BWHT}ntro$R")
+		# "waiting" first: a long pair is cut at its end, never the word.
+		SIDE+=("$BMAG⚑$R ${BYEL}waiting$R $BWHT${f:0:30}$R $GRY→$R $BWHT${t:0:30}$R")
 	done
-	gn=$(grep -c . "$ASTATE/grants" 2>/dev/null)
-	((gn)) && INTRO_ON=1
-	((gn)) && SIDE+=("$GRY  $gn permission(s) given · $R$BBLU[$B${BYEL}I$R$BBLU]$R$GRY to see$R")
+	# Approved: allow lines within their day (agent-say culls the rest when I is pressed).
+	local ttl=${AGENT_SAY_SESSION_TTL:-86400}
+	[[ $ttl =~ ^[1-9][0-9]{0,9}$ ]] || ttl=86400
+	printf -v now '%(%s)T' -1
+	gn=$(awk -v c="$((now - ttl))" '$1 == "allow" && $6 ~ /^[0-9]+$/ && $6 > c {n++} END {print n + 0}' "$ASTATE/grants" 2>/dev/null)
+	((gn)) && INTRO_ON=1 && SIDE+=("$BGRN✓$R $GRY$gn approved$R")
 	# ssh connections in panes that aren't linked yet: offered for linking with L.
 	local i seen=" "
 	for i in "${!P_SSH[@]}"; do
@@ -1700,22 +1726,18 @@ draw() {
 	local k=""
 	((!ANSWERING)) && [[ ${P_STATE[SEL]:-} == asking ]] && k="$B$BMAG[Tab]$R$B$BWHT answer$R  "
 	# Keys that can't act on the selected pane are faded: on a linked computer's pane, nothing
-	# to rename unless its rows say which pane it is, and nothing to jump to unless a pane
-	# here is ssh'd there (or, for a pane its rows name, a terminal outside tmux is).
-	local off=" " rh=${P_HOST[SEL]:-} j
+	# to rename unless its rows say which pane it is, and never J: a jump there would move
+	# focus somewhere you may be busy (another pane, or tmux over there).
+	local off=" " rh=${P_HOST[SEL]:-}
 	if [[ -n $rh ]]; then
 		[[ -n ${P_RID[SEL]:-} ]] || off+="N "
 		[[ -n ${P_NAME[SEL]:-} ]] || off+="M "
 		off+="J "
-		for j in "${!P_SSH[@]}"; do [[ ${P_SSH[j]} == "$rh" ]] && { off=${off/J /}; break; }; done
-		if [[ -n ${P_RID[SEL]:-} ]]; then
-			for j in "${!X_SSH[@]}"; do [[ ${X_SSH[j]} == "$rh" ]] && { off=${off/J /}; break; }; done
-		fi
 	fi
 	local cs=("J:ump" "M:essage" "N:ame" "L:ink" "U:nlink")
 	v_mode # tmux-revive for that row's user, or on that computer
 	case $VMODE in host | update) cs+=("V: update") ;; install) cs+=("V: install") ;; esac
-	((${INTRO_ON:-0})) && cs+=("I:ntroductions")
+	((${INTRO_ON:-0})) && cs+=("G:rant access")
 	cs+=("P:eek" "A:rt" "S:ave" "Q:uit" "?: help")
 	for c in "${cs[@]}"; do
 		if [[ $off == *" ${c%%:*} "* ]]; then
@@ -1855,11 +1877,19 @@ ask() { # ask PROMPT -> REPLY on the bottom line. Enter accepts; Esc, Ctrl-C or 
 
 # pick TITLE ITEM...: a BBS-style popup over the panel, a blue double-line box with a shaded
 # shadow, listing ITEMs. ↑↓ or 1-9 choose, Enter picks (-> PICKED, the index), Esc or q closes
-# it (returns 1). Ctrl-C closes it too, read in slices as in ask.
+# it (returns 1). Ctrl-C closes it too, read in slices as in ask. An ITEM starting with $NOTE
+# is a line to read (a heading, some words), not a choice: unnumbered, and never picked.
+NOTE=$'\x1f' # clean takes control characters out of anything shown, so none can start with it
 pick() {
-	local title=$1 rows cols w h top left i k rest sel=0 line hint="↑↓ choose · Enter picks · Esc closes" INTR=0
+	local title=$1 rows cols w h top left i k rest sel=-1 line hint="↑↓ choose · Enter picks · Esc closes" INTR=0
 	shift
-	local -a items=("$@")
+	local -a items=("$@") ch=() num=()
+	for i in "${!items[@]}"; do
+		[[ ${items[i]} == "$NOTE"* ]] && continue
+		num[i]=${#ch[@]} ch+=("$i")
+		((sel < 0)) && sel=$i
+	done
+	((${#ch[@]})) || return 1
 	rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80)
 	w=$((${#hint} + 6))
 	for i in "${items[@]}"; do ((${#i} + 10 > w)) && w=$((${#i} + 10)); done
@@ -1881,7 +1911,12 @@ pick() {
 		printf '%s' "$e[$((top + 1));${left}H$bg$BWHT║$blank║$R$GRY░$R"
 		for ((i = 0; i < ${#items[@]}; i++)); do
 			local key="  "
-			((i < 9)) && key="$((i + 1)) "
+			if [[ ${items[i]} == "$NOTE"* ]]; then
+				fld "${items[i]#"$NOTE"}" $((w - 6))
+				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║  $BCYN$FLD$BWHT  ║$R$GRY░$R"
+				continue
+			fi
+			((num[i] < 9)) && key="$((num[i] + 1)) "
 			if ((i == sel)); then
 				fld " $key ${items[i]}" $((w - 5))
 				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║ $hi$B▶$FLD$R$bg$BWHT ║$R$GRY░$R"
@@ -1911,10 +1946,10 @@ pick() {
 			IFS= read -rsn2 -t 0.05 rest || true
 			case $rest in
 			'') trap 'exit 0' INT; return 1 ;; # a lone Esc closes the window
-			'[A') ((sel > 0)) && ((sel--)) ;;
-			'[B') ((sel < ${#items[@]} - 1)) && ((sel++)) ;;
+			'[A') ((num[sel] > 0)) && sel=${ch[num[sel] - 1]} ;;
+			'[B') ((num[sel] < ${#ch[@]} - 1)) && sel=${ch[num[sel] + 1]} ;;
 			esac ;;
-		[1-9]) ((k - 1 < ${#items[@]})) && sel=$((k - 1)) && { PICKED=$sel; trap 'exit 0' INT; return 0; } ;;
+		[1-9]) ((k - 1 < ${#ch[@]})) && sel=${ch[k - 1]} && { PICKED=$sel; trap 'exit 0' INT; return 0; } ;;
 		"") PICKED=$sel; trap 'exit 0' INT; return 0 ;; # Enter
 		esac
 	done
@@ -1970,20 +2005,6 @@ send_answer() { # send_answer TOKEN...: to the selected pane, here or over the l
 	else flash "on $h: the keys didn't get through"; fi
 	return 1
 }
-# remote_show HOST %ID: that pane shown in tmux over there (its window and pane selected),
-# by the fixed command REMOTE_SHOW_CMD and the checked id. If it can't be, SHOWN says why.
-remote_show() {
-	local out st
-	SHOWN="can't show it from here"
-	[[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $2 =~ ^%[0-9]+$ ]] || return 1
-	out=$(remote_run "$1" "$REMOTE_SHOW_CMD '$2'" | head -c 64)
-	st=${PIPESTATUS[0]}
-	[[ $out == shown ]] && return 0
-	if [[ -z $out ]] && ((st == 124 || st == 255)); then SHOWN="can't be reached to show it"
-	else SHOWN="couldn't show it in tmux there (update tmux-revive there?)"; fi
-	return 1
-}
-
 # question_look -> QL, QRAW, QSHOT: the selected pane's screen while answering. A pane here
 # is one capture-pane. A linked computer's comes in its peek file, which changes only when a
 # fetch comes back, so while one is still out there's nothing new to read.
@@ -2181,39 +2202,21 @@ act() {
 	local id=${P_ID[SEL]:-} name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} out
 	case $1 in
 	j | J)
-		local h=${P_HOST[SEL]:-} rid=${P_RID[SEL]:-} loc=${P_LOC[SEL]:-} where="" there="" j
-		if [[ -n $h ]]; then
-			# Not a pane here: go to the pane that's ssh'd into that computer, if there is one,
-			# and show this pane in tmux over there, if its rows say which pane it is.
-			there="${P_NAME[SEL]:-${P_LOC[SEL]:-that pane}} on $h"
-			id=""
-			for j in "${!P_SSH[@]}"; do [[ ${P_SSH[j]} == "$h" ]] && { id=${P_ID[j]} loc=${P_LOC[j]}; name="${P_NAME[j]:-${P_LOC[j]}} (ssh to $h)"; break; }; done
-			if [[ -z $id ]]; then
-				# ssh'd there from a terminal outside tmux: that can't be focused from here, but
-				# tmux over there can still show the pane.
-				for j in "${!X_SSH[@]}"; do [[ ${X_SSH[j]} == "$h" ]] && { where=${X_WHERE[j]}; break; }; done
-				[[ -n $where && -n $rid ]] || { flash "${P_NAME[SEL]:-that pane} is on $h, and no pane here is ssh'd there"; return; }
-				flash "showing $there…"; draw
-				if remote_show "$h" "$rid"; then flash "showing $there; its terminal ($where) is outside tmux"
-				else flash "on $h: $SHOWN"; fi
-				return
-			fi
-		fi
+		# Panes on this computer only. On a linked computer's row J does nothing but say so:
+		# focus moves only where you press J, never in tmux over there.
+		[[ -n ${P_HOST[SEL]:-} ]] && { flash "J jumps to panes on this computer only"; return; }
 		[[ -n $id ]] || return
 		if [[ -n ${TMUX:-} ]]; then
 			tm switch-client -t "$id" 2>/dev/null
 			tm select-window -t "$id" 2>/dev/null
 			tm select-pane -t "$id" 2>/dev/null
-			# Then that computer's tmux, before a popup closes.
-			if [[ -n $rid ]] && ! remote_show "$h" "$rid"; then name+="; on $h: $SHOWN"; fi
 			[[ -n ${REVIVE_PANEL_POPUP:-} ]] && exit 0
 			flash "jumped to $name"
 		else
 			tm select-window -t "$id" 2>/dev/null
 			tm select-pane -t "$id" 2>/dev/null
-			[[ -n $rid ]] && remote_show "$h" "$rid"
 			restore_term
-			exec tmux attach -t "${loc%%:*}"
+			exec tmux attach -t "${P_LOC[SEL]%%:*}"
 		fi ;;
 	m | M)
 		[[ -n $id ]] || { [[ -n ${P_HOST[SEL]:-} ]] && flash "that pane has no name; name it on ${P_HOST[SEL]} to message it"; return; }
@@ -2400,11 +2403,11 @@ act() {
 		flash "$msg$last"
 		RFETCH_T[$h]=0 # and ask it for its rows, and so its version, again
 		;;
-	i | I)
-		# Introductions waiting for you, then the permissions you gave (to revoke). Only here,
-		# by a key you press, can two agents on linked computers be let to talk.
-		# Each lasts SESSION_TTL (a day) from when it was given, and shows the time it has left;
-		# agent-say clears what has lapsed first.
+	g | G | i | I) # I: the key it had before, kept so it still works
+		# Access: agents on two linked computers asking to talk through this one (waiting), and
+		# those you let (approved). Only here, by a key you press, can two of them be let talk.
+		# An approval lasts SESSION_TTL (a day) from when it was given or refreshed; agent-say
+		# clears what has lapsed first. Declined ones aren't listed: they lapse on their own.
 		local ids=() labels=() d f t txt g a b w ttl now
 		ttl=$(timeout 10 "$ASAY" _cull 2>/dev/null)
 		[[ $ttl =~ ^[1-9][0-9]{0,9}$ ]] || ttl=86400
@@ -2413,32 +2416,42 @@ act() {
 			[[ -f $d/from ]] || continue
 			f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to")
 			clean f t
-			ids+=("i $(basename "$d")") labels+=("${f:0:30} wants to talk with ${t:0:30}")
+			((${#ids[@]})) || ids+=("") labels+=("${NOTE}WAITING")
+			ids+=("i $(basename "$d")") labels+=("${f:0:30} → ${t:0:30}")
 		done
+		local nw=${#ids[@]}
 		while read -r g a b f t w _; do
-			[[ $g == allow || $g == deny ]] || continue
-			[[ $w =~ ^[0-9]{1,12}$ ]] && ((w + ttl > now)) || continue
+			[[ $g == allow && $w =~ ^[0-9]{1,12}$ ]] && ((w + ttl > now)) || continue
 			clean f t
 			w=$((w + ttl - now))
-			ids+=("g $a $b") labels+=("$([[ $g == allow ]] && echo allowed || echo declined): ${f:0:30} and ${t:0:30} · $((w / 3600))h$((w % 3600 / 60))m left")
+			((${#ids[@]} > nw)) || ids+=("") labels+=("${NOTE}APPROVED")
+			ids+=("g $a $b") labels+=("${f:0:30} → ${t:0:30} · $((w / 3600))h $((w % 3600 / 60))m left")
 		done < <(cat "$ASTATE/grants" 2>/dev/null)
-		((${#ids[@]})) || { flash "no introductions waiting, and no permissions given"; return; }
-		pick "INTRODUCTIONS · each permission lasts $((ttl / 3600))h" "${labels[@]}" || return
+		((${#ids[@]})) || { flash "nothing waiting or approved"; return; }
+		pick "ACCESS" "${labels[@]}" || return
 		read -r g a b <<<"${ids[PICKED]}"
 		if [[ $g == i ]]; then
 			d="$ASTATE/intros/$a"
-			[[ $a =~ ^[0-9a-f]{32}$ && -f $d/from ]] || { flash "that introduction is gone"; return; }
-			f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to") txt=$(head -c 300 "$d/intro")
+			[[ $a =~ ^[0-9a-f]{32}$ && -f $d/from ]] || { flash "that request is gone"; return; }
+			f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to") txt=$(head -c 180 "$d/intro")
 			clean f t txt
-			# Its words first, cut in lines; No before Yes, so Enter alone doesn't allow it.
+			# Its words (three lines at most), then the two choices. Approving takes a code typed
+			# back in a popup, so agents on other computers can't approve it (one running as you
+			# here could), and neither can a stray Enter here.
 			labels=()
-			while [[ -n $txt ]]; do labels+=("│ ${txt:0:60}"); txt=${txt:60}; done
-			# What this does and doesn't keep out, said where you decide.
-			labels+=("│ (agents on other computers can't allow this; one running as you here could)")
+			while [[ -n $txt ]] && ((${#labels[@]} < 3)); do labels+=("$NOTE${txt:0:60}"); txt=${txt:60}; done
+			# Its agent restarted since asking (its computer reports another session in that
+			# pane, or none): what it sent is from a conversation that's over.
+			local fs="" cur=""
+			{ read -r fs <"$d/from-session"; } 2>/dev/null || true
+			if [[ $fs == s:* && ${f#*@} =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+				cur=$(awk -v n="${f%@*}" '$1 == n {print $2; exit}' "$ASTATE/links/${f#*@}/sessions" 2>/dev/null)
+				[[ "s:$cur@${f#*@}" == "$fs" ]] || labels+=("$NOTE${f%@*} has restarted since asking")
+			fi
 			local nt=${#labels[@]}
-			labels+=("No, decline ${f:0:30}" "Yes, allow ${f:0:30} to talk with ${t:0:30}")
-			pick "${f:0:24} → ${t:0:24}" "${labels[@]}" && ((PICKED >= nt)) || { flash "left waiting"; return; }
-			if ((PICKED == nt + 1)); then
+			PREV=(); draw # the list away first, so the two boxes never overlap
+			pick "${f:0:24} → ${t:0:24}" "${labels[@]}" "Approve" "Deny" || { PREV=(); return; } # PREV: all of it drawn again over the box
+			if ((PICKED == nt)); then
 				# A code shown only in a popup, typed back there: a popup isn't a pane, so no
 				# agent can read it or type into it with send-keys. The popup's own shell then
 				# allows it, by agent-say's approve; no command does that.
@@ -2449,14 +2462,23 @@ act() {
 				PREV=()
 				out=$(tail -n 1 "$ASTATE/intros/.allow.out" 2>/dev/null || true)
 				rm -f "$ASTATE/intros/.allow.out"
-				[[ -n $out ]] || out="not allowed: the code didn't match; it's still waiting"
+				[[ -n $out ]] || out="not approved: the code didn't match, so it's still waiting"
 			else
 				out=$("$ASAY" _intro deny "$a" 2>&1 | tail -n 1)
 			fi
 		else
-			pick "Revoke ${labels[PICKED]:0:50}?" "No" "Yes, revoke it: they need your permission again" && ((PICKED == 1)) || return
-			out=$("$ASAY" revoke "$a" "$b" 2>&1 | tail -n 1)
+			# Refresh first, so a bare Enter takes nothing away.
+			local l=${labels[PICKED]%% · *} lt=${labels[PICKED]:0:60}
+			PREV=(); draw
+			pick "$lt" "Refresh" "Cancel" || { PREV=(); return; }
+			if ((PICKED == 0)); then
+				out=$("$ASAY" _grant refresh "$a" "$b" 2>&1) && out="refreshed: $l · $((ttl / 3600))h left"
+			else
+				out=$("$ASAY" revoke "$a" "$b" 2>&1) && out="cancelled: $l"
+			fi
+			out=${out##*$'\n'}
 		fi
+		PREV=() # the boxes drawn over, all of it again
 		clean out
 		flash "${out#agent-say: }" ;;
 	p | P) PEEK=$((!PEEK)) ;;
@@ -2541,16 +2563,11 @@ if ((KEYSMODE)); then
 	exit
 fi
 if ((SHOWMODE)); then
-	# Asked for by another computer's J: a pane id, nothing else. Its window and pane are
-	# selected, so a client on that session (or one attached later) shows it, and the client
-	# used last is switched to it: from over ssh there's no telling which client is whose.
-	# No client at all is fine too.
-	[[ ${2:-} =~ ^%[0-9]+$ && $# == 2 ]] || { echo "usage: panel.sh --show %PANE" >&2; exit 2; }
-	pane_here "$2" || exit 1
-	tm select-window -t "$2" && tm select-pane -t "$2" || exit 1
-	tm switch-client -t "$2" 2>/dev/null
-	echo shown
-	exit 0
+	# Once asked for by another computer's J, to select a pane here and switch the client used
+	# last to it. That moved focus away from whoever was working here, so it changes nothing
+	# now; an older computer's J that asks says it couldn't show it.
+	echo "panel.sh --show: not done any more; nothing was changed" >&2
+	exit 1
 fi
 if ((ASKMODE)); then
 	# For daemon.sh's question alerts: the agent panes whose screen reads as asking, by the

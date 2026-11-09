@@ -434,12 +434,128 @@ out=$(bgframe)
 check "with that command ended (an MCP server still running under it), WAITING ON YOU" "pgrep -P $clpid -f mcp-server >/dev/null && grep -q 'claude *◆ WAITING ON YOU' <<<\"\$out\""
 tm kill-window -t work:cl; tm kill-window -t work:cx; tm kill-window -t work:cl2
 
-# The key bar offers I only while the Links area has something for it: an introduction waiting.
+echo "access"
+# The key bar offers I only while the Links area has something for it: access waiting, or
+# approved and not lapsed. A declined one isn't something for I.
 iid=0123456789abcdef0123456789abcdef
-check "with no introductions, the bar has no [I]ntroductions" "! frame 200 50 | grep -qF '[I]ntroductions'"
+check "with nothing waiting or approved, the bar has no [G]rant access" "! frame 200 50 | grep -qF '[G]rant access'"
 mkdir -p "$T/mail/intros/$iid" && echo "x@far" >"$T/mail/intros/$iid/from" && echo "y@near" >"$T/mail/intros/$iid/to"
-check "with one waiting, the bar offers [I]ntroductions" "frame 200 50 | grep -qF '[I]ntroductions'"
+out=$(frame 200 50)
+check "with one waiting, the bar offers [G]rant access" "grep -qF '[G]rant access' <<<\"\$out\""
+check "and Links shows it in one short line" "grep -qF '⚑ waiting x@far → y@near' <<<\"\$out\" && ! grep -qF 'ntro' <<<\"\$out\""
 rm -rf "$T/mail/intros/$iid"
+# The agent waiting for access shows it in its STATE, by its name@host: here, a pane named
+# acc-sh on this computer.
+tm set-option -p -t work:0.0 @agent acc-sh
+mkdir -p "$T/mail/intros/$iid" && echo "acc-sh@$(hostname -s 2>/dev/null || uname -n)" >"$T/mail/intros/$iid/from" && echo "y@near" >"$T/mail/intros/$iid/to"
+check "an agent waiting for access shows [G]RANT ACCESS in its STATE" "frame 200 50 | grep -cE 'acc-sh .*⚑ \[G\]RANT ACCESS' >/dev/null"
+rm -rf "$T/mail/intros/$iid"
+check "and once it's answered, its STATE is back" "! frame 200 50 | grep -cF 'RANT ACCESS' >/dev/null"
+tm set-option -p -u -t work:0.0 @agent
+printf 'deny s:c1@h s:d1@h c@h d@h %s\nallow s:a1@h s:b1@h a@h b@h %s\n' "$(date +%s)" $(($(date +%s) - 90000)) >"$T/mail/grants"
+check "a declined one, or an approval that has lapsed, isn't offered" "! frame 200 50 | grep -qF '[G]rant access'"
+printf 'allow s:a1@h s:b1@h a@h b@h %s\n' "$(date +%s)" >>"$T/mail/grants"
+out=$(frame 200 50)
+check "an approved one is, with one summary line in Links" "grep -qF '[G]rant access' <<<\"\$out\" && grep -qF '✓ 1 approved' <<<\"\$out\""
+rm -f "$T/mail/grants"
+# A held message's row says what became of it: held, then delivered (no ✗), under one id. One
+# refused for an agent session that changed says the agent restarted, not the raw error.
+mv "$AGENT_SAY_MAILBOX" "$T/mailbox.keep" 2>/dev/null
+printf '## [lr@far -> dr@near 2026-11-09T19:00:00Z] #h1.0001 (held: waiting for access)\nplease run it\n\n## [cx@far -> dr@near 2026-11-09T19:01:00Z] #h2.0001 (NOT DELIVERED: agent-say: the agent session in dr has changed since it was given permission; not sent)\nold one\n\n## [lr@far -> dr@near 2026-11-09T19:54:00Z] #h1.0001 (delivered)\nplease run it\n\n' >"$AGENT_SAY_MAILBOX"
+out=$(frame 200 50)
+check "a held message, once delivered, shows as delivered, once" "[[ \$(grep -c 'please run it' <<<\"\$out\") == 1 ]] && grep -q '✉ lr@far→dr@near please run it' <<<\"\$out\""
+check "one refused because its agent restarted says so" "grep -q '✗ cx@far→dr@near not delivered: dr restarted · old one' <<<\"\$out\""
+rm -f "$AGENT_SAY_MAILBOX"; mv "$T/mailbox.keep" "$AGENT_SAY_MAILBOX" 2>/dev/null
+# The I window, live. Its popup for the approval code is a stand-in here (no client is attached
+# to show a real one): a tmux in front of the real one that runs the popup's own command, reads
+# the code it shows and types back the right one, or a wrong one, as $T/popup.code says.
+mkdir -p "$T/popbin"
+cat >"$T/popbin/tmux" <<POP
+#!/bin/bash
+if [[ \$1 == display-popup ]]; then
+	echo "\$*" >>"$T/popup.log"
+	cmd=\${!#}
+	coproc P { eval "\$cmd"; }
+	buf=""
+	while IFS= read -r -N1 -t 5 c <&"\${P[0]}"; do buf+=\$c; [[ \$buf =~ Type\ ([0-9]{4})\  ]] && break; done
+	if [[ \$(cat "$T/popup.code") == right ]]; then echo "\${BASH_REMATCH[1]}" >&"\${P[1]}"; else echo 0000 >&"\${P[1]}"; fi
+	wait "\$P_PID"
+	exit 0
+fi
+exec $(command -v tmux) "\$@"
+POP
+chmod +x "$T/popbin/tmux"
+ia=1111111111111111aaaaaaaaaaaaaaaa ib=2222222222222222bbbbbbbbbbbbbbbb
+intro() { # intro ID FROM TO TEXT
+	mkdir -p "$T/mail/intros/$1/held"
+	echo "s:$1@${2#*@}" >"$T/mail/intros/$1/from-session"; echo "s:to$1@${3#*@}" >"$T/mail/intros/$1/to-session"
+	echo "$2" >"$T/mail/intros/$1/from"; echo "$3" >"$T/mail/intros/$1/to"; printf '%s' "$4" >"$T/mail/intros/$1/intro"
+	date +%s >"$T/mail/intros/$1/created"
+}
+intro $ia live-root@far.invalid dev-root@near.invalid 'may I ask dev-root about the failing build?'
+intro $ib cx@far.invalid dev-root@near.invalid 'hello'
+# The agent sessions each link reports in those panes now: the same ones that asked.
+mkdir -p "$T/mail/links/far.invalid" "$T/mail/links/near.invalid"
+printf 'live-root %s\ncx %s\n' $ia $ib >"$T/mail/links/far.invalid/sessions"
+printf 'dev-root to%s\n' $ia >"$T/mail/links/near.invalid/sessions"
+printf 'allow s:a1@far.invalid s:b1@near.invalid ann@far.invalid bob@near.invalid %s\ndeny s:c1@far.invalid s:d1@near.invalid cat@far.invalid dan@near.invalid %s\n' $(($(date +%s) - 3600)) "$(date +%s)" >"$T/mail/grants"
+tm new-window -d -t work -n acc "env PATH=$T/popbin:\$PATH AGENT_SAY_SSH=false REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+ascreen() { tm capture-pane -p -t work:acc; }
+wait_a() { for _ in $(seq 1 ${2:-30}); do ascreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
+gone_a() { for _ in $(seq 1 30); do ascreen | grep -cF -- "$1" >/dev/null || return 0; sleep 0.2; done; return 1; }
+akey() { tm send-keys -t work:acc "$@"; sleep 0.4; }
+state() { { cat "$T/mail/grants"; ls "$T/mail/intros"; } 2>/dev/null | md5sum; }
+wait_a 'C O N T R O L' >/dev/null
+check "Links shows each waiting one, and the approved ones as a count" "wait_a 'waiting live-root@far.invalid → dev-root@near' && wait_a 'waiting cx@far.invalid → dev-root@near' && wait_a '✓ 1 approved'"
+check "the bar offers [G]rant access" "wait_a '[G]rant access'"
+before=$(state)
+akey g
+check "G opens ACCESS: WAITING, then APPROVED with the time left" "wait_a 'ACCESS' && wait_a 'WAITING' && wait_a 'APPROVED' && wait_a 'ann@far.invalid → bob@near.invalid · 2' && wait_a 'm left'"
+check "each waiting one as FROM → TO, and no declined one" "ascreen | grep -qF '1  live-root@far.invalid → dev-root@near.invalid' && ascreen | grep -qF '2  cx@far.invalid' && ! ascreen | grep -qF 'cat@far.invalid'"
+check "the headings aren't choices" "! ascreen | grep -qE '[0-9] (WAITING|APPROVED)'"
+akey Escape
+check "Esc closes it, nothing changed" "gone_a 'APPROVED' && [[ \$(state) == '$before' ]]"
+akey i
+check "I, the key it had before, still opens it" "wait_a 'ACCESS' && wait_a 'WAITING'"
+akey 1
+check "a waiting one shows its words, and Approve or Deny" "wait_a 'may I ask dev-root about the failing build?' && wait_a '1  Approve' && wait_a '2  Deny' && ! ascreen | grep -cF 'restarted' >/dev/null"
+akey Escape; gone_a '2  Deny' >/dev/null
+# Its agent restarted since asking (another session in that pane now): the window says so.
+printf 'live-root s-new\ncx %s\n' $ib >"$T/mail/links/far.invalid/sessions"
+akey g; wait_a 'WAITING' >/dev/null; akey 1
+check "one whose agent restarted since asking says so" "wait_a 'live-root has restarted since asking' && wait_a '1  Approve'"
+printf 'live-root %s\ncx %s\n' $ia $ib >"$T/mail/links/far.invalid/sessions"
+akey Escape
+check "Esc there closes it too, nothing changed" "gone_a '2  Deny' && [[ \$(state) == '$before' ]] && [[ ! -e $T/popup.log ]]"
+echo wrong >"$T/popup.code"
+akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; akey 1
+check "Approve asks for the code in a popup; a wrong one approves nothing" "wait_a \"not approved: the code didn't match, so it's still waiting\" && grep -q '^display-popup ' $T/popup.log && [[ \$(state) == '$before' ]]"
+echo right >"$T/popup.code"
+akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; akey 1
+check "the code typed back approves it" "wait_a 'allowed live-root@far.invalid to talk with dev-root@near.invalid' && [[ ! -e $T/mail/intros/$ia ]] && grep -q '^allow s:$ia@far.invalid s:to$ia@near.invalid live-root@far.invalid dev-root@near.invalid [0-9]*\$' $T/mail/grants"
+akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '2  Deny' >/dev/null; akey 2
+check "Deny declines it" "wait_a 'declined cx@far.invalid to dev-root@near.invalid' && [[ ! -e $T/mail/intros/$ib ]] && grep -q '^deny s:$ib@far.invalid ' $T/mail/grants"
+check "with nothing waiting, Links has no waiting line" "gone_a '⚑ waiting' && wait_a '✓ 2 approved'"
+before=$(state)
+akey g; wait_a 'APPROVED' >/dev/null
+check "with nothing waiting, ACCESS lists only APPROVED" "! ascreen | grep -qF 'WAITING' && ascreen | grep -qF '1  ann@far.invalid → bob@near.invalid'"
+akey 1
+check "an approved one offers Refresh or Cancel" "wait_a '1  Refresh' && wait_a '2  Cancel'"
+akey Escape
+check "Esc there changes nothing" "gone_a '2  Cancel' && [[ \$(state) == '$before' ]]"
+start=$(date +%s)
+akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '1  Refresh' >/dev/null; akey 1
+check "Refresh restarts its day" "wait_a 'refreshed: ann@far.invalid → bob@near.invalid · 24h left' && awk -v s=$start '\$4 == \"ann@far.invalid\" && \$6 >= s {f = 1} END {exit !f}' $T/mail/grants"
+check "and logs it" "grep -q ' refresh s:a1@far.invalid s:b1@near.invalid ' $T/mail/grants.log"
+akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '2  Cancel' >/dev/null; akey 2
+check "Cancel takes it away" "wait_a 'cancelled: ann@far.invalid → bob@near.invalid' && ! grep -q 'ann@far.invalid' $T/mail/grants && grep -q 'live-root@far.invalid' $T/mail/grants"
+rm -f "$T/mail/grants"
+check "with nothing left, the bar has no [G]rant access" "gone_a '[G]rant access' && gone_a ' approved'"
+akey g
+check "and G says there's nothing" "wait_a 'nothing waiting or approved'"
+akey q
+tm kill-window -t work:acc 2>/dev/null
+rm -rf "$T/mail/intros" "$T/mail/grants"* "$T/popup.log"
 echo "questions"
 # A stand-in agent (a copy of bash named codex) asking a question the way Claude Code draws
 # one. Every key it reads is logged to OUT.keys; the answer it got goes to OUT.
@@ -1005,6 +1121,12 @@ for _ in $(seq 1 20); do farscreen | grep -q '▶ far-top' && break; tm send-key
 bar() { tm capture-pane -e -p -t work:farpanel | grep -F 'ump' | tail -1; }
 grey=$'\e[90m[J]ump' lit=$'\e[93mS'
 check "its peek tracks that pane's screen live" "for _ in \$(seq 1 30); do farscreen | sed -n '/PEEK · far-top/,\$p' | grep -c 'Mem' >/dev/null && break; sleep 0.3; done; farscreen | sed -n '/PEEK · far-top/,\$p' | grep -c 'Mem' >/dev/null"
+# A linked computer's agent waiting for access: its row there says so, by NAME@HOST.
+gid=0123456789abcdef0123456789abcdef
+mkdir -p "$st/intros/$gid" && echo far-top@far.example >"$st/intros/$gid/from" && echo y@near >"$st/intros/$gid/to"
+check "a linked computer's agent waiting for access shows [G]RANT ACCESS" "for _ in \$(seq 1 30); do farscreen | grep -cE 'far-top .*⚑ \[G\]RANT ACCESS' >/dev/null && break; sleep 0.2; done; farscreen | grep -cE 'far-top .*⚑ \[G\]RANT ACCESS' >/dev/null"
+rm -rf "$st/intros/$gid"
+check "and goes back once the request is gone" "for _ in \$(seq 1 30); do farscreen | grep -cF 'RANT ACCESS' >/dev/null || break; sleep 0.2; done; ! farscreen | grep -cF 'RANT ACCESS' >/dev/null"
 check "on a linked computer's pane, J fades and N doesn't" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\" && bar | grep -qF $'\\e[93mN' && ! bar | grep -qF $'\\e[90m[N]ame'"
 check "while keys that still work stay lit" "bar | grep -qF \"\$lit\""
 # V: update tmux-revive over there, once confirmed, with a fixed command.
@@ -1042,23 +1164,19 @@ check "and one agent-say there turns away is refused there" "wait_far \"on far.e
 touch "$st/links/far.example/read-only"
 rename_far far-top
 check "on a read-only link too, as V and answering are" "wait_far \"on far.example: pane $rtop is now 'far-top'\" && wait_far '▶ far-top' 40"
-# J: the pane here that's ssh'd there is focused, and tmux over there shows the pane too.
+# J on a linked computer's pane stays faded, even with a pane here ssh'd there, and moves no
+# focus: not here, not in tmux over there. It only says so.
 rt() { tmux -L "revive-panel-remote-$$" -f /dev/null "$@"; }
 rt new-window -d -t far -n elsewhere "bash --norc --noprofile"; rt select-window -t far:elsewhere
 tm new-window -d -t work -n farssh "bash -c 'exec -a \"ssh far.example\" sleep 300'"
-check "with a pane here ssh'd there, J lights up" "for _ in \$(seq 1 25); do ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; ! bar | grep -qF \"\$grey\""
+herewin=$(tm display -p -t work '#{window_name}')
+sleep 2.5
+check "with a pane here ssh'd there, J stays faded" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\""
 tm send-keys -t work:farpanel j
-check "J focuses the pane ssh'd there (on a read-only link too)" "wait_far '(ssh to far.example)' && [[ \$(tm display -p -t work '#{window_name}') == farssh ]]"
-check "and tmux over there shows the selected pane" "[[ \$(rt display -p -t far '#{window_index} #{pane_id}') == '0 $rtop' ]]"
-check "with the fixed command and its id, nothing else" "[[ \$(cat $T/show.cmd) == \"PATH=\\\"\\\$HOME/.local/bin:\\\$PATH\\\" tmux-revive panel --show '$rtop'\" ]]"
-rm -f "$st/links/far.example/read-only" "$T/show.cmd"
-# ssh'd there from a terminal outside tmux: tmux over there still shows the pane.
-tm kill-window -t work:farssh; rt select-window -t far:elsewhere
-bash -c 'exec -a "ssh far.example" sleep 60' & xssh=$!; sleep 2.5
-tm send-keys -t work:farpanel j
-check "with the ssh in a terminal outside tmux, J shows the pane over there and says so" "wait_far 'showing far-top on far.example; its terminal' && wait_far 'is outside tmux' && [[ \$(rt display -p -t far '#{window_index} #{pane_id}') == '0 $rtop' ]]"
-kill "$xssh" 2>/dev/null; wait "$xssh" 2>/dev/null
-rm -f "$T/show.cmd"; rt kill-window -t far:elsewhere
+check "J there only says so" "wait_far 'J jumps to panes on this computer only'"
+check "and moves nothing, here or over there" "[[ \$(tm display -p -t work '#{window_name}') == '$herewin' && \$(rt display -p -t far '#{window_name}') == elsewhere && ! -e $T/show.cmd ]]"
+rm -f "$st/links/far.example/read-only"
+tm kill-window -t work:farssh; rt kill-window -t far:elsewhere
 tm send-keys -t work:farpanel 0
 check "back on a pane here, J lights up again" "for _ in \$(seq 1 25); do farscreen | grep -q '\[0\.0\] ▶' && ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; farscreen | grep -q '\[0\.0\] ▶' && ! bar | grep -qF \"\$grey\""
 tm send-keys -t work:farpanel q
@@ -1102,7 +1220,7 @@ tm send-keys -t work:vpanel Escape
 tm kill-window -t work:vpanel
 rm -f "$st/users/deploy"
 far_tm kill-window -t far:as-deploy
-# A row from the link's names alone has no pane id over there: J only jumps here, as before.
+# A row from the link's names alone: J stays put there too, and asks nothing over there.
 printf '#!/bin/bash\nprintf "%%s\\n" "${!#}" >>%q\nexit 1\n' "$T/ssh.log" >"$T/logssh"; chmod +x "$T/logssh"
 sleep 0.5; rm -f "$st/panel/far.example.rows"*
 tm new-window -d -t work -n farssh "bash -c 'exec -a \"ssh far.example\" sleep 300'"
@@ -1111,18 +1229,26 @@ fn() { tm capture-pane -p -t work:farnames; }
 for _ in $(seq 1 60); do fn | grep -q 'far-two *◌ linked' && break; sleep 0.25; done
 for _ in $(seq 1 25); do fn | grep -q '▶ far-two' && break; tm send-keys -t work:farnames Down; sleep 0.4; done
 tm select-window -t work:farnames; tm send-keys -t work:farnames j
-check "J on a names-only row jumps to the pane ssh'd there, and asks nothing over there" "for _ in \$(seq 1 30); do fn | grep -c '(ssh to far.example)' >/dev/null && break; sleep 0.2; done; fn | grep -c '(ssh to far.example)' >/dev/null && [[ \$(tm display -p -t work '#{window_name}') == farssh ]] && ! grep -c -- '--show' $T/ssh.log >/dev/null && [[ ! -e $T/show.cmd ]]"
+check "J on a names-only row moves nothing, and asks nothing over there" "for _ in \$(seq 1 30); do fn | grep -c 'J jumps to panes on this computer only' >/dev/null && break; sleep 0.2; done; fn | grep -c 'J jumps to panes on this computer only' >/dev/null && [[ \$(tm display -p -t work '#{window_name}') == farnames ]] && ! grep -c -- '--show' $T/ssh.log >/dev/null && [[ ! -e $T/show.cmd ]]"
 tm send-keys -t work:farnames q; tm kill-window -t work:farssh
 
 # --keys: a pane id, then key names from a short list or lit:HEX text, nothing else.
 hex() { printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n'; }
 check "--keys types into a pane over there" "[[ \$(rpanel --keys $farid lit:\$(hex 'echo keys-$((6 * 7))') Enter) == sent ]] && for _ in \$(seq 1 20); do tmux -L revive-panel-remote-$$ -f /dev/null capture-pane -p -t $farid | grep -c '^keys-42' >/dev/null && break; sleep 0.2; done && (( \$(tmux -L revive-panel-remote-$$ -f /dev/null capture-pane -p -t $farid | grep -c '^keys-42') >= 1 ))"
-check "--show turns away a bad pane id" "! rpanel --show 'far:0.0' && ! rpanel --show '%0;touch $T/pwn' && ! rpanel --show %999 && ! rpanel --show && ! rpanel --show $farid x && [[ ! -e $T/pwn ]]"
+far_tm new-window -d -t far -n w2 "sleep 300"; far_tm select-window -t far:0
+check "--show, which an older computer's J asks for, changes nothing and fails" "! rpanel --show \$(far_tm display -p -t far:w2 '#{pane_id}') && ! rpanel --show '%0;touch $T/pwn' && [[ ! -e $T/pwn && \$(far_tm display -p -t far '#{window_index}') == 0 ]]"
+far_tm kill-window -t far:w2
 check "--keys turns away a bad pane id" "! rpanel --keys 'far:0.0' Enter && ! rpanel --keys '%0;touch $T/pwn' Enter && ! rpanel --keys %999 Enter && ! rpanel --keys $farid && [[ ! -e $T/pwn ]]"
 check "--keys turns away keys not on its list" "! rpanel --keys $farid 'Enter;touch $T/pwn' && ! rpanel --keys $farid F1 && ! rpanel --keys $farid 'send-keys' && ! rpanel --keys $farid '\$(touch $T/pwn)' && [[ ! -e $T/pwn ]]"
 check "--keys text: no control characters, bidi overrides or endless text" "! rpanel --keys $farid lit:0a && ! rpanel --keys $farid lit:\$(hex \$'a\\e[2J') && ! rpanel --keys $farid lit:c29b && ! rpanel --keys $farid lit:\$(hex \$'\\u202e') && ! rpanel --keys $farid lit:00 && ! rpanel --keys $farid lit:\$(hex \$(printf 'a%.0s' {1..65})) && ! rpanel --keys $farid lit:4"
 
-# A question on the linked computer, answered from here over the link.
+# A question on the linked computer, answered from here over the link. Over there you're busy
+# in a pane of your own (far-sh): an agent there starting to ask must not move you off it (what
+# a client on that session shows), nor anything here; only the keys you send while answering go
+# anywhere.
+far_tm select-window -t far:0; far_tm select-pane -t far:0.0
+fclient() { far_tm display -p -t far '#{window_index}.#{pane_index}'; }
+fwas=$(fclient) hwas=$(tm display -p -t work '#{window_name}')
 tmux -L "revive-panel-remote-$$" -f /dev/null new-window -d -t far -n ask "$T/bin/codex $T/ask.sh $T/ans3"
 tmux -L "revive-panel-remote-$$" -f /dev/null set-option -p -t far:ask @agent far-ask
 sleep 0.5
@@ -1132,7 +1258,9 @@ fq() { tm capture-pane -p -t work:farq; }
 wait_fq() { for _ in $(seq 1 ${2:-50}); do fq | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 wait_fq 'far-ask' 60 >/dev/null
 for _ in $(seq 1 25); do fq | grep -q '▶ far-ask' && break; tm send-keys -t work:farq Down; sleep 0.4; done
-check "a linked computer's question shows here" "wait_fq 'QUESTION · far-ask' && wait_fq 'Do you want to proceed?'"
+check "a linked computer's question shows here" "wait_fq 'QUESTION · far-ask' 100 && wait_fq 'Do you want to proceed?'"
+check "and moves no client's focus, there or here" "[[ '$fwas' == '0.0' && \$(fclient) == '$fwas' && \$(tm display -p -t work '#{window_name}') == '$hwas' ]]"
+check "its question view offers Tab, not J" "fq | grep -qF '[Tab] answer' && ! fq | grep -qF 'open the chat'"
 # Its highlighted choice sits on a band here too, before answering, once Enter starts it, and
 # after a key moves it over the link.
 fqcolor() { tm capture-pane -e -p -t work:farq | grep -F -- "$1" | head -1; }
@@ -1146,6 +1274,7 @@ check "the band moves with the highlighted choice" "wait_fqband '❯ 2. No' && [
 tm send-keys -t work:farq Enter
 check "and is answered from here" "for _ in \$(seq 1 40); do [[ -s $T/ans3 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans3 2>/dev/null) == picked:2 ]]"
 check "then its peek comes back" "wait_fq 'PEEK · far-ask' 100 && ! fq | grep -c 'ANSWERING' >/dev/null"
+check "answering it moved no client's focus either" "[[ \$(fclient) == '$fwas' && \$(tm display -p -t work '#{window_name}') == '$hwas' ]]"
 tm send-keys -t work:farq q; sleep 0.5
 check "the panel takes the screens it fetched with it" "! ls $st/panel/ 2>/dev/null | grep -c 'peek-' >/dev/null"
 
