@@ -140,6 +140,8 @@ Each pane is numbered the way tmux's status bar numbers it, window then pane:
 
 **USER** is the user working in the pane, and **VER** the tmux-revive that user
 has, in yellow when it's older than yours. `[V]` means they don't have it yet.
+A linked computer on tmux-revive 1.2.4 or older can't say who's working in its
+panes, so all its rows show `[V]`. Press **V** there to update it over ssh.
 
 **CTX LEFT** shows how much of each agent's context window is still free. It goes
 green, then yellow at 40%, then red at 15%. It reads Claude Code's and Codex's own
