@@ -627,9 +627,35 @@ claude_record() { # claude_record PID -> RECORD: Claude Code's session record fo
 		[[ -f $f ]] && { RECORD=$f; return; }
 	done
 }
-claude_status() { # Claude Code's own idle/busy, from its session record
+# Claude Code's record says idle between turns even while agents it started in the background
+# (the Agent tool's run_in_background, background shells) go on working, and it has no field
+# that says so. Their output files do: each is under its temp folder, as
+# claude-UID/<its folder>/<sessionId>/tasks/*.output, and grows while it runs (an agent's is a
+# link to its transcript). Written to within REVIVE_BG_SECS (20) means work in the background.
+BG_SECS=${REVIVE_BG_SECS:-20}
+claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting) or nothing; CBG=1: background work
+	local sid t m=0 d
+	local -a f=() roots=()
+	CST="" CBG=0
 	claude_record "$1"
-	[[ -n $RECORD ]] && jq -r '.status // empty' "$RECORD" 2>/dev/null
+	[[ -n $RECORD ]] || return 0
+	IFS=$'\t' read -r CST sid < <(jq -r '[.status // "", .sessionId // ""] | @tsv' "$RECORD" 2>/dev/null)
+	# Only idle: "waiting" is a dialog of its own open, which needs you whatever else runs.
+	[[ $CST == idle && $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
+	# Where its temp folder is: CLAUDE_CODE_TMPDIR, else the system's (TMPDIR, else /tmp).
+	for d in ${CLAUDE_CODE_TMPDIR:+"${CLAUDE_CODE_TMPDIR%/}"} ${TMPDIR:+"${TMPDIR%/}"} /tmp; do
+		[[ " ${roots[*]} " == *" $d "* ]] || roots+=("$d")
+	done
+	for d in "${roots[@]}"; do
+		for t in "$d"/claude-"$UID"/*/"$sid"/tasks/*.output; do [[ -e $t ]] && f+=("$t"); done
+	done
+	((${#f[@]})) || return 0
+	# One stat for them all, through the links.
+	while read -r t; do
+		[[ $t =~ ^[0-9]+$ ]] && ((t > m)) && m=$t
+	done < <(stat -L -c %Y "${f[@]}" 2>/dev/null || stat -L -f %m "${f[@]}" 2>/dev/null)
+	((m && ${EPOCHSECONDS:-$(date +%s)} - m <= BG_SECS)) && CBG=1
+	return 0
 }
 
 # ------------------------------------------------------------------ context left
@@ -888,9 +914,11 @@ gather() {
 			st=$(screen_state "$id")
 			# Claude Code's record says for itself whether it is busy, and outranks the screen.
 			# With nothing in it to go by (no record found for this process, or one with no
-			# status), the screen decides, as it does for the other agents.
+			# status), the screen decides, as it does for the other agents. Idle while agents it
+			# started still work in the background is a state of its own: it takes input.
 			if [[ $kind == claude && $st != asking ]]; then
-				case $(claude_status "$apid") in busy) st=working ;; "") ;; *) st=waiting ;; esac
+				claude_look "$apid"
+				case $CST in busy) st=working ;; "") ;; *) st=waiting; ((CBG)) && st=agents ;; esac
 			fi
 			ctx_left "$kind" "$apid" "${tree[@]}"
 			ctx=$CTX
@@ -1065,7 +1093,7 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 }
 remote_panes() {
 	local d h f id loc name app st folder git cpu mem agent got v wp lg S=$'\x1f'
-	local -A rctx
+	local -A rctx rbg
 	P_GROUPS=0
 	# Other computers' screens are kept no longer than they're shown: a minute at most. So are
 	# the temporary files of an ask cut off by the panel closing.
@@ -1078,7 +1106,7 @@ remote_panes() {
 		lg=0
 		[[ -f $d/login ]] && lg=1
 		if ((lg)); then :; elif ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
-		f="$RDIR/$h.rows" got=0 RVER[$h]="" rctx=()
+		f="$RDIR/$h.rows" got=0 RVER[$h]="" rctx=() rbg=()
 		# Rows a minute old or newer; older means that computer stopped answering.
 		if ((!lg)) && [[ -s $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
 			RVER[$h]=old # unless it says which version it is
@@ -1094,13 +1122,20 @@ remote_panes() {
 					((BASH_REMATCH[2] <= 100)) && rctx[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
 					continue
 				fi
+				# A pane waiting while its agents work in the background, likewise: its row says
+				# waiting, which is what a panel from before this shows.
+				if [[ ${id:0:40} =~ ^\#agents\ (%[0-9]{1,9})$ && -z $loc ]]; then
+					rbg[${BASH_REMATCH[1]}]=1
+					continue
+				fi
 				# Only a complete row from a pane: a %id first and the agent flag last.
 				[[ $id =~ ^%[0-9]+$ && $agent =~ ^[01]$ ]] || continue
 				# Cut before cleaning, so a huge field costs nothing to look at.
 				loc=${loc:0:64} name=${name:0:64} app=${app:0:64} st=${st:0:16} folder=${folder:0:256} git=${git:0:128}
 				clean loc name app st folder git
 				[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || name=""
-				case $st in asking | working | waiting | shell | program) ;; *) st=program ;; esac
+				case $st in asking | working | waiting | agents | shell | program) ;; *) st=program ;; esac
+				[[ $st == waiting && -n ${rbg[$id]:-} ]] && st=agents
 				[[ $st == asking && $f -ot $RDIR/$h.answered-${id#%} ]] && st=waiting # answered from here since
 				[[ $cpu =~ ^[0-9]{1,4}$ ]] || cpu=0
 				[[ $mem =~ ^[0-9]{1,10}$ ]] || mem=0
@@ -1180,6 +1215,7 @@ state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
 	asking) CELL="$B$BMAG$BLINK?$R$B$BMAG NEEDS ANSWER    $R" ;;
 	working) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
 	waiting) CELL="$BGRN◆ WAITING ON YOU  $R" ;;
+	agents) CELL="$YEL◇ AGENTS WORKING  $R" ;;
 	shell) CELL="$GRY· shell           $R" ;;
 	self) CELL="$BBLU✦ this panel      $R" ;;
 	linked) CELL="$GRY◌ linked          $R" ;;
@@ -1308,7 +1344,8 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 		return
 	fi
 	if ((FULL)); then kcs x " back" c " collapse"; else kc x " full view"; fi
-	sectk "PEEK · $name" "$KC"
+	# Its agents working in the background don't keep it from taking what you type.
+	if [[ ${P_STATE[SEL]:-} == agents ]]; then sectk "PEEK · $name · agents busy, takes input" "$KC"; else sectk "PEEK · $name" "$KC"; fi
 	if [[ -n ${P_HOST[SEL]:-} ]]; then
 		remote_peek "$1"
 	elif [[ -n $id ]]; then
@@ -1493,7 +1530,7 @@ links_saves() { # -> SIDE lines: saves, then links
 draw_top() {
 	local i counts w=0 a=0 s=0
 	for ((i = 0; i < n; i++)); do
-		case ${P_STATE[i]} in working) ((w++)) ;; asking) ((a++)) ;; esac
+		case ${P_STATE[i]} in working | agents) ((w++)) ;; asking) ((a++)) ;; esac
 		((P_AGENT[i])) && ((s++))
 	done
 
@@ -2368,7 +2405,11 @@ if ((ROWS)); then
 		# Context left goes on a line of its own: a panel from before it skips the line, where a
 		# field added to the row would make it drop the row.
 		[[ -n ${P_CTX[i]} ]] && printf '#ctx %s %s\n' "${P_ID[i]}" "${P_CTX[i]}"
-		printf '%s\x1f' "${P_ID[i]}" "${P_LOC[i]}" "${P_NAME[i]}" "${P_APP[i]}" "${P_STATE[i]}" "$folder" "${P_GIT[i]}" "${P_CPU[i]}" "${P_MEM[i]}"
+		# Agents working in the background: the row says waiting, as a panel from before this
+		# knows it, and a line before it says the rest.
+		st=${P_STATE[i]}
+		[[ $st == agents ]] && { printf '#agents %s\n' "${P_ID[i]}"; st=waiting; }
+		printf '%s\x1f' "${P_ID[i]}" "${P_LOC[i]}" "${P_NAME[i]}" "${P_APP[i]}" "$st" "$folder" "${P_GIT[i]}" "${P_CPU[i]}" "${P_MEM[i]}"
 		printf '%s\n' "${P_AGENT[i]}"
 	done
 	exit 0

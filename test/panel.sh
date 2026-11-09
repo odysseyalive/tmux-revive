@@ -20,6 +20,7 @@ check() {
 cleanup() {
 	tm kill-server 2>/dev/null
 	tmux -L "revive-alert-$$" -f /dev/null kill-server 2>/dev/null
+	tmux -L "revive-panel-remote-$$" -f /dev/null kill-server 2>/dev/null
 	[[ -n ${dpid:-} ]] && kill "$dpid" 2>/dev/null
 	rm -rf "$T"
 }
@@ -387,6 +388,28 @@ out=$(cframe)
 check "a Claude 5 model has a million-token window (500k: 50% left)" "grep -q 'claude .* 50%' <<<\"\$out\""
 rows=$(tm run-shell "HOME=$H REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows")
 check "--rows gives each pane's context left on a line of its own, before its row" "grep -A1 '^#ctx %[0-9]* 20$' <<<\"\$rows\" | grep -q $'\x1fcodex\x1f'"
+# Idle between turns while its agents work in the background (their output under its temp
+# folder written to just now): AGENTS WORKING, and its peek says it still takes input.
+mkdir -p "$T/ltmp/claude-$UID/-w/s-1/tasks"
+bgframe() { tm run-shell "HOME=$H CLAUDE_CODE_TMPDIR=$T/ltmp REVIVE_PANEL_SEL=$clid COLUMNS=${1:-130} LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
+clid=$(tm display -p -t work:cl '#{pane_id}')
+: >"$T/ltmp/claude-$UID/-w/s-1/tasks/b1.output"
+out=$(bgframe)
+check "idle with agents working in the background shows AGENTS WORKING" "grep -q 'claude *◇ AGENTS WORKING' <<<\"\$out\""
+check "and its peek says it still takes input" "grep -q 'PEEK · .*agents busy, takes input' <<<\"\$out\""
+for c in 80 200; do
+	out=$(bgframe "$c")
+	check "at $c columns every row is exactly $c wide" "grep -q 'AGENTS WORKING' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
+done
+# A record saying waiting (a dialog of its own open) needs you, agents or not.
+printf '{"pid":%s,"sessionId":"s-1","status":"waiting","waitingFor":"dialog open"}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
+touch "$T/ltmp/claude-$UID/-w/s-1/tasks/b1.output"
+out=$(bgframe)
+check "a record saying waiting is WAITING ON YOU, agents or not" "grep -q 'claude *◆ WAITING ON YOU' <<<\"\$out\""
+printf '{"pid":%s,"sessionId":"s-1","status":"idle"}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
+touch -d '-1 minute' "$T/ltmp/claude-$UID/-w/s-1/tasks/b1.output"
+out=$(bgframe)
+check "with that output a minute old, WAITING ON YOU again" "grep -q 'claude *◆ WAITING ON YOU' <<<\"\$out\""
 tm kill-window -t work:cl; tm kill-window -t work:cx; tm kill-window -t work:cl2
 
 echo "questions"
@@ -616,7 +639,7 @@ chmod +x "$T/rbin/tmux"
 # peek's id and count go through as plain arguments, never through a shell. agent-say name is
 # run by a shell, as sshd would run it.
 {
-	printf '#!/bin/bash\nunset TMUX TMUX_PANE\nexport HOME=%q REVIVE_SOCKET=%q REVIVE_DIR=%q REVIVE_VERSION_FILE=%q\npanel=%q T=%q\n' "$T/rhome" "$rsock" "$T/remote-data" "$T/remote-version" "$ROOT/scripts/panel.sh" "$T"
+	printf '#!/bin/bash\nunset TMUX TMUX_PANE\nexport HOME=%q REVIVE_SOCKET=%q REVIVE_DIR=%q REVIVE_VERSION_FILE=%q CLAUDE_CODE_TMPDIR=%q\npanel=%q T=%q\n' "$T/rhome" "$rsock" "$T/remote-data" "$T/remote-version" "$T/rtmp" "$ROOT/scripts/panel.sh" "$T"
 	cat <<'EOF'
 cmd=${!#}
 if [[ $cmd =~ \ panel\ --rows$ ]]; then exec bash "$panel" --rows
@@ -662,17 +685,41 @@ far_cl cl-none "-c 'printf \"* Working (esc to interrupt)\\n\"; sleep 300; :'"
 far_cl cl-busy "-c 'printf \"> \"; sleep 300; :'" busy
 far_cl cl-idle "-c 'printf \"* Working (esc to interrupt)\\n\"; sleep 300; :'" idle
 far_cl cl-ask "$T/ask.sh $T/ans-far-cl"
+# Agents a Claude Code started work on in the background: their output files, under its temp
+# folder's claude-UID/<folder>/<sessionId>/tasks/, written to just now (an agent's is a link to
+# its transcript) or minutes ago. Idle with one fresh is AGENTS WORKING; with only stale ones,
+# waiting; busy is still working, and a question on screen still wins.
+far_cl cl-bg "-c 'printf \"> \"; sleep 300; :'" idle
+far_cl cl-stale "-c 'printf \"> \"; sleep 300; :'" idle
+far_cl cl-bgask "$T/ask.sh $T/ans-far-cl2" idle
+bgtasks() { # bgtasks SESSION fresh|stale
+	local d=$T/rtmp/claude-$UID/-w/$1/tasks
+	mkdir -p "$d" "$T/rtmp/sub"
+	: >"$d/old.output"; touch -d '-10 minutes' "$d/old.output"
+	[[ $2 == fresh ]] || return 0
+	: >"$T/rtmp/sub/$1.jsonl"; ln -sf "$T/rtmp/sub/$1.jsonl" "$d/agent.output"; touch -h -d '-10 minutes' "$d/agent.output"
+}
+for s in cl-bg cl-busy cl-bgask; do bgtasks "s-$s" fresh; done
+bgtasks s-cl-stale stale
 sleep 0.5
-rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
+rows=$(CLAUDE_CODE_TMPDIR=$T/rtmp REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
 check "--rows there: an agent working with no record to go by is working, from its screen" "grep -q $'\x1fcl-none\x1fclaude\x1fworking\x1f' <<<\"\$rows\""
 check "--rows there: a record that says busy is working, even with no sign on screen" "grep -q $'\x1fcl-busy\x1fclaude\x1fworking\x1f' <<<\"\$rows\""
 check "--rows there: a record that says idle is waiting, whatever the screen says" "grep -q $'\x1fcl-idle\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
 check "--rows there: a question on screen is asking" "grep -q $'\x1fcl-ask\x1fclaude\x1fasking\x1f' <<<\"\$rows\""
+check "--rows there: idle with agents working in the background is a line before a row saying waiting (as an older panel shows it)" "grep -B1 $'\x1fcl-bg\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -q '^#agents %[0-9]*\$'"
+check "--rows there: with only stale output, no such line" "! grep -B1 $'\x1fcl-stale\x1f' <<<\"\$rows\" | grep -q '^#agents' && grep -q $'\x1fcl-stale\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
+check "--rows there: busy, or asking, with fresh output: no such line" "[[ \$(grep -c '^#agents' <<<\"\$rows\") == 1 ]] && grep -q $'\x1fcl-bgask\x1fclaude\x1fasking\x1f' <<<\"\$rows\""
 out=$(far "$T/fakessh")
 check "here: a linked agent working with no record shows WORKING" "grep -q 'cl-none *claude *. WORKING' <<<\"\$out\""
 check "here: one whose record says busy shows WORKING" "grep -q 'cl-busy *claude *. WORKING' <<<\"\$out\""
 check "here: one whose record says idle shows WAITING ON YOU" "grep -q 'cl-idle *claude *◆ WAITING ON YOU' <<<\"\$out\""
 check "here: one asking a question shows NEEDS ANSWER" "grep -q 'cl-ask *claude *? NEEDS ANSWER' <<<\"\$out\""
+check "here: idle with agents working in the background shows AGENTS WORKING" "grep -q 'cl-bg *claude *◇ AGENTS WORKING' <<<\"\$out\""
+check "here: idle with only stale output shows WAITING ON YOU" "grep -q 'cl-stale *claude *◆ WAITING ON YOU' <<<\"\$out\""
+check "here: a question still wins over agents in the background" "grep -q 'cl-bgask *claude *? NEEDS ANSWER' <<<\"\$out\""
+check "and the frame is still exactly 140 wide" "[[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
+for w in cl-bg cl-stale cl-bgask; do far_tm kill-window -t far:$w; done # room for the rows below
 # Their CPU and context left, drawn as this computer's own are. A busy pane there; a Claude
 # Code whose record names its transcript; and three with no record to be found, as over a
 # link's ssh: one whose config folder is in its own environment and whose session is the
