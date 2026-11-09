@@ -1512,7 +1512,7 @@ messages() { # -> MSG lines for the message center; INTRO_ON
 			if [[ $rest == " (held: waiting for access)" && -n ${asks[$c]:-} ]]; then
 				# Not failed: waiting on you. "waiting" first, so a narrow panel cuts the pair, not it.
 				shown[$c]=1
-				WAIT+=("$GRY$when$R $BMAG⚑$R $B${BMAG}waiting for [G]rant access$R $BWHT$from$R$GRY→$R$BWHT$to$R $GRY· $b$R")
+				WAIT+=("$GRY$when$R $B$BYEL$BLINK⚑$R $B${BMAG}waiting for [G]rant access$R $BWHT$from$R$GRY→$R$BWHT$to$R $GRY· $b$R")
 			elif [[ $rest == *"NOT DELIVERED"* ]]; then
 				# Why, short: an agent whose session changed has restarted.
 				why=${rest#*NOT DELIVERED: } why=${why%)}
@@ -1533,12 +1533,12 @@ messages() { # -> MSG lines for the message center; INTRO_ON
 		f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to") b=$(head -c 200 "$d/intro" 2>/dev/null)
 		clean f t b
 		[[ $c =~ ^[0-9]{1,12}$ ]] && TZ=UTC printf -v when '%(%H:%M)T' "$c" || when="--:--"
-		WAIT+=("$GRY$when$R $BMAG⚑$R $B${BMAG}waiting for [G]rant access$R $BWHT$f$R$GRY→$R$BWHT$t$R${b:+ $GRY· $b$R}")
+		WAIT+=("$GRY$when$R $B$BYEL$BLINK⚑$R $B${BMAG}waiting for [G]rant access$R $BWHT$f$R$GRY→$R$BWHT$t$R${b:+ $GRY· $b$R}")
 	done
 	# Waiting ones first, so other messages never push them off: a few, then a count.
 	if ((${#WAIT[@]} > 3)); then
 		more=$((${#WAIT[@]} - 2))
-		WAIT=("${WAIT[@]:0:2}" "$BMAG⚑$R $B$BMAG$more more waiting for [G]rant access$R")
+		WAIT=("${WAIT[@]:0:2}" "$B$BYEL$BLINK⚑$R $B$BMAG$more more waiting for [G]rant access$R")
 	fi
 	((${#WAIT[@]} + ${#MSG[@]})) || MSG+=("$GRY no messages yet · ask an agent to use agent-say$R")
 	MSG=("${WAIT[@]}" "${MSG[@]}")
