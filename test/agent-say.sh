@@ -293,6 +293,14 @@ check "a sender name with a space is refused" "! AGENT_SAY_PANE=$LC say --from '
 there "$ROOT/bin/agent-say --from codex me 'with nothing named there'" >/dev/null 2>&1
 there "$ROOT/bin/agent-say --from codex me@laptop 'with nothing named there'" >/dev/null
 check "the link still works when the other side has no named panes" "wait_seen $LC 'with nothing named there'"
+# Its only named pane has no agent session in it (as when a pane closes while that side
+# answers): that pane's line is dropped, and the link keeps checking in. It must be the only
+# named pane there (codex is unnamed above), so its line is always the last one read.
+NA=$("$T/rbin/tmux" new-window -d -P -F '#{pane_id}' -t r 'exec /bin/bash --norc --noprofile')
+"$T/rbin/tmux" set-option -p -t "$NA" @agent noagent
+sleep 1.5
+check "a pane there with no agent session in it doesn't stop the link" "say link | grep -q '^devbox  running' && grep -qx noagent \$(dirname $AGENT_SAY_MAILBOX)/links/devbox/names"
+"$T/rbin/tmux" kill-pane -t "$NA"
 "$T/rbin/tmux" set-option -p -t "$RC" @agent codex
 
 # Someone typing in the pane a message is for: the link retries instead of stalling.

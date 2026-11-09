@@ -560,7 +560,7 @@ session_id() { # session_id PANE
 pane_sessions() { # "I name session" for each pane here with a name only it has
 	local p n
 	tmux list-panes -a -F '#{pane_id} #{@agent}' 2>/dev/null | awk 'NF == 2 {c[$2]++; p[$2] = $1} END {for (n in c) if (c[n] == 1) print p[n], n}' |
-		while read -r p n; do valid_name "$n" && printf 'I %s %s\n' "$n" "$(session_id "$p")"; done
+		while read -r p n; do valid_name "$n" && printf 'I %s %s\n' "$n" "$(session_id "$p")"; done || true
 	return 0
 }
 
@@ -1157,10 +1157,12 @@ case "$cmd" in
 				rm -f "$d/error" "$d/error.new" "$d/login"
 				grep -vxFf "$d/acks.sent" "$d/acks" >"$d/acks.new" || true
 				mv "$d/acks.new" "$d/acks"
-				sed -n 's/^N //p' <<<"$out" | while read -r n; do valid_name "$n" && echo "$n"; done >"$d/names.new"
+				# Each "|| true": a filter loop ends in a failed test when its last line is dropped, and
+				# with pipefail that would end the poller (a pane there closing as it answers, say).
+				sed -n 's/^N //p' <<<"$out" | while read -r n; do valid_name "$n" && echo "$n"; done >"$d/names.new" || true
 				mv "$d/names.new" "$d/names"
 				# Its panes' agent sessions, and the session each waiting message was sent from.
-				sed -n 's/^I //p' <<<"$out" | while read -r n s _; do valid_name "$n" && valid_session "${s:-}" && echo "$n $s"; done >"$d/sessions.new"
+				sed -n 's/^I //p' <<<"$out" | while read -r n s _; do valid_name "$n" && valid_session "${s:-}" && echo "$n $s"; done >"$d/sessions.new" || true
 				mv "$d/sessions.new" "$d/sessions"
 				declare -A msid=()
 				while read -r tag id s _; do
