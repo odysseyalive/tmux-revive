@@ -634,6 +634,7 @@ chmod +x "$T/rbin/tmux"
 	cat <<'EOF'
 cmd=${!#}
 if [[ $cmd =~ \ panel\ --rows$ ]]; then exec bash "$panel" --rows
+elif [[ $cmd == *' tmux-revive update '* && -e $T/update.fail ]]; then printf '\e[1;34m==>\e[0m downloading\n\e[1;31mxx\e[0m  download failed: https://github.com/odysseyalive/tmux-revive/releases/download/v9.9.9/%s.tar.gz\n' "$(printf 'x%.0s' {1..150})"; exit 1
 elif [[ $cmd == *' tmux-revive update '* ]]; then printf '%s' "$cmd" >"$T/update.cmd"; printf 'downloading\ntmux-revive 9.9.9 installed\n\n'; exit 0
 elif [[ $cmd == AGENT_SAY_PANE=* ]]; then printf '%s' "$cmd" >"$T/name.cmd"; HOME=$T/rhome PATH=$T/rbin:$PATH AGENT_SAY_MAILBOX=$T/rstate/mailbox.md exec bash -c "$cmd"
 elif [[ $cmd =~ \ panel\ --peek\ \'([^\']*)\'\ ([^ ]*)$ ]]; then exec bash "$panel" --peek "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
@@ -889,6 +890,15 @@ check "and Esc updates nothing" "for _ in \$(seq 1 20); do farscreen | grep -c '
 tm send-keys -t work:farpanel v; sleep 0.5; tm send-keys -t work:farpanel Enter
 check "yes runs tmux-revive update there and shows how it went" "for _ in \$(seq 1 30); do farscreen | grep -c 'on far.example: tmux-revive 9.9.9 installed' >/dev/null && break; sleep 0.2; done; farscreen | grep -c 'on far.example: tmux-revive 9.9.9 installed' >/dev/null"
 check "with the fixed command, nothing else" "[[ \$(cat $T/update.cmd) == 'PATH=\"\$HOME/.local/bin:\$PATH\" tmux-revive update </dev/null 2>&1' ]]"
+# An update that fails there in colour: the message shows as text, without its escape codes
+# or its "xx", cut to fit the bar.
+touch "$T/update.fail"
+tm send-keys -t work:farpanel v; sleep 0.5; tm send-keys -t work:farpanel Enter
+wait_fail() { for _ in $(seq 1 30); do farscreen | grep -cF 'on far.example: update failed: download failed: https://' >/dev/null && return 0; sleep 0.2; done; return 1; }
+check "a failed update there shows its message, without escape codes or its xx" \
+	"wait_fail && ! tm capture-pane -e -p -t work:farpanel | grep -F 'update failed' | grep -cE $'\\e\\\\[1;31m|\\\\[1;31m|\\\\[0mxx|xx  download' >/dev/null"
+check "cut to fit the bar" "farscreen | grep -F 'update failed: download failed:' | grep -cF 'xxx…' >/dev/null"
+rm -f "$T/update.fail"
 # N: agent-say name runs over there, for that pane, by its id.
 rtop=$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.1 '#{pane_id}')
 wait_far() { for _ in $(seq 1 ${2:-30}); do farscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }

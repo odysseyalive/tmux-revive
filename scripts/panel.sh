@@ -2225,19 +2225,26 @@ act() {
 		flash "${out#agent-say: }" ;;
 	v | V)
 		# Update tmux-revive on the selected pane's linked computer, over the link's ssh.
-		local h=${P_HOST[SEL]:-} last st
+		local h=${P_HOST[SEL]:-} last st msg w
 		[[ -n $h ]] || { flash "V updates a linked computer: select one of its panes"; return; }
 		[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return
 		pick "Update tmux-revive on $h?" "Yes, update it over ssh" "No" && ((PICKED == 0)) || { flash "update cancelled"; return; }
 		flash "updating tmux-revive on $h…"; draw
 		out=$(RTIMEOUT=300 remote_run "$h" "$REMOTE_UPDATE_CMD" | tail -c 4096)
 		st=$?
-		last=$(grep -v '^[[:space:]]*$' <<<"$out" | tail -n 1)
+		# Its last line, as text: the installer's colour codes (and any other escape sequence)
+		# go whole, not just their ESC, and so does its "xx" or "!!" in front of the message.
+		last=$(LC_ALL=C sed -E $'s#\e\\[[0-9:;<=>?]*[ -/]*[@-~]##g; s#\e\\][^\a\e]*(\a|\e\\\\)?##g; s#\e.##g' <<<"$out" |
+			grep -v '^[[:space:]]*$' | tail -n 1)
 		clean last
-		last=${last:0:120}
-		if ((st == 0)); then flash "on $h: ${last:-updated}"
-		elif ((st == 124 || st == 255)); then flash "on $h: couldn't be reached to update"
-		else flash "on $h: update failed${last:+: $last}"; fi
+		[[ $last =~ ^[[:space:]]*(xx|!!|==\>)[[:space:]]+(.*)$ ]] && last=${BASH_REMATCH[2]}
+		if ((st == 0)); then msg="on $h: " last=${last:-updated}
+		elif ((st == 124 || st == 255)); then msg="on $h: couldn't be reached to update" last=""
+		else msg="on $h: update failed${last:+: }"; fi
+		# Cut to what the bar has room for, next to its keys.
+		w=$((IW - ${#msg} - 4)); ((w < 20)) && w=20
+		((${#last} > w)) && last="${last:0:w-1}…"
+		flash "$msg$last"
 		RFETCH_T[$h]=0 # and ask it for its rows, and so its version, again
 		;;
 	i | I)
