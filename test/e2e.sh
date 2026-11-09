@@ -465,21 +465,24 @@ printf '%s\n' '# >>> tmux-revive >>>' >"$T/ih/.bashrc"
 inst "$T/tmux-ok"
 check "no restart hint when no rc file got the hand-off" "grep -q 'left it alone' $T/inst.out && ! grep -q 'exec \\\$SHELL -l' $T/inst.out"
 
-# Claude Code's SessionStart hook: registered in settings.json next to what's there, once.
+# Claude Code's hooks (SessionStart; Stop and PostToolUse for context left): registered in
+# settings.json next to what's there, once.
 CS=$T/ih/.claude/settings.json HOOK=$T/ih/.local/share/tmux-revive/app/scripts/claude-hook.sh
 mkdir -p "$T/ih/.claude"
 rm -f "$CS" "$CS".bak-revive-*
 cat >"$CS" <<'EOF'
 {"theme":"dark","permissions":{"allow":["Bash(ls:*)"]},
  "hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"pre.sh"}]}],
+  "Stop":[{"hooks":[{"type":"command","command":"stop.sh"}]}],
   "SessionStart":[{"hooks":[{"type":"command","command":"mine.sh"},{"type":"command","command":"'/old/tmux-revive/app/scripts/claude-hook.sh'"}]}]}}
 EOF
 cp "$CS" "$T/cs.seed"
 inst "$T/tmux-ok"
-ours() { jq --arg t "tmux-revive/app/scripts/claude-hook.sh'" '[.hooks.SessionStart[]?.hooks[]? | select(.command | endswith($t))] | length' "$CS"; }
-mine() { jq -e '.theme == "dark" and .hooks.PreToolUse[0].hooks[0].command == "pre.sh" and .hooks.SessionStart[0].hooks == [{type: "command", command: "mine.sh"}]' "$CS" >/dev/null; }
-check "install adds the SessionStart hook to settings.json" "grep -q 'told about agent-say when a session starts' $T/inst.out && jq -e --arg c \"'\$HOOK'\" '.hooks.SessionStart[-1].hooks == [{type: \"command\", command: \$c, timeout: 10}]' $CS >/dev/null"
-check "what was there is kept, and an older install's hook goes" "[[ \$(ours) == 1 ]] && mine && jq -e '.permissions.allow | index(\"Bash(ls:*)\")' $CS >/dev/null"
+ours() { jq --arg t tmux-revive/app/scripts/claude-hook.sh '[.hooks[]?[]?.hooks[]? | select(.command | contains($t))] | length' "$CS"; }
+mine() { jq -e '.theme == "dark" and .hooks.PreToolUse[0].hooks[0].command == "pre.sh" and .hooks.Stop[0].hooks == [{type: "command", command: "stop.sh"}] and .hooks.SessionStart[0].hooks == [{type: "command", command: "mine.sh"}]' "$CS" >/dev/null; }
+check "install adds the SessionStart hook to settings.json" "grep -q 'told about agent-say' $T/inst.out && jq -e --arg c \"'\$HOOK'\" '.hooks.SessionStart[-1].hooks == [{type: \"command\", command: \$c, timeout: 10}]' $CS >/dev/null"
+check "and the context hooks, async, on Stop and PostToolUse" "jq -e --arg c \"'\$HOOK' ctx\" '[.hooks.Stop[-1].hooks, .hooks.PostToolUse[-1].hooks] == [[{type: \"command\", command: \$c, async: true, timeout: 10}], [{type: \"command\", command: \$c, async: true, timeout: 10}]]' $CS >/dev/null"
+check "what was there is kept, and an older install's hook goes" "[[ \$(ours) == 3 ]] && mine && jq -e '.permissions.allow | index(\"Bash(ls:*)\")' $CS >/dev/null"
 check "settings.json was backed up before the edit" "cmp -s $T/cs.seed \"\$(ls $CS.bak-revive-* | head -n 1)\""
 cp "$CS" "$T/cs.once"
 inst "$T/tmux-ok"
@@ -499,7 +502,7 @@ inst "$T/tmux-ok"
 check "a settings.json that isn't valid JSON is left alone, with a warning" "cmp -s $T/cs.bad $CS && grep -q \"isn't valid JSON\" $T/inst.out"
 cp "$T/cs.once" "$CS"
 inst "$T/tmux-ok" --uninstall
-check "uninstall removes only our hook" "grep -q 'removed the agent-say hook' $T/inst.out && [[ \$(ours) == 0 ]] && mine && jq -e '.hooks.SessionStart | length == 1' $CS >/dev/null && jq -e '.permissions.allow == [\"Bash(ls:*)\"]' $CS >/dev/null"
+check "uninstall removes only our hook" "grep -q 'removed the agent-say hook' $T/inst.out && [[ \$(ours) == 0 ]] && mine && jq -e '(.hooks.SessionStart | length == 1) and (.hooks.Stop | length == 1) and (.hooks | has(\"PostToolUse\") | not)' $CS >/dev/null && jq -e '.permissions.allow == [\"Bash(ls:*)\"]' $CS >/dev/null"
 printf '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"%s"}]}]}}\n' "'$HOOK'" >"$CS"
 inst "$T/tmux-ok" --uninstall
 check "a settings.json that held only our hook is left with no hooks key" "jq -e '. == {}' $CS >/dev/null"

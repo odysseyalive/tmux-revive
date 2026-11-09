@@ -144,6 +144,12 @@ session records, and other agents show a dash. Claude Code doesn't record its
 window size, so the panel assumes a million tokens for models that have one and
 200k otherwise. Set `REVIVE_CLAUDE_WINDOW` to override it.
 
+Claude Code also reports its own context left, through a hook the installer adds
+(see agent-say below), after each tool call and each turn. The panel uses that
+first, so it works even when the panel can't read the session's files, like a
+server where you link in as one user and the agents run as root. A report older
+than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds).
+
 ### Keys
 
 | Key | What it does |
@@ -255,8 +261,10 @@ sessions on the same computer, so on their own its agents never think to try
 (`~/.claude`, or `CLAUDE_CONFIG_DIR`, and root's too when installed as root).
 When a Claude Code session starts in a tmux pane, the hook tells it the pane's
 name, the `agent-say` commands, and that a first message to another server waits
-for your OK in the panel. Outside tmux it says nothing. `--no-config` skips it,
-uninstall takes it out, and `tmux-revive doctor` shows whether it's there.
+for your OK in the panel. Outside tmux it says nothing. The same hook, after
+each tool call and each turn, reports the session's context left for the panel's
+CTX LEFT. `--no-config` skips it, uninstall takes it out, and
+`tmux-revive doctor` shows whether it's there.
 
 ### Several users in one tmux
 

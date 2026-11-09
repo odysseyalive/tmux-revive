@@ -603,10 +603,10 @@ claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting
 # How much of an agent's context window is still free, as a percentage, read from the
 # record the agent itself keeps of its session: Claude Code's transcript (the session record
 # under sessions/PID.json names it), Codex's rollout file (the file its process holds open).
-# Each holds the tokens the last turn sent; Codex also says its window. Claude Code doesn't:
-# REVIVE_CLAUDE_WINDOW when set, else a million for a model or setting that has one (the
-# Claude 5 family, Opus and Sonnet 4.6 on, an [1m] model, or a session already past 200k),
-# else 200k.
+# Each holds the tokens the last turn sent; Codex also says its window (Claude Code's is
+# worked out in common.sh). A Claude Code session also reports its own, from a hook
+# (scripts/claude-hook.sh ctx, through agent-say _ctx): that comes first, since the panel may
+# be another user than the agent, as over a link to a server where agents run as root.
 declare -A CTX_STAMP=() CTX_VAL=()
 CTX=""
 fstamp() { stat -c '%s.%Y' "$1" 2>/dev/null || stat -f '%z.%m' "$1" 2>/dev/null; }
@@ -616,29 +616,6 @@ ctx_cached() { # ctx_cached FILE FUNC: CTX=FUNC FILE's answer, worked out again 
 	[[ -n $st ]] || return 0
 	if [[ ${CTX_STAMP[$1]:-} != "$st" ]]; then CTX_VAL[$1]=$("$2" "$1") CTX_STAMP[$1]=$st; fi
 	CTX=${CTX_VAL[$1]}
-}
-ctx_pct() { # ctx_pct USED WINDOW -> percent left, or nothing
-	[[ $1 =~ ^[0-9]+$ && $2 =~ ^[0-9]+$ ]] && (($2 > 0)) || return 0
-	local l=$((100 - ($1 * 100 + $2 / 2) / $2))
-	((l < 0)) && l=0
-	printf '%s' "$l"
-}
-claude_ctx_file() { # a transcript -> percent left
-	local u m w=${REVIVE_CLAUDE_WINDOW:-} dir=${1%/projects/*}
-	# The last turn of the main conversation (not a subagent's, not a placeholder): the end of
-	# the file is enough, and a line cut in half there is skipped.
-	read -r u m < <(tail -c 4000000 "$1" 2>/dev/null | grep '"usage"' |
-		jq -Rr 'fromjson? | select(.type == "assistant" and (.isSidechain | not) and .message.usage
-			and .message.model != "<synthetic>") | .message
-			| "\((.usage.input_tokens // 0) + (.usage.cache_read_input_tokens // 0)
-				+ (.usage.cache_creation_input_tokens // 0)) \(.model)"' 2>/dev/null | tail -n 1)
-	[[ -n ${u:-} ]] || return 0
-	if [[ -z $w ]]; then
-		w=200000
-		if ((u > 200000)) || [[ $m =~ ^claude-[a-z]+-5 || $m =~ ^claude-(opus|sonnet)-4-[6-9] || $m == *'[1m]'* ]] ||
-			grep -qs '"model": *"[^"]*\[1m\]' "$dir/settings.json"; then w=1000000; fi
-	fi
-	ctx_pct "$u" "$w"
 }
 codex_ctx_file() { # a rollout file -> percent left
 	local u w
@@ -706,19 +683,33 @@ claude_transcript() { # claude_transcript PID -> TRANSCRIPT, or nothing
 	((n == 1)) && CL_TR[$pid]=$f TRANSCRIPT=$f
 	return 0
 }
-ctx_left() { # ctx_left KIND AGENT_PID PID... -> CTX: percent of its context window left, or nothing
-	local kind=$1 apid=$2 f sid p
-	shift 2
+# ctx_reported PANE AGENT_PID [SESSION] -> CTX: what the Claude Code in PANE last reported,
+# if it was that process (and that session, when known) and within REVIVE_CTX_TTL (600 s).
+ctx_reported() {
+	local f=$ASTATE/ctx/${1#%} id sid pct at pid
+	[[ -f $f ]] || return 0
+	read -r id sid pct at pid _ <"$f" 2>/dev/null || return 0
+	[[ $id == "$1" && $pid == "$2" && $pct =~ ^[0-9]{1,3}$ && $at =~ ^[0-9]+$ ]] && ((pct <= 100)) || return 0
+	[[ -z ${3:-} || $sid == "$3" ]] || return 0
+	((${EPOCHSECONDS:-$(date +%s)} - at <= ${REVIVE_CTX_TTL:-600})) && CTX=$pct
+	return 0
+}
+ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its context window left, or nothing
+	local kind=$1 apid=$2 pane=$3 f sid p
+	shift 3
 	CTX="" # set here, not printed: the files' answers are kept between frames
 	case $kind in
 	claude)
 		claude_record "$apid"
+		sid=""
+		[[ -n $RECORD ]] && sid=$(jq -r '.sessionId // empty' "$RECORD" 2>/dev/null)
+		ctx_reported "$pane" "$apid" "$sid"
+		[[ -n $CTX ]] && return 0
 		if [[ -z $RECORD ]]; then
 			claude_transcript "$apid"
 			[[ -n $TRANSCRIPT ]] && ctx_cached "$TRANSCRIPT" claude_ctx_file
 			return 0
 		fi
-		sid=$(jq -r '.sessionId // empty' "$RECORD" 2>/dev/null)
 		[[ $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
 		for f in "${RECORD%/sessions/*}"/projects/*/"$sid".jsonl; do
 			[[ -f $f ]] && { ctx_cached "$f" claude_ctx_file; return 0; }
@@ -861,7 +852,7 @@ gather() {
 				claude_look "$apid"
 				case $CST in busy) st=working ;; "") ;; *) st=waiting; ((CBG)) && st=agents ;; esac
 			fi
-			ctx_left "$kind" "$apid" "${tree[@]}"
+			ctx_left "$kind" "$apid" "$id" "${tree[@]}"
 			ctx=$CTX
 			P_APP+=("$kind") P_AGENT+=(1)
 		elif [[ $SHELLS == *" ${cmd#-} "* ]]; then

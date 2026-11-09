@@ -13,6 +13,22 @@ done
 ROOT="$(cd "$(dirname "$self")/.." && pwd)" || exit 0
 ((BASH_VERSINFO[0] >= 4)) || exit 0 # agent-say needs bash 4
 
+# `claude-hook.sh ctx`, on Stop and PostToolUse (async, so nothing waits on it): the context
+# this session has left, worked out as the panel does and handed to agent-say, which keeps it
+# for the panel as the tmux owner. The panel then needn't read this session's files, which it
+# can't when it runs as someone else (a link's user, with agents running as root).
+if [[ ${1:-} == ctx ]]; then
+	# shellcheck source=common.sh
+	source "$ROOT/scripts/common.sh" || exit 0
+	IFS=$'\t' read -r sid tr sub < <(jq -r '[.session_id // "", .transcript_path // "", .agent_id // ""] | @tsv')
+	# A subagent's tool calls aren't the session's context.
+	[[ -n $sid && -z $sub && $tr == /* && -f $tr ]] || exit 0
+	pct=$(claude_ctx_file "$tr")
+	[[ -n $pct ]] || exit 0
+	"$ROOT/bin/agent-say" _ctx "$sid" "$pct" >/dev/null
+	exit 0
+fi
+
 # agent-say's own functions, the way the panel uses them: sourced, nothing run.
 # shellcheck source=../bin/agent-say
 source "$ROOT/bin/agent-say" || exit 0

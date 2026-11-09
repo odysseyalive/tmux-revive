@@ -117,3 +117,31 @@ open_files() {
 		lsof -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p'
 	fi
 }
+
+# Context left in a Claude Code transcript, for the panel and for the hook that reports it
+# (scripts/claude-hook.sh ctx). Claude Code doesn't write its window down: REVIVE_CLAUDE_WINDOW
+# when set, else a million for a model or setting that has one (the Claude 5 family, Opus and
+# Sonnet 4.6 on, an [1m] model, or a session already past 200k), else 200k.
+ctx_pct() { # ctx_pct USED WINDOW -> percent left, or nothing
+	[[ $1 =~ ^[0-9]+$ && $2 =~ ^[0-9]+$ ]] && (($2 > 0)) || return 0
+	local l=$((100 - ($1 * 100 + $2 / 2) / $2))
+	((l < 0)) && l=0
+	printf '%s' "$l"
+}
+claude_ctx_file() { # a transcript -> percent left
+	local u m w=${REVIVE_CLAUDE_WINDOW:-} dir=${1%/projects/*}
+	# The last turn of the main conversation (not a subagent's, not a placeholder): the end of
+	# the file is enough, and a line cut in half there is skipped.
+	read -r u m < <(tail -c 4000000 "$1" 2>/dev/null | grep '"usage"' |
+		jq -Rr 'fromjson? | select(.type == "assistant" and (.isSidechain | not) and .message.usage
+			and .message.model != "<synthetic>") | .message
+			| "\((.usage.input_tokens // 0) + (.usage.cache_read_input_tokens // 0)
+				+ (.usage.cache_creation_input_tokens // 0)) \(.model)"' 2>/dev/null | tail -n 1)
+	[[ -n ${u:-} ]] || return 0
+	if [[ -z $w ]]; then
+		w=200000
+		if ((u > 200000)) || [[ $m =~ ^claude-[a-z]+-5 || $m =~ ^claude-(opus|sonnet)-4-[6-9] || $m == *'[1m]'* ]] ||
+			grep -qs '"model": *"[^"]*\[1m\]' "$dir/settings.json"; then w=1000000; fi
+	fi
+	ctx_pct "$u" "$w"
+}

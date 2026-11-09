@@ -44,7 +44,7 @@ MD_BEGIN='<!-- >>> tmux-revive agent-say >>> -->'
 MD_END='<!-- <<< tmux-revive agent-say <<< -->'
 CODEX=${CODEX_HOME:-$HOME/.codex}
 AGENT_SAY_PERM='Bash(agent-say:*)'
-# Our Claude Code SessionStart hook is the one whose command ends in this path.
+# Our Claude Code hooks are the ones whose command names this path.
 HOOK_TAG=tmux-revive/app/scripts/claude-hook.sh
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -329,22 +329,27 @@ hook_dirs() {
 	} | sed 's|//*$||' | awk 'NF && !seen[$0]++'
 }
 
-# The hook's command is our hook script, sh-quoted; any other hook ending in HOOK_TAG is an
-# older install's, so it goes. A group that held only ours goes with it; other hooks stay.
-HOOK_JQ='def ours: (.command? // "") | tostring | (endswith($t) or endswith($t + "\u0027"));
-def drop_ours: map(if any(.hooks[]?; ours) then (.hooks |= map(select(ours | not))) | select(.hooks | length > 0) else . end);'
+# Our hooks run our hook script, sh-quoted: at SessionStart to tell Claude about agent-say,
+# and (async, so nothing waits) on Stop and PostToolUse to report the context left for the
+# panel. Any other hook naming HOOK_TAG is an older install's, so it goes. A group that held
+# only ours goes with it; other hooks stay.
+HOOK_JQ='def ours: (.command? // "") | tostring | contains($t);
+def drop_ours: map(if any(.hooks[]?; ours) then (.hooks |= map(select(ours | not))) | select(.hooks | length > 0) else . end);
+def want($e; $h): if any(.hooks[$e][]?.hooks[]?; . == $h) then .
+	else .hooks[$e] = (((.hooks[$e] // []) | drop_ours) + [{hooks: [$h]}]) end;
+def strip($e): if any(.hooks[$e][]?.hooks[]?; ours) then
+	.hooks[$e] |= drop_ours | if .hooks[$e] == [] then del(.hooks[$e]) else . end else . end;'
 HOOK_ADD="$HOOK_JQ"'
-if any(.hooks.SessionStart[]?.hooks[]?; .command == $c) then .
-else .hooks.SessionStart = (((.hooks.SessionStart // []) | drop_ours) + [{hooks: [{type: "command", command: $c, timeout: 10}]}])
-end'
+want("SessionStart"; {type: "command", command: $c, timeout: 10})
+| want("Stop"; {type: "command", command: ($c + " ctx"), async: true, timeout: 10})
+| want("PostToolUse"; {type: "command", command: ($c + " ctx"), async: true, timeout: 10})'
 HOOK_DEL="$HOOK_JQ"'
-if any(.hooks.SessionStart[]?.hooks[]?; ours) then
-	.hooks.SessionStart |= drop_ours
-	| if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end
+if [.hooks[]?[]?.hooks[]? | select(ours)] == [] then . else
+	strip("SessionStart") | strip("Stop") | strip("PostToolUse")
 	| if .hooks == {} then del(.hooks) else . end
-else . end'
+end'
 
-# hook_add DIR: register the agent-say SessionStart hook in DIR/settings.json.
+# hook_add DIR: register the agent-say hooks in DIR/settings.json.
 hook_add() {
 	f=$1/settings.json
 	j=$(jq_bin)
@@ -354,7 +359,7 @@ hook_add() {
 	fi
 	mkdir -p "$1" 2>/dev/null
 	if json_edit "$f" --arg c "$(sq "$APP/scripts/claude-hook.sh")" --arg t "$HOOK_TAG" "$HOOK_ADD"; then
-		[ "$CHANGED" = 0 ] || say "Claude Code in $1 is told about agent-say when a session starts"
+		[ "$CHANGED" = 0 ] || say "Claude Code in $1 is told about agent-say, and reports its context left to the panel"
 	else
 		warn "couldn't add the agent-say hook to $f"
 	fi

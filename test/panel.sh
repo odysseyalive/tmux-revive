@@ -761,6 +761,31 @@ check "--rows there: context left from a record's transcript ($(rctx "$rows" cl-
 check "--rows there: with no record, from its config folder and the session folder it holds open ($(rctx "$rows" cl-fd))" "[[ \$(rctx \"\$rows\" cl-fd) == 25 ]]"
 check "--rows there: with no record, from its working folder ($(rctx "$rows" cl-cwd))" "[[ \$(rctx \"\$rows\" cl-cwd) == 90 ]]"
 check "--rows there: not from a working folder another Claude Code shares" "[[ -z \$(rctx \"\$rows\" cl-two) ]] && grep -q $'\x1fcl-two\x1f' <<<\"\$rows\""
+# A Claude Code that reports its own context left from its hook (claude-hook.sh ctx, through
+# agent-say _ctx): taken even when its record and transcript can't be read, as when the panel
+# there runs as another user than the agent. A report gone stale is not.
+mkdir -p "$T/hooktr" "$T/cwd-hook"
+turn 60000 >"$T/hooktr/s-hook.jsonl" # 70% left
+printf '#!/bin/bash\nprintf %s %q | bash %q ctx\ntouch %q\n' "'%s\n'" \
+	"{\"session_id\":\"s-hook\",\"transcript_path\":\"$T/hooktr/s-hook.jsonl\",\"hook_event_name\":\"Stop\"}" \
+	"$ROOT/scripts/claude-hook.sh" "$T/ctxhook-ran" >"$T/hook-run.sh"
+far_tm new-window -d -t far -n cl-hook -c "$T/cwd-hook" "$T/bin/claude -c 'sleep 0.3; bash $T/hook-run.sh; sleep 300; :'"
+far_tm set-option -p -t far:cl-hook @agent cl-hook
+hpane=$(far_tm display -p -t far:cl-hook '#{pane_id}') hpid=$(far_tm display -p -t far:cl-hook '#{pane_pid}')
+for _ in $(seq 50); do [[ -f $T/ctxhook-ran ]] && break; sleep 0.1; done
+cf=$AGENT_SAY_MAILBOX
+cf=${cf%/*}/ctx/${hpane#%}
+check "the ctx hook keeps its pane's context left through agent-say ($(cat "$cf" 2>/dev/null))" "read -r a b c d e <$cf && [[ \$a == $hpane && \$b == s-hook && \$c == 70 && \$e == $hpid ]] && (( \$(date +%s) - d < 60 ))"
+chmod 000 "$T/hooktr/s-hook.jsonl"
+rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
+check "--rows there: context left as its hook reported it, with its transcript unreadable ($(rctx "$rows" cl-hook))" "[[ \$(rctx \"\$rows\" cl-hook) == 70 ]]"
+printf '%s s-hook 70 %s %s\n' "$hpane" $(($(date +%s) - 3600)) "$hpid" >"$cf"
+rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
+check "--rows there: a report an hour old is not used" "[[ -z \$(rctx \"\$rows\" cl-hook) ]] && grep -q $'\x1fcl-hook\x1f' <<<\"\$rows\""
+printf '%s s-hook 70 %s 1\n' "$hpane" "$(date +%s)" >"$cf"
+rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
+check "--rows there: nor one from another process than the pane's Claude Code" "[[ -z \$(rctx \"\$rows\" cl-hook) ]]"
+far_tm kill-window -t far:cl-hook
 # Asked again a little later, it measures since the last ask, kept over there, in one look.
 sleep 1.2
 rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
