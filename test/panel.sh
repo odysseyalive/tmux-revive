@@ -21,6 +21,7 @@ cleanup() {
 	tm kill-server 2>/dev/null
 	tmux -L "revive-alert-$$" -f /dev/null kill-server 2>/dev/null
 	tmux -L "revive-panel-remote-$$" -f /dev/null kill-server 2>/dev/null
+	tmux -L "revive-panel-scroll-$$" -f /dev/null kill-server 2>/dev/null
 	[[ -n ${dpid:-} ]] && kill "$dpid" 2>/dev/null
 	rm -rf "$T"
 }
@@ -130,7 +131,7 @@ sleep 0.7
 nid=$(tm display -p -t work:numbers '#{pane_id}')
 pane_tail=$(tm capture-pane -p -t "$nid" | tail -2 | sed 's/[[:space:]]*$//' | tr '\n' '|')
 peek=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
-box_tail=$(awk '/PEEK · /{on=1; next} on && /MESSAGES|ART · /{exit} on' <<<"$peek" | tail -2 | sed 's/^║ │ \{0,1\}//; s/[[:space:]]*║$//; s/[[:space:]]*$//' | tr '\n' '|')
+box_tail=$(awk '/PEEK · /{on=1; next} on && /MESSAGES|ART · /{exit} on' <<<"$peek" | tail -2 | sed 's/^║ │ \{0,1\}//; s/[[:space:]]*[▲▼░▓]\{0,1\}║$//; s/[[:space:]]*$//' | tr '\n' '|')
 check "the peek's bottom rows are the pane's bottom rows ($pane_tail)" "[[ '$box_tail' == '$pane_tail' ]]"
 # The peek gets about two thirds of the free rows, the artwork the rest.
 prows=$(awk '/PEEK · /{on=1; next} on && /ART · |MESSAGES/{exit} on' <<<"$peek" | wc -l)
@@ -648,20 +649,22 @@ for want in 'Do you want to proceed?' 'rm -rf build' '❯ 1. Yes' '5. Type somet
 	check "the question view shows: $want" "(( \$(qbox | grep -cF -- '$want') > 0 ))"
 done
 lastrow() { tm capture-pane -p -t work:asker | tail -1 | sed 's/[[:space:]]*$//'; }
-boxrow() { qbox | grep '│' | tail -1 | sed 's/^║[^│]*│ \{0,1\}//; s/[[:space:]]*║$//; s/[[:space:]]*$//'; }
+boxrow() { qbox | grep '│' | tail -1 | sed 's/^║[^│]*│ \{0,1\}//; s/[[:space:]]*[▲▼░▓]\{0,1\}║$//; s/[[:space:]]*$//'; }
 # The question stands out: bold yellow; the highlighted choice on a band; the rest plainer.
 qcolor() { tm capture-pane -e -p -t work:qpanel | grep -F -- "$1" | head -1; }
 check "the question itself is bold yellow" "[[ \$(qcolor 'Do you want to proceed?') == *'93'* ]]"
 check "the highlighted choice sits on a band" "[[ \$(qcolor '❯ 1. Yes') == *'44'* ]]"
 check "the other choices don't" "[[ \$(qcolor '2. No') != *'44'* ]]"
 check "its last row is the agent's last row" "[[ \"\$(boxrow)\" == \"\$(lastrow)\" ]]"
-check "Tab offers to answer it, J the chat" "qhas '[Tab] answer' && qhas '[J] open the chat'"
+check "Enter offers to answer it, J the chat" "qhas '[Enter] answer' && qhas '[J] open the chat' && ! qhas '[Tab] answer'"
 check "the messages step aside while a question shows" "! qhas 'MESSAGES'"
-# Tab moves the focus into the question and back to the panes.
+# Tab moves the focus to the question's window, but doesn't answer it: Enter does.
 tm send-keys -t work:qpanel Tab
-check "Tab moves the focus into the question" "wait_q 'ANSWERING asker' && qhas 'Tab back to the panes'"
+check "Tab only moves the focus to the question, sending nothing" "wait_q '▸ QUESTION · asker' && ! qhas 'ANSWERING' && [[ ! -s $T/ans1.keys ]]"
+tm send-keys -t work:qpanel Enter
+check "Enter answers, and Tab is the way back" "wait_q 'ANSWERING asker' && qhas 'Tab back to the panes'"
 tm send-keys -t work:qpanel Tab
-check "and Tab brings it back to the panes, sending nothing" "wait_q 'Tab returns to the question' && ! qhas 'ANSWERING' && [[ ! -s $T/ans1.keys ]]"
+check "and Tab brings it back to the panes, sending nothing" "wait_q 'Enter returns to the question' && ! qhas 'ANSWERING' && [[ ! -s $T/ans1.keys ]]"
 tm send-keys -t work:qpanel Enter
 check "Enter starts answering, and says how to leave" "wait_q 'ANSWERING asker' && qhas 'Ctrl-] leaves'"
 tm send-keys -t work:qpanel C-]
@@ -1013,7 +1016,7 @@ rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/
 check "--rows asked again measures since the last ask, kept there ($(rcpu "$rows" far-spin)%)" "(( \$(rcpu \"\$rows\" far-spin) >= 10 )) && grep -q '^%[0-9]*:[0-9]* [0-9]*\$' $st/panel/ticks && [[ \$(stat -c %a $st/panel/ticks) == 600 ]]"
 rm -f "$st/panel/far.example.rows"
 for c in 80 120 160 200; do
-	out=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=$c LINES=60 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+	out=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=$c LINES=90 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
 	check "at $c columns a linked busy pane shows its CPU, a linked Claude Code its CTX LEFT, rows exactly $c wide" "grep 'far-spin ' <<<\"\$out\" | grep -q '[░▒▓█][░▒▓█·]* *[1-9][0-9]*%' && grep -q 'cl-idle .*M  [█▓▒░·]\{5\}  50% ║\$' <<<\"\$out\" && grep -q 'cl-fd .* 25% ║\$' <<<\"\$out\" && grep -q 'cl-cwd .* 90% ║\$' <<<\"\$out\" && grep -q 'cl-two .*·····    – ║\$' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
 done
 # Rows in the older form (no version, no context lines) still draw their CPU and memory.
@@ -1043,7 +1046,7 @@ me=$(id -un)
 raw=$(farv "$T/fakessh") out=$(plain <<<"$raw")
 check "a linked computer's panes show their user, and its version in VER, older in the warn colour" "grep -c 'far-top *$me *1\.1\.0 *top' <<<\"\$out\" >/dev/null && grep -cF $'\\e[93m1.1.0' <<<\"\$raw\" >/dev/null"
 check "this computer's own panes show this one's version" "grep -c ' $me *1\.2\.0 *bash' <<<\"\$out\" >/dev/null"
-check "the headings say no version" "grep -c 'FAR.EXAMPLE · linked *║' <<<\"\$out\" >/dev/null && grep -c 'this computer *║' <<<\"\$out\" >/dev/null && ! grep -c 'out of date' <<<\"\$out\" >/dev/null"
+check "the headings say no version" "grep -c 'FAR.EXAMPLE · linked · [0-9]* panes\{0,1\} *║' <<<\"\$out\" >/dev/null && grep -c 'this computer *║' <<<\"\$out\" >/dev/null && ! grep -c 'out of date' <<<\"\$out\" >/dev/null"
 echo 1.2.0 >"$T/remote-version"
 raw=$(farv "$T/fakessh")
 check "the same version isn't in the warn colour" "grep -cF $'\\e[90m1.2.0' <<<\"\$raw\" >/dev/null && ! grep -cF $'\\e[93m1.2.0' <<<\"\$raw\" >/dev/null"
@@ -1073,11 +1076,11 @@ tm send-keys -t work:oldpanel q
 tm kill-window -t work:oldpanel 2>/dev/null
 rm -f "$st/panel/far.example.rows"*
 out=$(farv "$T/norowssh" | plain)
-check "one that answers no rows shows its names, with no user or version" "grep -c 'FAR.EXAMPLE · linked *║' <<<\"\$out\" >/dev/null && grep -c 'far-two *◌ linked' <<<\"\$out\" >/dev/null"
+check "one that answers no rows shows its names, with no user or version" "grep -c 'FAR.EXAMPLE · linked · [0-9]* panes\{0,1\} *║' <<<\"\$out\" >/dev/null && grep -c 'far-two *◌ linked' <<<\"\$out\" >/dev/null"
 # Its pane names alone carry no window.pane: those rows are counted instead.
 check "and its names-only rows are numbered by their count" "grep -q '║ \[[1-9]\] *far-two ' <<<\"\$out\" && ! grep -q '\[[0-9]*\.[0-9]*\] *far-two' <<<\"\$out\""
 out=$(farv "$T/deadssh" | plain)
-check "one that can't be reached still has its heading" "grep -c 'FAR.EXAMPLE · linked *║' <<<\"\$out\" >/dev/null"
+check "one that can't be reached still has its heading" "grep -c 'FAR.EXAMPLE · linked · [0-9]* panes\{0,1\} *║' <<<\"\$out\" >/dev/null"
 printf '#version 1.2.3;touch %s/pwn\n' "$T" >"$T/badver"; head -c 2000 /dev/zero | tr '\0' 9 >>"$T/badver"; printf '\n' >>"$T/badver"
 printf '#!/bin/bash\n%q "$@" | sed 1d | cat %q -\n' "$T/fakessh" "$T/badver" >"$T/badverssh"; chmod +x "$T/badverssh"
 out=$(farv "$T/badverssh" | plain)
@@ -1290,7 +1293,7 @@ wait_fq 'far-ask' 60 >/dev/null
 for _ in $(seq 1 25); do fq | grep -q '▶ far-ask' && break; tm send-keys -t work:farq Down; sleep 0.4; done
 check "a linked computer's question shows here" "wait_fq 'QUESTION · far-ask' 100 && wait_fq 'Do you want to proceed?'"
 check "and moves no client's focus, there or here" "[[ '$fwas' == '0.0' && \$(fclient) == '$fwas' && \$(tm display -p -t work '#{window_name}') == '$hwas' ]]"
-check "its question view offers Tab, not J" "fq | grep -qF '[Tab] answer' && ! fq | grep -qF 'open the chat'"
+check "its question view offers Enter, not J" "fq | grep -qF '[Enter] answer' && ! fq | grep -qF 'open the chat'"
 # Its highlighted choice sits on a band here too, before answering, once Enter starts it, and
 # after a key moves it over the link.
 fqcolor() { tm capture-pane -e -p -t work:farq | grep -F -- "$1" | head -1; }
@@ -1599,6 +1602,88 @@ check "two users in one tmux show their own versions" "wait_u 'l-root *root *1\.
 echo 1.2.0 >"$T/umail/users/deploy"
 check "one that's up to date gets no V" "wait_u 'l-deploy *deploy *1\.2\.0' && usel l-deploy && sleep 0.5 && ! uscreen | grep -F 'ump' | grep -qF '[V]'"
 tm kill-window -t work:upanel; tm kill-window -t work:lroot; tm kill-window -t work:ldeploy
+
+echo "scrolling windows"
+# A private tmux of its own with more panes than PANES has room for: a pane full of numbered
+# rows first, sleeps, and an agent asking a question last. A linked computer, fold.example,
+# from rows kept as its panel would have fetched them (its ssh never answers), with one
+# pane asking and one at a shell.
+sm() { tmux -L "revive-panel-scroll-$$" -f /dev/null "$@"; }
+sm new-session -d -s s -x 130 -y 30 "seq -f 'srow-%g' 1 200; sleep 300"
+for i in $(seq 1 14); do sm new-window -d -t s: "sleep 300"; done
+sm new-window -d -t s: -n asker "$T/bin/codex $T/ask.sh $T/ans9"
+sm set-option -p -t s:asker @agent asker9
+SMAIL=$T/smail/mailbox.md
+mkdir -p "$T/smail/links/fold.example" "$T/smail/panel"
+touch "$T/smail/links/fold.example/on"
+printf 'fold-a\nfold-b\n' >"$T/smail/links/fold.example/names"
+frows() { printf '#owner fx\n%s\n%s\n' "%1"$'\x1f'"main:7.0"$'\x1f'"fold-a"$'\x1f'"codex"$'\x1f'"asking"$'\x1f'"/tmp"$'\x1f\x1f'"0"$'\x1f'"1000"$'\x1f'"1" "%2"$'\x1f'"main:7.1"$'\x1f'"fold-b"$'\x1f'"bash"$'\x1f'"shell"$'\x1f'"/tmp"$'\x1f\x1f'"0"$'\x1f'"1000"$'\x1f'"0" >"$T/smail/panel/fold.example.rows"; }
+frows
+sleep 0.7
+sframe() { sm run-shell "COLUMNS=130 LINES=${1:-30} REVIVE_PANEL_TICK=${2:-0} REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$SMAIL AGENT_SAY_SSH=$T/deadssh bash $ROOT/scripts/panel.sh --once"; }
+plist() { awk '/PANES/{on=1; getline; next} on && / cpu /{exit} on'; } # the list's rows, under its column header
+raw=$(sframe 30 0) out=$(plain <<<"$raw")
+check "PANES with more rows than room scrolls: ▲, a track with its thumb, ▼ on its right edge" "[[ \$(plist <<<\"\$out\" | head -1) == *▲║ && \$(plist <<<\"\$out\" | tail -1) == *▼║ ]] && plist <<<\"\$out\" | grep -q '▓║$' && plist <<<\"\$out\" | grep -q '░║$'"
+check "it keeps to half the room, and every row is still exactly 130 wide" "(( \$(plist <<<\"\$out\" | wc -l) <= 7 )) && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '130 ' ]]"
+check "a question out of view below makes the ▼ blink bold yellow" "plist <<<\"\$raw\" | tail -1 | grep -qF $'\\e[1m\\e[93m\\e[5m▼' && ! plist <<<\"\$raw\" | head -1 | grep -qF $'\\e[93m\\e[5m▲'"
+check "and on the next tick it goes dark, as the help page's beacons do" "sframe 30 1 | plist | tail -1 | grep -qF $'\\e[34m▼' && ! sframe 30 1 | plist | grep -qF $'\\e[93m\\e[5m▼'"
+out=$(sframe 80 | plain)
+check "with room for every row, no scroll bar" "plist <<<\"\$out\" | grep -q 'asker9' && ! plist <<<\"\$out\" | grep -q '[▲▼░▓]║$'"
+check "a linked computer's heading counts its panes and the ones that need you" "grep -q 'FOLD.EXAMPLE · linked · 2 panes · 1 needs you' <<<\"\$out\""
+# MESSAGES: older messages above the newest; a message not delivered scrolled off the top
+# lights the ▲.
+{
+	printf '## [mailer@elsewhere -> asker9@here 2026-11-09 09:00:00] #m0 (NOT DELIVERED: no such pane)\nlost one\n'
+	for i in 1 2 3 4 5 6 7 8 9; do printf '## [mailer@elsewhere -> asker9@here 2026-11-09 10:0%s:00] #m%s\nhello %s\n' "$i" "$i" "$i"; done
+} >"$SMAIL"
+raw=$(sframe 30 0) out=$(plain <<<"$raw")
+mrows() { awk '/MESSAGES/{on=1; next} on && /^╠/{exit} on'; }
+check "MESSAGES shows the newest, with a scroll bar beside it" "mrows <<<\"\$out\" | grep -q 'hello 9' && ! mrows <<<\"\$out\" | grep -q 'hello 1 ' && mrows <<<\"\$out\" | head -1 | grep -q '▲│'"
+check "a message not delivered, scrolled out of view, makes its ▲ blink" "mrows <<<\"\$raw\" | head -1 | grep -qF $'\\e[1m\\e[93m\\e[5m▲'"
+# Folded: the computer is its heading alone, saying how many of its panes need you.
+mkdir -p "$REVIVE_DIR/panel/fold" && touch "$REVIVE_DIR/panel/fold/fold.example"
+out=$(sframe 80 | plain)
+check "a folded computer shows its heading alone, with · 1 needs you" "grep -q 'FOLD.EXAMPLE · linked · 2 panes · 1 needs you' <<<\"\$out\" && ! grep -q 'fold-a' <<<\"\$out\""
+rm -f "$REVIVE_DIR/panel/fold/fold.example"
+# The keys, in a live panel.
+frows
+sm new-window -d -t s: -n sp "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$SMAIL AGENT_SAY_SSH=$T/deadssh REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+sscr() { sm capture-pane -p -t s:sp; }
+wait_sp() { for _ in $(seq 1 ${2:-30}); do sscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+gone_sp() { for _ in $(seq 1 ${2:-30}); do sscr | grep -qF -- "$1" || return 0; sleep 0.2; done; return 1; }
+wait_sp 'C O N T R O L' >/dev/null
+check "PANES has the focus to start with: its title is highlighted" "wait_sp '▸ PANES'"
+tm_s() { sm send-keys -t s:sp "$@"; }
+tm_s Tab
+check "Tab moves the focus to the peek" "wait_sp '▸ PEEK · ' && ! sscr | grep -qF '▸ PANES'"
+check "where the arrows scroll, and the bar says so" "wait_sp '↑↓ PgUp PgDn scroll · Tab next window'"
+check "the peek shows the bottom of its pane's screen" "wait_sp 'srow-200'"
+tm_s PPage
+check "PgUp scrolls the peek back up its screen" "gone_sp 'srow-200' && sscr | grep -q 'srow-1[0-9][0-9]'"
+tm_s End
+check "and End brings it back to the bottom" "wait_sp 'srow-200'"
+tm_s Tab
+check "Tab: then MESSAGES" "wait_sp '▸ MESSAGES'"
+tm_s Tab
+check "then LINKS · SAVES" "wait_sp '▸ LINKS · SAVES'"
+tm_s Tab
+check "and round to PANES again" "wait_sp '▸ PANES' && ! sscr | grep -qF '▸ LINKS'"
+tm_s End
+check "in PANES, End selects the last row and the view follows it off the top" "wait_sp '▶ fold-b' && gone_sp '[0.0]'"
+tm_s Home
+check "Home goes back to the first" "for _ in \$(seq 1 30); do sscr | grep -q '\[0\.0\] *▶' && break; sleep 0.2; done; sscr | grep -q '\[0\.0\] *▶'"
+frows # kept fresh: rows over a minute old would mean that computer stopped answering
+tm_s End; wait_sp '▶ fold-b' >/dev/null
+tm_s Up; wait_sp '▶ fold-a' >/dev/null
+tm_s Up
+check "the arrows land on a linked computer's heading, and Enter offers to fold it" "wait_sp '▶▒░ FOLD.EXAMPLE' && wait_sp '[Enter] fold'"
+tm_s Enter
+check "Enter folds it to its heading line, saying what needs you" "wait_sp 'FOLD.EXAMPLE · linked · 2 panes · 1 needs you' && gone_sp 'fold-a' && wait_sp '[Enter] unfold'"
+check "and the fold is kept for next time" "[[ -e $REVIVE_DIR/panel/fold/fold.example ]]"
+tm_s Enter
+check "Enter on it again unfolds it" "wait_sp 'fold-a' && [[ ! -e $REVIVE_DIR/panel/fold/fold.example ]]"
+tm_s q
+sm kill-server
 
 
 echo "$pass passed, $fail failed"

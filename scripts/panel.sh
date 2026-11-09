@@ -110,11 +110,41 @@ line() { OUT+=("$1"); }
 row() { # row CONTENT [WIDTH]: one line inside the frame, cut or padded to the inner width.
 	# A row whose visible width is known already (the artwork, a peek line) says so, and isn't
 	# measured again: measuring a row of many colours is most of what drawing it costs.
-	local c=$1 pad
+	# RBAR set (a scroll bar's cell, from sbar): the row is one narrower and the cell sits
+	# against the frame's right edge.
+	local c=$1 pad w=$IW
+	[[ -n $RBAR ]] && w=$((IW - 1))
 	if [[ -n ${2:-} ]]; then VLEN=$2; else vlen "$c"; fi
-	((VLEN > IW)) && { trim_colored "$c" "$IW"; c=$TRIM VLEN=$IW; }
-	printf -v pad '%*s' $((IW - VLEN)) ''
-	line "$FRAME║$R $c$pad $FRAME║$R"
+	((VLEN > w)) && { trim_colored "$c" "$w"; c=$TRIM VLEN=$w; }
+	printf -v pad '%*s' $((w - VLEN)) ''
+	line "$FRAME║$R $c$pad ${RBAR:+$RBAR$R}$FRAME║$R"
+}
+RBAR=""
+# sbar HEIGHT TOTAL OFFSET UP DOWN [COLOUR] -> SB[0..HEIGHT-1]: a BBS scroll bar for a window
+# HEIGHT rows tall showing TOTAL rows from OFFSET down: ▲, a ░ track with a ▓ thumb sized and
+# placed by the view, ▼. Nothing when it all fits. UP or DOWN 1: something waiting on you is
+# out of view that way, and that arrow blinks bold yellow: lit one tick, dark the next (as the
+# help page's beacons), so it blinks even where the terminal ignores the blink code.
+sbar() {
+	local h=$1 n=$2 o=$3 c=${6:-$FRAME} hot up dn t s p i
+	SB=()
+	((n > h && h > 0)) || return 0
+	if ((TICK % 2)); then hot=$c; else hot=$B$BYEL$BLINK; fi
+	up="$c▲" dn="$c▼"
+	(($4)) && up="$hot▲"
+	(($5)) && dn="$hot▼"
+	if ((h == 1)); then
+		if (($4 && !$5)) || ((o >= n - h)); then SB=("$up$R"); else SB=("$dn$R"); fi
+		return 0
+	fi
+	SB[0]="$up$R" SB[h - 1]="$dn$R"
+	t=$((h - 2))
+	s=$((t * h / n))
+	((s < 1)) && s=1
+	p=$((((t - s) * o * 2 / (n - h) + 1) / 2))
+	for ((i = 0; i < t; i++)); do
+		if ((i >= p && i < p + s)); then SB[i + 1]="$c▓$R"; else SB[i + 1]="$c░$R"; fi
+	done
 }
 # A section title on a solid blue band that fades into the black on both sides: shading as
 # a short transition between two colours, the way the artpack groups used it.
@@ -129,14 +159,14 @@ sectk() { # sectk TITLE KEYS [COLOUR]: a divider with a title, and the keys for 
 	rep ═ $((W - 5 - a - VLEN))
 	line "$t$FRAME$REP$R $2 $FRAME══╣$R"
 }
-sect() { # sect TITLE [RIGHT-TITLE SPLIT-AT]: a divider carrying section titles
+sect() { # sect TITLE [RIGHT-TITLE SPLIT-AT [COLOUR RIGHT-COLOUR]]: a divider carrying section titles
 	local t
-	tab "$1"
+	tab "$1" "${4:-4}"
 	t="$FRAME╠═$TAB"
 	if [[ -n ${2:-} ]]; then
 		vlen "$t"
 		rep ═ $(($3 + 2 - VLEN))
-		tab "$2"
+		tab "$2" "${5:-4}"
 		t+="$FRAME$REP╤═$TAB"
 	fi
 	vlen "$t"
@@ -1213,6 +1243,79 @@ nav=0 MSG=() SIDE=() MSG_OLD=1 TCOLS="" TLINES=""
 # QRAW as it came, QSHOT the same as one string).
 ATOP=() ATOP_BH=3 QL=() QRAW=() QSHOT=""
 SPIN=(▖ ▘ ▝ ▗)
+# The windows: 0 PANES, 1 PEEK (or the question), 2 MESSAGES, 3 LINKS · SAVES. Tab moves FOCUS
+# along the ones drawn (WON, from the last frame); the arrows and PgUp/PgDn/Home/End scroll
+# the focused one. Each window's view: PO the first PANES row shown (it follows the selection),
+# PB how far the peek is scrolled back from the bottom of the screen, MO and SO the first
+# MESSAGES and LINKS · SAVES rows shown. MMAN: MESSAGES scrolled by hand (otherwise it shows
+# the newest, and never scrolls a waiting access request off its top). WH: each one's height
+# last drawn, for a page's worth. PB_FOR: whose screen PB is for.
+FOCUS=0 PO=0 PB=0 MO=0 SO=0 MMAN=0 PB_FOR="" MOLD=0 MWAIT=-1
+WON=(1 0 0 0) WH=(1 1 1 1)
+# HSEL: a linked computer's heading is selected (the PANES list's headings are rows too: Enter
+# folds one to its heading line). SEL stays on one of its panes, so the rest still has a pane.
+# FOLD: the computers folded, kept in REVIVE_DIR so they stay folded the next time.
+HSEL="" FOLDDIR="$DIR/panel/fold"
+declare -A FOLD=()
+fold_load() { local f; FOLD=(); for f in "$FOLDDIR"/*; do [[ -f $f ]] && FOLD[${f##*/}]=1; done; }
+fold_toggle() { # fold_toggle HOST
+	[[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return
+	if [[ -n ${FOLD[$1]:-} ]]; then
+		unset "FOLD[$1]"
+		rm -f "$FOLDDIR/$1"
+	else
+		FOLD[$1]=1
+		mkdir -p "$FOLDDIR" && : >"$FOLDDIR/$1"
+	fi
+}
+# panes_rows -> NAV: the PANES list top down, one entry a row: a pane's index, or h:HOST for a
+# computer's heading (h: alone for this computer's, which doesn't fold). A folded computer's
+# panes aren't in it.
+panes_rows() {
+	local i g=-
+	NAV=()
+	for ((i = 0; i < ${#P_ID[@]}; i++)); do
+		if ((P_GROUPS)) && [[ ${P_HOST[i]} != "$g" ]]; then g=${P_HOST[i]}; NAV+=("h:$g"); fi
+		[[ -n ${P_HOST[i]} && -n ${FOLD[${P_HOST[i]}]:-} ]] && continue
+		NAV+=("$i")
+	done
+}
+nav_at() { # nav_at -> NAT: where the selection is in NAV
+	local i
+	NAT=0
+	for i in "${!NAV[@]}"; do
+		if [[ -n $HSEL ]]; then [[ ${NAV[i]} == "h:$HSEL" ]] && { NAT=$i; return; }
+		elif [[ ${NAV[i]} == "$SEL" ]]; then NAT=$i; return; fi
+	done
+}
+# nav_go INDEX [STEP]: select that row of NAV; on this computer's heading, the next row STEP
+# (1 or -1) away. A heading selects one of its computer's panes behind it.
+nav_go() {
+	local k=${#NAV[@]} i=$1 d=${2:-1} j
+	((k)) || return
+	((i < 0)) && i=0
+	((i >= k)) && i=$((k - 1))
+	[[ ${NAV[i]} == h: ]] && { i=$((i + d)); ((i < 0 || i >= k)) && i=$((i - 2 * d)); }
+	((i < 0 || i >= k)) && return
+	if [[ ${NAV[i]} == h:* ]]; then
+		HSEL=${NAV[i]#h:}
+		for j in "${!P_HOST[@]}"; do [[ ${P_HOST[j]} == "$HSEL" ]] && { SEL=$j; break; }; done
+	else
+		HSEL="" SEL=${NAV[i]}
+	fi
+}
+# sel_fix: after the panes are gathered again. A heading whose computer has gone is let go; a
+# pane selected inside a folded computer gives way to its heading.
+sel_fix() {
+	local j h=""
+	if [[ -n $HSEL ]]; then
+		for j in "${!P_HOST[@]}"; do [[ ${P_HOST[j]} == "$HSEL" ]] && { h=$HSEL; SEL=$j; break; }; done
+		HSEL=$h
+	fi
+	h=${P_HOST[SEL]:-}
+	((P_GROUPS)) && [[ -z $HSEL && -n $h && -n ${FOLD[$h]:-} ]] && HSEL=$h
+	SEL_ID=${P_ID[SEL]:-}
+}
 
 state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
 	case $1 in
@@ -1237,8 +1340,8 @@ draw_panes() {
 	# Who waits for access (G): each introduction's sender, as NAME@HOST.
 	local gw=" " st d f
 	for d in "$ASTATE"/intros/*/; do [[ -f $d/from ]] && read -r f <"$d/from" && gw+="$f "; done
-	local -a lab=() nm=() ver=()
-	local -A ses=() many=()
+	local -a lab=() nm=() ver=() stc=() need=()
+	local -A ses=() many=() cnt=() needc=()
 	# An unnamed pane's NAME is a dim ---: the # column already says where it is. Unless its
 	# computer has more than one tmux session, when [0.0] alone could be any of them: then its
 	# session's name. So first, which computers (this one is @) have more than one.
@@ -1277,20 +1380,32 @@ draw_panes() {
 		ver[i]=$v
 		((${#v} > VW)) && VW=${#v}
 		((${#P_USER[i]} > UW)) && UW=${#P_USER[i]}
+		# Its agent waiting for access through here: said in its STATE, unless it asks a question.
+		st=${P_STATE[i]}
+		[[ $st != asking && -n ${P_NAME[i]} && $gw == *" ${P_NAME[i]}@${P_HOST[i]:-${AGENT_SAY_HOST:-$HOST}} "* ]] && st=grant
+		# Whether the row needs you (a question, access waiting, [V]), and how many on each
+		# computer do, for its heading.
+		stc[i]=$st need[i]=0 key=${P_HOST[i]:-.}
+		cnt[$key]=$((${cnt[$key]:-0} + 1))
+		[[ $st == asking || $st == grant || $v == "[V]" ]] && need[i]=1 needc[$key]=$((${needc[$key]:-0} + 1))
 	done
 	((NW > 29)) && NW=29
 	((FW > 35)) && FW=35
 	((UW > 10)) && UW=10
 	((VW > 11)) && VW=11
+	# More rows than the list has room for (PH, from draw): it scrolls, and its rows are one
+	# narrower for the scroll bar.
+	local tot=${#NAV[@]} cw=$IW
+	((tot > PH)) && cw=$((IW - 1))
 	# USER and VER, and a space after each.
 	extra=$((UW + VW + 2))
-	GW=$((IW - 65 - KW - NW - FW - extra))
+	GW=$((cw - 65 - KW - NW - FW - extra))
 	# A narrow panel cuts GIT first, down to 13, then the folder and the name, down to 10. Too
 	# narrow for that, the folder and GIT go and the name has their room: the narrowest panel
 	# takes the name down to 10 to keep CTX LEFT.
 	v=$((13 - GW < FW - 10 ? 13 - GW : FW - 10)); ((v > 0)) && FW=$((FW - v)) GW=$((GW + v))
 	v=$((13 - GW < NW - 10 ? 13 - GW : NW - 10)); ((v > 0)) && NW=$((NW - v)) GW=$((GW + v))
-	((GW < 13)) && wide=0 NW=$((IW - 63 - KW - extra))
+	((GW < 13)) && wide=0 NW=$((cw - 63 - KW - extra))
 	# Narrower still, USER and VER go too, before the name gets under 10.
 	((NW < 10)) && us=0 NW=$((NW + extra))
 	# Built from the same widths as the rows below, so the columns line up.
@@ -1309,18 +1424,31 @@ draw_panes() {
 	fi
 	fld CPU 13; hdr+="$FLD   MEM  "
 	fld 'CTX LEFT' 10; hdr+=$FLD
+	((tot > PH)) && RBAR=" "
 	row "$GRY$hdr$R"
-	local group="-"
-	for ((i = 0; i < n; i++)); do
-		# One heading per computer, once panes from a linked one are listed.
-		if ((P_GROUPS)) && [[ ${P_HOST[i]} != "$group" ]]; then
-			group=${P_HOST[i]}
+	RBAR=""
+	# The list's rows (NAV's order), and which need you, before the window's share is cut out.
+	local -a lr=() ln=()
+	local en c group sl
+	for en in "${NAV[@]}"; do
+		# One heading per computer, once panes from a linked one are listed: a linked one's says
+		# how many panes it has and how many of them need you, which shows when it's folded.
+		if [[ $en == h:* ]]; then
+			group=${en#h:}
 			if [[ -z $group ]]; then
-				row "$BLU▓▒░$R $B$BWHT${HOST^^}$R $GRY· this computer$R"
-			else
-				row "$BLU▓▒░$R $B$BWHT${group^^}$R $GRY· linked$R"
+				lr+=("$BLU▓▒░$R $B$BWHT${HOST^^}$R $GRY· this computer$R") ln+=(0)
+				continue
 			fi
+			c=${cnt[$group]:-0}
+			if [[ $HSEL == "$group" ]]; then mark="$BYEL▶$R$BLU▒░$R $REV$B$BCYN${group^^}$R"; else mark="$BLU▓▒░$R $B$BWHT${group^^}$R"; fi
+			mark+=" $GRY· linked · $c pane"
+			((c == 1)) || mark+=s
+			mark+=$R
+			((${needc[$group]:-0})) && mark+=" $GRY·$R $B$BMAG${needc[$group]} needs you$R"
+			lr+=("$mark") ln+=($((${needc[$group]:-0} > 0)))
+			continue
 		fi
+		i=$en
 		name=${nm[i]}
 		printf -v pad '%*s' $((KW - ${#lab[i]} - 2)) ''
 		if [[ -n ${lab[i]} ]]; then key="$BBLU[$BWHT$B${lab[i]}$R$BBLU]$R$pad"; else key="$GRY ·$R$pad"; fi
@@ -1328,10 +1456,11 @@ draw_panes() {
 		folder=${folder##*/}
 		git=${P_GIT[i]}
 		cells="$key "
-		if ((i == SEL)); then mark="$BYEL▶$R"; else mark=" "; fi
+		sl=0; [[ -z $HSEL ]] && ((i == SEL)) && sl=1
+		if ((sl)); then mark="$BYEL▶$R"; else mark=" "; fi
 		cells+="$mark "
 		fld "$name" "$NW"
-		if ((i == SEL)); then cells+="$REV$BCYN$FLD$R "
+		if ((sl)); then cells+="$REV$BCYN$FLD$R "
 		elif [[ -z ${P_NAME[i]} ]]; then cells+="$GRY$FLD$R "
 		else cells+="$BWHT$FLD$R "; fi
 		if ((us)); then
@@ -1344,10 +1473,7 @@ draw_panes() {
 		fi
 		fld "${P_APP[i]}" 9
 		if ((P_AGENT[i])); then cells+="$BCYN$FLD$R "; else cells+="$CYN$FLD$R "; fi
-		# Its agent waiting for access through here: said in its STATE, unless it asks a question.
-		st=${P_STATE[i]}
-		[[ $st != asking && -n ${P_NAME[i]} && $gw == *" ${P_NAME[i]}@${P_HOST[i]:-${AGENT_SAY_HOST:-$HOST}} "* ]] && st=grant
-		state_cell "$st"
+		state_cell "${stc[i]}"
 		cells+=$CELL
 		if ((wide)); then
 			fld "$folder" "$FW"
@@ -1364,9 +1490,28 @@ draw_panes() {
 			ctx_cell "${P_CTX[i]}" "${P_AGENT[i]}"
 			cells+="  $CTX_CELL"
 		fi
-		row "$cells"
+		lr+=("$cells") ln+=("${need[i]}")
 	done
-	((n)) || row "$GRY  no tmux panes found$R"
+	((n)) || { row "$GRY  no tmux panes found$R"; return; }
+	# The window: PH rows from PO, moved just enough to keep the selection in view. Rows that
+	# need you above or below it light that end's arrow.
+	nav_at
+	((NAT < PO)) && PO=$NAT
+	((NAT >= PO + PH)) && PO=$((NAT - PH + 1))
+	((PO > tot - PH)) && PO=$((tot - PH))
+	((PO < 0)) && PO=0
+	local up=0 dn=0
+	for ((i = 0; i < tot; i++)); do
+		((ln[i])) || continue
+		((i < PO)) && up=1
+		((i >= PO + PH)) && dn=1
+	done
+	sbar "$PH" "$tot" "$PO" "$up" "$dn"
+	for ((i = 0; i < PH && PO + i < tot; i++)); do
+		RBAR=${SB[i]:-}
+		row "${lr[PO + i]}"
+	done
+	RBAR=""
 }
 
 ctx_cell() { # ctx_cell PERCENT AGENT -> CTX_CELL: context left as a meter, red as it runs out; a
@@ -1387,45 +1532,63 @@ kcs() {
 }
 draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or the question it's asking
 	local -a L=()
-	local id=${P_ID[SEL]:-} i end start shown=0 keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}}
+	local id=${P_ID[SEL]:-} i keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} fc=4 ft=""
 	if [[ ${P_STATE[SEL]:-} == asking ]]; then
 		draw_question "$1"
 		return
 	fi
+	((FOCUS == 1)) && fc=6 ft="▸ "
 	if ((FULL)); then kc c " collapse"; else kc x " full view"; fi
 	# Its agents working in the background don't keep it from taking what you type.
-	if [[ ${P_STATE[SEL]:-} == agents ]]; then sectk "PEEK · $name · agents busy, takes input" "$KC"; else sectk "PEEK · $name" "$KC"; fi
+	if [[ ${P_STATE[SEL]:-} == agents ]]; then sectk "${ft}PEEK · $name · agents busy, takes input" "$KC" $fc; else sectk "${ft}PEEK · $name" "$KC" $fc; fi
 	if [[ -n ${P_HOST[SEL]:-} ]]; then
-		remote_peek "$1"
+		remote_peek 60 # all it may ask for, to scroll back through
 	elif [[ -n $id ]]; then
 		mapfile -t L < <(tm capture-pane -p -t "$id" 2>/dev/null)
 		for i in "${!L[@]}"; do clean "L[$i]"; done # capture-pane passes C1 characters through
 	fi
-	# The bottom of its screen, row for row: the box's last line is the pane's last line,
-	# blank or not, and it reads upward from there. A screen shorter than the box is padded
-	# above, so the bottoms still line up.
-	end=$((${#L[@]} - 1))
-	start=$((end - $1 + 1))
+	peek_rows "$1" "$GRY" 0 "$FRAME"
+}
+# peek_rows LINES COLOUR STYLED BAR-COLOUR: the bottom of its screen (L), row for row: the box's
+# last line is the pane's last line, blank or not, and it reads upward from there, each after
+# a │ in COLOUR. STYLED 1: each line in its QSTYLE colour (the question), else dim. A screen
+# shorter than the box is padded above, so the bottoms still line up; a taller one scrolls
+# back PB rows from the bottom, with a scroll bar in BAR-COLOUR.
+peek_rows() {
+	local h=$1 c=$2 n=${#L[@]} start i w=$((IW - 2)) vw=$IW st
+	((PB > n - h)) && PB=$((n - h))
+	((PB < 0)) && PB=0
+	start=$((n - h - PB))
 	((start < 0)) && start=0
-	for ((shown = end - start + 1; shown < $1; shown++)); do row "$GRY│$R"; done
-	for ((i = start; i <= end; i++)); do fld "${L[i]}" $((IW - 2)); row "$GRY│$R $DIM$FLD$R" "$IW"; done
+	sbar "$h" "$n" "$start" 0 0 "$4"
+	((${#SB[@]})) && w=$((IW - 3)) vw=$((IW - 1))
+	for ((i = n; i < h; i++)); do row "$c│$R"; done
+	for ((i = 0; i < h && start + i < n; i++)); do
+		RBAR=${SB[i]:-}
+		fld "${L[start + i]}" "$w"
+		if (($3)); then st=${QSTYLE[start + i]:-$BWHT}; else st=$DIM; fi
+		row "$c│$R $st$FLD$R" "$vw"
+	done
+	RBAR=""
 }
 
 # The question the selected pane is asking, in place of its peek: only the dialog at the
 # bottom of its screen, bright, from the top of the box down. Enter answers it from here (keys
 # go to the pane until Ctrl-]); a chat with the agent is J, in the pane itself.
 draw_question() { # draw_question LINES
-	local id=${P_ID[SEL]:-} i start keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}}
+	local id=${P_ID[SEL]:-} i keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} ft=""
 	if ((ANSWERING)); then
 		kcs Tab " back to panes" "Ctrl-]" " leaves"
 		keys="$B${BMAG}keys go to $name$R  $KC"
 	else
-		if [[ -n ${P_HOST[SEL]:-} ]]; then kcs Tab " answer"; else kcs Tab " answer" J " open the chat"; fi
+		if [[ -n ${P_HOST[SEL]:-} ]]; then kcs Enter " answer"; else kcs Enter " answer" J " open the chat"; fi
 		keys="$KC  "
 		if ((FULL)); then kc c " collapse"; else kc x " full view"; fi
 		keys+=$KC
 	fi
-	sectk "QUESTION · $name" "$keys" 5
+	# Focused, or answering, its title says so; its band stays magenta, the asking colour.
+	((FOCUS == 1 || ANSWERING)) && ft="▸ "
+	sectk "${ft}QUESTION · $name" "$keys" 5
 	if ((ANSWERING)); then
 		L=("${QL[@]}") # answer() has just read it
 	elif [[ -n ${P_HOST[SEL]:-} ]]; then
@@ -1437,12 +1600,8 @@ draw_question() { # draw_question LINES
 	# The dialog sits at the bottom of the agent's screen, so show that bottom row for row,
 	# exactly like the peek: the question, every choice and the footer, nothing cut out.
 	# (Cutting it at a rule lost the question: Claude Code draws one between its choices.)
-	local end=$((${#L[@]} - 1)) shown
-	start=$((end - $1 + 1))
-	((start < 0)) && start=0
 	question_parts
-	for ((shown = end - start + 1; shown < $1; shown++)); do row "$BMAG│$R"; done
-	for ((i = start; i <= end; i++)); do fld "${L[i]}" $((IW - 2)); row "$BMAG│$R ${QSTYLE[i]:-$BWHT}$FLD$R" "$IW"; done
+	peek_rows "$1" "$BMAG" 1 "$BMAG"
 }
 
 # question_parts: a colour for each line of L by what it is, so the question stands out:
@@ -1481,7 +1640,7 @@ question_parts() {
 messages() { # -> MSG lines for the message center; INTRO_ON
 	MSG=()
 	local h b from to when id rest qn why k i j d c f t gn now more
-	local -a H=() BS=() WAIT=() ASKS=()
+	local -a H=() BS=() WAIT=() ASKS=() OLDM=()
 	local -A asks=() last=() shown=()
 	# Access waiting on you, by its introduction's time: a held message's id starts with it.
 	INTRO_ON=0 # anything for G: access waiting, or approved and not yet lapsed (the key bar offers G)
@@ -1524,7 +1683,9 @@ messages() { # -> MSG lines for the message center; INTRO_ON
 				MSG+=("$GRY$when$R $BGRN✉$R $BWHT$from$R$GRY→$R$BWHT$to$R $GRY$b$R")
 			fi
 		done
-		((${#MSG[@]} > 4)) && MSG=("${MSG[@]: -4}") # the last four
+		# The last four show under the waiting ones; older ones sit above them (OLDM), to scroll
+		# back to.
+		if ((${#MSG[@]} > 4)); then OLDM=("${MSG[@]:0:${#MSG[@]}-4}") MSG=("${MSG[@]: -4}"); fi
 	fi
 	# One waiting whose held rows are older than the ones read: from its introduction instead.
 	for d in "${ASKS[@]}"; do
@@ -1541,7 +1702,9 @@ messages() { # -> MSG lines for the message center; INTRO_ON
 		WAIT=("${WAIT[@]:0:2}" "$B$BYEL$BLINK⚑$R $B$BMAG$more more waiting for [G]rant access$R")
 	fi
 	((${#WAIT[@]} + ${#MSG[@]})) || MSG+=("$GRY no messages yet · ask an agent to use agent-say$R")
-	MSG=("${WAIT[@]}" "${MSG[@]}")
+	MSG=("${OLDM[@]}" "${WAIT[@]}" "${MSG[@]}")
+	MOLD=${#OLDM[@]}                     # how many older ones sit above
+	MWAIT=$((${#WAIT[@]} ? MOLD : -1)) # where the waiting ones start, if any
 	# Approved: allow lines within their day (agent-say culls the rest when G is pressed).
 	local ttl=${AGENT_SAY_SESSION_TTL:-86400}
 	[[ $ttl =~ ^[1-9][0-9]{0,9}$ ]] || ttl=86400
@@ -1629,7 +1792,7 @@ draw_top() {
 	rep ═ $((W - 2))
 	line "$FRAME╔$REP╗$R"
 	local total=0 BAN=() now
-	if ((lines - n >= 30)); then
+	if ((lines - PH >= 30)); then
 		BH=6
 		monitor "$w" "$a" "$s"
 		rep ─ 25
@@ -1660,7 +1823,7 @@ draw_top() {
 	((HELP)) && { help_frame "$lines" "$BH"; return 1; } # the ? page takes everything below
 	counts="$BYEL$w working$R$GRY · $R$BMAG$a asking$R"
 	((a)) && counts="$BYEL$w working$R$GRY · $R$B$BMAG$BLINK$a asking$R"
-	sect "PANES"
+	if ((FOCUS == 0)); then sect "▸ PANES" "" 0 6; else sect "PANES"; fi
 	draw_panes
 	# CPU across every pane, as a running graph.
 	for i in "${!P_CPU[@]}"; do [[ -z ${P_HOST[i]} ]] && total=$((total + P_CPU[i])); done
@@ -1672,13 +1835,25 @@ draw_top() {
 }
 
 draw() {
-	local cols lines n i LW RW avail peek_h=0 l r BH=3
+	local cols lines n i LW RW avail peek_h=0 l r BH=3 PH sst=""
 	[[ -n $TCOLS ]] || TCOLS=$(tput cols 2>/dev/null || echo 100) TLINES=$(tput lines 2>/dev/null || echo 40)
 	cols=$TCOLS lines=$TLINES
 	((ONCE)) && cols=${COLUMNS:-$cols} lines=${LINES:-$lines}
 	W=$((cols < 80 ? 80 : cols)) IW=$((W - 4))
 	OUT=()
 	n=${#P_ID[@]}
+	# PANES takes about half of what the banner, bars and messages leave, so the peek keeps
+	# its room; it scrolls past that.
+	panes_rows
+	PH=${#NAV[@]}
+	i=$(((lines - 16) / 2))
+	((i < 3)) && i=3
+	((PH > i)) && PH=$i
+	((PH)) || PH=1 # "no tmux panes found"
+	# The selected pane's state; none while a heading is selected (no peek, no question).
+	[[ -n $HSEL ]] || sst=${P_STATE[SEL]:-}
+	# Another pane selected: its peek starts at the bottom of its screen.
+	[[ "$SEL_ID|$HSEL" == "$PB_FOR" ]] || PB=0 PB_FOR="$SEL_ID|$HSEL"
 	if ((ANSWERING && ${#ATOP[@]})); then
 		# Answering: nothing above the question can change (no panes are gathered meanwhile),
 		# so those rows are kept from the first frame, and only the question and the bar drawn.
@@ -1690,12 +1865,18 @@ draw() {
 
 	# A question needs every row it can get: the messages step aside until it's answered, and
 	# aren't looked at meanwhile. Moving the selection can't change them, so they're kept.
-	local bottom=-1 msgs=0
-	if [[ ${P_STATE[SEL]:-} == asking ]]; then
+	local bottom=-1 msgs=0 bcap
+	if [[ $sst == asking ]]; then
 		MSG_OLD=1
 	else
 		((nav && !MSG_OLD)) || { messages; links_saves; MSG_OLD=0; }
-		msgs=1 bottom=$((${#MSG[@]} > ${#SIDE[@]} ? ${#MSG[@]} : ${#SIDE[@]}))
+		# As tall as they are without the older messages kept above, and a quarter of the height
+		# at most (4 rows at least): MESSAGES and LINKS · SAVES scroll past that.
+		bottom=$((${#MSG[@]} - MOLD))
+		((${#SIDE[@]} > bottom)) && bottom=${#SIDE[@]}
+		msgs=1 bcap=$((lines / 4))
+		((bcap < 4)) && bcap=4
+		((bottom > bcap)) && bottom=$bcap
 	fi
 	# Fixed rows: frame 2, banner, section bars 3, column header 1, totals 1, keys 1. The peek
 	# matters more than the artwork: it takes about two thirds of the rest (14 rows or more
@@ -1703,19 +1884,22 @@ draw() {
 	# be worth drawing. X gives the peek all of it. With no peek (P hides it, or nothing to
 	# peek at) the scene fills the space, so the panel fills its pane. A question shows even
 	# with the peek hidden: it's waiting on you.
-	avail=$((lines - BH - 8 - n - P_GROUPS - bottom))
-	# No peek at the panel's own pane: it would only show itself.
+	avail=$((lines - BH - 8 - PH - bottom))
+	# No peek at the panel's own pane: it would only show itself. Nor at a heading.
 	local show=0
-	if ((n && avail >= 4)) && [[ ${P_STATE[SEL]:-} != self ]]; then
-		((PEEK)) || [[ ${P_STATE[SEL]:-} == asking ]] && show=1
+	if ((n && avail >= 4)) && [[ -n $sst && $sst != self ]]; then
+		((PEEK)) || [[ $sst == asking ]] && show=1
 	fi
+	# The windows drawn, for Tab; one that's gone hands the focus back to PANES, drawn again.
+	WON=(1 "$show" "$msgs" "$msgs")
+	((ANSWERING || WON[FOCUS])) || { FOCUS=0; draw; return; }
 	if ((show)); then
 		# Rows with its title: 15 is the 14 it always had.
 		peek_h=$((avail * 2 / 3))
 		((peek_h < 15)) && peek_h=15
 		# A question takes all the room: its top (the question itself) must not be cut off.
 		((peek_h > avail || avail - peek_h < 4 || FULL)) && peek_h=$avail
-		[[ ${P_STATE[SEL]:-} == asking ]] && peek_h=$avail
+		[[ $sst == asking ]] && peek_h=$avail
 		avail=$((avail - peek_h))
 		draw_peek $((peek_h - 1))
 	fi
@@ -1727,28 +1911,64 @@ draw() {
 	fi
 	for ((; avail > 0; avail--)); do row ""; done
 
+	WH=("$PH" $((peek_h - 1)) "$bottom" "$bottom")
 	LW=$(((IW - 3) * 3 / 5)) RW=$((IW - 3 - LW))
-	((msgs)) && sect "MESSAGES" "LINKS · SAVES" "$((LW + 1))"
-	for ((i = 0; i < bottom; i++)); do
-		l=${MSG[i]:-} r=${SIDE[i]:-}
-		vlen "$l"
-		((VLEN > LW)) && { trim_colored "$l" "$LW"; l=$TRIM; }
-		vlen "$l"
-		rep ' ' $((LW - VLEN))
-		l+=$REP
-		vlen "$r"
-		((VLEN > RW)) && { trim_colored "$r" "$RW"; r=$TRIM; }
-		row "$l $FRAME│$R $r"
-	done
+	if ((msgs)); then
+		local mt="MESSAGES" st="LINKS · SAVES" mc=4 sc=4
+		((FOCUS == 2)) && mt="▸ $mt" mc=6
+		((FOCUS == 3)) && st="▸ $st" sc=6
+		sect "$mt" "$st" "$((LW + 1))" $mc $sc
+		# MESSAGES shows its newest unless scrolled by hand, but never past the first access
+		# waiting on you. Rows waiting on you (access, or a message not delivered) out of view
+		# light that end's arrow.
+		local mn=${#MSG[@]} up=0 dn=0 lw=$LW rw=$RW
+		local -a msb ssb
+		((MMAN)) || { MO=$((mn - bottom)); ((MWAIT >= 0 && MWAIT < MO)) && MO=$MWAIT; }
+		((MO > mn - bottom)) && MO=$((mn - bottom))
+		((MO < 0)) && MO=0
+		((SO > ${#SIDE[@]} - bottom)) && SO=$((${#SIDE[@]} - bottom))
+		((SO < 0)) && SO=0
+		for ((i = 0; i < mn; i++)); do
+			[[ ${MSG[i]} == *"waiting for [G]rant access"* || ${MSG[i]} == *"✗"* ]] || continue
+			((i < MO)) && up=1
+			((i >= MO + bottom)) && dn=1
+		done
+		sbar "$bottom" "$mn" "$MO" "$up" "$dn"
+		msb=("${SB[@]}")
+		sbar "$bottom" "${#SIDE[@]}" "$SO" 0 0
+		ssb=("${SB[@]}")
+		((${#msb[@]})) && lw=$((LW - 1))
+		((${#ssb[@]})) && rw=$((RW - 1))
+		for ((i = 0; i < bottom; i++)); do
+			l=${MSG[MO + i]:-} r=${SIDE[SO + i]:-}
+			vlen "$l"
+			((VLEN > lw)) && { trim_colored "$l" "$lw"; l=$TRIM; }
+			vlen "$l"
+			rep ' ' $((lw - VLEN))
+			l+=$REP
+			((${#msb[@]})) && l+=" ${msb[i]}"
+			vlen "$r"
+			((VLEN > rw)) && { trim_colored "$r" "$rw"; r=$TRIM; }
+			RBAR=${ssb[i]:-}
+			if ((${#msb[@]})); then row "$l$FRAME│$R $r"; else row "$l $FRAME│$R $r"; fi
+		done
+		RBAR=""
+	fi
 
 	# Command bar.
 	local k=""
-	((!ANSWERING)) && [[ ${P_STATE[SEL]:-} == asking ]] && k="$B$BMAG[Tab]$R$B$BWHT answer$R  "
+	((!ANSWERING)) && [[ $sst == asking ]] && k="$B$BMAG[Enter]$R$B$BWHT answer$R  "
+	if [[ -n $HSEL ]]; then
+		if [[ -n ${FOLD[$HSEL]:-} ]]; then k="$BBLU[$B${BYEL}Enter$R$BBLU]$R$BWHT unfold$R  "; else k="$BBLU[$B${BYEL}Enter$R$BBLU]$R$BWHT fold$R  "; fi
+	fi
 	# Keys that can't act on the selected pane are faded: on a linked computer's pane, nothing
 	# to rename unless its rows say which pane it is, and never J: a jump there would move
-	# focus somewhere you may be busy (another pane, or tmux over there).
+	# focus somewhere you may be busy (another pane, or tmux over there). On a heading, none
+	# of the pane's own keys.
 	local off=" " rh=${P_HOST[SEL]:-}
-	if [[ -n $rh ]]; then
+	if [[ -n $HSEL ]]; then
+		off+="J M N V "
+	elif [[ -n $rh ]]; then
 		[[ -n ${P_RID[SEL]:-} ]] || off+="N "
 		[[ -n ${P_NAME[SEL]:-} ]] || off+="M "
 		off+="J "
@@ -1766,7 +1986,12 @@ draw() {
 		fi
 	done
 	vlen "$k"
-	((VLEN + 15 <= IW)) && k+="$GRY↑↓ 0-9 select$R"
+	# How to move: in PANES the arrows select, elsewhere they scroll; Tab goes window to window.
+	if ((FOCUS)); then
+		if ((VLEN + 37 <= IW)); then k+="$GRY↑↓ PgUp PgDn scroll · Tab next window$R"
+		elif ((VLEN + 9 <= IW)); then k+="$GRY↑↓ scroll$R"; fi
+	elif ((VLEN + 32 <= IW)); then k+="$GRY↑↓ 0-9 select · Tab next window$R"
+	elif ((VLEN + 15 <= IW)); then k+="$GRY↑↓ 0-9 select$R"; fi
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	# While answering every key goes to the agent, so the bar says that and how to stop.
 	((ANSWERING)) && k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Tab$R$BMAG back to the panes ·$R $B${BYEL}Ctrl-]$R$BMAG leaves$R"
@@ -2068,7 +2293,7 @@ answer() {
 	[[ ${P_STATE[SEL]:-} == asking ]] || return 0
 	[[ -n $h ]] && id=${P_RID[SEL]:-}
 	[[ $id =~ ^%[0-9]+$ ]] || return 0
-	ANSWERING=1 PEEK_EVERY=0 PREV=() ATOP=() QL=() QRAW=() QSHOT=""
+	ANSWERING=1 PEEK_EVERY=0 PREV=() ATOP=() QL=() QRAW=() QSHOT="" PB=0 # the dialog, at the bottom
 	trap 'INTR=1' INT
 	while :; do
 		# Keys already waiting behind the ones just sent go first, so they reach the agent together
@@ -2152,7 +2377,7 @@ answer() {
 	trap 'exit 0' INT
 	case $why in
 	left) flash "left the question; nothing more was sent" ;;
-	tab) flash "back to the panes · Tab returns to the question" ;;
+	tab) flash "back to the panes · Enter returns to the question" ;;
 	answered)
 		flash "${P_NAME[SEL]:-${P_LOC[SEL]:-the pane}} has its answer"
 		# Rows from over there asked for before this still say asking: they don't count now.
@@ -2231,8 +2456,12 @@ note() {
 act() {
 	# A key may draw over the panel (popup, prompt) and return early: repaint it whole. Keys
 	# that only move the selection don't, so they keep the line-by-line redraw.
-	case $1 in up | down | [0-9]) ;; *) PREV=() ;; esac
+	case $1 in up | down | pgup | pgdn | home | end | tab | btab | [0-9]) ;; *) PREV=() ;; esac
 	local id=${P_ID[SEL]:-} name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} out
+	# A heading selected: the keys for a pane wait for one.
+	if [[ -n $HSEL ]]; then
+		case $1 in j | J | m | M | n | N | v | V) flash "select one of ${HSEL}'s panes for that"; return ;; esac
+	fi
 	case $1 in
 	j | J)
 		# Panes on this computer only. On a linked computer's row J does nothing but say so:
@@ -2513,7 +2742,11 @@ act() {
 	p | P) PEEK=$((!PEEK)) ;;
 	x | X) FULL=1 PEEK=1 ;; # the peek over the whole art; pressed again, it stays there
 	c | C) FULL=0 ;;        # only c puts the art back
-	enter | $'\t') [[ ${P_STATE[SEL]:-} == asking ]] && answer ;; # Tab: focus to the question
+	# Enter: on a linked computer's heading, fold it to that line (or open it again); on a pane
+	# asking a question, answer it.
+	enter)
+		if [[ -n $HSEL ]]; then fold_toggle "$HSEL"; [[ -n ${FOLD[$HSEL]:-} ]] || PO=$((1 << 30)) # opened: its panes into view, under its heading
+		elif [[ ${P_STATE[SEL]:-} == asking ]]; then answer; fi ;;
 	a | A)
 		SCENE=$(((SCENE + 1) % ${#SCENES[@]}))
 		flash "art: ${TITLES[SCENE]}" ;;
@@ -2528,13 +2761,41 @@ act() {
 	[0-9])
 		local w
 		for w in "${!P_ID[@]}"; do
-			[[ -z ${P_HOST[w]} && ${P_WP[w]%%.*} == "$1" ]] && { SEL=$w; break; }
+			[[ -z ${P_HOST[w]} && ${P_WP[w]%%.*} == "$1" ]] && { SEL=$w HSEL=""; break; }
 		done ;;
-	# The list goes round: up from the first pane is the last, down from the last the first.
-	up) ((${#P_ID[@]})) && SEL=$(((SEL - 1 + ${#P_ID[@]}) % ${#P_ID[@]})) ;;
-	down) ((${#P_ID[@]})) && SEL=$(((SEL + 1) % ${#P_ID[@]})) ;;
+	up | down | pgup | pgdn | home | end) scroll "$1" ;;
+	# Tab: the focus to the next window drawn (Shift-Tab: the one before).
+	tab | btab)
+		local f=$FOCUS j d=1
+		[[ $1 == btab ]] && d=3
+		for j in 1 2 3 4; do f=$(((f + d) % 4)); ((WON[f])) && break; done
+		FOCUS=$f ;;
 	esac
 	SEL_ID=${P_ID[SEL]:-}
+}
+# scroll KEY: up, down, pgup, pgdn, home or end in the focused window. In PANES they move the
+# selection, headings included, and the view follows it; the arrows go round (up from the
+# first row is the last). Elsewhere they scroll; draw keeps each view in range.
+scroll() {
+	local pg=$((WH[FOCUS] > 1 ? WH[FOCUS] - 1 : 1)) d k i
+	case $1 in up) d=-1 ;; down) d=1 ;; pgup) d=-pg ;; pgdn) d=pg ;; home) d=-100000 ;; end) d=100000 ;; esac
+	case $FOCUS in
+	0)
+		panes_rows
+		nav_at
+		k=${#NAV[@]}
+		((k)) || return
+		if [[ $1 == up || $1 == down ]]; then
+			i=$(((NAT + d + k) % k))
+			[[ ${NAV[i]} == h: ]] && i=$(((i + d + k) % k)) # this computer's heading isn't a stop
+			nav_go "$i" "$d"
+		else
+			nav_go $((NAT + d)) $((d > 0 ? 1 : -1))
+		fi ;;
+	1) PB=$((PB - d)) ;; # up is further back
+	2) MO=$((MO + d)) MMAN=1; [[ $1 == end ]] && MMAN=0 ;; # End: the newest again, and kept there
+	3) SO=$((SO + d)) ;;
+	esac
 }
 
 restore_term() {
@@ -2653,6 +2914,8 @@ if ((ONCE)); then
 	gather
 	# Tests pick the selected pane by its id (name@host for a linked computer's).
 	for i in "${!P_ID[@]}"; do [[ -n ${REVIVE_PANEL_SEL:-} && ${P_ID[i]} == "$REVIVE_PANEL_SEL" ]] && SEL=$i; done
+	fold_load
+	sel_fix
 	draw
 	exit 0
 fi
@@ -2676,6 +2939,7 @@ esac
 PREV=() # after the splash: paint the whole panel
 
 declare -A SSH_SEEN=() LOGIN_SEEN=()
+fold_load
 # keys KEY: act on KEY and on any keys already waiting behind it (a held arrow), so that they
 # are drawn once. Keys that only move the selection set nav.
 keys() {
@@ -2683,12 +2947,21 @@ keys() {
 	while :; do
 		[[ -z $key || $key == $'\r' ]] && key=enter # read stops at the newline Enter sends
 		if [[ $key == "$e" ]]; then
-			rest=""
-			IFS= read -rsn2 -t 0.05 rest || true
-			case $rest in '[A') key=up ;; '[B') key=down ;; *) key="" ;; esac
+			# A sequence: ESC [ or ESC O, then up to its final character (PgUp is ESC [ 5 ~).
+			rest="" seq=""
+			IFS= read -rsn1 -t 0.05 rest || true
+			if [[ $rest == '[' || $rest == O ]]; then
+				while IFS= read -rsn1 -t 0.05 rest; do seq+=$rest; [[ $rest == [@-~] || ${#seq} -gt 8 ]] && break; done
+			fi
+			case $seq in
+			A) key=up ;; B) key=down ;; 5~) key=pgup ;; 6~) key=pgdn ;;
+			H | 1~ | 7~) key=home ;; F | 4~ | 8~) key=end ;; Z) key=btab ;; *) key="" ;;
+			esac
 		fi
+		[[ $key == $'\t' ]] && key=tab
 		case $key in
-		up | down | [0-9]) act "$key"; nav=1 ;;
+		# Moving the selection, scrolling and moving the focus only redraw.
+		up | down | pgup | pgdn | home | end | tab | btab | [0-9]) act "$key"; nav=1 ;;
 		"") ;;
 		*) act "$key"; nav=0; break ;;
 		esac
@@ -2725,7 +2998,7 @@ while :; do
 		for i in "${!P_ID[@]}"; do [[ ${P_ID[i]} == "$SEL_ID" ]] && SEL=$i; done
 	fi
 	((SEL >= ${#P_ID[@]})) && SEL=$((${#P_ID[@]} ? ${#P_ID[@]} - 1 : 0))
-	SEL_ID=${P_ID[SEL]:-}
+	sel_fix
 	# A key pressed while it gathered is taken first, so one draw shows both. Not twice running,
 	# so keys arriving all the time can't keep the panel from drawing.
 	if ((!nav && !held && ${#PREV[@]})) && read -t 0; then

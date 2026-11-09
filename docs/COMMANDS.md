@@ -159,7 +159,9 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 
 | Key | What it does |
 |---|---|
-| Up / Down | pick a pane (the list wraps around) |
+| Up / Down | pick a pane (the list wraps around), or scroll the window you tabbed to |
+| PgUp / PgDn, Home / End | a page at a time, or to the top or bottom |
+| Tab (Shift-Tab) | move to the next window (or back): PANES, PEEK, MESSAGES, LINKS · SAVES |
 | `0`-`9` | go to that window's first pane |
 | `J` | jump to the pane on this computer (when the panel is a popup, it closes) |
 | `M` | message the pane's agent |
@@ -167,7 +169,7 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 | `P` | show or hide a quick peek at its screen |
 | `X` | spread the peek over the artwork too |
 | `C` | put the artwork back |
-| Enter (or Tab) | answer the question the selected agent is asking |
+| Enter | answer the question the selected agent is asking, or fold a linked computer's heading |
 | `L` | link a computer you ssh into |
 | `U` (or `D`) | unlink a computer |
 | `V` | update tmux-revive on a linked computer, or copy the install or update command for another user's pane |
@@ -176,6 +178,20 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 | `S` | save right now |
 | `?` | the help page |
 | `Q` | quit |
+
+### Scrolling
+
+When a window has more than fits, a scroll bar shows on its right edge. Press
+**Tab** to move to that window (its title lights up), then scroll it with the
+arrows, PgUp and PgDn. In PANES the arrows still pick a pane, and the list
+follows. If something that needs you is scrolled out of view, like a question or
+an access request, the arrow on that side blinks yellow.
+
+PANES takes about half the screen at most, so the peek always has room.
+
+On a linked computer's heading, **Enter** folds its panes into that one line,
+which still says how many need you. Press Enter again to open it. Folds are
+remembered for next time.
 
 ### Answering questions
 
