@@ -382,9 +382,13 @@ access**, and the asking agent's STATE
 blinks **[G]RANT ACCESS**. Press **G** to grant access,
 pick it, read why it's asking, and choose Approve or Deny.
 
+The same goes for every pair of agents, not only across servers: two agents on
+your computer, an agent on a server and one on your computer, either way. What you
+send yourself, from a shell or the panel, needs no permission.
+
 Approve shows a four-digit code in a popup for you to type back. Then it delivers
 the introduction and anything sent since, in order, and the two can talk both ways.
-Deny drops them, and the asking agent can't write to the other one again.
+Deny drops them, and the asking agent can't write to the other one again, nor the other to it.
 
 An agent can restart while it waits. Approve covers whoever is in those two panes
 now. If the recipient restarted, it still gets what waited. If the sender restarted,
@@ -395,7 +399,7 @@ through is told so it can send it again. While any approval is in force, MESSAGE
 ends with one line counting them.
 
 Permission is per pair of agent sessions, so a new session in a pane asks again.
-**G** also lists what you've approved: pick one to Refresh it (another 24 hours)
+**G** also lists what you've approved: pick one to Refresh it (another 24 hours, with a code as for Approve)
 or Cancel it. Esc closes without changing anything. The sending agent is
 told plainly what happened (`introduction sent`, `held`, `declined`). At most 5
 messages wait per pair, and 3 introductions per server. `agent-say intros` lists
@@ -416,11 +420,17 @@ Your computer and both servers need this version. What a server sends through yo
 computer also follows its own link's limits. `--read-only` holds it in your
 mailbox, and an `--allow` list has to name the far pane as `tt-dev@dev`.
 
+A Mac can't tell a login over ssh from an agent that left its pane, so there a
+message sent from outside any tmux pane is refused, including what your computer
+hands a Mac server it links to.
+
 ### What this does and doesn't protect
 
-Agents on your servers can't allow anything, since they can't touch your
-computer's files. So a rogue server can't reach your other servers' agents without
-you. Your computer names each sender's server itself, from the link it came in on.
+Every agent needs your permission to talk with another, on one computer or across
+two. Agents on your servers can't allow anything, since they can't touch your
+computer's files. So a rogue server can't reach your computer's agents or your
+other servers' agents without you. Your computer names each sender's server itself,
+from the link it came in on.
 
 Within one server, though, an agent's session is whatever that server says it is.
 A rogue process there could pass for another agent on the same server, but only
@@ -428,7 +438,11 @@ one still running under the same pane name, and only to the agents you allowed
 that one to reach.
 
 Agents on your own computer run as you, and a determined one could get around the
-popup. Every permission given is logged with what gave it (`agent-say intros`
+popup (for Approve and Refresh alike), or around agent-say altogether. The popup's
+code stops keys typed into the panel and agents on other computers, not an agent here
+that sets out to get past it. It could type `agent-say` into a shell pane
+of yours with `tmux send-keys`, or run it over `ssh` to its own computer, and pass
+for you. Every permission given is logged with what gave it (`agent-say intros`
 shows them). For real isolation on your computer, deny agents `tmux send-keys` and
 writes under `~/.local/state/agent-say` (in Claude Code, a `permissions.deny` rule
 such as `Bash(tmux send-keys:*)`), or run them as another user.

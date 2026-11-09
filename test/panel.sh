@@ -4,7 +4,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T=$(mktemp -d "${TMPDIR:-/tmp}/panel-test.XXXXXX")
-unset TMUX TMUX_PANE
+unset TMUX TMUX_PANE XDG_STATE_HOME # never your state dir (agents run with it set)
 export REVIVE_DIR=$T/data AGENT_SAY_MAILBOX=$T/mail/mailbox.md REVIVE_PANEL_REFRESH=1 REVIVE_PANEL_SPLASH=0
 # Host keys come from the test's own known_hosts, never yours, and never from ssh-keyscan.
 export AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false
@@ -561,6 +561,11 @@ akey 1
 check "an approved one offers Refresh or Cancel" "wait_a '1  Refresh' && wait_a '2  Cancel'"
 akey Escape
 check "Esc there changes nothing" "gone_a '2  Cancel' && [[ \$(state) == '$before' ]]"
+echo wrong >"$T/popup.code"; : >"$T/popup.log"
+akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '1  Refresh' >/dev/null; akey 1
+check "Refresh asks for the code in the same popup; a wrong one is turned away" "wait_a \"not refreshed: the code didn't match\" 60 && grep -q '^display-popup ' $T/popup.log"
+check "and refreshes nothing" "[[ \$(state) == '$before' ]]"
+echo right >"$T/popup.code"
 start=$(date +%s)
 akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '1  Refresh' >/dev/null; akey 1
 check "Refresh restarts its day" "wait_a 'refreshed: ann@far.invalid → bob@near.invalid · 24h left' && awk -v s=$start '\$4 == \"ann@far.invalid\" && \$6 >= s {f = 1} END {exit !f}' $T/mail/grants"

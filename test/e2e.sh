@@ -9,7 +9,7 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/revive-e2e.XXXXXX")
 # or a typed `claude` could reach the real CLI.
 export REVIVE_SOCKET=$T/sock REVIVE_DIR=$T/data SHELL=/bin/bash
 # Run from inside tmux, $TMUX would point plain `tmux` at your server.
-unset TMUX TMUX_PANE
+unset TMUX TMUX_PANE XDG_STATE_HOME # and never your state dir (agents run with it set)
 mkdir -p "$T/sh"
 printf '#!/bin/sh\nexec /bin/bash --norc --noprofile "$@"\n' >"$T/sh/bash"
 chmod +x "$T/sh/bash"
