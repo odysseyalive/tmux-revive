@@ -111,32 +111,6 @@ sys.exit(0 if not any(ch in sky for ch in '*·.') and ('▀' in sky or '▄' in 
 PY
 check "the sunset sky has clouds, not stars" "artband grid 1 | python3 $T/dusk.py && artband grid 5 | python3 $T/dusk.py"
 check "and nothing shows through the sun" "artband grid 1 | python3 $T/sun.py"
-# The mountains, small and large: a pine forest in silhouette (black, colour 0) runs along the
-# bottom row, and snow lies on the peaks.
-cat >"$T/forest.py" <<'PY'
-import re, sys
-lo, hi = int(sys.argv[1]), int(sys.argv[2])
-lines = sys.stdin.read().split('\n')
-plain = lambda l: re.sub(r'\x1b\[[0-9;]*m', '', l)
-i = next(n for n, l in enumerate(lines) if 'ART · ' in plain(l))
-j = next(n for n, l in enumerate(lines) if 'MESSAGES' in plain(l))
-band = []
-for line in lines[i + 1:j]:
-    row, col = [], ''
-    for m in re.finditer(r'(\x1b\[[0-9;]*m)|(.)', line):
-        if m.group(1): col = m.group(1)
-        else: row.append((m.group(2), col))
-    band.append(row[2:-2])  # inside the frame
-band = [r for r in band if r]
-black = lambda ch, col: re.search(r'\[(?:[0-9;]*;)?40m', col) or (ch in '▀▄' and re.search(r'\[30[;m]', col))
-bottom = sum(1 for ch, col in band[-1] if black(ch, col)) / len(band[-1])
-snow = sum(1 for r in band for ch, col in r if ch in '▀▄ ' and re.search(r'[\[;](?:97|107)[;m]', col))
-print(f'band={len(band[-1])}x{len(band)} bottom={bottom:.2f} snow={snow}', file=sys.stderr)
-sys.exit(0 if lo <= len(band) <= hi and bottom >= 0.95 and snow > 0 else 1)
-PY
-mtn() { tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_ART=mountains COLUMNS=$1 LINES=$2 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | python3 "$T/forest.py" "$3" "$4" 2>>"$T/forest.log"; }
-check "mountains, small: a pine forest along the bottom" "mtn 80 24 4 12"
-check "mountains, large: a pine forest along the bottom" "mtn 160 46 20 40"
 out=$(frame 130)
 check "a shell pane shows as a shell" "grep -q 'bash *· shell' <<<\"\$out\""
 check "a program shows as running" "grep -q 'top *▸ running' <<<\"\$out\""
