@@ -366,10 +366,10 @@ tmux_how() {
 		HOW_SYS=macOS
 		if have brew; then HOW="brew install tmux"
 		elif have port; then HOW="sudo port install tmux"
-		else HOW="brew install tmux" HOW_PRE="first install Homebrew from https://brew.sh"; fi
+		else HOW="brew install tmux" HOW_PRE="you'll need Homebrew first, from https://brew.sh"; fi
 		return ;;
 	FreeBSD) HOW_SYS=FreeBSD HOW="${su:+$su }pkg install tmux"; return ;;
-	OpenBSD) HOW_SYS=OpenBSD HOW_NOTE="tmux is part of OpenBSD's base system: reinstall or upgrade the base sets."; return ;;
+	OpenBSD) HOW_SYS=OpenBSD HOW_NOTE="tmux comes with OpenBSD's base system, so reinstall or upgrade the base sets."; return ;;
 	NetBSD) HOW_SYS=NetBSD HOW="${su:+$su }pkgin install tmux"; return ;;
 	esac
 	osr=${REVIVE_OS_RELEASE:-/etc/os-release}
@@ -416,21 +416,21 @@ need_tmux() {
 	tmux_how
 	sys=${HOW_SYS:+ on $HOW_SYS}
 	if [ "$1" = missing ]; then
-		printf '\033[1;31mxx\033[0m  %s\n\n' "tmux isn't installed. tmux-revive runs inside tmux, so it needs tmux first." >&2
+		printf '\033[1;31mxx\033[0m  %s\n\n' "tmux isn't installed yet. tmux-revive runs inside tmux, so that comes first." >&2
 		get="To install tmux$sys, run:"
 	else
-		printf '\033[1;31mxx\033[0m  %s\n\n' "This tmux is $2, which is too old. tmux-revive needs tmux $TMUX_MIN or newer." >&2
+		printf '\033[1;31mxx\033[0m  %s\n\n' "This tmux is $2, which is a bit too old. tmux-revive needs tmux $TMUX_MIN or newer." >&2
 		get="To get a newer tmux$sys, run:"
 	fi
 	{
 		if [ -n "$HOW_PRE" ]; then printf '  %s\n' "${get%, run:}, $HOW_PRE."; get="After that, run:"; fi
 		if [ -n "$HOW" ]; then printf '  %s\n    %s\n' "$get" "$HOW"; fi
 		if [ -n "$HOW_NOTE" ]; then printf '  %s\n' "$HOW_NOTE"; fi
-		if [ -z "$HOW$HOW_NOTE" ]; then printf '  %s\n' "Install tmux with your package manager."; fi
+		if [ -z "$HOW$HOW_NOTE" ]; then printf '  %s\n' "Install tmux with your system's package manager."; fi
 		if [ -z "$HOW$HOW_NOTE" ] || [ "$1" != missing ]; then
-			printf '  %s\n' "If that tmux is older than $TMUX_MIN, see https://github.com/tmux/tmux/wiki/Installing"
+			printf '  %s\n' "If that tmux is older than $TMUX_MIN, there's help at https://github.com/tmux/tmux/wiki/Installing"
 		fi
-		printf '\n  %s\n    %s\n\n' "Then run the install command again:" "$(rerun_cmd)"
+		printf '\n  %s\n    %s\n\n' "Once tmux is in, run the install command again:" "$(rerun_cmd)"
 	} >&2
 	exit 1
 }
