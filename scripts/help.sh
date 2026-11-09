@@ -153,21 +153,15 @@ HART_talk_ink=(
 	"CCCCCCC   MMMMMMMMM       MMMMMMM"
 	" ccccc                     mmmmm "
 )
-HART_satellite=( # a satellite beaming down to the curve of the earth
+HART_satellite=( # a satellite
 	" ▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄ "
 	" █▒█▒█▒█▒█══███████══█▒█▒█▒█▒█ "
 	" ▀▀▀▀▀▀▀▀▀  ▀▀▀█▀▀▀  ▀▀▀▀▀▀▀▀▀ "
-	"            ▄▄███▄▄            "
-	"       ▄▄▄▄▄░▒▓█▓▒░▄▄▄▄▄       "
-	" ▄▄▄▄▄▄█████████████████▄▄▄▄▄▄ "
 )
 HART_satellite_ink=(
 	" BBBBBBBBB  YYYrYyy  BBBBBBBBB "
 	" BbBbBbBbBkkYYYYYyykkBbBbBbBbB "
 	" bbbbbbbbb  yyykyyy  bbbbbbbbb "
-	"            kkkkkkk            "
-	"       cccccCCCCCCCccccc       "
-	" ccccccbGGbbbGGGbbbbbGGbcccccc "
 )
 # hart NAME: the picture HART_NAME, painted, for the section it follows the title of. Beside
 # the section's text when the page is wide enough for both (hart_close puts it there), above

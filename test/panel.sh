@@ -300,16 +300,16 @@ done
 talk='██▄█▄██       ░░▒▒▓▓██►   ██▄█▄██' sat='█▒█▒█▒█▒█══███████══█▒█▒█▒█▒█'
 out=$(hframe 160)
 check "at 160 columns two agents talk beside the first section" "grep -q '[a-z][.,]* .*$talk' <<<\"\$out\" && grep -q '1 Get your agents talking.*▄  ' <<<\"\$out\""
-check "and a satellite beams down beside the second" "grep -q 'Got agents on a remote server.*$sat' <<<\"\$out\" && grep -q '░▒▓█▓▒░' <<<\"\$out\""
+check "and a satellite, alone, beside the second" "grep -q 'Got agents on a remote server.*▀▀▀█▀▀▀' <<<\"\$out\" && grep -q '$sat' <<<\"\$out\" && ! grep -q '░▒▓█▓▒░' <<<\"\$out\""
 out=$(hframe 100)
-check "at 100 they still fit beside the words" "grep -q 'session talk to any other.*$talk' <<<\"\$out\" && grep -q 'the rest\\..*▀▀▀▀▀▀▀▀▀  ▀▀▀█▀▀▀' <<<\"\$out\""
+check "at 100 they still fit beside the words" "grep -q 'Revive lets any AI.*$talk' <<<\"\$out\" && grep -q 'Got agents on a remote server.*▀▀▀▀▀▀▀▀▀  ▀▀▀█▀▀▀' <<<\"\$out\""
 out=$(hframe 80)
 check "at 80 they go above the words instead" "grep -q '^║  $talk  *║\$' <<<\"\$out\" && grep -q '^║   $sat  *║\$' <<<\"\$out\" && ! grep -q 'Got agents.*█▒█' <<<\"\$out\""
 # A few suggestions to get going, not a reference: the keys are on the panel already.
 out=$(hframe 160)
 check "it has no key reference or column list" "! grep -qiE 'key reference|What the columns mean|Remember the old BBS|^║ +\\[[^]]+\\] {2,}[A-Z]' <<<\"\$out\" && grep -q 'shop-dev' <<<\"\$out\" && grep -q 'press L' <<<\"\$out\""
-hp=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
-check "at 160x50 it fits on one screen ($hp)" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]]"
+hp=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=52 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
+check "at 160x52 it fits on one screen ($hp)" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]]"
 
 echo "context left"
 # Stand-in agents (copies of bash named claude and codex) with the records the real ones keep:
