@@ -1750,13 +1750,22 @@ check "Home goes back to the first" "for _ in \$(seq 1 30); do sscr | grep -q '\
 frows # kept fresh: rows over a minute old would mean that computer stopped answering
 tm_s End; wait_sp '▶ fold-b' >/dev/null
 tm_s Up; wait_sp '▶ fold-a' >/dev/null
+top_sp() { for _ in $(seq 1 30); do sscr | grep -q '\[0\.0\] *▶' && return 0; sleep 0.2; done; return 1; } # the first row selected
 tm_s Up
-check "the arrows land on a linked computer's heading, and Enter offers to fold it" "wait_sp '▶▒░ FOLD.EXAMPLE' && wait_sp '[Enter] fold'"
-tm_s Enter
-check "Enter folds it to its heading line, saying what needs you" "wait_sp 'FOLD.EXAMPLE · linked · 2 panes · 1 needs you' && gone_sp 'fold-a' && wait_sp '[Enter] unfold'"
+check "Up skips an open computer's heading" "gone_sp '▶ fold-a' && ! sscr | grep -qF '▶▒░ FOLD.EXAMPLE'"
+tm_s Down
+check "and so does Down, back to its first pane, where F offers to fold it" "wait_sp '▶ fold-a' && ! sscr | grep -qF '▶▒░ FOLD.EXAMPLE' && wait_sp '[F] fold' && sscr | grep -qF '[?] help'"
+tm_s F
+check "F folds it to its heading line, selected, saying what needs you" "wait_sp '▶▒░ FOLD.EXAMPLE' && wait_sp 'FOLD.EXAMPLE · linked · 2 panes · 1 needs you' && gone_sp 'fold-a' && wait_sp '[Enter] unfold'"
 check "and the fold is kept for next time" "[[ -e $REVIVE_DIR/panel/fold/fold.example ]]"
+tm_s Down; top_sp >/dev/null
+tm_s Up
+check "a folded heading is still a stop for the arrows" "wait_sp '▶▒░ FOLD.EXAMPLE' && wait_sp '[Enter] unfold'"
 tm_s Enter
-check "Enter on it again unfolds it" "wait_sp 'fold-a' && [[ ! -e $REVIVE_DIR/panel/fold/fold.example ]]"
+check "Enter on it unfolds it" "wait_sp 'fold-a' && [[ ! -e $REVIVE_DIR/panel/fold/fold.example ]]"
+tm_s Home; top_sp >/dev/null
+tm_s F
+check "F on this computer's pane says it doesn't fold" "wait_sp \"this computer doesn't fold\" && [[ ! -e $REVIVE_DIR/panel/fold/fold.example ]]"
 tm_s q
 sm kill-server
 
