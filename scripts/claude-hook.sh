@@ -41,11 +41,20 @@ set +eu
 as=agent-say
 command -v agent-say >/dev/null || as=$(printf %q "$ROOT/bin/agent-say")
 pane=$(self_pane)
-name=""
+name="" why=""
 [[ -n $pane ]] && name=$(name_of "$pane")
+# A tmux this user can't look at (another user's: su in one of its panes): agent-say, run in
+# full, reaches it as its owner, or asks root's, or says why it can't.
+if [[ -z $pane ]]; then
+	r=$(AGENT_SAY_ASK_WAIT=2 "$ROOT/bin/agent-say" _pane </dev/null 2>&1) && read -r pane name <<<"$r" || why=${r#agent-say: }
+	[[ $pane =~ ^%[0-9]+$ ]] || pane=""
+	valid_name "$name" || name=""
+fi
 
 if [[ -n $name ]]; then
 	where="This Claude Code session is in tmux pane $pane, named \"$name\" for agent-say."
+elif [[ -n $why ]]; then
+	where="This Claude Code session's tmux pane can't be reached by agent-say right now: $why"
 else
 	where="This Claude Code session is in a tmux pane with no agent-say name yet. Run $as name NAME to give it one."
 fi

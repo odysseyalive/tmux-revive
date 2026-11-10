@@ -77,6 +77,8 @@ id=$(tmux capture-pane -p -J -t "$B" -S -100 | sed -n 's/.*agent-say show \([0-9
 check "long message arrives as a notice with an id ($id)" "[[ -n '$id' ]]"
 AGENT_SAY_PANE=$A say beta "a later short one" >/dev/null
 check "show <id> prints exactly that message" "say show '$id' | grep -q 'line 60' && ! say show '$id' | grep -q 'later short'"
+check "show takes the whole id, not a part of one" "! say show '${id:0:8}' >/dev/null 2>&1 && ! say show '${id#*-}' >/dev/null 2>&1"
+check "nor anything that isn't an id" "[[ \$(say show 'a b' 2>&1) == *'usage: agent-say show'* ]]"
 
 echo "refusals"
 out=$(AGENT_SAY_PANE=$A say idle "rm -rf ~" 2>&1)
@@ -193,6 +195,19 @@ printf '{"pid":%s,"name":"from-claude","nameSource":"user","status":"idle"}' "$c
 out=$(AGENT_SAY_PANE=$C say name 2>&1)
 check "no name given: the claude session's own name is used" "[[ \$(tmux display -p -t $C '#{@agent}') == from-claude ]]"
 check "and it isn't typed back as a rename" "[[ '$out' != *'will be renamed'* ]]"
+# Its session id, from its record: only when the record is its process's user's own, and kept
+# apart by that user's uid when that isn't this user. The tests are one user: stat and id stand
+# in for a record of someone else's, and a process of someone else's.
+printf '{"pid":%s,"sessionId":"s-c","status":"idle"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
+sid() { bash -c 'source "$1"; eval "$2"; session_id "$3"' _ "$ROOT/bin/agent-say" "${2:-}" "$1"; }
+check "a session's id is its record's ($(sid $C))" "[[ \$(sid $C) == s-c ]]"
+out=$(sid $C 'stat() { [[ $* == *" /dev/fd/"* ]] && { echo 4242; return; }; command stat "$@"; }')
+check "not from a record that isn't its process's user's own ($out)" "[[ \$out == *':$C:$cpid:'* ]]"
+out=$(sid $C 'id() { [[ $1 == -u ]] && { echo 4242; return; }; command id "$@"; }')
+check "another user's is kept apart by its uid ($out)" "[[ \$out == u$(id -u):s-c ]]"
+out=$(sid $C 'stat() { [[ $* == *" /proc/"* ]] && return 1; command stat "$@"; }; ps() { [[ $* == *uid=* ]] && return 1; command ps "$@"; }')
+check "and with its process's user unknown, none is taken from the file ($out)" "[[ \$out == *':$C:$cpid:'* ]]"
+printf '{"pid":%s,"name":"from-claude","nameSource":"user","status":"idle"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
 out=$(AGENT_SAY_PANE=$SH say name 2>&1)
 check "no name given in a plain shell pane is refused" "grep -q 'no name of its own' <<<\"\$out\""
 out=$(AGENT_SAY_PANE=$A say name alpha2 2>&1)
@@ -1317,6 +1332,107 @@ mkdir "$tr/index.lock" && echo "$holder" >"$tr/index.lock/pid"
 out=$(rref s:a@h s:b@h 2>&1) && rc=0 || rc=$?
 check "with the list busy it fails and says so, changing nothing ($out)" "((rc != 0)) && [[ \$out == *'the permission list is busy'* ]] && cmp -s $tr/grants $tr/grants.before"
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -rf "$tr/index.lock"
+
+echo "a user's pane in root's tmux (su - USER in one of its tabs)"
+# This computer's tmux stands in for root's. In its panes jv (an agent) and jp (a person at a
+# shell) the user can't become root, nor reach root's tmux: AGENT_SAY_TEST_OWNER=root:... stands
+# in for root owning it, a tmux that finds no server for being shut out of it, and a sudo that
+# asks for a password. Root's agent-say _serve answers for them, as this same user: there,
+# AGENT_SAY_TEST_ASKER stands in for the user's home.
+for f in jv jp jt; do mkfifo "$T/run.$f"; done
+JV=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/runner $T/run.jv")
+JP=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/plainrunner $T/run.jp")
+JT=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/runner $T/run.jt")
+FIFO[0$JV]=$T/run.jv FIFO[0$JP]=$T/run.jp FIFO[0$JT]=$T/run.jt
+AGENT_SAY_PANE=$JT say name jt >/dev/null
+mkdir -p "$T/jhome" "$HOME"
+JU="env -u TMUX -u TMUX_PANE -u AGENT_SAY_PANE -u AGENT_SAY_MAILBOX -u XDG_STATE_HOME HOME=$T/jhome PATH=$T/rootbin:$T/nosudobin:\$PATH AGENT_SAY_TEST_OWNER=root:$HOME"
+inj() { run "0$1" "$JU $2"; }
+sleep 0.3
+out=$(inj $JV "AGENT_SAY_ASK_WAIT=1 $ROOT/bin/agent-say list") && rc=0 || rc=$?
+check "with root's side not answering, it fails and says what to do ($out)" "((rc != 0)) && [[ \$out == *\"root's tmux-revive didn't answer for it in 1s\"*'update tmux-revive as root'* ]] && [[ -z \$(ls $T/jhome/.local/state/agent-say/ask) ]]"
+check "its folder is the user's own, closed to others" "[[ \$(stat -c %a $T/jhome/.local/state/agent-say/ask) == 700 ]]"
+$E0 AGENT_SAY_TEST_ASKER="$T/jhome" "$ROOT/bin/agent-say" _serve "$(id -u)" >"$T/serve.log" 2>&1 &
+sleep 0.5
+out=$(inj $JV "$ROOT/bin/agent-say list")
+check "list: root's panes, through root's agent-say ($out)" "[[ \$out == *\"$JT jt \"* ]]"
+out=$(inj $JV "$ROOT/bin/agent-say name jv")
+check "name names its own pane in root's tmux ($out)" "[[ \$out == *\"pane $JV is now 'jv'\"* ]] && [[ \$(tmux show-options -pqv -t $JV @agent) == jv ]]"
+out=$(inj $JV "$ROOT/bin/agent-say _pane")
+check "and it can tell its pane and name ($out)" "[[ \$out == '$JV jv' ]]"
+out=$(inj $JV "$ROOT/bin/agent-say --why 'checking in' jt 'jv here, from su'")
+check "an agent's first message waits for your permission, like any other ($out)" "[[ \$out == 'introduction sent to jt@laptop; waiting for the user on laptop to allow it.' ]] && wait_intro 'jv@laptop wants to talk with jt@laptop' && ! seen $JT 'jv here, from su'"
+allow_intro "$(intro_id 'jv@laptop wants to talk with jt@laptop')" >/dev/null
+check "allowed, it arrives, from jv" "wait_seen $JT '(introduction, allowed by the user on laptop) jv here, from su' && seen $JT '[agent-msg from=jv'"
+out=$(in0 $JT "$ROOT/bin/agent-say jv 'jt answering jv'")
+check "and the answer is typed into its pane ($out)" "[[ \$out == 'sent to jv'* ]] && wait_seen $JV 'jt answering jv'"
+out=$(inj $JV "$ROOT/bin/agent-say --from jt jt 'as jt'")
+check "it sends as its own pane, whatever --from says ($out)" "wait_seen $JT 'as jt' && ! seen $JT '[agent-msg from=jt' && ! grep -q '^## \\[jt -> jt ' $AGENT_SAY_MAILBOX"
+out=$(inj $JP "$ROOT/bin/agent-say --from jp jt - <<<'a person there, on stdin'")
+check "what a person at a shell there sends isn't held, stdin and all ($out)" "[[ \$out == 'sent to jt'* ]] && wait_seen $JT 'a person there, on stdin'"
+out=$(inj $JV "$ROOT/bin/agent-say read")
+check "read: only what its own pane got ($out)" "[[ \$out == *'jt answering jv'* && \$out != *'-> jt '* && \$out != *'a person there'* ]]"
+id=$(sed -n 's/^## \[jp -> jt .*\] #\([0-9-]*\)$/\1/p' "$AGENT_SAY_MAILBOX" | tail -n 1)
+out=$(inj $JV "$ROOT/bin/agent-say show $id") && rc=0 || rc=$?
+check "show: not another pane's message ($out)" "[[ -n '$id' ]] && ((rc != 0)) && [[ \$out == *'no message'* ]]"
+id=$(sed -n 's/^## \[jt -> jv .*\] #\([0-9-]*\)$/\1/p' "$AGENT_SAY_MAILBOX" | tail -n 1)
+out=$(inj $JV "$ROOT/bin/agent-say show $id")
+check "but its own ($out)" "[[ -n '$id' && \$out == *'jt answering jv'* ]]"
+# Two entries under one id, the first its own: each is looked at, so the other isn't shown.
+now=$(date -u +%FT%TZ)
+printf '## [jt -> jv %s] #dup-1\nfor jv\n\n## [jt -> jt %s] #dup-1\nnot for jv\n\n' "$now" "$now" >>"$AGENT_SAY_MAILBOX"
+out=$(inj $JV "$ROOT/bin/agent-say show dup-1")
+check "show: of entries sharing an id, only its own ($out)" "[[ \$out == *'for jv'* && \$out != *'not for jv'* ]]"
+out=$(inj $JV "$ROOT/bin/agent-say link elsewhere.example") && rc=0 || rc=$?
+check "link isn't run for it ($out)" "((rc != 0)) && [[ \$out == *\"agent-say link doesn't run for another user's pane\"* ]] && [[ ! -e $T/links/elsewhere.example ]]"
+out=$(inj $JV "$ROOT/bin/agent-say _ctx s-jv 50; $ROOT/bin/agent-say _user-installed 1.2.3") && rc=0 || rc=$?
+check "_ctx and _user-installed ask nothing: root reads those itself ($out)" "((rc == 0)) && [[ -z \$out && ! -e $T/ctx/${JV#%} && ! -e $T/users ]]"
+# A request naming another process than its own: one in the person's pane, which holds no such file.
+jpid=$(tmux display -p -t "$JP" '#{pane_pid}')
+run "0$JV" "printf '%s\\0' 2 jt 'forged, as jp' >$T/jhome/.local/state/agent-say/ask/$jpid.req" >/dev/null
+sleep 1.5
+check "a request in another process's name is dropped, unanswered" "[[ ! -e $T/jhome/.local/state/agent-say/ask/$jpid.req && ! -e $T/jhome/.local/state/agent-say/ask/$jpid.res ]] && ! seen $JT 'forged, as jp'"
+out=$(AGENT_SAY_FOR=$$ say list 2>&1) && rc=0 || rc=$?
+check "a run that says it answers for another process, without agent-say's own key, is refused ($out)" "((rc != 0)) && [[ \$out == *\"AGENT_SAY_FOR is agent-say's own\"* ]]"
+mkdir -p "$T/jhome2/.local/state/agent-say" "$T/elsewhere"
+ln -s "$T/elsewhere" "$T/jhome2/.local/state/agent-say/ask"
+out=$(inj $JV "HOME=$T/jhome2 $ROOT/bin/agent-say list") && rc=0 || rc=$?
+check "a folder that is a symbolic link isn't used ($out)" "((rc != 0)) && [[ \$out == *\"can't reach it\"* && -z \$(ls $T/elsewhere) ]]"
+# Claude Code's SessionStart hook there, which can't look at root's tmux itself.
+out=$(inj $JV "bash $ROOT/scripts/claude-hook.sh </dev/null")
+check "Claude Code's start hook there gives the pane its name ($out)" '[[ $out == *"tmux pane '"$JV"', named \\\"jv\\\" for agent-say"* ]]'
+# Two users, neither root, and no sudo between them: said plainly, to the agent too.
+out=$(inj $JV "AGENT_SAY_TEST_OWNER=admin:$HOME bash $ROOT/scripts/claude-hook.sh </dev/null")
+check "where it can't be reached at all, the hook says why ($out)" "[[ \$out == *\"can't be reached by agent-say right now: this pane is in admin's tmux\"* ]]"
+# Requests in another process's name that it does hold open: a file of the user's that jp's
+# shell keeps open, linked in as jp's request, or moved there. Neither is jp's agent-say's own.
+ask=$T/jhome/.local/state/agent-say/ask
+printf '%s\0' 2 jt 'forged by a link' >"$T/jpfile1"
+printf '%s\0' 2 jt 'forged by a move' >"$T/jpfile2"
+run "0$JP" "exec 7<$T/jpfile1 8<$T/jpfile2" >/dev/null
+run "0$JV" "ln $T/jpfile1 $ask/$jpid.req" >/dev/null
+sleep 1
+run "0$JV" "mv $T/jpfile2 $ask/$jpid.req" >/dev/null
+sleep 1.5
+check "nor one linked or moved in from a file that process holds open" "[[ ! -e $ask/$jpid.req && ! -e $ask/$jpid.res ]] && ! seen $JT 'forged by a'"
+out=$(inj $JV "$ROOT/bin/agent-say name jt") && rc=0 || rc=$?
+check "it can't take a name another pane has, so not its mail either ($out)" "((rc != 0)) && [[ \$out == *\"'jt' is already another pane's name\"* && \$(tmux show-options -pqv -t $JV @agent) == jv ]]"
+# A name another pane had, gone now: what it got before this pane took the name isn't this pane's.
+mkfifo "$T/run.jw"
+JW=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/runner $T/run.jw")
+FIFO[0$JW]=$T/run.jw
+sleep 0.3
+AGENT_SAY_PANE=$JW say name gone1 >/dev/null
+say --from jt gone1 'for the old gone1' >/dev/null
+tmux kill-pane -t "$JW"
+sleep 1.1
+inj $JV "$ROOT/bin/agent-say name gone1" >/dev/null
+out=$(inj $JV "$ROOT/bin/agent-say read")
+id=$(sed -n 's/^## \[jt -> gone1 .*\] #\([0-9-]*\)$/\1/p' "$AGENT_SAY_MAILBOX" | tail -n 1)
+out2=$(inj $JV "$ROOT/bin/agent-say show $id") && rc=0 || rc=$?
+check "mail to its name from before it took it isn't shown ($out / $out2)" "[[ -n '$id' && \$out != *'for the old gone1'* && \$out2 != *'for the old gone1'* ]] && ((rc != 0))"
+pkill -f -- "$ROOT/bin/agent-say _serve" 2>/dev/null
+for p in $JV $JP $JT; do tmux kill-pane -t "$p"; done
 
 echo "$pass passed, $fail failed"
 ((fail == 0))

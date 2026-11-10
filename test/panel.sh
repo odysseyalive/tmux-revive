@@ -1081,6 +1081,26 @@ far_tm set-option -p -t far:cl-cwd @agent cl-cwd
 far_tm new-window -d -t far -n cl-two -c "$T/cwd-two" "$T/bin/claude -c 'sleep 300; :'"
 far_tm new-window -d -t far -n cl-two2 -c "$T/cwd-two" "$T/bin/claude -c 'sleep 300; :'"
 far_tm set-option -p -t far:cl-two @agent cl-two
+# One running as another user (root's tmux, su - USER in a pane): its record is in its own
+# home, which its environment names, not the panel's.
+far_tm new-window -d -t far -n cl-env -e HOME="$T/ehome" "$T/bin/claude -c 'sleep 300; :'"
+far_tm set-option -p -t far:cl-env @agent cl-env
+mkdir -p "$T/ehome/.claude/sessions" "$T/ehome/.claude/projects/-e"
+printf '{"pid":%s,"sessionId":"s-cl-env","status":"idle"}\n' "$(far_tm display -p -t far:cl-env '#{pane_pid}')" >"$T/ehome/.claude/sessions/$(far_tm display -p -t far:cl-env '#{pane_pid}').json"
+turn 40000 >"$T/ehome/.claude/projects/-e/s-cl-env.jsonl" # 80% left
+# Its user says where those files are, so none reached through a symbolic link is read: not its
+# record (cl-lrec), nor its transcript (cl-ltr).
+for w in cl-lrec cl-ltr; do
+	far_tm new-window -d -t far -n $w -e HOME="$T/$w" "$T/bin/claude -c 'sleep 300; :'"
+	far_tm set-option -p -t far:$w @agent $w
+	mkdir -p "$T/$w/.claude/sessions" "$T/$w/.claude/projects/-e" "$T/$w-real"
+	printf '{"pid":%s,"sessionId":"s-%s","status":"idle"}\n' "$(far_tm display -p -t far:$w '#{pane_pid}')" $w >"$T/$w-real/rec.json"
+	turn 40000 >"$T/$w-real/tr.jsonl"
+done
+ln -s "$T/cl-lrec-real/rec.json" "$T/cl-lrec/.claude/sessions/$(far_tm display -p -t far:cl-lrec '#{pane_pid}').json"
+cp "$T/cl-lrec-real/tr.jsonl" "$T/cl-lrec/.claude/projects/-e/s-cl-lrec.jsonl"
+cp "$T/cl-ltr-real/rec.json" "$T/cl-ltr/.claude/sessions/$(far_tm display -p -t far:cl-ltr '#{pane_pid}').json"
+ln -s "$T/cl-ltr-real/tr.jsonl" "$T/cl-ltr/.claude/projects/-e/s-cl-ltr.jsonl"
 sleep 1.1 # transcripts written after their Claude Code started
 slug=${T//[^A-Za-z0-9]/-}
 mkdir -p "$T/rhome/.claude/projects/$slug-cwd-one" "$T/rhome/.claude/projects/$slug-cwd-two"
@@ -1093,6 +1113,9 @@ rctx() { grep -B1 $'\x1f'"$2"$'\x1f' <<<"$1" | sed -n 's/^#ctx %[0-9]* \([0-9]*\
 check "--rows there: a busy pane's CPU, from two looks ($(rcpu "$rows" far-spin)%)" "(( \$(rcpu \"\$rows\" far-spin) >= 10 ))"
 check "--rows there: context left from a record's transcript ($(rctx "$rows" cl-idle))" "[[ \$(rctx \"\$rows\" cl-idle) == 50 ]]"
 check "--rows there: with no record, from its config folder and the session folder it holds open ($(rctx "$rows" cl-fd))" "[[ \$(rctx \"\$rows\" cl-fd) == 25 ]]"
+check "--rows there: one running as another user, from the record in its own home ($(rctx "$rows" cl-env))" "[[ \$(rctx \"\$rows\" cl-env) == 80 ]] && grep -q $'\x1fcl-env\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
+check "--rows there: not through a symbolic link, to its record or its transcript" "[[ -z \$(rctx \"\$rows\" cl-lrec) && -z \$(rctx \"\$rows\" cl-ltr) ]] && grep -q $'\x1fcl-ltr\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
+far_tm kill-window -t far:cl-env; far_tm kill-window -t far:cl-lrec; far_tm kill-window -t far:cl-ltr
 check "--rows there: with no record, from its working folder ($(rctx "$rows" cl-cwd))" "[[ \$(rctx \"\$rows\" cl-cwd) == 90 ]]"
 check "--rows there: not from a working folder another Claude Code shares" "[[ -z \$(rctx \"\$rows\" cl-two) ]] && grep -q $'\x1fcl-two\x1f' <<<\"\$rows\""
 # A Claude Code that reports its own context left from its hook (claude-hook.sh ctx, through
@@ -1130,26 +1153,35 @@ mkdir -p "$T/uidps"
 	printf '#!/bin/bash\n[[ $* == *uid=* ]] || exec %q "$@"\n' "$(command -v ps)"
 	printf '%q "$@" | awk -v m=%q '\''BEGIN { while ((getline l < m) > 0) { split(l, a, " "); u[a[1]] = a[2] } } ($1 in u) { $3 = u[$1] } 1'\''\n' "$(command -v ps)" "$T/uidmap"
 } >"$T/uidps/ps"
-DEPLOY_UID=$((UID + 4243))
-printf '#!/bin/sh\n[ "$1" = passwd ] && [ "$2" = %s ] && { echo "deploy:x:%s:%s::/home/deploy:/bin/sh"; exit 0; }\nexec %q "$@"\n' \
-	"$DEPLOY_UID" "$DEPLOY_UID" "$DEPLOY_UID" "$(command -v getent)" >"$T/uidps/getent"
+DEPLOY_UID=$((UID + 4243)) JARVIS_UID=$((UID + 4244))
+{
+	printf '#!/bin/sh\n[ "$1" = passwd ] && [ "$2" = %s ] && { echo "deploy:x:%s:%s::/home/deploy:/bin/sh"; exit 0; }\n' "$DEPLOY_UID" "$DEPLOY_UID" "$DEPLOY_UID"
+	printf '[ "$1" = passwd ] && [ "$2" = %s ] && { echo "jarvis:x:%s:%s::%s:/bin/sh"; exit 0; }\nexec %q "$@"\n' "$JARVIS_UID" "$JARVIS_UID" "$JARVIS_UID" "$T/jvhome" "$(command -v getent)"
+} >"$T/uidps/getent"
 chmod +x "$T/uidps/ps" "$T/uidps/getent"
 far_tm new-window -d -t far -n as-root "sleep 300"
 far_tm new-window -d -t far -n as-deploy "sleep 300"
+far_tm new-window -d -t far -n as-jarvis "sleep 300"
 far_tm set-option -p -t far:as-root @agent as-root
 far_tm set-option -p -t far:as-deploy @agent as-deploy
-printf '%s 0\n%s %s\n' "$(far_tm display -p -t far:as-root '#{pane_pid}')" "$(far_tm display -p -t far:as-deploy '#{pane_pid}')" "$DEPLOY_UID" >"$T/uidmap"
+far_tm set-option -p -t far:as-jarvis @agent as-jarvis
+printf '%s 0\n%s %s\n%s %s\n' "$(far_tm display -p -t far:as-root '#{pane_pid}')" "$(far_tm display -p -t far:as-deploy '#{pane_pid}')" "$DEPLOY_UID" \
+	"$(far_tm display -p -t far:as-jarvis '#{pane_pid}')" "$JARVIS_UID" >"$T/uidmap"
 rid() { far_tm display -p -t "far:$1" '#{pane_id}'; }
-mkdir -p "$T/rst2/agent-say/users"
+mkdir -p "$T/rst2/agent-say/users" "$T/jvhome/.local/share/tmux-revive/app"
 echo 1.0.9 >"$T/rst2/agent-say/users/deploy"
+# jarvis's own install, which can be read here (as root can): that, over what it once recorded.
+echo 1.3.0 >"$T/jvhome/.local/share/tmux-revive/app/VERSION"
+echo 1.0.1 >"$T/rst2/agent-say/users/jarvis"
 urows() { PATH="$T/uidps:$PATH" AGENT_SAY_MAILBOX=$T/rst2/agent-say/mailbox.md REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows; }
 rows=$(urows)
 check "--rows says whose tmux it is" "grep -qx '#owner $(id -un)' <<<\"\$rows\""
 check "--rows: a pane running as another user with no tmux-revive: its user, and -" "grep -qx \"#user $(rid as-root) root -\" <<<\"\$rows\""
 check "--rows: one whose user recorded a version: that version" "grep -qx \"#user $(rid as-deploy) deploy 1.0.9\" <<<\"\$rows\""
+check "--rows: one whose own install can be read: its version, read there" "grep -qx \"#user $(rid as-jarvis) jarvis 1.3.0\" <<<\"\$rows\""
 check "--rows: the owner's own: owner" "grep -qx \"#user $(rid 0.1) $(id -un) owner\" <<<\"\$rows\""
 check "--rows: the line comes before its row, and a context line still sits right above the row" "grep -A1 \"^#user $(rid as-deploy) \" <<<\"\$rows\" | grep -q $'\x1fas-deploy\x1f'"
-far_tm kill-window -t far:as-root; far_tm kill-window -t far:as-deploy
+far_tm kill-window -t far:as-root; far_tm kill-window -t far:as-deploy; far_tm kill-window -t far:as-jarvis
 # Asked again a little later, it measures since the last ask, kept over there, in one look.
 sleep 1.2
 rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)

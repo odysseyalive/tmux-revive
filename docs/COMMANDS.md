@@ -314,11 +314,16 @@ other and anyone on its links.
   their VER in the panel shows `[V]`. Select one of their panes and press **V**
   for the command to run in that pane. It's copied, ready to paste. If they
   have an older version, **V** gives you `tmux-revive update` instead.
-- Their install tells your tmux which version they have. A user other than root
-  needs the same `sudo` as for `agent-say` below, or VER keeps showing `[V]`.
+- Their install tells your tmux which version they have. In root's tmux, root's
+  panel reads it straight from their install. Anywhere else, a user other than
+  root needs the same `sudo` setup as `agent-say` below, or VER keeps showing
+  `[V]`.
 - Without their own, their agents can still message: the messages they get show
   the full path to run.
-- A user other than root, in someone else's tmux, needs permission to run commands
+- In root's tmux, a user who ran `su - name` needs nothing more: their
+  `agent-say` asks root's, which acts for their pane only. Root's tmux-revive has
+  to be this version or newer.
+- A user other than root, in another user's tmux, needs permission to run commands
   as the tmux owner with `sudo` and no password. Without it, `agent-say` says so
   and does nothing.
 - Installed as root, tmux-revive also puts `agent-say` in `/usr/local/bin`, so
