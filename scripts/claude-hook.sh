@@ -13,10 +13,11 @@ done
 ROOT="$(cd "$(dirname "$self")/.." && pwd)" || exit 0
 ((BASH_VERSINFO[0] >= 4)) || exit 0 # agent-say needs bash 4
 
-# `claude-hook.sh ctx`, on Stop and PostToolUse (async, so nothing waits on it): the context
-# this session has left, worked out as the panel does and handed to agent-say, which keeps it
-# for the panel as the tmux owner. The panel then needn't read this session's files, which it
-# can't when it runs as someone else (a link's user, with agents running as root).
+# `claude-hook.sh ctx`, on Stop, PostToolUse and a SessionStart after a compaction (async, so
+# nothing waits on it): the context this session has left, worked out as the panel does and
+# handed to agent-say, which keeps it for the panel as the tmux owner. The panel then needn't
+# read this session's files, which it can't when it runs as someone else (a link's user, with
+# agents running as root).
 if [[ ${1:-} == ctx ]]; then
 	# shellcheck source=common.sh
 	source "$ROOT/scripts/common.sh" || exit 0

@@ -330,19 +330,23 @@ hook_dirs() {
 }
 
 # Our hooks run our hook script, sh-quoted: at SessionStart to tell Claude about agent-say,
-# and (async, so nothing waits) on Stop and PostToolUse to report the context left for the
-# panel. Any other hook naming HOOK_TAG is an older install's, so it goes. A group that held
-# only ours goes with it; other hooks stay.
+# and (async, so nothing waits) on Stop, PostToolUse and a SessionStart after a compaction
+# (matcher compact) to report the context left for the panel. Any other hook naming HOOK_TAG
+# is an older install's, so it goes. A group that held only ours goes with it; other hooks
+# stay. want takes every group of ours an event should have, and leaves the event alone when
+# each is there already.
 HOOK_JQ='def ours: (.command? // "") | tostring | contains($t);
 def drop_ours: map(if any(.hooks[]?; ours) then (.hooks |= map(select(ours | not))) | select(.hooks | length > 0) else . end);
-def want($e; $h): if any(.hooks[$e][]?.hooks[]?; . == $h) then .
-	else .hooks[$e] = (((.hooks[$e] // []) | drop_ours) + [{hooks: [$h]}]) end;
+def held($e; $g): any(.hooks[$e][]?; .matcher == $g.matcher and any(.hooks[]?; . == $g.hooks[0]));
+def want($e; $gs): . as $s | if all($gs[]; . as $g | $s | held($e; $g)) then .
+	else .hooks[$e] = (((.hooks[$e] // []) | drop_ours) + $gs) end;
 def strip($e): if any(.hooks[$e][]?.hooks[]?; ours) then
 	.hooks[$e] |= drop_ours | if .hooks[$e] == [] then del(.hooks[$e]) else . end else . end;'
 HOOK_ADD="$HOOK_JQ"'
-want("SessionStart"; {type: "command", command: $c, timeout: 10})
-| want("Stop"; {type: "command", command: ($c + " ctx"), async: true, timeout: 10})
-| want("PostToolUse"; {type: "command", command: ($c + " ctx"), async: true, timeout: 10})'
+{type: "command", command: ($c + " ctx"), async: true, timeout: 10} as $ctx
+| want("SessionStart"; [{hooks: [{type: "command", command: $c, timeout: 10}]}, {matcher: "compact", hooks: [$ctx]}])
+| want("Stop"; [{hooks: [$ctx]}])
+| want("PostToolUse"; [{hooks: [$ctx]}])'
 HOOK_DEL="$HOOK_JQ"'
 if [.hooks[]?[]?.hooks[]? | select(ours)] == [] then . else
 	strip("SessionStart") | strip("Stop") | strip("PostToolUse")

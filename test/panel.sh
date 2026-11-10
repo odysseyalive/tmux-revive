@@ -423,6 +423,20 @@ check "a panel 70 columns wider gives GIT all 70 ($(gitw 160) -> $(gitw 230))" "
 echo '{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":500000}}}' >>"$H/.claude/projects/-w/s-1.jsonl"
 out=$(cframe)
 check "a Claude 5 model has a million-token window (500k: 50% left)" "grep -q 'claude .* 50%' <<<\"\$out\""
+# A compaction after the last turn: what it kept is the context used, until the next turn. A
+# subagent's compaction isn't the session's.
+compacted() { printf '{"isSidechain":%s,"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"manual","preTokens":500000,"postTokens":%s}}\n' "$1" "$2" >>"$H/.claude/projects/-w/s-1.jsonl"; }
+compacted false 100000
+compacted true 900000
+out=$(cframe)
+check "after a compaction, what it kept (100k of a million: 90% left)" "grep -q 'claude .* 90%' <<<\"\$out\""
+echo '{"type":"assistant","message":{"model":"claude-haiku-4-5","usage":{"input_tokens":300000}}}' >>"$H/.claude/projects/-w/s-1.jsonl"
+compacted false 50000
+out=$(cframe)
+check "a session past 200k before its compaction keeps its million-token window (50k: 95% left)" "grep -q 'claude .* 95%' <<<\"\$out\""
+echo '{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":500000}}}' >>"$H/.claude/projects/-w/s-1.jsonl"
+out=$(cframe)
+check "the next turn counts again (500k: 50% left)" "grep -q 'claude .* 50%' <<<\"\$out\""
 rows=$(tm run-shell "HOME=$H REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows")
 check "--rows gives each pane's context left on a line of its own, before its row" "grep -A1 '^#ctx %[0-9]* 20$' <<<\"\$rows\" | grep -q $'\x1fcodex\x1f'"
 # Idle between turns while its agents work in the background (their output under its temp

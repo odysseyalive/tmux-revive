@@ -472,8 +472,8 @@ printf '%s\n' '# >>> tmux-revive >>>' >"$T/ih/.bashrc"
 inst "$T/tmux-ok"
 check "no restart hint when no rc file got the hand-off" "grep -q 'left it alone' $T/inst.out && ! grep -q 'exec \\\$SHELL -l' $T/inst.out"
 
-# Claude Code's hooks (SessionStart; Stop and PostToolUse for context left): registered in
-# settings.json next to what's there, once.
+# Claude Code's hooks (SessionStart; Stop, PostToolUse and SessionStart after a compaction for
+# context left): registered in settings.json next to what's there, once.
 CS=$T/ih/.claude/settings.json HOOK=$T/ih/.local/share/tmux-revive/app/scripts/claude-hook.sh
 mkdir -p "$T/ih/.claude"
 rm -f "$CS" "$CS".bak-revive-*
@@ -487,13 +487,20 @@ cp "$CS" "$T/cs.seed"
 inst "$T/tmux-ok"
 ours() { jq --arg t tmux-revive/app/scripts/claude-hook.sh '[.hooks[]?[]?.hooks[]? | select(.command | contains($t))] | length' "$CS"; }
 mine() { jq -e '.theme == "dark" and .hooks.PreToolUse[0].hooks[0].command == "pre.sh" and .hooks.Stop[0].hooks == [{type: "command", command: "stop.sh"}] and .hooks.SessionStart[0].hooks == [{type: "command", command: "mine.sh"}]' "$CS" >/dev/null; }
-check "install adds the SessionStart hook to settings.json" "grep -q 'told about agent-say' $T/inst.out && jq -e --arg c \"'\$HOOK'\" '.hooks.SessionStart[-1].hooks == [{type: \"command\", command: \$c, timeout: 10}]' $CS >/dev/null"
+check "install adds the SessionStart hook to settings.json" "grep -q 'told about agent-say' $T/inst.out && jq -e --arg c \"'\$HOOK'\" '.hooks.SessionStart[-2] == {hooks: [{type: \"command\", command: \$c, timeout: 10}]}' $CS >/dev/null"
 check "and the context hooks, async, on Stop and PostToolUse" "jq -e --arg c \"'\$HOOK' ctx\" '[.hooks.Stop[-1].hooks, .hooks.PostToolUse[-1].hooks] == [[{type: \"command\", command: \$c, async: true, timeout: 10}], [{type: \"command\", command: \$c, async: true, timeout: 10}]]' $CS >/dev/null"
-check "what was there is kept, and an older install's hook goes" "[[ \$(ours) == 3 ]] && mine && jq -e '.permissions.allow | index(\"Bash(ls:*)\")' $CS >/dev/null"
+check "and after a compaction, async, on SessionStart with the matcher compact" "jq -e --arg c \"'\$HOOK' ctx\" '.hooks.SessionStart[-1] == {matcher: \"compact\", hooks: [{type: \"command\", command: \$c, async: true, timeout: 10}]}' $CS >/dev/null"
+check "what was there is kept, and an older install's hook goes" "[[ \$(ours) == 4 ]] && mine && jq -e '.permissions.allow | index(\"Bash(ls:*)\")' $CS >/dev/null"
 check "settings.json was backed up before the edit" "cmp -s $T/cs.seed \"\$(ls $CS.bak-revive-* | head -n 1)\""
 cp "$CS" "$T/cs.once"
 inst "$T/tmux-ok"
 check "a second install doesn't add it again" "cmp -s $T/cs.once $CS && ! grep -q 'told about agent-say' $T/inst.out"
+# An install from before the compaction hook had only the plain one on SessionStart. The update
+# adds the compaction one and keeps the plain one, with nothing doubled.
+jq '.hooks.SessionStart |= map(select(.matcher != "compact"))' "$T/cs.once" >"$CS"
+inst "$T/tmux-ok"
+check "an older install's update adds the compaction hook and keeps the plain one, once each" "[[ \$(ours) == 4 ]] && mine && jq -e --arg c \"'\$HOOK'\" '([.hooks.SessionStart[] | select(.matcher == null) | .hooks[] | select(.command == \$c)] | length == 1) and ([.hooks.SessionStart[] | select(.matcher == \"compact\")] | length == 1)' $CS >/dev/null"
+cp "$T/cs.once" "$CS"
 # In a tmux pane the hook tells Claude about agent-say, with the pane's name. $T/ib first:
 # the `tmux` in $T/bin talks to another test server.
 "$T/tmux-ok" new-window -d -t i -n hk "sleep 0.5; PATH=$(printf %q "$T/ib"):\$PATH bash $(printf %q "$HOOK") >$(printf %q "$T/hook.json"); touch $(printf %q "$T/hook.done"); sleep 5"
@@ -533,6 +540,12 @@ inst "$T/tmux-ok"
 doctor() { env HOME="$T/ih" XDG_DATA_HOME="$T/ih/.local/share" PATH="$T/ib:$PATH" bash "$T/ih/.local/share/tmux-revive/app/bin/tmux-revive" doctor 2>&1 | sed 's/\x1b\[[0-9;]*m//g'; }
 dr=$(doctor)
 check "doctor says nothing about root's Claude Code" "grep -qF 'Claude Code is told about agent-say' <<<\"\$dr\" && ! grep -qi 'root' <<<\"\$dr\""
+check "doctor finds the context hooks, the compaction one too" "grep -q '^ *ok *Claude Code reports its context left' <<<\"\$dr\""
+cp "$CS" "$T/cs.doctor"
+jq '.hooks.SessionStart |= map(select(.matcher != "compact"))' "$T/cs.doctor" >"$CS"
+dr=$(doctor)
+check "doctor asks for an update when the compaction hook is missing" "grep -q \"^ *no *Claude Code doesn't report its context left\" <<<\"\$dr\""
+cp "$T/cs.doctor" "$CS"
 
 # Installed inside someone else's tmux: that server is theirs, so nothing is loaded into it,
 # set on it or saved from it. The tests can't be another user: REVIVE_TEST_UID stands in for
