@@ -1029,7 +1029,8 @@ tell() { # tell HOST NAME TEXT
 # there to one here, and from one linked machine through here to another. The first one is
 # held as an introduction you allow or decline in the panel; until then the recipient gets
 # nothing. An allow or a decline covers that pair both ways, so the answers need no second
-# one. What a person sends needs none (see sending_agent), nor an agent to itself. A session
+# one, and it answers an introduction already waiting the other way too (both wrote before
+# you answered), with what it held. What a person sends needs none (see sending_agent), nor an agent to itself. A session
 # here is found by walking up from the process sending; one on a linked machine is as that
 # machine reports it, its host the link it came in on, stamped here. Without a session (an
 # older agent-say there, or a person there), its name@host stands in.
@@ -1234,14 +1235,38 @@ permit() {
 	esac
 	return 1
 }
-intro_read() { # intro_read ID -> I_DIR I_FROM I_TO I_FSID I_TSID, checked
+intro_ok() { # intro_ok ID -> I_DIR I_FROM I_TO I_FSID I_TSID; 1: not waiting, 2: damaged
 	I_DIR="$INTROS/$1"
-	[[ "$1" =~ ^[0-9a-f]{32}$ && -f "$I_DIR/from" ]] || die "no introduction $1 waiting (see: agent-say intros)"
+	[[ "$1" =~ ^[0-9a-f]{32}$ && -f "$I_DIR/from" ]] || return 1
 	I_FROM="$(head -n 1 "$I_DIR/from")" I_TO="$(head -n 1 "$I_DIR/to")"
 	I_FSID="$(head -n 1 "$I_DIR/from-session")" I_TSID="$(head -n 1 "$I_DIR/to-session")"
 	valid_sender "$I_FROM" && valid_sender "$I_TO" && [[ $I_FROM == *@* && $I_TO == *@* ]] &&
-		valid_key "$I_FSID" && valid_key "$I_TSID" ||
-		die "introduction $1 is damaged"
+		valid_key "$I_FSID" && valid_key "$I_TSID" || return 2
+}
+intro_read() { # intro_read ID -> I_DIR I_FROM I_TO I_FSID I_TSID, checked
+	local rc=0
+	intro_ok "$1" || rc=$?
+	case $rc in
+		1) die "no introduction $1 waiting (see: agent-say intros)" ;;
+		2) die "introduction $1 is damaged" ;;
+	esac
+}
+# When both agents wrote before you answered, an introduction waits each way (and one from an
+# agent's earlier session may wait too). Your answer to one is your answer to all of them, so
+# nothing asks you again. intros_between A B ID: the others waiting between those two panes.
+intros_between() {
+	local d a b
+	for d in "$INTROS"/*/; do
+		[[ -f $d/from && $(basename "$d") != "$3" ]] || continue
+		a="$(head -n 1 "$d/from")" b="$(head -n 1 "$d/to")"
+		[[ ($a == "$1" && $b == "$2") || ($a == "$2" && $b == "$1") ]] && basename "$d"
+	done
+	return 0
+}
+# One of those, answered with the one you picked: logged the way a lapsed one is.
+intro_log() { # intro_log allowed|declined A B (I_ as intro_ok set them)
+	printf '%s %s with %s and %s: introduction %s from %s to %s, %s held\n' "$(date -u +%FT%TZ)" "$1" "$2" "$3" \
+		"$(basename "$I_DIR")" "$I_FROM" "$I_TO" "$(find "$I_DIR/held" -type f 2>/dev/null | wc -l | tr -d ' ')" >>"$GRANTS.log"
 }
 # Is this the panel's popup, with the code it showed you and you typed back? approve and
 # grant_refresh are only ever run there, sourced, never as a command (_intro allow and _grant
@@ -1250,52 +1275,77 @@ intro_read() { # intro_read ID -> I_DIR I_FROM I_TO I_FSID I_TSID, checked
 # Both values come from the caller, so an agent running as you that sources agent-say on
 # purpose could still get round it. typed_code CODE
 typed_code() { [[ -n "${1:-}" && "${AGENT_SAY_APPROVE_CODE:-}" == "$1" ]]; }
-approve() { # approve ID CODE: allow the pair, then deliver what waited, in order
-	local f first=1 text fcur tcur err
+approve() { # approve ID CODE: allow the pair, then deliver what waited, in order, both ways
+	local f first text a b fcur tcur scur rcur err id others sent=0 lost=0 gone="" say
 	typed_code "${2:-}" || die "only you can allow that, in the panel (press G there)"
 	intro_read "$1"
+	a=$I_FROM b=$I_TO
 	# Allowed for the agent sessions in those two panes now, which may not be the ones there
 	# when it asked (an agent restarted meanwhile). Only you get here, with the popup's code,
 	# and it names the panes; who is in them is what their own computers report.
 	fcur="$(current_key "$I_FROM" "$I_FSID")" tcur="$(current_key "$I_TO" "$I_TSID")"
 	[[ -n $fcur ]] || die "${I_FROM%@*} has no agent running now, so this keeps waiting; deny it if that work is finished"
 	[[ -n $tcur ]] || die "${I_TO%@*} has no agent running now, so this keeps waiting"
-	grant_set allow "$fcur" "$tcur" "$I_FROM" "$I_TO"
-	if [[ $fcur != "$I_FSID" ]]; then
-		# The agent that sent these is gone (it may well have sent them again since): they're
-		# dropped, not delivered twice. Nobody to tell; that session is over.
-		for f in "$I_DIR"/held/*; do
-			[[ -f $f ]] || continue; held_fate "$I_DIR" "$f" "$I_FROM" "$I_TO" "NOT DELIVERED: ${I_FROM%@*} restarted before approval"
+	others="$(intros_between "$a" "$b" "$1")"
+	grant_set allow "$fcur" "$tcur" "$a" "$b"
+	# The one you picked, then any other waiting between the two (the other way, most often):
+	# each as if you'd approved it too.
+	for id in "$1" $others; do
+		intro_ok "$id" || continue
+		[[ $id == "$1" ]] || intro_log allowed "$a" "$b"
+		if [[ $I_FROM == "$a" ]]; then scur=$fcur rcur=$tcur; else scur=$tcur rcur=$fcur; fi
+		if [[ $scur != "$I_FSID" ]]; then
+			# The agent that sent these is gone (it may well have sent them again since): they're
+			# dropped, not delivered twice. Nobody to tell; that session is over.
+			for f in "$I_DIR"/held/*; do
+				[[ -f $f ]] || continue; held_fate "$I_DIR" "$f" "$I_FROM" "$I_TO" "NOT DELIVERED: ${I_FROM%@*} restarted before approval"
+			done
+			[[ " $gone " == *" ${I_FROM%@*} "* ]] || gone+="${gone:+ and }${I_FROM%@*}"
+			rm -rf "$I_DIR"
+			continue
+		fi
+		# Anything held while this runs is delivered too: it drains until nothing is left.
+		first=1
+		while f="$(find "$I_DIR/held" -type f 2>/dev/null | sort | head -n 1)" && [[ -n $f ]]; do
+			text="$(cat "$f")"
+			((first)) && text="(introduction, allowed by the user on $LABEL) $text"
+			first=0
+			if relay_send "$I_FROM" "$I_TO" "$text" "$rcur" 2>"$I_DIR/err"; then
+				held_fate "$I_DIR" "$f" "$I_FROM" "$I_TO" "delivered"
+				sent=$((sent + 1))
+			else
+				err="$(short_why "${I_TO%@*}" "$(cat "$I_DIR/err")")"
+				held_fate "$I_DIR" "$f" "$I_FROM" "$I_TO" "NOT DELIVERED: $err"
+				tell "${I_FROM#*@}" "${I_FROM%@*}" "your message to $I_TO wasn't delivered: $err; send it again."
+				lost=$((lost + 1))
+			fi
+			rm -f "$f"
 		done
 		rm -rf "$I_DIR"
-		echo "allowed $I_FROM to talk with $I_TO; it restarted since asking, so what it sent before was dropped"
-		return 0
-	fi
-	# Anything held while this runs is delivered too: it drains until nothing is left.
-	while f="$(find "$I_DIR/held" -type f 2>/dev/null | sort | head -n 1)" && [[ -n $f ]]; do
-		text="$(cat "$f")"
-		((first)) && text="(introduction, allowed by the user on $LABEL) $text"
-		first=0
-		if relay_send "$I_FROM" "$I_TO" "$text" "$tcur" 2>"$I_DIR/err"; then
-			held_fate "$I_DIR" "$f" "$I_FROM" "$I_TO" "delivered"
-		else
-			err="$(short_why "${I_TO%@*}" "$(cat "$I_DIR/err")")"
-			held_fate "$I_DIR" "$f" "$I_FROM" "$I_TO" "NOT DELIVERED: $err"
-			tell "${I_FROM#*@}" "${I_FROM%@*}" "your message to $I_TO wasn't delivered: $err; send it again."
-		fi
-		rm -f "$f"
 	done
-	rm -rf "$I_DIR"
-	echo "allowed $I_FROM to talk with $I_TO"
+	say="allowed $a and $b"
+	((sent)) && say+="; $sent held message$( ((sent == 1)) || echo s) delivered"
+	((lost)) && say+="; $lost not delivered"
+	[[ -n $gone ]] && say+="; $gone restarted since asking, so what it sent before was dropped"
+	echo "$say"
 }
-decline() { # decline ID: refuse the pair from now on, drop what waited, tell the sender
-	local f
+decline() { # decline ID: refuse the pair from now on, both ways, drop what waited, tell the senders
+	local f a b id others fs ts
 	intro_read "$1"
-	grant_set deny "$I_FSID" "$I_TSID" "$I_FROM" "$I_TO"
-	for f in "$I_DIR"/held/*; do [[ -f $f ]] || continue; held_fate "$I_DIR" "$f" "$I_FROM" "$I_TO" "NOT DELIVERED: declined"; done
-	rm -rf "$I_DIR"
-	tell "${I_FROM#*@}" "${I_FROM%@*}" "declined: the user on $LABEL declined your messages to $I_TO."
-	echo "declined $I_FROM to $I_TO"
+	a=$I_FROM b=$I_TO fs=$I_FSID ts=$I_TSID
+	others="$(intros_between "$a" "$b" "$1")"
+	for id in "$1" $others; do
+		intro_ok "$id" || continue
+		# One deny per pair of sessions (it covers the pair both ways).
+		if [[ $id == "$1" ]] || ! [[ ($I_FSID == "$fs" && $I_TSID == "$ts") || ($I_FSID == "$ts" && $I_TSID == "$fs") ]]; then
+			grant_set deny "$I_FSID" "$I_TSID" "$I_FROM" "$I_TO"
+		fi
+		[[ $id == "$1" ]] || intro_log declined "$a" "$b"
+		for f in "$I_DIR"/held/*; do [[ -f $f ]] || continue; held_fate "$I_DIR" "$f" "$I_FROM" "$I_TO" "NOT DELIVERED: declined"; done
+		rm -rf "$I_DIR"
+		tell "${I_FROM#*@}" "${I_FROM%@*}" "declined: the user on $LABEL declined your messages to $I_TO."
+	done
+	echo "declined $a and $b"
 }
 revoke() { # revoke A B: forget what was said for the pair (sessions or name@host), either way
 	local t="$GRANTS.$$" n

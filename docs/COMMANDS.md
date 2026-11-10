@@ -423,7 +423,8 @@ send yourself, from a shell or the panel, needs no permission.
 
 Approve shows a four-digit code in a popup for you to type back. Then it delivers
 the introduction and anything sent since, in order, and the two can talk both ways.
-Deny drops them, and neither agent can write to the other again.
+If both agents wrote before you answered, one Approve covers both, and each gets
+what the other sent. Deny drops them, and neither agent can write to the other again.
 
 An agent can restart while it waits. Approve covers whoever is in those two panes
 now. If the recipient restarted, it still gets what waited. If the sender restarted,
