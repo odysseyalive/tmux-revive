@@ -561,6 +561,9 @@ back() { # back ID AS-ID: AS-ID's introduction the other way, from the same two 
 	cp "$T/mail/intros/$2/to-session" "$T/mail/intros/$1/from-session"; cp "$T/mail/intros/$2/from-session" "$T/mail/intros/$1/to-session"
 }
 back $ic $ia; back $id $ib
+# Why each asks: one line agent-say keeps; an agent's words, so escapes in it never paint.
+# The other way's has none (an older agent-say): how its message opens stands in.
+printf 'needs the logs\e[48;5;201m\e]0;pwned\a\n' >"$T/mail/intros/$ia/why"
 # The agent sessions each link reports in those panes now: the same ones that asked.
 mkdir -p "$T/mail/links/far.invalid" "$T/mail/links/near.invalid"
 printf 'live-root %s\ncx %s\n' $ia $ib >"$T/mail/links/far.invalid/sessions"
@@ -586,6 +589,8 @@ akey i
 check "I, the key it had before, still opens it" "wait_a 'ACCESS' && wait_a 'WAITING'"
 akey 1
 check "a waiting one shows its words, and Approve or Deny" "wait_a 'may I ask dev-root about the failing build?' && wait_a '1  Approve' && wait_a '2  Deny' && ! ascreen | grep -cF 'restarted' >/dev/null"
+check "under its title, why each of the two asks, one line each, never a choice" "wait_a 'why (live-root): needs the logs' && wait_a 'why (dev-root): and back' && ! ascreen | grep -qE '[0-9]  why'"
+check "and the escapes in a reason don't paint the screen" "! tm capture-pane -p -e -t work:acc | grep -qF '48;5;201' && ! tm capture-pane -p -t work:acc | grep -qF \$'\\e'"
 akey Escape; gone_a '2  Deny' >/dev/null
 # Its agent restarted since asking (another session in that pane now): the window says so.
 printf 'live-root s-new\ncx %s\n' $ib >"$T/mail/links/far.invalid/sessions"
@@ -599,11 +604,11 @@ akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; ake
 check "Approve asks for the code in a popup; a wrong one approves nothing" "wait_a \"not approved: the code didn't match, so it's still waiting\" && grep -q '^display-popup ' $T/popup.log && [[ \$(state) == '$before' ]]"
 echo right >"$T/popup.code"; : >"$T/popup.log"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; akey 1
-check "the code typed back approves it" "wait_a 'allowed live-root@far.invalid and dev-root@near.invalid' && [[ ! -e $T/mail/intros/$ia ]] && grep -q '^allow s:$ia@far.invalid s:to$ia@near.invalid live-root@far.invalid dev-root@near.invalid [0-9]*\$' $T/mail/grants"
+check "the code typed back approves it" "wait_a 'live-root@far.invalid and dev-root@near.invalid can talk now' && [[ ! -e $T/mail/intros/$ia ]] && grep -q '^allow s:$ia@far.invalid s:to$ia@near.invalid live-root@far.invalid dev-root@near.invalid [0-9]*\$' $T/mail/grants"
 check "the one the other way with it, and only that one" "[[ ! -e $T/mail/intros/$ic && -e $T/mail/intros/$ib && -e $T/mail/intros/$id ]]"
 check "and then just the panel: no box asks again" "sleep 1 && ! ascreen | grep -qE 'ACCESS|[0-9]  (Approve|Deny)' && [[ \$(grep -c '^display-popup ' $T/popup.log) == 1 ]]"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '2  Deny' >/dev/null; akey 2
-check "Deny declines it, both ways" "wait_a 'declined cx@far.invalid and dev-root@near.invalid' && [[ ! -e $T/mail/intros/$ib && ! -e $T/mail/intros/$id ]] && [[ \$(grep -c '^deny s:$ib@far.invalid ' $T/mail/grants) == 1 ]]"
+check "Deny declines it, both ways" "wait_a \"declined: cx@far.invalid and dev-root@near.invalid can't talk\" && [[ ! -e $T/mail/intros/$ib && ! -e $T/mail/intros/$id ]] && [[ \$(grep -c '^deny s:$ib@far.invalid ' $T/mail/grants) == 1 ]]"
 check "with nothing waiting, MESSAGES has no waiting line" "gone_a 'waiting for [G]rant access' && wait_a '✓ 2 approved'"
 before=$(state)
 akey g; wait_a 'APPROVED' >/dev/null
@@ -1838,7 +1843,7 @@ tm_s Enter
 check "Enter on it unfolds it" "wait_sp 'fold-a' && [[ ! -e $REVIVE_DIR/panel/fold/fold.example ]]"
 tm_s Home; top_sp >/dev/null
 tm_s F
-check "F on this computer's pane says it doesn't fold" "wait_sp \"this computer doesn't fold\" && [[ ! -e $REVIVE_DIR/panel/fold/fold.example ]]"
+check "F on this computer's pane says it can't be folded" "wait_sp \"this computer can't be folded\" && [[ ! -e $REVIVE_DIR/panel/fold/fold.example ]]"
 tm_s q
 sm kill-server
 
