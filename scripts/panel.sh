@@ -3046,7 +3046,7 @@ keys() {
 		read -t 0 && IFS= read -rsn1 key || break
 	done
 }
-held=0
+held=0 SSH_FIRST=1
 while :; do
 	# Moving the selection only redraws from what was gathered last; everything is looked at
 	# again on the next refresh or any other key, so the arrows stay quick.
@@ -3055,8 +3055,11 @@ while :; do
 		for h in "${P_SSH[@]}" "${X_SSH[@]}"; do
 			[[ -n $h && -z ${SSH_SEEN[$h]:-} ]] || continue
 			SSH_SEEN[$h]=1
-			linked "$h" || flash "new ssh: $h · L links it"
+			# Only one opened since the panel started: those open before are in LINKS already
+			# ([L]ink?), and a flash for each would cover the key bar as it opens.
+			((SSH_FIRST)) || linked "$h" || flash "new ssh: $h · L links it"
 		done
+		SSH_FIRST=0
 		# A link whose login dropped (a reboot over there, the network gone): said once.
 		for d in "$ASTATE"/links/*/; do
 			h=$(basename "$d")
