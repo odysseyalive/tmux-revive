@@ -1110,17 +1110,20 @@ check "link shows just that key and, off a terminal, wants --yes ($out)" "[[ \$o
 out=$(say _host-keys devbox)
 check "a host in known_hosts: trusted, that key, nothing scanned ($out)" "[[ \$out == \$'state: trusted\n$fp1 (ED25519)' ]]"
 
-# livebox: ssh keeps no key for it (UserKnownHostsFile /dev/null), and new connections to it
-# time out (a firewall), but you have an ssh connection to it open (a ControlMaster your config
-# names: live.master). Through that, and only that, it is devbox.
+# livebox: it is devbox, behind a fake ssh whose config ssh -G gives from live.strict and live.khf
+# (at first: keys not checked, known_hosts /dev/null, as a server you reach with
+# StrictHostKeyChecking no). An ssh connection of yours may be open to it (a ControlMaster your
+# config names: live.master), and new connections get through only while live.net exists (else
+# they time out, as behind a firewall).
 mkdir -p "$T/hk"
 cp "$T/hostkey1.pub" "$T/hk/ssh_host_ed25519_key.pub"; cp "$T/hostkey_ec.pub" "$T/hk/ssh_host_ecdsa_key.pub"
+echo false >"$T/live.strict"; echo /dev/null >"$T/live.khf"
 cat >"$T/bin/livessh" <<EOF
 #!/usr/bin/env bash
 echo "\$(date +%s.%N) \$*" >>$T/live.log
 case " \$* " in
-*" -G "*) printf '%s\n' 'hostname livebox.internal' 'userknownhostsfile /dev/null' 'globalknownhostsfile /dev/null' \\
-	'stricthostkeychecking false' 'hostkeyalgorithms ssh-ed25519,ecdsa-sha2-nistp256'; exit 0 ;;
+*" -G "*) printf '%s\n' 'hostname livebox.internal' "userknownhostsfile \$(cat $T/live.khf)" 'globalknownhostsfile /dev/null' \\
+	"stricthostkeychecking \$(cat $T/live.strict)" 'hostkeyalgorithms ssh-ed25519,ecdsa-sha2-nistp256'; exit 0 ;;
 *" -O check "*) if [[ -e $T/live.master ]]; then echo 'Master running (pid=4242)' >&2; exit 0; fi
 	echo 'Control socket connect: No such file or directory' >&2; exit 255 ;;
 *" -O exit "*) exit 0 ;;
@@ -1128,12 +1131,14 @@ case " \$* " in
 	[[ -e $T/live.master && " \$* " == *" ProxyCommand=false "* ]] || { echo 'kex_exchange_identification: Connection closed by remote host' >&2; exit 255; }
 	exec $T/bin/fakessh devbox "\${!#}" ;;
 esac
+[[ -e $T/live.net ]] && exec $T/bin/fakessh "\$@"
 echo 'ssh: connect to host livebox.internal port 22: Connection timed out' >&2
 exit 255
 EOF
 chmod +x "$T/bin/livessh"
 lv() { AGENT_SAY_KNOWN_HOSTS='' AGENT_SAY_SSH=$T/bin/livessh AGENT_SAY_HOSTKEY_FILES="$T/hk/ssh_host_*_key.pub" say "$@"; }
 lvl=$(dirname "$AGENT_SAY_MAILBOX")/links/livebox
+ridden() { grep -c 'ControlMaster=no .*_sync' "$T/live.log" || true; }
 rm -f "$T/scan.presented"
 out=$(lv _host-keys livebox)
 check "no connection open, nothing in known_hosts, no scan answer: unknown, no key ($out)" "[[ \$out == 'state: unknown' ]]"
@@ -1141,18 +1146,21 @@ touch "$T/live.master"
 out=$(lv _host-keys livebox)
 check "with your connection open: live, the key read through it, of the type ssh uses ($out)" "[[ \$out == \$'state: live\n$fp1 (ED25519)' ]]"
 out=$(lv link livebox 2>&1 </dev/null)
-check "it links with no question and no --yes, bound to that key ($out)" "[[ \$out == *'read through your open ssh connection'*'$fp1 (ED25519)'*'linked to livebox'* && \$out != *'--yes'* && \$(cat $lvl/fingerprint) == '$fp1 (ED25519)' ]]"
-check "nothing went over a new connection: every call through yours" "! grep ' livebox\$\| livebox ' $T/live.log | grep -v ' -G \| -O \|ControlMaster=no -o ProxyCommand=false' | grep -q ."
-there "$ROOT/bin/agent-say --from codex me@laptop 'through your own connection'" >/dev/null
-check "and its poller brings messages through it" "wait_seen $LC 'through your own connection'"
+check "but that is a key seen for the first time: shown, and off a terminal it wants --yes ($out)" "[[ \$out == *'read through your open ssh connection'*'first time'*'$fp1 (ED25519)'*'--yes'* && ! -e $lvl/on ]]"
+echo "$T/hostkey1.pub" >"$T/scan.presented"; touch "$T/live.net"
+: >"$T/live.log"
+out=$(lv link livebox --yes 2>&1 </dev/null)
+check "confirmed, it links, bound to that key ($out)" "[[ \$out == *'linked to livebox'* && \$(cat $lvl/fingerprint) == '$fp1 (ED25519)' ]]"
+checkins() { grep -c "${1:-}.* livebox .*_sync" "$T/live.log" || true; }
+check "and its poller checks in, over a connection of its own bound to that key" "for _ in \$(seq 40); do (( \$(checkins UserKnownHostsFile=$lvl/pin) > 2 )) && break; sleep 0.25; done; (( \$(checkins UserKnownHostsFile=$lvl/pin) > 2 )) && [[ ! -s $lvl/error ]]"
+check "never through yours: ssh didn't check the key it was opened to (keys not checked, known_hosts /dev/null)" "[[ \$(ridden) == 0 ]] && grep -q 'UserKnownHostsFile=$lvl/pin .* livebox .*_sync' $T/live.log"
 pid=$(cat "$lvl/pid")
 check "the poller doesn't hold its lock (flock does), so nothing it starts can keep the link from restarting" "! ls -l /proc/$pid/fd 2>/dev/null | grep -q '$lvl/lock' && ! flock -n $lvl/lock true"
 check "one poller tree per link: every process of it in the poller's session" "[[ \$(pollers livebox | xargs -r ps -o sid= -p | sort -u | wc -l) == 1 ]]"
-# The connection closes, and new ones time out. A link that was working tries once more at once,
-# then stops: it says why (ssh's own words in the link's log) and tries nothing more on its own.
-echo "$T/hostkey1.pub" >"$T/scan.presented"
+# New connections time out. A link that was working tries once more at once, then stops: it says
+# why (ssh's own words in the link's log) and tries nothing more on its own.
 : >"$T/live.log"
-rm -f "$T/live.master"
+rm -f "$T/live.net"
 tries() { grep -v ' -G \| -O ' "$T/live.log" | grep -c . || true; }
 check "a timeout stops it, saying 'can't reach (connection timed out) · L to try again'" "for _ in \$(seq 40); do [[ -e $lvl/paused ]] && break; sleep 0.25; done; [[ \$(cat $lvl/error) == \"can't reach (connection timed out) · L to try again\" ]] && for _ in \$(seq 20); do pollers livebox >/dev/null || break; sleep 0.25; done; ! pollers livebox >/dev/null"
 check "with ssh's own words kept in the link's log" "grep -q 'ssh: connect to host livebox.internal port 22: Connection timed out' $lvl/log"
@@ -1167,16 +1175,20 @@ lv _resume-links
 check "a link that hasn't worked since it started tries once, then stops" "for _ in \$(seq 40); do [[ -e $lvl/paused ]] && break; sleep 0.25; done; sleep 1; [[ -e $lvl/paused && \$(tries) == 4 ]] && ! pollers livebox >/dev/null"
 out=$(lv unlink livebox 2>&1)
 check "a link stopped on a failure can be unlinked, with no try to tell its server ($out)" "[[ \$out == *'unlinked livebox'* && ! -e $lvl && \$(tries) == 4 ]] && ! pollers livebox >/dev/null"
-touch "$T/live.master"
-out=$(lv link livebox 2>&1 </dev/null)
-there "$ROOT/bin/agent-say --from codex me@laptop 'back again'" >/dev/null
-check "and linked again, its poller runs and messages come ($out)" "[[ \$out == *'linked to livebox'* ]] && wait_seen $LC 'back again' && pollers livebox >/dev/null && [[ ! -e $lvl/paused && ! -s $lvl/error ]]"
-# Riding your connection is only for a host that shows the key the link was bound to.
-cp "$T/hostkey2.pub" "$T/hk/ssh_host_ed25519_key.pub"; rm -f "$T/hk/ssh_host_ecdsa_key.pub" "$T/scan.presented" "$lvl/ride"
+# Your config checks keys, and your known_hosts has livebox's: ssh vouched for the connection you
+# have open, so the link goes through it, and needs no connection of its own (none get through).
+echo yes >"$T/live.strict"
+printf 'livebox.internal %s\n' "$(cut -d' ' -f1,2 "$T/hostkey1.pub")" >"$T/live_kh"; echo "$T/live_kh" >"$T/live.khf"
 : >"$T/live.log"
-check "a connection of yours to a host showing another key isn't ridden" "for _ in \$(seq 40); do [[ -s $lvl/error ]] && break; sleep 0.25; done; [[ -s $lvl/error ]] && ! grep -q 'ControlMaster=no -o ProxyCommand=false .* livebox _sync\|ControlMaster=no.*_sync' $T/live.log"
+out=$(lv link livebox 2>&1 </dev/null)
+check "with keys checked and its key in known_hosts, it links with no question, and checks in through your open connection only ($out)" "[[ \$out == *'as ssh already trusts it'*'linked to livebox'* ]] && for _ in \$(seq 40); do (( \$(ridden) > 2 )) && break; sleep 0.25; done; (( \$(ridden) > 2 )) && [[ \$(tries) == \$(ridden) && ! -s $lvl/error ]]"
+# known_hosts now has another key for it: ssh vouched for some other key, so not ridden.
+printf 'livebox.internal %s\n' "$(cut -d' ' -f1,2 "$T/hostkey2.pub")" >"$T/live_kh"
+n=$(ridden)
+check "with another key in known_hosts, your connection isn't ridden: it stops instead" "for _ in \$(seq 40); do [[ -e $lvl/paused ]] && break; sleep 0.25; done; [[ -e $lvl/paused && \$(ridden) == $n ]]"
 lv unlink livebox >/dev/null 2>&1
-rm -f "$T/live.master"
+rm -f "$T/live.master" "$T/scan.presented"
+
 
 echo "a link's error, in plain words"
 lw() { printf '%s\n' "$3" >"$T/why.err"; bash -c 'source "$1"; link_why "$2" "$3" "$4"' _ "$ROOT/bin/agent-say" "$1" "$2" "$T/why.err"; }

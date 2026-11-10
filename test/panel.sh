@@ -813,8 +813,9 @@ check "L offers the failing link, to link again" "wait_ssh 'LINK AGENTS ON' && s
 tm send-keys -t work:sshpanel Enter
 check "picking it asks: leave it, link it again, or unlink it" "wait_ssh 'LINK devbox.example AGAIN?' && wait_ssh 'No, leave it as it is' && wait_ssh 'Yes, link devbox.example again' && wait_ssh 'Unlink devbox.example'"
 tm send-keys -t work:sshpanel 2
-check "linking again shows the key ssh uses now, as one yes or no" "wait_ssh 'LINK devbox.example?' && wait_ssh 'key from your known_hosts: $fp (ED25519)'"
-tm send-keys -t work:sshpanel Enter
+# It was linked to another key: that is said, with No first, though known_hosts has this one.
+check "linking again shows the key ssh uses now, warns it isn't the one linked before, No first" "wait_ssh \"WARNING: devbox.example's HOST KEY CHANGED\" && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -q \"1 *No, don't link devbox.example\""
+tm send-keys -t work:sshpanel 2
 check "and yes unlinks the old one and links again (its old key and error gone)" "wait_ssh \"couldn't run agent-say on devbox.example\" && [[ ! -e $sk/on && ! -e $sk/error && ! -e $sk/fingerprint ]]"
 broken
 tm send-keys -t work:sshpanel l; sleep 0.7; wait_ssh 'link again' >/dev/null; tm send-keys -t work:sshpanel Enter
@@ -838,6 +839,34 @@ tm send-keys -t work:sshpanel u; sleep 0.7; wait_ssh 'UNLINK' >/dev/null; tm sen
 check "U unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $sk ]]"
 tm send-keys -t work:sshpanel q
 tm kill-window -t work:remote 2>/dev/null
+# live.example: ssh keeps no key for it (known_hosts /dev/null, keys not checked), but an ssh
+# connection of yours is open to it, through which its key file reads. That key is shown, as
+# one seen for the first time, with No first.
+{
+	printf '#!/bin/bash\nT=%q\n' "$T"
+	cat <<'EOF'
+case " $* " in
+*" -G "*) printf '%s\n' 'hostname live.example' 'userknownhostsfile /dev/null' 'stricthostkeychecking false'; exit 0 ;;
+*" -O check "*) echo 'Master running (pid=4242)' >&2; exit 0 ;;
+*" ControlMaster=no "*) cat "$T/hostkey.pub"; exit 0 ;;
+esac
+exit 255
+EOF
+} >"$T/livessh"
+chmod +x "$T/livessh"
+tm new-window -d -t work -n livepanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=$T/livessh REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n liveremote "bash -c 'exec -a \"ssh live.example\" sleep 300'"
+lvs() { tm capture-pane -p -t work:livepanel; }
+wait_lv() { for _ in $(seq 1 40); do lvs | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_lv 'live.example · ssh in' >/dev/null
+tm send-keys -t work:livepanel l; wait_lv 'LINK AGENTS ON' >/dev/null
+n=$(lvs | grep -o '[1-9] *live.example  · ssh in' | head -c 1)
+tm send-keys -t work:livepanel "$n"
+check "a key read through your open ssh connection: shown, said to be seen for the first time, No first" "wait_lv 'key read through your open ssh connection: $fp (ED25519)' && wait_lv 'First time we see this key' && lvs | grep -q \"1 *No, don't link live.example\""
+tm send-keys -t work:livepanel Enter
+check "and Enter links nothing" "wait_lv 'link cancelled' && [[ ! -e $st/links/live.example ]]"
+tm send-keys -t work:livepanel q
+tm kill-window -t work:liveremote 2>/dev/null
 
 echo "other computers"
 # A second private tmux server stands in for a linked computer, and a fake ssh runs the

@@ -2525,7 +2525,7 @@ act() {
 		# Links waiting for their login first, then every ssh host not linked yet (the selected
 		# pane's first), then the links there are to link again (one that fails first), then
 		# "other host...".
-		local hosts=() labels=() seen=" " h i j d e pass
+		local hosts=() labels=() seen=" " h i j d why pass
 		for d in "$ASTATE"/links/*/; do
 			[[ -f $d/on && -f $d/login ]] || continue
 			h=$(basename "$d")
@@ -2547,14 +2547,14 @@ act() {
 			for d in "$ASTATE"/links/*/; do
 				h=$(basename "$d")
 				[[ -f $d/on && $seen != *" $h "* && $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
-				e=$(head -n 1 "$d/error" 2>/dev/null)
-				e=${e% · L to try again}
-				clean e
+				why=$(head -n 1 "$d/error" 2>/dev/null)
+				why=${why% · L to try again}
+				clean why
 				if [[ $pass == error && -f $d/paused ]]; then
-					seen+="$h " hosts+=("$h") labels+=("$h  · ${e:0:40} · try again")
-				elif [[ $pass == error && -n $e ]]; then
-					seen+="$h " hosts+=("$h") labels+=("$h  · ${e:0:40} · link again")
-				elif [[ $pass == ok && -z $e ]]; then
+					seen+="$h " hosts+=("$h") labels+=("$h  · ${why:0:40} · try again")
+				elif [[ $pass == error && -n $why ]]; then
+					seen+="$h " hosts+=("$h") labels+=("$h  · ${why:0:40} · link again")
+				elif [[ $pass == ok && -z $why ]]; then
 					seen+="$h " hosts+=("$h") labels+=("$h  · linked · link again")
 				fi
 			done
@@ -2602,27 +2602,34 @@ act() {
 		# What link is told: the keys shown here (--fingerprint), so it is bound to exactly those,
 		# never to what it might scan a moment later; or, linking with no key found, that none is
 		# to be taken (--no-key). A relink gives none: it keeps the one recorded, and refuses another.
-		local -a keys largs=() yn
-		local k linked_msg="" note title
+		local -a keys largs=() yn notes
+		local k linked_msg="" note title first
 		read_host_keys "$h" ${again:+--fresh}
 		keys=("${KEYS[@]}")
 		PREV=()
 		if [[ $KEY_STATE == recorded ]]; then
 			linked_msg="relinked $h with the key you confirmed"
 		else
-			title="LINK $h?" yn=("No, don't link $h" "Yes, link $h")
+			# Only a key from your known_hosts (ssh itself trusts it) has Yes first. One read through
+			# your open connection, or shown by ssh-keyscan, is whatever answers there says: seen for
+			# the first time, to check.
+			title="LINK $h?" yn=("No, don't link $h" "Yes, link $h") first=""
 			case $KEY_STATE in
 				trusted) note="key from your known_hosts" yn=("${yn[1]}" "${yn[0]}") ;;
-				live) note="key read through your open ssh connection" yn=("${yn[1]}" "${yn[0]}") ;;
+				live) note="key read through your open ssh connection" first=1 ;;
 				changed) note="its key now"; title="WARNING: $h's HOST KEY CHANGED since you linked it" ;;
-				*) note="new host: first key seen" ;;
+				*) note="new host: first key seen" first=1 ;;
 			esac
-			# Linked before with another key, and none of yours vouches for this one: say so.
-			if [[ -n $was && $KEY_STATE != trusted && $KEY_STATE != live ]] && ((${#keys[@]})) && ! grep -qxF -- "${keys[0]}" <<<"$was"; then
+			# Linked before, and none of the keys you confirmed then is among these: say so, whatever
+			# vouches for them now (your known_hosts too may have changed).
+			if [[ -n $was ]] && ((${#keys[@]})) && ! grep -qxF -f <(printf '%s\n' "${keys[@]}") <<<"$was"; then
 				title="WARNING: $h's HOST KEY CHANGED since you linked it" yn=("No, don't link $h" "Yes, link $h")
 			fi
-			if ((${#keys[@]})); then note+=": ${keys[0]}"; else note="no key found (not in known_hosts, no answer to ssh-keyscan)"; fi
-			pick "$title" "$NOTE$note" "${yn[@]}" || { flash "link cancelled"; return; }
+			if ((${#keys[@]})); then note+=": ${keys[0]}"; else note="no key found (not in known_hosts, no answer to ssh-keyscan)" first=""; fi
+			notes=("$NOTE$note")
+			[[ -n $first ]] && notes+=("${NOTE}First time we see this key: check it matches your server.")
+			pick "$title" "${notes[@]}" "${yn[@]}" || { flash "link cancelled"; return; }
+			PICKED=$((PICKED - ${#notes[@]} + 1))
 			[[ ${yn[PICKED - 1]} == Yes* ]] || { flash "link cancelled"; return; }
 			if [[ $KEY_STATE == trusted ]]; then
 				for k in "${keys[@]}"; do largs+=(--fingerprint "$k"); done

@@ -209,9 +209,10 @@ off.
 
 When a pane ssh's into another computer, the panel spots it and offers to link the
 agents there. **L** links it and **U** unlinks it. Linking is one yes or no: the
-panel finds the key ssh already uses for that computer (your known_hosts, or the
-ssh connection you have open to it) and shows it, and pops up a box for the
-password if the server takes one. A link that stops working shows why in LINKS,
+panel finds the key ssh uses for that computer (your known_hosts, or the ssh
+connection you have open to it) and shows it, and pops up a box for the password
+if the server takes one. A key not in your known_hosts is one you haven't
+confirmed yet, so there No comes first. A link that stops working shows why in LINKS,
 and **L** on it tries it once more. **L** on a working link links it again or
 unlinks it.
 
@@ -344,14 +345,17 @@ with its `HostName`, `Port`, `HostKeyAlias` and known_hosts files.
 
 If ssh already trusts the server (its key is in a known_hosts file ssh reads for
 it), it links with no questions, and that key is recorded with the link. Linking
-it again while it still has the key you confirmed asks nothing either. With no
-key in known_hosts (say `UserKnownHostsFile /dev/null`) but an ssh connection of
-yours open to it through a `ControlMaster`, it reads the server's key through that
-connection and links with that, and the link uses that connection too while it is
-open. Only for a server you've never connected to does it show you a fingerprint
-(the key type ssh would pick) and ask you to confirm it. From a script, add
-`--yes` once you've checked it, or `--fingerprint 'SHA256:... (TYPE)'` to link it
-to exactly that key.
+it again while it still has the key you confirmed asks nothing either. Otherwise
+it shows you one fingerprint, the key type ssh would pick, and asks you to confirm
+it, as ssh does for a key it hasn't seen. With no key in known_hosts (say
+`UserKnownHostsFile /dev/null`) but an ssh connection of yours open to it through a
+`ControlMaster`, that key is read through your connection, with no new one made.
+From a script, add `--yes` once you've checked it, or `--fingerprint 'SHA256:...
+(TYPE)'` to link it to exactly that key.
+
+While an ssh connection of yours is open to the server, the link uses it instead
+of its own, but only when ssh checked the server's key as it opened it (your config
+checks host keys, and your known_hosts has the key the link was confirmed with).
 
 A link that can't reach its server doesn't keep trying, so a server's fail2ban
 never takes it for an attack. If a working link drops, it tries once more right

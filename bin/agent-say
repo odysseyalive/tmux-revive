@@ -448,21 +448,21 @@ master_keys() {
 	timeout 15 $SSH "${MUX_OPTS[@]}" "$1" "cat $HOSTKEY_FILES" 2>/dev/null </dev/null |
 		awk '$1 ~ /^(ssh-|ecdsa-|sk-)/ && NF >= 2 {print "x", $1, $2}' | sort -u || true
 }
-# riding HOST: may a link's ssh go through your own open connection to it? Only when one is open,
-# and its host shows a key confirmed for the link, not revoked (looked at once per connection,
-# by its pid): a connection through it makes no key check of its own.
+# riding HOST: may a link's ssh go through your own open connection to it? A connection through
+# it makes no key check of its own, so only when ssh itself checked that host's key when it
+# opened it: your config checks keys (StrictHostKeyChecking yes, ask or accept-new; not no), and
+# a known_hosts file it reads has, for that host, a key confirmed for the link (and not revoked).
+# Nothing read over the connection counts for this. With known_hosts off (/dev/null) or keys not
+# checked, the link makes its own connection, bound to its key (pin_opts), as with none open.
 riding() {
-	local d="$STATE/links/$1" pid fps mark
-	pid="$(user_master "$1")" || return 1
+	local d="$STATE/links/$1" fps
+	user_master "$1" >/dev/null || return 1
 	fps="${PIN_FPS:-$(cat "$d/fingerprint" 2>/dev/null || true)}"
-	kh_find "$1"
-	fps="$(not_revoked "$fps" "$(kh_revoked)")"
 	[[ -n $fps ]] || return 1
-	mark="$pid $(paste -sd, - <<<"$fps")"
-	[[ "$(cat "$d/ride" 2>/dev/null || true)" == "$mark" ]] && return 0
-	master_keys "$1" | ssh-keygen -lf - 2>/dev/null | awk '{print $2, $NF}' | grep -qxF -f <(printf '%s\n' "$fps") || return 1
-	[[ -d $d ]] && echo "$mark" >"$d/ride"
-	return 0
+	kh_find "$1"
+	[[ $KH_STRICT == true || $KH_STRICT == yes || $KH_STRICT == accept-new || $KH_STRICT == ask ]] || return 1
+	fps="$(not_revoked "$fps" "$(kh_revoked)")"
+	[[ -n $fps ]] && grep -qxF -f <(printf '%s\n' "$fps") <<<"$(kh_keys)"
 }
 
 # --- logging in --------------------------------------------------------------------------
@@ -668,13 +668,14 @@ link_why() { # link_why HOST STATUS STDERR-FILE
 # and the name it looks the key up by in them (HostKeyAlias as is, else name or [name]:port).
 kh_find() { # kh_find HOST -> KH_KEY (as known_hosts names it), KH_FILES, KH_NAME, KH_PORT, KH_ALGS
 	local name=$1 port=22 alias="" k v f
-	KH_FILES=() KH_ALGS=""
+	KH_FILES=() KH_ALGS="" KH_STRICT=""
 	while read -r k v; do
 		case $k in
 			hostname) name=$v ;;
 			port) port=$v ;;
 			hostkeyalias) alias=$v ;;
 			hostkeyalgorithms) KH_ALGS=$v ;;
+			stricthostkeychecking) KH_STRICT=$v ;;
 			userknownhostsfile | globalknownhostsfile) for f in $v; do KH_FILES+=("${f/#\~/$HOME}"); done ;;
 		esac
 	done < <(timeout 5 $SSH -G "$1" 2>/dev/null </dev/null)
@@ -728,7 +729,8 @@ keys_changed() { # keys_changed CONFIRMED NOW
 #             and wouldn't ask: nothing asked, and that key is the one recorded
 #   changed   linked before, and known_hosts has another key for it now: asked, with a warning
 #   live      never linked, ssh keeps no key for it, but a connection of yours is open to it:
-#             the key it uses, read through that connection, nothing new connected
+#             the key it uses, read through that connection (nothing new connected), and like
+#             unknown it is asked: whatever answers there says it, a key seen for the first time
 #   unknown   ssh would ask too (no known_hosts key for it, none recorded): from ssh-keyscan
 # A key confirmed and since revoked counts as changed; a revoked key is never one shown.
 # KEYS go first-preferred first (prefer_keys); for live and unknown, only that one. KEY_FRESH
@@ -1729,8 +1731,10 @@ case "$cmd" in
 			die "$host's host key changed since you linked it, so it's not linked. Confirm the new one with agent-say link $host"
 		else
 			[[ $KEY_STATE == trusted ]] && { echo "$host's host key, as ssh already trusts it (known_hosts):"; sed 's/^/  /' <<<"$keys"; }
-			[[ $KEY_STATE == live ]] && { echo "$host's host key, read through your open ssh connection to it:"; sed 's/^/  /' <<<"$keys"; }
-			[[ $KEY_STATE == changed || $KEY_STATE == unknown ]] && confirm_keys
+			# Read through your open connection: what answers there says it, so it is confirmed as a
+			# key seen for the first time is.
+			[[ $KEY_STATE == live ]] && echo "(read through your open ssh connection to $host; the first time this key is seen here: check it matches your server)"
+			[[ $KEY_STATE == changed || $KEY_STATE == unknown || $KEY_STATE == live ]] && confirm_keys
 		fi
 		mkdir -p "$d"
 		# Its limits first: the check below already hands it names (V lines) by its allowlist.
