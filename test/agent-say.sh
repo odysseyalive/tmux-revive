@@ -77,6 +77,8 @@ id=$(tmux capture-pane -p -J -t "$B" -S -100 | sed -n 's/.*agent-say show \([0-9
 check "long message arrives as a notice with an id ($id)" "[[ -n '$id' ]]"
 AGENT_SAY_PANE=$A say beta "a later short one" >/dev/null
 check "show <id> prints exactly that message" "say show '$id' | grep -q 'line 60' && ! say show '$id' | grep -q 'later short'"
+check "show takes the whole id, not a part of one" "! say show '${id:0:8}' >/dev/null 2>&1 && ! say show '${id#*-}' >/dev/null 2>&1"
+check "nor anything that isn't an id" "[[ \$(say show 'a b' 2>&1) == *'usage: agent-say show'* ]]"
 
 echo "refusals"
 out=$(AGENT_SAY_PANE=$A say idle "rm -rf ~" 2>&1)
@@ -193,6 +195,19 @@ printf '{"pid":%s,"name":"from-claude","nameSource":"user","status":"idle"}' "$c
 out=$(AGENT_SAY_PANE=$C say name 2>&1)
 check "no name given: the claude session's own name is used" "[[ \$(tmux display -p -t $C '#{@agent}') == from-claude ]]"
 check "and it isn't typed back as a rename" "[[ '$out' != *'will be renamed'* ]]"
+# Its session id, from its record: only when the record is its process's user's own, and kept
+# apart by that user's uid when that isn't this user. The tests are one user: stat and id stand
+# in for a record of someone else's, and a process of someone else's.
+printf '{"pid":%s,"sessionId":"s-c","status":"idle"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
+sid() { bash -c 'source "$1"; eval "$2"; session_id "$3"' _ "$ROOT/bin/agent-say" "${2:-}" "$1"; }
+check "a session's id is its record's ($(sid $C))" "[[ \$(sid $C) == s-c ]]"
+out=$(sid $C 'stat() { [[ $* == *" /dev/fd/"* ]] && { echo 4242; return; }; command stat "$@"; }')
+check "not from a record that isn't its process's user's own ($out)" "[[ \$out == *':$C:$cpid:'* ]]"
+out=$(sid $C 'id() { [[ $1 == -u ]] && { echo 4242; return; }; command id "$@"; }')
+check "another user's is kept apart by its uid ($out)" "[[ \$out == u$(id -u):s-c ]]"
+out=$(sid $C 'stat() { [[ $* == *" /proc/"* ]] && return 1; command stat "$@"; }; ps() { [[ $* == *uid=* ]] && return 1; command ps "$@"; }')
+check "and with its process's user unknown, none is taken from the file ($out)" "[[ \$out == *':$C:$cpid:'* ]]"
+printf '{"pid":%s,"name":"from-claude","nameSource":"user","status":"idle"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
 out=$(AGENT_SAY_PANE=$SH say name 2>&1)
 check "no name given in a plain shell pane is refused" "grep -q 'no name of its own' <<<\"\$out\""
 out=$(AGENT_SAY_PANE=$A say name alpha2 2>&1)
@@ -1363,6 +1378,11 @@ check "show: not another pane's message ($out)" "[[ -n '$id' ]] && ((rc != 0)) &
 id=$(sed -n 's/^## \[jt -> jv .*\] #\([0-9-]*\)$/\1/p' "$AGENT_SAY_MAILBOX" | tail -n 1)
 out=$(inj $JV "$ROOT/bin/agent-say show $id")
 check "but its own ($out)" "[[ -n '$id' && \$out == *'jt answering jv'* ]]"
+# Two entries under one id, the first its own: each is looked at, so the other isn't shown.
+now=$(date -u +%FT%TZ)
+printf '## [jt -> jv %s] #dup-1\nfor jv\n\n## [jt -> jt %s] #dup-1\nnot for jv\n\n' "$now" "$now" >>"$AGENT_SAY_MAILBOX"
+out=$(inj $JV "$ROOT/bin/agent-say show dup-1")
+check "show: of entries sharing an id, only its own ($out)" "[[ \$out == *'for jv'* && \$out != *'not for jv'* ]]"
 out=$(inj $JV "$ROOT/bin/agent-say link elsewhere.example") && rc=0 || rc=$?
 check "link isn't run for it ($out)" "((rc != 0)) && [[ \$out == *\"agent-say link isn't run for another user's pane\"* ]] && [[ ! -e $T/links/elsewhere.example ]]"
 out=$(inj $JV "$ROOT/bin/agent-say _ctx s-jv 50; $ROOT/bin/agent-say _user-installed 1.2.3") && rc=0 || rc=$?

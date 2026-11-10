@@ -1044,16 +1044,21 @@ local_names() { tmux list-panes -a -F '#{@agent}' 2>/dev/null | grep -v '^$' | s
 # its start time. Permission to talk across links is kept per session, not per pane name.
 valid_session() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:%-]{0,127}$ ]]; }
 session_id() { # session_id PANE
-	local kind pid f sid="" start own
+	local kind pid f sid="" start own rf
 	read -r kind pid < <(pane_agent_pid "$(tmux display-message -p -t "$1" '#{pane_pid}' 2>/dev/null)") || true
 	case "${kind:-}" in
 		claude)
 			f="$(claude_record "$pid")"
-			[[ -n $f ]] && sid="$(jq -r '.sessionId // empty' "$f" 2>/dev/null)"
-			# Another user's (in root's tmux, su - USER): its id is whatever its own file says,
-			# so it is kept apart from this user's sessions, by its user, and can't pass for one.
-			own="$(stat -c %u -- "$f" 2>/dev/null)" || own=""
-			[[ -n $sid && -n $own && $own != "$(id -u)" ]] && sid="u$own:$sid" ;;
+			# The user its process runs as; not known, no id is taken from the file. The file is
+			# read once, through what was opened, and only if it is that user's own.
+			own="$(stat -c %u "/proc/$pid" 2>/dev/null || ps -o uid= -p "$pid" 2>/dev/null | tr -d ' ')" || own=""
+			if [[ -n $f && $own =~ ^[0-9]+$ ]] && exec {rf}<"$f"; then
+				[[ "$(stat -L -c %u "/dev/fd/$rf" 2>/dev/null)" == "$own" ]] && sid="$(jq -r '.sessionId // empty' <&"$rf" 2>/dev/null)" || sid=""
+				exec {rf}<&-
+				# Another user's (in root's tmux, su - USER): its id is whatever its own file
+				# says, so it is kept apart by its user, and can't pass for one of this user's.
+				[[ -n $sid && $own != "$(id -u)" ]] && sid="u$own:$sid"
+			fi ;;
 	esac
 	if ! valid_session "$sid" && [[ -n "${pid:-}" ]]; then
 		start="$(ps -o lstart= -p "$pid" 2>/dev/null | tr -dc 'A-Za-z0-9')"
@@ -2553,19 +2558,25 @@ case "$cmd" in
 		f="$(mktemp "$STATE/users/.$who.XXXXXX")"
 		printf '%s\n' "$v" >"$f" && mv -f "$f" "$STATE/users/$who" || rm -f "$f" ;;
 	show)
-		[[ -n "${2:-}" ]] || die "usage: agent-say show <id>"
+		[[ "${2:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || die "usage: agent-say show <id>"
 		files=()
 		for f in "$MAILBOX.1" "$MAILBOX"; do [[ -f "$f" ]] && files+=("$f"); done
 		((${#files[@]})) || die "the mailbox is empty"
-		out="$(awk -v id="$2" '/^## /{keep = (index($0, "] #" id) > 0)} keep' "${files[@]}")"
-		# For another user's pane: only a message to or from it, since it took its name.
-		if ((ORIGIN != $$)); then
-			h="$(head -n 1 <<<"$out")" h="${h%%"] #"*}"
-			at="${h:${#h}-20}" # its date
-			if [[ -z $ownname || $at < "$since" ]] ||! grep -qF -e "[$ownname -> " -e "[$ownname@" -e " -> $ownname " <<<"$h] "; then
-				out=""
-			fi
-		fi
+		# The entries with exactly that id. For another user's pane, each one only if it is to
+		# or from that pane's name, since it took it.
+		scoped=""
+		((ORIGIN == $$)) || scoped=1
+		out="$(awk -v id="$2" -v scoped="$scoped" -v own="$ownname" -v since="$since" '
+			/^## /{
+				i = index($0, "] #"); r = substr($0, i + 3); sub(/ .*/, "", r)
+				keep = (i > 0 && r == id)
+				if (keep && scoped) {
+					h = substr($0, 1, i - 1)
+					keep = own != "" && substr(h, i - 20, 20) >= since &&
+						(index(h, "## [" own " -> ") == 1 || index(h, "## [" own "@") == 1 || index(h " ", " -> " own " ") > 0)
+				}
+			}
+			keep' "${files[@]}")"
 		[[ -n "$out" ]] || die "no message $2 in the mailbox"
 		printf '%s\n' "$out" ;;
 	read)
