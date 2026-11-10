@@ -544,7 +544,7 @@ check "the hub relays it, as from live-root" "wait_seen2 $DR 'root here, from a 
 in2 $DR "$ROOT/bin/agent-say --from dev-root live-root@devbox 'answer for root'" >/dev/null
 check "and the answer comes back to its pane" "wait_seen1 $LR 'answer for root'"
 out=$(run 1$LR "$ASROOT $ROOT/bin/agent-say cx 'root here, next door'" 2>&1)
-check "a send to an agent in the same tmux waits for the user there ($out)" "[[ '$out' == 'introduction sent to cx@devbox-1; waiting for the user on devbox-1 to allow it. Next time, add --why \"short reason\" so they know why you ask.' ]] && ! \"$T/rbin/tmux\" capture-pane -p -J -t $CX -S -200 | grep -F 'root here, next door' >/dev/null"
+check "a send to an agent in the same tmux waits for the user there ($out)" "[[ \$out == 'introduction sent to cx@devbox-1; waiting for the user on devbox-1 to allow it. Next time, add --why \"short reason\" so they can see why you'\''re asking.' ]] && ! \"$T/rbin/tmux\" capture-pane -p -J -t $CX -S -200 | grep -F 'root here, next door' >/dev/null"
 iid=$(there "$ROOT/bin/agent-say intros" | awk '$1 == "waiting" && /live-root@devbox-1 wants to talk with cx@devbox-1/ {print $2; exit}')
 there "AGENT_SAY_APPROVE_CODE=4321 bash -c 'source $ROOT/bin/agent-say && approve $iid 4321'" >/dev/null 2>&1
 check "allowed there, it is typed in" "wait_seen1 $CX '(introduction, allowed by the user on devbox-1) root here, next door'"
@@ -615,7 +615,7 @@ E0="env -u AGENT_SAY_PANE -u XDG_STATE_HOME HOME=$HOME AGENT_SAY_MAILBOX=$AGENT_
 in0() { run "0$1" "$E0 $2"; }
 sleep 1 # devbox learns the new names at the link's next check-in
 out=$(in0 $LA "$ROOT/bin/agent-say lb 'la here, first'")
-check "an agent's first message to another agent here waits as an introduction ($out)" "[[ \$out == 'introduction sent to lb@laptop; waiting for the user on laptop to allow it. Next time, add --why \"short reason\" so they know why you ask.' ]] && wait_intro 'la@laptop wants to talk with lb@laptop' && ! seen $LB 'la here, first'"
+check "an agent's first message to another agent here waits as an introduction ($out)" "[[ \$out == 'introduction sent to lb@laptop; waiting for the user on laptop to allow it. Next time, add --why \"short reason\" so they can see why you'\''re asking.' ]] && wait_intro 'la@laptop wants to talk with lb@laptop' && ! seen $LB 'la here, first'"
 check "with no --why, its reason is how its message opens" "[[ \$(cat $T/intros/\$(intro_id 'la@laptop wants to talk with lb@laptop')/why) == 'la here, first' ]]"
 out=$(in0 $LA "$ROOT/bin/agent-say lb 'la here, second'")
 check "the next one is held too, and the sender told ($out)" "[[ \$out == 'held: waiting for permission from the user on laptop to talk with lb@laptop.' ]] && ! seen $LB 'la here, second'"

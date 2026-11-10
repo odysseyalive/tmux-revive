@@ -266,7 +266,7 @@ Then just ask your agent in plain words:
 `--from <label>`, before `<to>`, overrides the sender label.
 `--why "short reason"`, before or just after `<to>`, says in one line why an agent is
 writing. When its first message waits for your approval, the panel shows that line
-over Approve and Deny. Without one, the panel shows how the message opens.
+over Approve and Deny. Without it, the panel shows the start of the message.
 
 Read the last five messages:
 
@@ -419,7 +419,7 @@ allow it. The panel's MESSAGES area shows it at the top as **waiting for [G]rant
 access**, and the asking agent's STATE
 blinks **[G]RANT ACCESS**. Press **G** to grant access,
 pick it, read why it's asking, and choose Approve or Deny. The box shows one line
-saying why: the reason the agent gave with `--why`, or the opening of its message.
+on why: the reason the agent gave with `--why`, or the start of its message.
 
 The same goes for every pair of agents, not only across servers. That means two agents on
 your computer, or an agent on a server and one on your computer, either way. What you

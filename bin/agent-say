@@ -24,8 +24,8 @@
 #   agent-say read [n] [name]          last n mailbox entries (default 20), optionally only to <name>
 #
 # Options before <to>: --from <label> overrides the sender label.
-#   --why "short reason"               one line on why you write, shown to the user when your
-#                                      first message waits for approval (also after <to>)
+#   --why "short reason"               one line on why you're writing, shown to the user while
+#                                      your first message waits for approval (also allowed after <to>)
 # Delivery: tmux send-keys -l (literal), then a separate Enter after a short delay, which is
 # how a human paste+submit looks to a TUI. Every message is also appended to the receiving
 # machine's mailbox file, so long text is read from there and nothing is lost if a submit misfires.
@@ -1243,7 +1243,7 @@ short_why() { # short_why NAME ERROR
 # An introduction sent without a --why: the sender is told one helps (intro_said).
 intro_said() { # intro_said RECIPIENT WHY
 	printf 'introduction sent to %s; waiting for the user on %s to allow it.' "$1" "$LABEL"
-	[[ -n $2 ]] || printf ' Next time, add --why "short reason" so they know why you ask.'
+	[[ -n $2 ]] || printf '%s' " Next time, add --why \"short reason\" so they can see why you're asking."
 }
 permit() {
 	PERMIT_SAY="" PERMIT_WHY=""
