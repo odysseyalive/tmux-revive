@@ -1146,7 +1146,7 @@ touch "$T/live.master"
 out=$(lv _host-keys livebox)
 check "with your connection open: live, the key read through it, of the type ssh uses ($out)" "[[ \$out == \$'state: live\n$fp1 (ED25519)' ]]"
 out=$(lv link livebox 2>&1 </dev/null)
-check "but that is a key seen for the first time: shown, and off a terminal it wants --yes ($out)" "[[ \$out == *'read through your open ssh connection'*'first time'*'$fp1 (ED25519)'*'--yes'* && ! -e $lvl/on ]]"
+check "but that is a key seen for the first time: shown, and off a terminal it wants --yes ($out)" "[[ \$out == *'read through your open ssh connection'*'key is new here'*'$fp1 (ED25519)'*'--yes'* && ! -e $lvl/on ]]"
 echo "$T/hostkey1.pub" >"$T/scan.presented"; touch "$T/live.net"
 : >"$T/live.log"
 out=$(lv link livebox --yes 2>&1 </dev/null)
