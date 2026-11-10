@@ -7,8 +7,16 @@ Claude Code, Codex, Cursor Agent and Crush each pick up right where they left of
 
 ## Install
 
+On Linux and macOS:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.sh | sh
+```
+
+On Windows, in PowerShell (it installs into WSL, since tmux doesn't run on Windows itself):
+
+```powershell
+irm https://raw.githubusercontent.com/odysseyalive/tmux-revive/main/install.ps1 | iex
 ```
 
 The installer checks for tmux first. If it's missing, it stops and tells you how to get it on your system.
