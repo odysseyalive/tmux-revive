@@ -27,6 +27,7 @@
 I like my agents working together. Revive lets any AI session talk to any other, even across different Claude accounts, or different AI interfaces like Claude Code and Codex.
 1. Select a session's pane here and press N to name it, say shop-dev.
 2. In any other session, just mention it by name: "Ask shop-dev to run the tests and tell me what fails."
+3. Then approve the connection in the panel with [G] to grant access.
 
 = Talk to your servers too
 .art satellite

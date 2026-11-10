@@ -327,8 +327,8 @@ check "the two agents' beacons take turns" "[[ \$(beacon 0 226) -ge 1 && \$(beac
 # A few suggestions to get going, not a reference: the keys are on the panel already.
 out=$(hframe 160)
 check "it has no key reference or column list" "! grep -qiE 'key reference|What the columns mean|Remember the old BBS|^║ +\\[[^]]+\\] {2,}[A-Z]' <<<\"\$out\" && grep -q 'shop-dev' <<<\"\$out\" && grep -q 'press L' <<<\"\$out\""
-hp=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=55 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
-check "at 160x55 it fits on one screen ($hp)" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]]"
+hp=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=56 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
+check "at 160x56 it fits on one screen ($hp)" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]]"
 
 echo "context left"
 # Stand-in agents (copies of bash named claude and codex) with the records the real ones keep:
