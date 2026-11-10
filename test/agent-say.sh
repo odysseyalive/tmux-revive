@@ -461,12 +461,13 @@ check "the hub hands each server the other's names, marked with their host" "wai
 check "a server isn't handed its own names back" "! grep -q ' devbox\$' $via && ! grep -q ' dev.example.com\$' $T/r2state/agent-say/peers/laptop/via"
 
 echo "the first message across is an introduction, for you to allow"
-out=$(in1 $LR "$ROOT/bin/agent-say --from live-root dev-root 'I am live-root on the live server; I need the deploy logs.'" 2>&1)
+out=$(in1 $LR "$ROOT/bin/agent-say --from live-root --why 'it needs the deploy logs' dev-root 'I am live-root on the live server; I need the deploy logs.'" 2>&1)
 check "a bare name on the other server resolves and goes to the hub ($out)" "[[ '$out' == *'queued for dev-root@dev.example.com through laptop'* ]]"
 check "it waits at the hub as an introduction" "wait_intro 'live-root@devbox wants to talk with dev-root@dev.example.com'"
+check "with the --why it was sent with, carried across the link" "[[ \$(cat \$(dirname $AGENT_SAY_MAILBOX)/intros/\$(intro_id 'live-root@devbox wants to talk with dev-root')/why) == 'it needs the deploy logs' ]]"
 mkdir -p "$T/revive"
 check "and shows in the panel's messages" "tmux run-shell 'REVIVE_PANEL_PEEK=0 COLUMNS=230 LINES=60 REVIVE_DIR=$T/revive AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once' | sed 's/\x1b\[[0-9;]*m//g' | grep -F 'waiting for [G]rant access live-root@devbox→dev-root@dev.example.com' >/dev/null"
-check "the sender is told, plainly" "wait_seen1 $LR '[agent-say notice from laptop' && seen1 $LR 'introduction sent to dev-root@dev.example.com; waiting for the user on laptop to allow it.'"
+check "the sender is told, plainly, and not to add a --why it gave" "wait_seen1 $LR '[agent-say notice from laptop' && seen1 $LR 'introduction sent to dev-root@dev.example.com; waiting for the user on laptop to allow it.' && ! seen1 $LR 'Next time, add --why'"
 in1 $LR "$ROOT/bin/agent-say --from live-root dev-root 'second'" >/dev/null
 in1 $LR "$ROOT/bin/agent-say --from live-root dev-root 'third'" >/dev/null
 check "later ones are held too, and the sender told" "wait_intro '(3 held, ' && wait_seen1 $LR 'held: waiting for permission from the user on laptop'"
@@ -543,7 +544,7 @@ check "the hub relays it, as from live-root" "wait_seen2 $DR 'root here, from a 
 in2 $DR "$ROOT/bin/agent-say --from dev-root live-root@devbox 'answer for root'" >/dev/null
 check "and the answer comes back to its pane" "wait_seen1 $LR 'answer for root'"
 out=$(run 1$LR "$ASROOT $ROOT/bin/agent-say cx 'root here, next door'" 2>&1)
-check "a send to an agent in the same tmux waits for the user there ($out)" "[[ '$out' == 'introduction sent to cx@devbox-1; waiting for the user on devbox-1 to allow it.' ]] && ! \"$T/rbin/tmux\" capture-pane -p -J -t $CX -S -200 | grep -F 'root here, next door' >/dev/null"
+check "a send to an agent in the same tmux waits for the user there ($out)" "[[ '$out' == 'introduction sent to cx@devbox-1; waiting for the user on devbox-1 to allow it. Next time, add --why \"short reason\" so they know why you ask.' ]] && ! \"$T/rbin/tmux\" capture-pane -p -J -t $CX -S -200 | grep -F 'root here, next door' >/dev/null"
 iid=$(there "$ROOT/bin/agent-say intros" | awk '$1 == "waiting" && /live-root@devbox-1 wants to talk with cx@devbox-1/ {print $2; exit}')
 there "AGENT_SAY_APPROVE_CODE=4321 bash -c 'source $ROOT/bin/agent-say && approve $iid 4321'" >/dev/null 2>&1
 check "allowed there, it is typed in" "wait_seen1 $CX '(introduction, allowed by the user on devbox-1) root here, next door'"
@@ -614,7 +615,8 @@ E0="env -u AGENT_SAY_PANE -u XDG_STATE_HOME HOME=$HOME AGENT_SAY_MAILBOX=$AGENT_
 in0() { run "0$1" "$E0 $2"; }
 sleep 1 # devbox learns the new names at the link's next check-in
 out=$(in0 $LA "$ROOT/bin/agent-say lb 'la here, first'")
-check "an agent's first message to another agent here waits as an introduction ($out)" "[[ \$out == 'introduction sent to lb@laptop; waiting for the user on laptop to allow it.' ]] && wait_intro 'la@laptop wants to talk with lb@laptop' && ! seen $LB 'la here, first'"
+check "an agent's first message to another agent here waits as an introduction ($out)" "[[ \$out == 'introduction sent to lb@laptop; waiting for the user on laptop to allow it. Next time, add --why \"short reason\" so they know why you ask.' ]] && wait_intro 'la@laptop wants to talk with lb@laptop' && ! seen $LB 'la here, first'"
+check "with no --why, its reason is how its message opens" "[[ \$(cat $T/intros/\$(intro_id 'la@laptop wants to talk with lb@laptop')/why) == 'la here, first' ]]"
 out=$(in0 $LA "$ROOT/bin/agent-say lb 'la here, second'")
 check "the next one is held too, and the sender told ($out)" "[[ \$out == 'held: waiting for permission from the user on laptop to talk with lb@laptop.' ]] && ! seen $LB 'la here, second'"
 allow_intro "$(intro_id 'la@laptop wants to talk with lb@laptop')" >/dev/null
@@ -646,18 +648,27 @@ in0 $LE "$ROOT/bin/agent-say ld 'le here, crossing'" >/dev/null
 in0 $LE "$ROOT/bin/agent-say ld 'le here, again'" >/dev/null
 check "both wrote first: an introduction waits each way" "wait_intro 'ld@laptop wants to talk with le@laptop' && wait_intro 'le@laptop wants to talk with ld@laptop (2 held'"
 out=$(allow_intro "$(intro_id 'ld@laptop wants to talk with le@laptop')" 2>&1)
-check "one approve connects them both ways ($out)" "[[ \$out == 'allowed ld@laptop and le@laptop; 3 held messages delivered' ]] && ! say intros | grep -E '(ld|le)@laptop wants' >/dev/null"
+check "one approve connects them both ways ($out)" "[[ \$out == 'ld@laptop and le@laptop can talk now; 3 held messages delivered' ]] && ! say intros | grep -E '(ld|le)@laptop wants' >/dev/null"
 check "and delivers what each side held, in order" "wait_seen $LE '(introduction, allowed by the user on laptop) ld here, first' && wait_seen $LD '(introduction, allowed by the user on laptop) le here, crossing' && wait_seen $LD 'le here, again'"
-check "the other way's introduction is logged as answered with it" "grep -q ' allowed with ld@laptop and le@laptop: introduction [0-9a-f]* from le@laptop to ld@laptop, 2 held\$' $T/grants.log"
+check "the other way's introduction is logged as answered with it" "grep -q ' allowed ld@laptop and le@laptop: introduction [0-9a-f]* from le@laptop to ld@laptop, 2 held\$' $T/grants.log"
 out=$(in0 $LE "$ROOT/bin/agent-say ld 'le, after'")
 check "nothing asks again ($out)" "[[ \$out == 'sent to ld'* ]] && wait_seen $LD 'le, after'"
 in0 $LF "$ROOT/bin/agent-say lg 'lf here'" >/dev/null
 in0 $LG "$ROOT/bin/agent-say lf 'lg here'" >/dev/null
 wait_intro 'lg@laptop wants to talk with lf@laptop' >/dev/null
 out=$(say _intro deny "$(intro_id 'lf@laptop wants to talk with lg@laptop')" 2>&1)
-check "one deny declines them both ways ($out)" "[[ \$out == 'declined lf@laptop and lg@laptop' ]] && ! say intros | grep -E '(lf|lg)@laptop wants' >/dev/null"
+check "one deny declines them both ways ($out)" "[[ \$out == \"declined: lf@laptop and lg@laptop can't talk\" ]] && ! say intros | grep -E '(lf|lg)@laptop wants' >/dev/null"
 check "each sender is told, and nothing is delivered" "wait_seen $LF 'declined: the user on laptop declined your messages to lg@laptop.' && wait_seen $LG 'declined: the user on laptop declined your messages to lf@laptop.' && ! seen $LG 'lf here' && ! seen $LF 'lg here'"
+out=$(in0 $LD "$ROOT/bin/agent-say lf --why 'to compare   the build logs' 'ld for lf'")
+check "--why after the name is kept with the introduction, and no --why is asked for ($out)" "[[ \$out == 'introduction sent to lf@laptop; waiting for the user on laptop to allow it.' ]] && [[ \$(cat $T/intros/\$(intro_id 'ld@laptop wants to talk with lf@laptop')/why) == 'to compare the build logs' ]] && ! seen $LF 'ld for lf'"
+say _intro deny "$(intro_id 'ld@laptop wants to talk with lf@laptop')" >/dev/null
 for p in $LD $LE $LF $LG; do tmux kill-pane -t "$p"; done
+# A reason is one short line of plain text, whatever an agent sends.
+rl() { bash -c 'source "$1" && reason_line "$2"' _ "$ROOT/bin/agent-say" "$1"; }
+check "a reason loses its escape sequences whole" "[[ \$(rl \$'\\e[31mred\\e[0m now\\e]0;title\\a') == 'red now' ]]"
+check "and its control characters, whitespace run together" "[[ \$(rl \$'a\\tb\\rc  \\x7f d') == 'a b c d' ]]"
+check "and is cut to 80 bytes, with an ellipsis" "[[ \$(rl \$(printf 'x%.0s' {1..200})) == \$(printf 'x%.0s' {1..77})… ]]"
+check "a message's reason is its first line, to its first sentence's end" "[[ \$(rl \$'\\n  First thing. Second thing\\nmore') == 'First thing.' && \$(rl \$'one line\\ntwo') == 'one line' && \$(rl 'v1.2 is out') == 'v1.2 is out' ]]"
 # The watchman-dev case: an agent on a linked server writing to one here.
 out=$(in1 $CX "$ROOT/bin/agent-say la 'cx on devbox, for la'")
 check "an agent there writing to one here waits for you, and is told so ($out)" "[[ \$out == *'queued for la@laptop'* ]] && wait_seen1 $CX 'introduction sent to la@laptop; waiting for the user on laptop to allow it.' && ! seen $LA 'cx on devbox'"
@@ -666,8 +677,8 @@ allow_intro "$(intro_id 'cx@devbox wants to talk with la@laptop')" >/dev/null
 check "allowed, it arrives here" "wait_seen $LA '(introduction, allowed by the user on laptop) cx on devbox, for la'"
 out=$(in0 $LA "$ROOT/bin/agent-say cx 'la answering cx'")
 check "and the answer goes back with no second introduction ($out)" "[[ \$out != *introduction* ]] && wait_seen1 $CX 'la answering cx' && ! say intros | grep -F 'la@laptop wants' >/dev/null"
-out=$(in0 $LB "$ROOT/bin/agent-say cx 'lb here, for cx'")
-check "an agent here writing to one on a linked server waits here first ($out)" "[[ \$out == 'introduction sent to cx@devbox; waiting for the user on laptop to allow it.' ]] && sleep 1 && ! seen1 $CX 'lb here, for cx'"
+out=$(in0 $LB "$ROOT/bin/agent-say --why 'cx has the keys' cx 'lb here, for cx'")
+check "an agent here writing to one on a linked server waits here first, with its --why ($out)" "[[ \$out == 'introduction sent to cx@devbox; waiting for the user on laptop to allow it.' ]] && [[ \$(cat $T/intros/\$(intro_id 'lb@laptop wants to talk with cx@devbox')/why) == 'cx has the keys' ]] && sleep 1 && ! seen1 $CX 'lb here, for cx'"
 allow_from 'lb@laptop wants to talk with cx@devbox'
 check "allowed, it goes there, from here" "wait_seen1 $CX '(introduction, allowed by the user on laptop) lb here, for cx' && seen1 $CX '[agent-msg from=lb@laptop'"
 out=$(in1 $CX "$ROOT/bin/agent-say lb 'cx answering lb'")
@@ -780,7 +791,7 @@ in1 $CX "$ROOT/bin/agent-say --from cx tt-dev 'from the old cx'" >/dev/null
 wait_intro 'cx@devbox wants to talk with tt-dev' >/dev/null
 check "(cx restarts)" "restart $T/rbin/tmux $CX $T/run.cx cx devbox"
 out=$(allow_intro "$(intro_id 'cx@devbox wants to talk with tt-dev')" 2>&1)
-check "approved, it says the sender restarted ($out)" "[[ \$out == 'allowed cx@devbox and tt-dev@dev.example.com; cx restarted since asking, so what it sent before was dropped' ]]"
+check "approved, it says the sender restarted ($out)" "[[ \$out == 'cx@devbox and tt-dev@dev.example.com can talk now; cx restarted after asking, so its earlier messages were dropped' ]]"
 check "what the old session sent isn't delivered, and its row says why" "wait_mail 'cx@devbox -> tt-dev@dev.example.com .*(NOT DELIVERED: cx restarted before approval)' && sleep 2 && ! seen2 $TT 'from the old cx' && ! seen1 $CX \"wasn't delivered\""
 in1 $CX "$ROOT/bin/agent-say --from cx tt-dev 'from the new cx'" >/dev/null
 check "and its new session talks with no new introduction" "wait_seen2 $TT 'from the new cx' && ! say intros | grep waiting >/dev/null"

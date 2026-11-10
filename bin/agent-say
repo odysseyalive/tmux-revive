@@ -24,6 +24,8 @@
 #   agent-say read [n] [name]          last n mailbox entries (default 20), optionally only to <name>
 #
 # Options before <to>: --from <label> overrides the sender label.
+#   --why "short reason"               one line on why you write, shown to the user when your
+#                                      first message waits for approval (also after <to>)
 # Delivery: tmux send-keys -l (literal), then a separate Enter after a short delay, which is
 # how a human paste+submit looks to a TUI. Every message is also appended to the receiving
 # machine's mailbox file, so long text is read from there and nothing is lost if a submit misfires.
@@ -1151,7 +1153,26 @@ grant_set() { # grant_set allow|deny|none SENDER-SESSION RECIPIENT-SESSION [SEND
 	printf '%s %s %s %s %s %s by pid %s (%s) under %s\n' "$(date -u +%FT%TZ)" "$1" "${4:-$2}" "${5:-$3}" "$2" "$3" "$$" \
 		"$(ps -o args= -p $$ 2>/dev/null | head -c 80)" "$(ps -o args= -p "$PPID" 2>/dev/null | head -c 80)" >>"$GRANTS.log"
 }
-hold() { # hold SENDER-SESSION RECIPIENT-SESSION SENDER RECIPIENT TEXT -> new (an introduction now waits), held, or full
+# Why an agent asks, as the panel shows it over Approve and Deny: one short line, the --why
+# it gave or, without one, how its message opens (its first line, up to its first sentence's
+# end). An agent's words: no control character, whitespace run together, at most WHY_MAX
+# bytes, cut with an ellipsis. reason_line TEXT
+WHY_MAX=80
+reason_line() {
+	local LC_ALL=C s="$1" p
+	local -a w
+	# Colour and other escape sequences go whole, not only their ESC.
+	[[ $s == *$'\e'* ]] && s="$(printf '%s' "$s" | LC_ALL=C sed -E $'s#\e\\[[0-?]*[ -/]*[@-~]##g; s#\e\\][^\a\e]*(\a|\e\\\\)?##g')"
+	s="${s#"${s%%[![:space:]]*}"}"
+	s="${s%%$'\n'*}"
+	p="${s%%[.!?] *}"
+	[[ $p == "$s" ]] || s="$p${s:${#p}:1}"
+	read -ra w <<<"$(printable "$s")"
+	s="${w[*]}"
+	((${#s} > WHY_MAX)) && s="$(printable "${s:0:WHY_MAX-3}")…" # what a cut character left is dropped
+	printf '%s' "$s"
+}
+hold() { # hold SENDER-SESSION RECIPIENT-SESSION SENDER RECIPIENT TEXT [WHY] -> new (an introduction now waits), held, or full
 	local d n
 	d="$INTROS/$(pair_id "$1" "$2")"
 	mkdir -p "$INTROS"
@@ -1171,6 +1192,9 @@ hold() { # hold SENDER-SESSION RECIPIENT-SESSION SENDER RECIPIENT TEXT -> new (a
 		printf '%(%s)T\n' -1 >"$d/created"
 		n="$(printable "$5")"
 		printf '%s' "${n:0:INTRO_MAX}" >"$d/intro"
+		n="$(reason_line "${6:-}")"
+		[[ -n $n ]] || n="$(reason_line "$5")"
+		printf '%s\n' "$n" >"$d/why"
 	elif [[ "$(head -n 1 "$d/from-session" 2>/dev/null)" != "$1" || "$(head -n 1 "$d/to-session" 2>/dev/null)" != "$2" ]]; then
 		echo clash; return # another pair's introduction under this id: never add to it
 	fi
@@ -1213,17 +1237,22 @@ short_why() { # short_why NAME ERROR
 	esac
 }
 # The permission one agent's message to another needs, here (the hub's relays ask in the poller).
-# permit SENDER-KEY RECIPIENT-KEY SENDER RECIPIENT TEXT (keys as stamp makes them, names as
+# permit SENDER-KEY RECIPIENT-KEY SENDER RECIPIENT TEXT [WHY] (keys as stamp makes them, names as
 # name@host): 0 to deliver it now. Otherwise 1, with PERMIT_SAY, what to tell the sender, and
 # PERMIT_WHY, why it isn't delivered (empty: it waits for you, held with its introduction).
+# An introduction sent without a --why: the sender is told one helps (intro_said).
+intro_said() { # intro_said RECIPIENT WHY
+	printf 'introduction sent to %s; waiting for the user on %s to allow it.' "$1" "$LABEL"
+	[[ -n $2 ]] || printf ' Next time, add --why "short reason" so they know why you ask.'
+}
 permit() {
 	PERMIT_SAY="" PERMIT_WHY=""
 	case "$(grant_state "$1" "$2" - "$3" "$4")" in
 		allowed) return 0 ;;
 		denied) PERMIT_WHY="declined by the user on $LABEL"
 			PERMIT_SAY="declined: the user on $LABEL declined your messages to $4." ;;
-		*) case "$(hold "$1" "$2" "$3" "$4" "$5")" in
-				new) PERMIT_SAY="introduction sent to $4; waiting for the user on $LABEL to allow it." ;;
+		*) case "$(hold "$1" "$2" "$3" "$4" "$5" "${6:-}")" in
+				new) PERMIT_SAY="$(intro_said "$4" "$(reason_line "${6:-}")")" ;;
 				held) PERMIT_SAY="held: waiting for permission from the user on $LABEL to talk with $4." ;;
 				clash) PERMIT_WHY="it doesn't match the introduction already waiting under its id" ;;
 				gone) PERMIT_WHY="its introduction was answered just as it came in; send it again" ;;
@@ -1265,7 +1294,7 @@ intros_between() {
 }
 # One of those, answered with the one you picked: logged the way a lapsed one is.
 intro_log() { # intro_log allowed|declined A B (I_ as intro_ok set them)
-	printf '%s %s with %s and %s: introduction %s from %s to %s, %s held\n' "$(date -u +%FT%TZ)" "$1" "$2" "$3" \
+	printf '%s %s %s and %s: introduction %s from %s to %s, %s held\n' "$(date -u +%FT%TZ)" "$1" "$2" "$3" \
 		"$(basename "$I_DIR")" "$I_FROM" "$I_TO" "$(find "$I_DIR/held" -type f 2>/dev/null | wc -l | tr -d ' ')" >>"$GRANTS.log"
 }
 # Is this the panel's popup, with the code it showed you and you typed back? approve and
@@ -1323,10 +1352,10 @@ approve() { # approve ID CODE: allow the pair, then deliver what waited, in orde
 		done
 		rm -rf "$I_DIR"
 	done
-	say="allowed $a and $b"
+	say="$a and $b can talk now"
 	((sent)) && say+="; $sent held message$( ((sent == 1)) || echo s) delivered"
 	((lost)) && say+="; $lost not delivered"
-	[[ -n $gone ]] && say+="; $gone restarted since asking, so what it sent before was dropped"
+	[[ -n $gone ]] && say+="; $gone restarted after asking, so its earlier messages were dropped"
 	echo "$say"
 }
 decline() { # decline ID: refuse the pair from now on, both ways, drop what waited, tell the senders
@@ -1345,7 +1374,7 @@ decline() { # decline ID: refuse the pair from now on, both ways, drop what wait
 		rm -rf "$I_DIR"
 		tell "${I_FROM#*@}" "${I_FROM%@*}" "declined: the user on $LABEL declined your messages to $I_TO."
 	done
-	echo "declined $a and $b"
+	echo "declined: $a and $b can't talk"
 }
 revoke() { # revoke A B: forget what was said for the pair (sessions or name@host), either way
 	local t="$GRANTS.$$" n
@@ -1387,12 +1416,13 @@ start_poller() {
 }
 
 # Queue a message for a linked machine that checks in here (we are its server).
-queue_for_peer() { # queue_for_peer LABEL TO FROM MESSAGE [SENDER-SESSION]
+queue_for_peer() { # queue_for_peer LABEL TO FROM MESSAGE [SENDER-SESSION [WHY]]
 	local d="$STATE/peers/$1/outbox" id
 	mkdir -p "$d"
 	id="$(date -u +%Y%m%d%H%M%S)-$$-$RANDOM"
 	# The sender's session goes beside it (.sid.<id>), first, so the check-in that fetches it has it.
 	[[ -n "${5:-}" ]] && valid_session "$5" && printf '%s\n' "$5" >"$d/.sid.$id"
+	[[ -z "${6:-}" ]] || printf '%s\n' "$6" >"$d/.why.$id" # and its --why, as .why.<id>
 	printf '%s\n%s\n%s' "$2" "$3" "$4" >"$d/.$id" && mv "$d/.$id" "$d/$id"
 	if [[ "$2" == *@* ]]; then
 		echo "queued for $2 through $1 (sent on at its next check-in, within a few seconds)"
@@ -1422,7 +1452,11 @@ mail() { # mail HEADER BODY
 send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	local to="$1" msg me relayed="" ascmd tapid="" homes hubs hub d sp sn rc host name target tkind i ts id you reply line queue_to=""
 	local rs rk renv="" AGENT_PANE="" AGENT_SID=""
-	shift; [[ $# -gt 0 ]] || die "usage: agent-say <to> <message...>"
+	shift
+	# --why may follow <to> too: agent-say NAME --why "reason" "message"
+	if [[ "${1:-}" == --why ]]; then REASON="${2:-}"; shift 2 || die "--why needs a reason"; fi
+	[[ $# -gt 0 ]] || die "usage: agent-say [--why \"short reason\"] <to> <message...>"
+	REASON="$(reason_line "$REASON")"
 	if [[ "$*" == - ]]; then msg="$(head -c $((MSG_MAX + 1)))"; else msg="$*"; fi
 	[[ -n "$msg" ]] || die "empty message"
 	msg="$(cap "$msg")"
@@ -1469,7 +1503,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 					valid_name "$sn" || die "this pane has no name: name it first (agent-say name <name>); not sent"
 					from="$sn@$LABEL"
 				fi
-				queue_for_peer "$host" "$name" "$from" "$msg" "$AGENT_SID"
+				queue_for_peer "$host" "$name" "$from" "$msg" "$AGENT_SID" "$REASON"
 				return
 			fi
 			hub="$(relay_for "$host")"
@@ -1488,7 +1522,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 			[[ -n "$sn" ]] || die "this pane has no name: name it first (agent-say name <name>); not sent"
 			[[ "$sn" == "${me%@*}" ]] || die "--from ${me%@*} names another pane than this one ($sn); send as the pane you're in"
 			[[ -n "$SENDER_SID" ]] || die "no agent session found in this pane ($sn); not sent"
-			queue_for_peer "$hub" "$name@$host" "$from" "$msg" "$SENDER_SID"
+			queue_for_peer "$hub" "$name@$host" "$from" "$msg" "$SENDER_SID" "$REASON"
 			return
 		fi
 		# Otherwise hand the message to agent-say on that host over ssh: only a host linked here,
@@ -1505,7 +1539,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 			from="$(name_of "$AGENT_PANE")"; from="${from:-$AGENT_PANE}@$LABEL"
 			rs="$(awk -v n="$name" '$1 == n {print $2; exit}' "$STATE/links/$host/sessions" 2>/dev/null)"
 			rk="$(stamp "$rs" "$name" "$host")"
-			permit "$(stamp "$AGENT_SID" "" "$LABEL")" "$rk" "$from" "$to" "$msg" || {
+			permit "$(stamp "$AGENT_SID" "" "$LABEL")" "$rk" "$from" "$to" "$msg" "$REASON" || {
 				[[ -z $PERMIT_WHY ]] || die "${PERMIT_SAY:-$PERMIT_WHY; not sent}"
 				echo "$PERMIT_SAY"
 				return 0
@@ -1533,7 +1567,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 			# It goes as the pane it comes from, whatever --from says.
 			from="$(name_of "$AGENT_PANE")"; from="${from:-$AGENT_PANE}"
 			you="$(name_of "$target")"; you="${you:-$target}"
-			permit "$(stamp "$AGENT_SID" "" "$LABEL")" "$(stamp "$rs" "" "$LABEL")" "$from@$LABEL" "$you@$LABEL" "$msg" || {
+			permit "$(stamp "$AGENT_SID" "" "$LABEL")" "$(stamp "$rs" "" "$LABEL")" "$from@$LABEL" "$you@$LABEL" "$msg" "$REASON" || {
 				[[ -z $PERMIT_WHY ]] || die "${PERMIT_SAY:-$PERMIT_WHY; not sent}"
 				echo "$PERMIT_SAY"
 				return 0
@@ -1606,10 +1640,16 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 # functions only, no command run.
 [[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 
-from=""
-if [[ "${1:-}" == --from ]]; then from="${2:-}"; shift 2 || die "--from needs a value"; fi
+from="" REASON=""
+while :; do
+	case "${1:-}" in
+		--from) from="${2:-}"; shift 2 || die "--from needs a value" ;;
+		--why) REASON="${2:-}"; shift 2 || die "--why needs a reason" ;;
+		*) break ;;
+	esac
+done
 
-cmd="${1:-}"; [[ -n "$cmd" ]] || { sed -n '2,29p' "$0"; exit 1; }
+cmd="${1:-}"; [[ -n "$cmd" ]] || { sed -n '2,31p' "$0"; exit 1; }
 
 case "$cmd" in
 	name)
@@ -1992,6 +2032,11 @@ case "$cmd" in
 				while read -r tag id s _; do
 					[[ "$tag" == S && "$id" =~ ^[A-Za-z0-9-]+$ ]] && valid_session "${s:-}" && msid[$id]=$s
 				done <<<"$out"
+				# And the --why each came with, if any (W id base64): hold makes it safe to show.
+				declare -A mwhy=()
+				while read -r tag id s _; do
+					[[ "$tag" == W && "$id" =~ ^[A-Za-z0-9-]+$ ]] && mwhy[$id]="$(base64 -d <<<"${s:-}" 2>/dev/null | head -c 1000)"
+				done <<<"$out"
 				while read -r tag id to mfrom body; do
 					[[ "$tag" == M ]] || continue
 					[[ "$id" =~ ^[A-Za-z0-9-]+$ ]] || continue
@@ -2044,8 +2089,8 @@ case "$cmd" in
 									why="declined by the user on $LABEL"
 									tell "$host" "${mfrom%@*}" "declined: the user on $LABEL declined your messages to $to." ;;
 								*)
-									case "$(hold "$ssid" "$rsid" "$mfrom" "$to" "$text")" in
-										new) tell "$host" "${mfrom%@*}" "introduction sent to $to; waiting for the user on $LABEL to allow it." ;;
+									case "$(hold "$ssid" "$rsid" "$mfrom" "$to" "$text" "${mwhy[$id]:-}")" in
+										new) tell "$host" "${mfrom%@*}" "$(intro_said "$to" "$(reason_line "${mwhy[$id]:-}")")" ;;
 										held) tell "$host" "${mfrom%@*}" "held: waiting for permission from the user on $LABEL to talk with $to." ;;
 										clash) why="it doesn't match the introduction already waiting under its id" ;;
 										gone) why="its introduction was answered just as it came in; send it again" ;;
@@ -2073,7 +2118,7 @@ case "$cmd" in
 							elif [[ $ssid == n:* ]] && awk -v n="${mfrom%@*}" '$1 == n {f = 1} END {exit !f}' "$d/sessions" 2>/dev/null; then
 								# By name only for a person there, never under an agent's name.
 								why="no agent session came with it, though ${mfrom%@*} is an agent's name on $host"
-							elif ! permit "$ssid" "$(stamp "$rs" "" "$LABEL")" "$mfrom" "$to@$LABEL" "$text"; then
+							elif ! permit "$ssid" "$(stamp "$rs" "" "$LABEL")" "$mfrom" "$to@$LABEL" "$text" "${mwhy[$id]:-}"; then
 								why="$PERMIT_WHY" held=1
 								[[ -z $PERMIT_SAY ]] || tell "$host" "${mfrom%@*}" "$PERMIT_SAY"
 							fi
@@ -2178,7 +2223,7 @@ case "$cmd" in
 				V) # a pane on another machine it links to: "host name"
 					read -r vh vn _ <<<"$val"
 					valid_host "${vh:-}" && valid_name "${vn:-}" && [[ "$vh" != "$LABEL" ]] && echo "$vn $vh" >>"$nv" ;;
-				A) [[ "$val" =~ ^[A-Za-z0-9-]+$ ]] && rm -f "$d/outbox/$val" "$d/outbox/.sid.$val" ;;
+				A) [[ "$val" =~ ^[A-Za-z0-9-]+$ ]] && rm -f "$d/outbox/$val" "$d/outbox/.sid.$val" "$d/outbox/.why.$val" ;;
 				B) bye=1 ;;
 			esac
 		done
@@ -2189,7 +2234,7 @@ case "$cmd" in
 				[[ -f "$f" ]] || continue
 				{ read -r mto; read -r mfrom; } <"$f"
 				mail "[$mfrom -> $mto@$2 $(date -u +%FT%TZ)] #$(basename "$f") (NOT DELIVERED: $2 unlinked)" "$(tail -n +3 "$f")"
-				rm -f "$f" "$d/outbox/.sid.$(basename "$f")"
+				rm -f "$f" "$d/outbox/.sid.$(basename "$f")" "$d/outbox/.why.$(basename "$f")"
 			done
 			exit 0
 		fi
@@ -2204,6 +2249,7 @@ case "$cmd" in
 			{ read -r mto; read -r mfrom; } <"$f"
 			sid="$(head -n 1 "$d/outbox/.sid.$(basename "$f")" 2>/dev/null || true)"
 			valid_session "$sid" && printf 'S %s %s\n' "$(basename "$f")" "$sid"
+			[[ -s "$d/outbox/.why.$(basename "$f")" ]] && printf 'W %s %s\n' "$(basename "$f")" "$(base64 <"$d/outbox/.why.$(basename "$f")" | tr -d '\n')"
 			printf 'M %s %s %s %s\n' "$(basename "$f")" "$mto" "$mfrom" "$(tail -n +3 "$f" | base64 | tr -d '\n')"
 		done ;;
 	intros)

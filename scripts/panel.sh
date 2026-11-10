@@ -2957,7 +2957,29 @@ act() {
 			# back in a popup, so agents on other computers can't approve it (one running as you
 			# here could), and neither can a stray Enter here.
 			labels=()
-			while [[ -n $txt ]] && ((${#labels[@]} < 3)); do labels+=("$NOTE${txt:0:60}"); txt=${txt:60}; done
+			# First, why it asks: one short line agent-say kept (its --why, or how its message
+			# opens). When both wrote first, the other way's too (by its names, as agent-say's
+			# intros_between finds it), the earlier one first.
+			local wd wy wf wt wc wl=()
+			for wd in "$d" "$ASTATE"/intros/*/; do
+				((${#wl[@]} < 2)) || break
+				wy="" wf="" wt="" wc=0
+				{ read -r wf <"$wd/from"; read -r wt <"$wd/to"; read -r wc <"$wd/created"; } 2>/dev/null || true
+				clean wf wt
+				[[ $wd == "$d" ]] || [[ $wf == "$t" && $wt == "$f" ]] || continue
+				{ read -r wy <"$wd/why"; } 2>/dev/null || wy=$(head -c 60 "$wd/intro" 2>/dev/null)
+				clean wy
+				((${#wy} > 80)) && wy="${wy:0:79}…"
+				[[ $wc =~ ^[0-9]+$ ]] || wc=0
+				wl+=("$wc${NOTE}${wf%@*}${NOTE}$wy")
+			done
+			if ((${#wl[@]} == 1)); then labels+=("${NOTE}why: ${wl[0]##*"$NOTE"}")
+			elif ((${#wl[@]} == 2)); then
+				((${wl[1]%%"$NOTE"*} < ${wl[0]%%"$NOTE"*})) && wl=("${wl[1]}" "${wl[0]}")
+				for wd in "${wl[@]}"; do wd=${wd#*"$NOTE"}; labels+=("${NOTE}why (${wd%%"$NOTE"*}): ${wd#*"$NOTE"}"); done
+			fi
+			wc=${#labels[@]}
+			while [[ -n $txt ]] && ((${#labels[@]} < wc + 3)); do labels+=("$NOTE${txt:0:60}"); txt=${txt:60}; done
 			# Its agent restarted since asking (its computer reports another session in that
 			# pane, or none): what it sent is from a conversation that's over.
 			local fs="" cur=""
@@ -3007,7 +3029,7 @@ act() {
 	# (on a folded heading, open it again, as Enter does).
 	f | F)
 		if [[ -n $HSEL ]]; then act enter; return
-		elif [[ -z ${P_HOST[SEL]:-} ]]; then flash "this computer doesn't fold"; return; fi
+		elif [[ -z ${P_HOST[SEL]:-} ]]; then flash "this computer can't be folded"; return; fi
 		fold_toggle "${P_HOST[SEL]}" && HSEL=${P_HOST[SEL]} ;;
 	a | A)
 		SCENE=$(((SCENE + 1) % ${#SCENES[@]}))
