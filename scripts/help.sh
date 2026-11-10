@@ -390,7 +390,7 @@ help_frame() {
 # or ? again. ↑↓ scroll a line, PgUp/PgDn and Space a page, Home and End go to either end.
 # Ctrl-C closes it too.
 help_view() {
-	local k rest seq st INTR=0
+	local k rest seq st INTR=0 hsec=0
 	HELP=1 HELP_TOP=0 PREV=()
 	trap 'INTR=1' INT
 	while :; do
@@ -399,7 +399,9 @@ help_view() {
 		IFS= read -rsn1 -t 1 k
 		st=$?
 		((INTR)) && break
-		if ((st)); then ((st > 128)) && continue; break; fi # over 128: the second is up
+		# Over 128: the second is up. The panel's clock moves on every other one (its REFRESH,
+		# 2s), so the page's beacons blink as they would on the panel.
+		if ((st)); then ((st > 128)) && { ((++hsec % 2)) || ((TICK++)); continue; }; break; fi
 		case $k in
 		x | X | q | Q | '?') break ;;
 		' ') HELP_TOP=$((HELP_TOP + HELP_VIEW - 1)) ;;

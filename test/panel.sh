@@ -251,6 +251,9 @@ check "the command bar offers ? for help" "hscreen | grep -qF '[?] help'"
 tm send-keys -t work:helpw '?'
 check "? opens the help page, with its banner" "hwait 'C H E A T   S H E E T' && hscreen | grep -q 'HELP · HOW TO USE REVIVE'"
 check "in place of the pane list, under the panel's banner" "! hscreen | grep -q '✦ this panel\|PANES\|MESSAGES' &&hscreen | grep -q 'C O N T R O L' && hwhole"
+# Left open, the page keeps the panel's clock: the agents' beacons take turns, live.
+beacons() { local i seen=""; for i in 1 2 3 4 5 6; do seen+=$(tm capture-pane -p -e -t work:helpw | grep -o $'\e\\[38;5;22[67]m' | sort -u | tr -d '\n'); sleep 0.8; done; printf '%s' "$seen"; }
+check "left open, its beacons blink in turn" "b=\$(beacons); [[ \$b == *'226m'* && \$b == *'227m'* ]]"
 # A short pane, so there's a page to scroll through.
 tm resize-window -t work:helpw -x 130 -y 24; sleep 1.5
 p0=$(hpos)
