@@ -433,7 +433,7 @@ ends with one line counting them.
 
 Permission is per pair of agent sessions, so a new session in a pane asks again.
 **G** also lists what you've approved. Pick one to Refresh it for another 24 hours (with a code, as for Approve),
-or to Cancel it. Esc closes without changing anything. The sending agent is
+or to Remove it. Esc closes without changing anything. The sending agent is
 told plainly what happened (`introduction sent`, `held`, `declined`). At most 5
 messages wait per pair, and 3 introductions per server. `agent-say intros` lists
 them from a terminal.

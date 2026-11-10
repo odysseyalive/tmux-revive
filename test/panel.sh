@@ -570,9 +570,9 @@ before=$(state)
 akey g; wait_a 'APPROVED' >/dev/null
 check "with nothing waiting, ACCESS lists only APPROVED" "! ascreen | grep -qF 'WAITING' && ascreen | grep -qF '1  ann@far.invalid → bob@near.invalid'"
 akey 1
-check "an approved one offers Refresh or Cancel" "wait_a '1  Refresh' && wait_a '2  Cancel'"
+check "an approved one offers Refresh or Remove" "wait_a '1  Refresh' && wait_a '2  Remove'"
 akey Escape
-check "Esc there changes nothing" "gone_a '2  Cancel' && [[ \$(state) == '$before' ]]"
+check "Esc there changes nothing" "gone_a '2  Remove' && [[ \$(state) == '$before' ]]"
 echo wrong >"$T/popup.code"; : >"$T/popup.log"
 akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '1  Refresh' >/dev/null; akey 1
 check "Refresh asks for the code in the same popup; a wrong one is turned away" "wait_a \"not refreshed: the code didn't match\" 60 && grep -q '^display-popup ' $T/popup.log"
@@ -582,8 +582,8 @@ start=$(date +%s)
 akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '1  Refresh' >/dev/null; akey 1
 check "Refresh restarts its day" "wait_a 'refreshed: ann@far.invalid → bob@near.invalid · 24h left' && awk -v s=$start '\$4 == \"ann@far.invalid\" && \$6 >= s {f = 1} END {exit !f}' $T/mail/grants"
 check "and logs it" "grep -q ' refresh s:a1@far.invalid s:b1@near.invalid ' $T/mail/grants.log"
-akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '2  Cancel' >/dev/null; akey 2
-check "Cancel takes it away" "wait_a 'cancelled: ann@far.invalid → bob@near.invalid' && ! grep -q 'ann@far.invalid' $T/mail/grants && grep -q 'live-root@far.invalid' $T/mail/grants"
+akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '2  Remove' >/dev/null; akey 2
+check "Remove takes it away" "wait_a 'removed: ann@far.invalid → bob@near.invalid' && ! grep -q 'ann@far.invalid' $T/mail/grants && grep -q 'live-root@far.invalid' $T/mail/grants"
 rm -f "$T/mail/grants"
 check "with nothing left, the bar has no [G]rant access" "gone_a '[G]rant access' && gone_a ' approved'"
 akey g

@@ -2801,7 +2801,7 @@ act() {
 			# Refresh first, so a bare Enter takes nothing away.
 			local l=${labels[PICKED]%% · *} lt=${labels[PICKED]:0:60}
 			PREV=(); draw
-			pick "$lt" "Refresh" "Cancel" || { PREV=(); return; }
+			pick "$lt" "Refresh" "Remove" || { PREV=(); return; }
 			if ((PICKED == 0)); then
 				# The same code popup as Approve: no agent can refresh its own access.
 				out=$(code_popup "Refresh $l for another day?" refresh grant_refresh "$a" "$b")
@@ -2809,7 +2809,7 @@ act() {
 				if [[ $out == refreshed:* ]]; then out="refreshed: $l · $((ttl / 3600))h left"
 				elif [[ -z $out ]]; then out="not refreshed: the code didn't match"; fi
 			else
-				out=$("$ASAY" revoke "$a" "$b" 2>&1) && out="cancelled: $l"
+				out=$("$ASAY" revoke "$a" "$b" 2>&1) && out="removed: $l"
 			fi
 			out=${out##*$'\n'}
 		fi
