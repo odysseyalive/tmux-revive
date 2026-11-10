@@ -1088,6 +1088,19 @@ far_tm set-option -p -t far:cl-env @agent cl-env
 mkdir -p "$T/ehome/.claude/sessions" "$T/ehome/.claude/projects/-e"
 printf '{"pid":%s,"sessionId":"s-cl-env","status":"idle"}\n' "$(far_tm display -p -t far:cl-env '#{pane_pid}')" >"$T/ehome/.claude/sessions/$(far_tm display -p -t far:cl-env '#{pane_pid}').json"
 turn 40000 >"$T/ehome/.claude/projects/-e/s-cl-env.jsonl" # 80% left
+# Its user says where those files are, so none reached through a symbolic link is read: not its
+# record (cl-lrec), nor its transcript (cl-ltr).
+for w in cl-lrec cl-ltr; do
+	far_tm new-window -d -t far -n $w -e HOME="$T/$w" "$T/bin/claude -c 'sleep 300; :'"
+	far_tm set-option -p -t far:$w @agent $w
+	mkdir -p "$T/$w/.claude/sessions" "$T/$w/.claude/projects/-e" "$T/$w-real"
+	printf '{"pid":%s,"sessionId":"s-%s","status":"idle"}\n' "$(far_tm display -p -t far:$w '#{pane_pid}')" $w >"$T/$w-real/rec.json"
+	turn 40000 >"$T/$w-real/tr.jsonl"
+done
+ln -s "$T/cl-lrec-real/rec.json" "$T/cl-lrec/.claude/sessions/$(far_tm display -p -t far:cl-lrec '#{pane_pid}').json"
+cp "$T/cl-lrec-real/tr.jsonl" "$T/cl-lrec/.claude/projects/-e/s-cl-lrec.jsonl"
+cp "$T/cl-ltr-real/rec.json" "$T/cl-ltr/.claude/sessions/$(far_tm display -p -t far:cl-ltr '#{pane_pid}').json"
+ln -s "$T/cl-ltr-real/tr.jsonl" "$T/cl-ltr/.claude/projects/-e/s-cl-ltr.jsonl"
 sleep 1.1 # transcripts written after their Claude Code started
 slug=${T//[^A-Za-z0-9]/-}
 mkdir -p "$T/rhome/.claude/projects/$slug-cwd-one" "$T/rhome/.claude/projects/$slug-cwd-two"
@@ -1101,7 +1114,8 @@ check "--rows there: a busy pane's CPU, from two looks ($(rcpu "$rows" far-spin)
 check "--rows there: context left from a record's transcript ($(rctx "$rows" cl-idle))" "[[ \$(rctx \"\$rows\" cl-idle) == 50 ]]"
 check "--rows there: with no record, from its config folder and the session folder it holds open ($(rctx "$rows" cl-fd))" "[[ \$(rctx \"\$rows\" cl-fd) == 25 ]]"
 check "--rows there: one running as another user, from the record in its own home ($(rctx "$rows" cl-env))" "[[ \$(rctx \"\$rows\" cl-env) == 80 ]] && grep -q $'\x1fcl-env\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
-far_tm kill-window -t far:cl-env
+check "--rows there: not through a symbolic link, to its record or its transcript" "[[ -z \$(rctx \"\$rows\" cl-lrec) && -z \$(rctx \"\$rows\" cl-ltr) ]] && grep -q $'\x1fcl-ltr\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
+far_tm kill-window -t far:cl-env; far_tm kill-window -t far:cl-lrec; far_tm kill-window -t far:cl-ltr
 check "--rows there: with no record, from its working folder ($(rctx "$rows" cl-cwd))" "[[ \$(rctx \"\$rows\" cl-cwd) == 90 ]]"
 check "--rows there: not from a working folder another Claude Code shares" "[[ -z \$(rctx \"\$rows\" cl-two) ]] && grep -q $'\x1fcl-two\x1f' <<<\"\$rows\""
 # A Claude Code that reports its own context left from its hook (claude-hook.sh ctx, through

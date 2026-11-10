@@ -1384,6 +1384,33 @@ check "Claude Code's start hook there gives the pane its name ($out)" '[[ $out =
 # Two users, neither root, and no sudo between them: said plainly, to the agent too.
 out=$(inj $JV "AGENT_SAY_TEST_OWNER=admin:$HOME bash $ROOT/scripts/claude-hook.sh </dev/null")
 check "where it can't be reached at all, the hook says why ($out)" "[[ \$out == *\"can't reach right now: this pane is in admin's tmux\"* ]]"
+# Requests in another process's name that it does hold open: a file of the user's that jp's
+# shell keeps open, linked in as jp's request, or moved there. Neither is jp's agent-say's own.
+ask=$T/jhome/.local/state/agent-say/ask
+printf '%s\0' 2 jt 'forged by a link' >"$T/jpfile1"
+printf '%s\0' 2 jt 'forged by a move' >"$T/jpfile2"
+run "0$JP" "exec 7<$T/jpfile1 8<$T/jpfile2" >/dev/null
+run "0$JV" "ln $T/jpfile1 $ask/$jpid.req" >/dev/null
+sleep 1
+run "0$JV" "mv $T/jpfile2 $ask/$jpid.req" >/dev/null
+sleep 1.5
+check "nor one linked or moved in from a file that process holds open" "[[ ! -e $ask/$jpid.req && ! -e $ask/$jpid.res ]] && ! seen $JT 'forged by a'"
+out=$(inj $JV "$ROOT/bin/agent-say name jt") && rc=0 || rc=$?
+check "it can't take a name another pane has, so not its mail either ($out)" "((rc != 0)) && [[ \$out == *\"'jt' is already another pane's name\"* && \$(tmux show-options -pqv -t $JV @agent) == jv ]]"
+# A name another pane had, gone now: what it got before this pane took the name isn't this pane's.
+mkfifo "$T/run.jw"
+JW=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/runner $T/run.jw")
+FIFO[0$JW]=$T/run.jw
+sleep 0.3
+AGENT_SAY_PANE=$JW say name gone1 >/dev/null
+say --from jt gone1 'for the old gone1' >/dev/null
+tmux kill-pane -t "$JW"
+sleep 1.1
+inj $JV "$ROOT/bin/agent-say name gone1" >/dev/null
+out=$(inj $JV "$ROOT/bin/agent-say read")
+id=$(sed -n 's/^## \[jt -> gone1 .*\] #\([0-9-]*\)$/\1/p' "$AGENT_SAY_MAILBOX" | tail -n 1)
+out2=$(inj $JV "$ROOT/bin/agent-say show $id") && rc=0 || rc=$?
+check "mail to its name from before it took it isn't shown ($out / $out2)" "[[ -n '$id' && \$out != *'for the old gone1'* && \$out2 != *'for the old gone1'* ]] && ((rc != 0))"
 pkill -f -- "$ROOT/bin/agent-say _serve" 2>/dev/null
 for p in $JV $JP $JT; do tmux kill-pane -t "$p"; done
 

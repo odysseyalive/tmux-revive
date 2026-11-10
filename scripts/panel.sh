@@ -637,7 +637,7 @@ agent_kind() { # agent_kind ARGS -> AKIND: claude/codex/cursor/crush/gemini or n
 # One running as another user (in root's tmux, a pane where root ran su - USER) keeps it in its
 # own config, which its environment names, readable here only as root: looked for there again
 # every 30 s until found.
-declare -A CL_EREC=() CL_EREC_T=()
+declare -A CL_EREC=() CL_EREC_T=() CL_TROK=()
 claude_record() { # claude_record PID -> RECORD: Claude Code's session record for it, or nothing
 	local f e
 	local -a d=()
@@ -655,11 +655,16 @@ claude_record() { # claude_record PID -> RECORD: Claude Code's session record fo
 			esac
 		done <"/proc/$1/environ" 2>/dev/null
 		for f in "${d[@]}"; do
-			[[ -f $f/sessions/$1.json ]] && { CL_EREC[$1]=$f/sessions/$1.json; break; }
+			own_plain "$f/sessions/$1.json" "$(stat -c %u "/proc/$1" 2>/dev/null)" && { CL_EREC[$1]=$f/sessions/$1.json; break; }
 		done
 	fi
 	[[ -n ${CL_EREC[$1]:-} && -f ${CL_EREC[$1]} ]] && RECORD=${CL_EREC[$1]}
 	return 0
+}
+# own_plain FILE UID: FILE is UID's, reached by no symbolic link. Its user says where those
+# files are (its environment), so nothing of anyone else's is read for it.
+own_plain() {
+	[[ -f $1 && $2 =~ ^[0-9]+$ && "$(realpath -e -- "$1" 2>/dev/null)" == "$1" && "$(stat -c %u -- "$1" 2>/dev/null)" == "$2" ]]
 }
 # Claude Code's record says idle between turns even while agents it started in the background
 # (the Agent tool's run_in_background, background shells) go on working, and it has no field
@@ -834,7 +839,13 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 		fi
 		[[ $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
 		for f in "${RECORD%/sessions/*}"/projects/*/"$sid".jsonl; do
-			[[ -f $f ]] && { ctx_cached "$f" claude_ctx_file; return 0; }
+			[[ -f $f ]] || continue
+			# A record found by its environment (another user's): its transcript must be its own too.
+			if [[ $RECORD == "${CL_EREC[$apid]:-}" ]]; then
+				[[ -n ${CL_TROK[$f]:-} ]] || { own_plain "$f" "$(stat -c %u -- "$RECORD")" && CL_TROK[$f]=1; } || continue
+			fi
+			ctx_cached "$f" claude_ctx_file
+			return 0
 		done ;;
 	codex)
 		for p in "$@"; do
