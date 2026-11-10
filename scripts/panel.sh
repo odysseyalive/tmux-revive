@@ -1216,9 +1216,12 @@ remote_panes() {
 # linked too. Only someone's own interactive ssh counts: not the ones git, scp, sftp or
 # rsync start for themselves, and not agent-say's own link connections. Only your own ssh:
 # anyone on this computer can start a process whose command line says "ssh evil.example".
+# REVIVE_PANEL_OUTSIDE_SSH=0 skips this look (the tests: a panel there must not see the ssh
+# sessions open in your own terminals).
 outside_ssh() {
 	local pid a h up where c
 	X_SSH=() X_WHERE=()
+	[[ ${REVIVE_PANEL_OUTSIDE_SSH:-1} == 0 ]] && return
 	for pid in "${!PARGS[@]}"; do
 		[[ -n ${INPANE[$pid]:-} || ${PUID[$pid]:-} != "$UID" ]] && continue
 		a=${PARGS[$pid]}
@@ -2299,7 +2302,7 @@ question_look() {
 # Questions only: a chat with the agent is J, in its own pane.
 answer() {
 	local h=${P_HOST[SEL]:-} id=${P_ID[SEL]:-} k rest seq txt st got gone=0 why=left pend="" INTR=0 f
-	local shot="" sent=0 skips=0 idle=0 poll=0
+	local shot="" sent=0 skips=0 idle=0 poll=0 tl=0 w to
 	local -a TOKS AL
 	[[ ${P_STATE[SEL]:-} == asking ]] || return 0
 	[[ -n $h ]] && id=${P_RID[SEL]:-}
@@ -2313,6 +2316,7 @@ answer() {
 			((skips++))
 		else
 			skips=0
+			tl=${EPOCHREALTIME//[.,]/} # in µs: when this look began
 			question_look
 			# Drawn only when there's something new to show (a resize empties PREV).
 			if [[ $QSHOT != "$shot" || ${#PREV[@]} == 0 ]]; then draw; shot=$QSHOT; fi
@@ -2333,7 +2337,13 @@ answer() {
 			k=$pend pend=""
 		else
 			k="" got=1 st=0
-			if ((poll)); then IFS= read -rsn1 -t 0.04 k || { st=$? got=0; }
+			if ((poll)); then
+				# 40 ms from the start of the last look, not from its end: a slow look (a busy
+				# computer) doesn't stretch the time between them.
+				w=$((40000 - (${EPOCHREALTIME//[.,]/} - tl)))
+				((w < 1000)) && w=1000
+				printf -v to '0.%06d' "$w"
+				IFS= read -rsn1 -t "$to" k || { st=$? got=0; }
 			else IFS= read -rsn1 -t 0.3 k || { st=$? got=0; }; fi
 			if ((!got)); then
 				((st > 128 && !INTR)) || break # Ctrl-C, or the input closed

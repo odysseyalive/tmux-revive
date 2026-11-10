@@ -8,6 +8,10 @@ unset TMUX TMUX_PANE XDG_STATE_HOME # never your state dir (agents run with it s
 export REVIVE_DIR=$T/data AGENT_SAY_MAILBOX=$T/mail/mailbox.md REVIVE_PANEL_REFRESH=1 REVIVE_PANEL_SPLASH=0
 # Host keys come from the test's own known_hosts, never yours, and never from ssh-keyscan.
 export AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false
+# Nor the ssh sessions open in your own terminals: they'd be offered in LINKS · SAVES and
+# announced on the key bar, taking rows and room the checks count on. The checks of that look
+# turn it back on.
+export REVIVE_PANEL_OUTSIDE_SSH=0
 tm() { tmux -L "revive-panel-test-$$" -f /dev/null "$@"; }
 pass=0 fail=0
 check() {
@@ -732,7 +736,7 @@ bash -c 'exec -a "ssh -o BatchMode=yes linkpoll.example agent-say _sync x" sleep
 bash -c 'exec -a "ssh -o SendEnv=GIT_PROTOCOL git@gitfetch.example git-upload-pack x" sleep 60' & o3=$!
 bash -c 'exec -a "ssh -x -oForwardAgent=no -s sftpcopy.example sftp" sleep 60' & o4=$!
 sleep 0.5
-out=$(frame 140 45)
+out=$(tm run-shell "REVIVE_PANEL_OUTSIDE_SSH=1 REVIVE_PANEL_PEEK=0 COLUMNS=140 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
 check "an ssh session outside tmux is offered for linking" "grep -q 'outside.example · ssh in' <<<\"\$out\""
 check "agent-say's own, git's and sftp's ssh aren't" "! grep -qE 'linkpoll.example|gitfetch.example|sftpcopy.example' <<<\"\$out\""
 kill $o1 $o2 $o3 $o4 2>/dev/null; wait $o1 $o2 $o3 $o4 2>/dev/null
@@ -745,7 +749,7 @@ mkdir -p "$T/fakeps"
 	printf 'exit $st\n'
 } >"$T/fakeps/ps"
 chmod +x "$T/fakeps/ps"
-out=$(tm run-shell "PATH=$T/fakeps:\$PATH REVIVE_PANEL_PEEK=0 COLUMNS=140 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+out=$(tm run-shell "PATH=$T/fakeps:\$PATH REVIVE_PANEL_OUTSIDE_SSH=1 REVIVE_PANEL_PEEK=0 COLUMNS=140 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
 check "only your own ssh outside tmux is offered, not another user's" "grep -c 'mine.example · ssh in' <<<\"\$out\" >/dev/null && ! grep -c 'evil.example' <<<\"\$out\" >/dev/null"
 
 tm new-window -d -t work -n sshpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=false REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
