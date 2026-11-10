@@ -169,7 +169,8 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 | `P` | show or hide a quick peek at its screen |
 | `X` | spread the peek over the artwork too |
 | `C` | put the artwork back |
-| Enter | answer the question the selected agent is asking, or fold a linked computer's heading |
+| Enter | answer the question the selected agent is asking, or open a folded computer |
+| `F` | fold the selected pane's linked computer into one line |
 | `L` | link a computer you ssh into |
 | `U` (or `D`) | unlink a computer |
 | `V` | update tmux-revive on a linked computer, or copy the install or update command for another user's pane |
@@ -189,8 +190,9 @@ an access request, the arrow on that side blinks yellow.
 
 PANES takes about half the screen at most, so the peek always has room.
 
-On a linked computer's heading, **Enter** folds its panes into that one line,
-which still says how many need you. Press Enter again to open it. Folds are
+On a linked computer's pane, **F** folds that computer's panes into its heading
+line, which still says how many need you. The arrows skip an open computer's
+heading but stop on a folded one. Press **Enter** there to open it. Folds are
 remembered for next time.
 
 ### Answering questions

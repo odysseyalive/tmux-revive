@@ -1296,8 +1296,9 @@ wstyle() {
 	((NEXTW != FOCUS)) && { kc Tab " focus"; WK[NEXTW]=$KC; }
 }
 WF=0 WB=() WK=()
-# HSEL: a linked computer's heading is selected (the PANES list's headings are rows too: Enter
-# folds one to its heading line). SEL stays on one of its panes, so the rest still has a pane.
+# HSEL: a linked computer's heading is selected (F on one of its panes folds it to that line,
+# a row the arrows stop on; Enter opens it again). SEL stays on one of its panes, so the rest
+# still has a pane.
 # FOLD: the computers folded, kept in REVIVE_DIR so they stay folded the next time.
 HSEL="" FOLDDIR="$DIR/panel/fold"
 declare -A FOLD=()
@@ -1332,15 +1333,27 @@ nav_at() { # nav_at -> NAT: where the selection is in NAV
 		elif [[ ${NAV[i]} == "$SEL" ]]; then NAT=$i; return; fi
 	done
 }
-# nav_go INDEX [STEP]: select that row of NAV; on this computer's heading, the next row STEP
-# (1 or -1) away. A heading selects one of its computer's panes behind it.
+# nav_stop INDEX: is that row of NAV one the selection stops on? A pane, or a folded
+# computer's heading (its one row). An open computer's heading isn't, nor this computer's.
+nav_stop() {
+	local h=${NAV[$1]}
+	[[ $h == h:* ]] || return 0
+	h=${h#h:}
+	[[ -n $h && -n ${FOLD[$h]:-} ]]
+}
+# nav_go INDEX [STEP]: select that row of NAV, or failing that the next stop STEP (1 or -1)
+# away, or at the end of the list the nearest stop back. A heading selects one of its
+# computer's panes behind it.
 nav_go() {
 	local k=${#NAV[@]} i=$1 d=${2:-1} j
 	((k)) || return
 	((i < 0)) && i=0
 	((i >= k)) && i=$((k - 1))
-	[[ ${NAV[i]} == h: ]] && { i=$((i + d)); ((i < 0 || i >= k)) && i=$((i - 2 * d)); }
-	((i < 0 || i >= k)) && return
+	j=$i
+	while ((j >= 0 && j < k)) && ! nav_stop "$j"; do j=$((j + d)); done
+	if ((j < 0 || j >= k)); then j=$i; while ((j >= 0 && j < k)) && ! nav_stop "$j"; do j=$((j - d)); done; fi
+	((j < 0 || j >= k)) && return
+	i=$j
 	if [[ ${NAV[i]} == h:* ]]; then
 		HSEL=${NAV[i]#h:}
 		for j in "${!P_HOST[@]}"; do [[ ${P_HOST[j]} == "$HSEL" ]] && { SEL=$j; break; }; done
@@ -2018,6 +2031,8 @@ draw() {
 	((!ANSWERING)) && [[ $sst == asking ]] && k="$B$BMAG[Enter]$R$B$BWHT answer$R  "
 	if [[ -n $HSEL ]]; then
 		if [[ -n ${FOLD[$HSEL]:-} ]]; then k="$BBLU[$B${BYEL}Enter$R$BBLU]$R$BWHT unfold$R  "; else k="$BBLU[$B${BYEL}Enter$R$BBLU]$R$BWHT fold$R  "; fi
+	elif [[ -n ${P_HOST[SEL]:-} ]]; then
+		k+="$BBLU[$B${BYEL}F$R$BBLU]$R$BWHT fold$R  "
 	fi
 	# Keys that can't act on the selected pane are faded: on a linked computer's pane, nothing
 	# to rename unless its rows say which pane it is, and never J: a jump there would move
@@ -2869,6 +2884,12 @@ act() {
 	enter)
 		if [[ -n $HSEL ]]; then fold_toggle "$HSEL"; [[ -n ${FOLD[$HSEL]:-} ]] || PO=$((1 << 30)) # opened: its panes into view, under its heading
 		elif [[ ${P_STATE[SEL]:-} == asking ]]; then answer; fi ;;
+	# F: fold the selected pane's linked computer to its heading, which the selection moves to
+	# (on a folded heading, open it again, as Enter does).
+	f | F)
+		if [[ -n $HSEL ]]; then act enter; return
+		elif [[ -z ${P_HOST[SEL]:-} ]]; then flash "this computer doesn't fold"; return; fi
+		fold_toggle "${P_HOST[SEL]}" && HSEL=${P_HOST[SEL]} ;;
 	a | A)
 		SCENE=$(((SCENE + 1) % ${#SCENES[@]}))
 		flash "art: ${TITLES[SCENE]}" ;;
@@ -2893,10 +2914,11 @@ act() {
 	SEL_ID=${P_ID[SEL]:-}
 }
 # scroll KEY: up, down, pgup, pgdn, home or end in the focused window. In PANES they move the
-# selection, headings included, and the view follows it; the arrows go round (up from the
-# first row is the last). Elsewhere they scroll; draw keeps each view in range.
+# selection, a folded computer's heading included, and the view follows it; the arrows go
+# round (up from the first row is the last). Elsewhere they scroll; draw keeps each view in
+# range.
 scroll() {
-	local pg=$((WH[FOCUS] > 1 ? WH[FOCUS] - 1 : 1)) d k i
+	local pg=$((WH[FOCUS] > 1 ? WH[FOCUS] - 1 : 1)) d k i j
 	case $1 in up) d=-1 ;; down) d=1 ;; pgup) d=-pg ;; pgdn) d=pg ;; home) d=-100000 ;; end) d=100000 ;; esac
 	case $FOCUS in
 	0)
@@ -2905,8 +2927,8 @@ scroll() {
 		k=${#NAV[@]}
 		((k)) || return
 		if [[ $1 == up || $1 == down ]]; then
-			i=$(((NAT + d + k) % k))
-			[[ ${NAV[i]} == h: ]] && i=$(((i + d + k) % k)) # this computer's heading isn't a stop
+			i=$NAT
+			for ((j = 0; j < k; j++)); do i=$(((i + d + k) % k)); nav_stop "$i" && break; done # an open heading isn't a stop
 			nav_go "$i" "$d"
 		else
 			nav_go $((NAT + d)) $((d > 0 ? 1 : -1))
