@@ -35,6 +35,36 @@ trap 'exit 1' INT TERM HUP
 plain() { sed 's/\x1b\[[0-9;]*m//g'; }
 screen() { tm capture-pane -p -t work:panel; }
 wait_screen() { for _ in $(seq 1 30); do screen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+# wait_ok CHECK: CHECK (eval'd) comes true within 6 seconds.
+wait_ok() { for _ in $(seq 1 30); do eval "$1" && return 0; sleep 0.2; done; return 1; }
+# wcols TITLE < CAPTURE (capture-pane -e): the colours of the window titled TITLE's left and
+# right edges, on its title line and its rows down to the next divider, one "LEFT RIGHT" for
+# each different pair (34 the frame's blue, 96 bright cyan, 95 bright magenta). A capture only
+# says a colour where it changes, so it's followed from the top.
+cat >"$T/wcols.py" <<'PY'
+import re, sys
+title, fg, rows, on = sys.argv[1], "0", [], False
+for line in sys.stdin.read().split("\n"):
+    cells = []
+    for m in re.finditer(r"\x1b\[([0-9;]*)m|(.)", line):
+        if m.group(2) is not None:
+            cells.append(fg)
+            continue
+        ps = (m.group(1) or "0").split(";")
+        i = 0
+        while i < len(ps):
+            p = int(ps[i] or 0)
+            if p in (0, 39): fg = "0"
+            elif p == 38: i += 2 if ps[i + 1:i + 2] == ["5"] else 4
+            elif 30 <= p <= 37 or 90 <= p <= 97: fg = str(p)
+            i += 1
+    text = re.sub(r"\x1b\[[0-9;]*m", "", line).rstrip()
+    if on and text[:1] in ("╠", "╚"): break
+    if not on and title in text and text[:1] == "╠": on = True
+    if on: rows.append(cells[0] + " " + cells[len(text) - 1])
+print("\n".join(sorted(set(rows))))
+PY
+wcols() { python3 "$T/wcols.py" "$1"; }
 
 tm new-session -d -s work -x 130 -y 40 "bash --norc --noprofile"
 tm split-window -d -t work "top -d 5"
@@ -662,13 +692,21 @@ check "the other choices don't" "[[ \$(qcolor '2. No') != *'44'* ]]"
 check "its last row is the agent's last row" "[[ \"\$(boxrow)\" == \"\$(lastrow)\" ]]"
 check "Enter offers to answer it, J the chat" "qhas '[Enter] answer' && qhas '[J] open the chat' && ! qhas '[Tab] answer'"
 check "the messages step aside while a question shows" "! qhas 'MESSAGES'"
+# [Tab] focus: once, on the title of the window Tab goes to next, before that title's own keys.
+qtabs() { qscreen | grep -oF '[Tab] focus' | wc -l; }
+qcap() { tm capture-pane -e -p -t work:qpanel; }
+check "the question's title says [Tab] focus, before its own keys, and nothing else does" "wait_ok '(( \$(qtabs) == 1 ))' && qscreen | grep -q 'QUESTION · asker .*\[Tab\] focus  \[Enter\] answer'"
 # Tab moves the focus to the question's window, but doesn't answer it: Enter does.
 tm send-keys -t work:qpanel Tab
 check "Tab only moves the focus to the question, sending nothing" "wait_q '▸ QUESTION · asker' && ! qhas 'ANSWERING' && [[ ! -s $T/ans1.keys ]]"
+check "focused, the question's border is bright magenta, the asking colour; PANES's the frame's blue" "[[ \$(qcap | wcols '▸ QUESTION') == '95 95' && \$(qcap | wcols 'PANES') == '34 34' ]]"
+check "and [Tab] focus moves to PANES's title" "wait_ok '(( \$(qtabs) == 1 ))' && qscreen | grep -q 'PANES .*\[Tab\] focus ══╣' && ! qscreen | grep -q 'QUESTION.*\[Tab\] focus'"
 tm send-keys -t work:qpanel Enter
 check "Enter answers, and Tab is the way back" "wait_q 'ANSWERING asker' && qhas 'Tab back to the panes'"
+check "while answering no title says [Tab] focus: the question says where Tab goes" "(( \$(qtabs) == 0 ))"
 tm send-keys -t work:qpanel Tab
 check "and Tab brings it back to the panes, sending nothing" "wait_q 'Enter returns to the question' && ! qhas 'ANSWERING' && [[ ! -s $T/ans1.keys ]]"
+check "with the focus: PANES's title highlighted, [Tab] focus on the question's" "qhas '▸ PANES' && ! qhas '▸ QUESTION' && qscreen | grep -q 'QUESTION · asker .*\[Tab\] focus'"
 tm send-keys -t work:qpanel Enter
 check "Enter starts answering, and says how to leave" "wait_q 'ANSWERING asker' && qhas 'Ctrl-] leaves'"
 tm send-keys -t work:qpanel C-]
@@ -1701,9 +1739,21 @@ raw=$(sframe 30 0) out=$(plain <<<"$raw")
 check "PANES with more rows than room scrolls: ▲, a track with its thumb, ▼ on its right edge" "[[ \$(plist <<<\"\$out\" | head -1) == *▲║ && \$(plist <<<\"\$out\" | tail -1) == *▼║ ]] && plist <<<\"\$out\" | grep -q '▓║$' && plist <<<\"\$out\" | grep -q '░║$'"
 check "it keeps to half the room, and every row is still exactly 130 wide" "(( \$(plist <<<\"\$out\" | wc -l) <= 7 )) && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '130 ' ]]"
 check "a question out of view below makes the ▼ blink bold yellow" "plist <<<\"\$raw\" | tail -1 | grep -qF $'\\e[1m\\e[93m\\e[5m▼' && ! plist <<<\"\$raw\" | head -1 | grep -qF $'\\e[93m\\e[5m▲'"
-check "and on the next tick it goes dark, as the help page's beacons do" "sframe 30 1 | plist | tail -1 | grep -qF $'\\e[34m▼' && ! sframe 30 1 | plist | grep -qF $'\\e[93m\\e[5m▼'"
+# Dark is the border's colour: PANES has the focus, so bright cyan.
+check "and on the next tick it goes dark, as the help page's beacons do" "sframe 30 1 | plist | tail -1 | grep -qF $'\\e[96m▼' && ! sframe 30 1 | plist | grep -qF $'\\e[93m\\e[5m▼'"
+# The window with the focus (PANES, to start with) has its border in bright cyan: its title's
+# rule, the edges of its rows and its scroll bar's track. The others keep the frame's blue.
+check "the focused window's border is bright cyan: its rule, its edges, its scroll bar" "[[ \$(wcols PANES <<<\"\$raw\") == '96 96' ]] && grep -F '▸ PANES' <<<\"\$raw\" | grep -qF $'\\e[96m╠' &&plist <<<\"\$raw\" | grep -qF $'\\e[96m░'"
+check "and the others' are the frame's blue, as is the bar under them" "[[ \$(wcols MESSAGES <<<\"\$raw\") == '34 34' ]] &&(( \$(grep -cF $'\\e[96m╠' <<<\"\$raw\") == 1 ))"
+check "[Tab] focus is said once, on the title of the window Tab goes to next (MESSAGES)" "(( \$(grep -oF '[Tab] focus' <<<\"\$out\" | wc -l) == 1 )) && grep -q 'MESSAGES ▓▒░═* \[Tab\] focus ══╤' <<<\"\$out\""
 out=$(sframe 80 | plain)
 check "with room for every row, no scroll bar" "plist <<<\"\$out\" | grep -q 'asker9' && ! plist <<<\"\$out\" | grep -q '[▲▼░▓]║$'"
+# With PANES the only window drawn (a question selected, no room to show it), Tab has nowhere
+# to go, and no title offers it.
+aid=$(sm display -p -t s:asker '#{pane_id}')
+out=$(sm run-shell "COLUMNS=130 LINES=16 REVIVE_PANEL_SEL=$aid REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$SMAIL AGENT_SAY_SSH=$T/deadssh bash $ROOT/scripts/panel.sh --once" | plain)
+check "with one window drawn, no [Tab] focus anywhere" "grep -q '▸ PANES' <<<\"\$out\" && ! grep -q 'QUESTION\|MESSAGES' <<<\"\$out\" && ! grep -qF '[Tab] focus' <<<\"\$out\""
+out=$(sframe 80 | plain)
 check "a linked computer's heading counts its panes and the ones that need you" "grep -q 'FOLD.EXAMPLE · linked · 2 panes · 1 needs you' <<<\"\$out\""
 # MESSAGES: older messages above the newest; a message not delivered scrolled off the top
 # lights the ▲.
@@ -1727,11 +1777,18 @@ sscr() { sm capture-pane -p -t s:sp; }
 wait_sp() { for _ in $(seq 1 ${2:-30}); do sscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 gone_sp() { for _ in $(seq 1 ${2:-30}); do sscr | grep -qF -- "$1" || return 0; sleep 0.2; done; return 1; }
 wait_sp 'C O N T R O L' >/dev/null
+# [Tab] focus, said once, on the title of the window Tab goes to next; the focused window's
+# border in bright cyan (96), the others' the frame's blue (34).
+stabs() { sscr | grep -oF '[Tab] focus' | wc -l; }
+scap() { sm capture-pane -e -p -t s:sp; }
 check "PANES has the focus to start with: its title is highlighted" "wait_sp '▸ PANES'"
+check "and [Tab] focus is on the peek's title, before its own key" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'PEEK · .*\[Tab\] focus  \[x\] full view'"
 tm_s() { sm send-keys -t s:sp "$@"; }
 tm_s Tab
 check "Tab moves the focus to the peek" "wait_sp '▸ PEEK · ' && ! sscr | grep -qF '▸ PANES'"
-check "where the arrows scroll, and the bar says so" "wait_sp '↑↓ PgUp PgDn scroll · Tab next window'"
+check "its border goes bright cyan, PANES's back to the frame's blue" "wait_ok '[[ \$(scap | wcols \"▸ PEEK\") == \"96 96\" && \$(scap | wcols PANES) == \"34 34\" && \$(scap | wcols MESSAGES) == \"34 34\" ]]'"
+check "[Tab] focus moves on, to MESSAGES's title, still once" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'MESSAGES ▓▒░═* \[Tab\] focus ══╤' && ! sscr | grep -q 'PEEK.*\[Tab\] focus'"
+check "where the arrows scroll, and the bar says so (Tab is on the titles now)" "wait_sp '↑↓ PgUp PgDn scroll' && ! sscr | grep -qF 'Tab next window'"
 check "the peek shows the bottom of its pane's screen" "wait_sp 'srow-200'"
 tm_s PPage
 check "PgUp scrolls the peek back up its screen" "gone_sp 'srow-200' && sscr | grep -q 'srow-1[0-9][0-9]'"
@@ -1739,10 +1796,17 @@ tm_s End
 check "and End brings it back to the bottom" "wait_sp 'srow-200'"
 tm_s Tab
 check "Tab: then MESSAGES" "wait_sp '▸ MESSAGES'"
+# MESSAGES and LINKS · SAVES share a rule and a │: the half of the rule over the focused one,
+# its outer edge, and the │ between them take the focus colour.
+check "MESSAGES's border bright cyan: its half of the rule and its left edge, not LINKS's right" "wait_ok '[[ \$(scap | wcols MESSAGES) == \"96 34\" ]]'"
+check "[Tab] focus on LINKS · SAVES's half of the rule" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'LINKS · SAVES ▓▒░═* \[Tab\] focus ══╣'"
 tm_s Tab
 check "then LINKS · SAVES" "wait_sp '▸ LINKS · SAVES'"
+check "its border bright cyan: its right edge, not MESSAGES's left" "wait_ok '[[ \$(scap | wcols MESSAGES) == \"34 96\" ]]'"
+check "and [Tab] focus on PANES's title, as Tab goes round" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'PANES ▓▒░═* \[Tab\] focus ══╣'"
 tm_s Tab
 check "and round to PANES again" "wait_sp '▸ PANES' && ! sscr | grep -qF '▸ LINKS'"
+check "where it's PANES's border in bright cyan again, [Tab] focus back on the peek" "wait_ok '[[ \$(scap | wcols PANES) == \"96 96\" ]]' && (( \$(stabs) == 1 )) && sscr | grep -q 'PEEK · .*\[Tab\] focus'"
 tm_s End
 check "in PANES, End selects the last row and the view follows it off the top" "wait_sp '▶ fold-b' && gone_sp '[0.0]'"
 tm_s Home

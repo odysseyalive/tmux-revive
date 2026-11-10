@@ -111,15 +111,16 @@ row() { # row CONTENT [WIDTH]: one line inside the frame, cut or padded to the i
 	# A row whose visible width is known already (the artwork, a peek line) says so, and isn't
 	# measured again: measuring a row of many colours is most of what drawing it costs.
 	# RBAR set (a scroll bar's cell, from sbar): the row is one narrower and the cell sits
-	# against the frame's right edge.
+	# against the frame's right edge. ROWL and ROWR: the colours of its left and right edges,
+	# the focus colour on the rows of the window that has the focus.
 	local c=$1 pad w=$IW
 	[[ -n $RBAR ]] && w=$((IW - 1))
 	if [[ -n ${2:-} ]]; then VLEN=$2; else vlen "$c"; fi
 	((VLEN > w)) && { trim_colored "$c" "$w"; c=$TRIM VLEN=$w; }
 	printf -v pad '%*s' $((w - VLEN)) ''
-	line "$FRAME║$R $c$pad ${RBAR:+$RBAR$R}$FRAME║$R"
+	line "$ROWL║$R $c$pad ${RBAR:+$RBAR$R}$ROWR║$R"
 }
-RBAR=""
+RBAR="" ROWL=$FRAME ROWR=$FRAME
 # sbar HEIGHT TOTAL OFFSET UP DOWN [COLOUR] -> SB[0..HEIGHT-1]: a BBS scroll bar for a window
 # HEIGHT rows tall showing TOTAL rows from OFFSET down: ▲, a ░ track with a ▓ thumb sized and
 # placed by the view, ▼. Nothing when it all fits. UP or DOWN 1: something waiting on you is
@@ -150,28 +151,39 @@ sbar() {
 # a short transition between two colours, the way the artpack groups used it.
 # A question waiting on you gets the band in magenta, the colour of the asking state.
 tab() { local c=${2:-4}; TAB="$e[3${c}m░▒▓$e[4${c}m$B$BWHT $1 $R$e[3${c}m▓▒░$R"; } # tab TITLE [COLOUR 0-7] -> TAB
-sectk() { # sectk TITLE KEYS [COLOUR]: a divider with a title, and the keys for that section at its right end
-	local t a
-	tab "$1" "${3:-4}"
-	t="$FRAME╠═$TAB"
-	vlen "$t"; a=$VLEN
-	vlen "$2"
-	rep ═ $((W - 5 - a - VLEN))
-	line "$t$FRAME$REP$R $2 $FRAME══╣$R"
+# seg TAB HINT KEYS WIDTH BORDER -> SEG: a divider's run, WIDTH wide, in BORDER: ═, the title
+# band, ═ up to the keys at its right end, ══. HINT goes before the keys; short of room it's
+# all that's kept, and shorter still it's cut.
+seg() {
+	local k=$3 a r
+	[[ -n $2 ]] && k="$2${k:+  $k}"
+	vlen "$1"; a=$VLEN
+	r=$(($4 - a - 6))
+	vlen "$k"
+	((VLEN > r)) && [[ -n $2 ]] && { k=$2; vlen "$k"; }
+	((VLEN > r)) && { if ((r > 1)); then trim_colored "$k" "$r"; k=$TRIM VLEN=$r; else k="" VLEN=0; fi; }
+	if [[ -n $k ]]; then rep ═ $(($4 - a - VLEN - 5)); SEG="$5═$1$5$REP$R $k $5══"
+	else rep ═ $(($4 - a - 1)); SEG="$5═$1$5$REP"; fi
 }
-sect() { # sect TITLE [RIGHT-TITLE SPLIT-AT [COLOUR RIGHT-COLOUR]]: a divider carrying section titles
-	local t
-	tab "$1" "${4:-4}"
-	t="$FRAME╠═$TAB"
-	if [[ -n ${2:-} ]]; then
-		vlen "$t"
-		rep ═ $(($3 + 2 - VLEN))
-		tab "$2" "${5:-4}"
-		t+="$FRAME$REP╤═$TAB"
-	fi
-	vlen "$t"
-	rep ═ $((W - 1 - VLEN))
-	line "$t$FRAME$REP╣$R"
+# sectk TITLE KEYS [COLOUR [BORDER [HINT]]]: a divider with a title, and the keys for that
+# section at its right end, HINT ("[Tab] focus") first. BORDER: its rule's colour (FRAME).
+sectk() {
+	local b=${4:-$FRAME}
+	tab "$1" "${3:-4}"
+	seg "$TAB" "${5:-}" "$2" $((W - 2)) "$b"
+	line "$b╠$SEG$b╣$R"
+}
+sect() { sectk "$1" "" "${2:-4}" "${3:-}" "${4:-}"; } # sect TITLE [COLOUR [BORDER [HINT]]]
+# sect2 SPLIT-AT JOIN TITLE COLOUR BORDER HINT TITLE COLOUR BORDER HINT: a divider over two
+# windows side by side, each half as sect's, joined at SPLIT-AT by a ╤ in JOIN's colour.
+sect2() {
+	local l
+	tab "$3" "$4"
+	seg "$TAB" "$6" "" $(($1 + 1)) "$5"
+	l="$5╠$SEG$2╤"
+	tab "$7" "$8"
+	seg "$TAB" "${10}" "" $((W - $1 - 4)) "$9"
+	line "$l$SEG$9╣$R"
 }
 
 # Block letters for the banner, three rows each.
@@ -1265,6 +1277,25 @@ SPIN=(▖ ▘ ▝ ▗)
 # last drawn, for a page's worth. PB_FOR: whose screen PB is for.
 FOCUS=0 PO=0 PB=0 MO=0 SO=0 MMAN=0 PB_FOR="" MOLD=0 MWAIT=-1
 WON=(1 0 0 0) WH=(1 1 1 1)
+tab_next() { # tab_next [STEP] -> NEXTW: the window Tab (STEP 1) or Shift-Tab (3) moves the focus to
+	local j f=$FOCUS
+	NEXTW=$FOCUS
+	for j in 1 2 3 4; do f=$(((f + ${1:-1}) % 4)); ((WON[f])) && { NEXTW=$f; return; }; done
+}
+# wstyle ASKING -> WF the window with the focus (the question's while answering it), WB each
+# window's border colour and WK the key hint on its title. The focused one's border is bright
+# cyan, as its title band, or bright magenta on a question, the asking colour; the others are
+# FRAME. "[Tab] focus" goes on the window Tab moves to next, when there's more than one; none
+# while answering, where Tab goes back to the panes and the question says so.
+wstyle() {
+	WF=$FOCUS WB=("$FRAME" "$FRAME" "$FRAME" "$FRAME") WK=("" "" "" "")
+	((ANSWERING)) && WF=1
+	if ((WF == 1 && $1)); then WB[1]=$BMAG; else WB[WF]=$BCYN; fi
+	((ANSWERING)) && return
+	tab_next
+	((NEXTW != FOCUS)) && { kc Tab " focus"; WK[NEXTW]=$KC; }
+}
+WF=0 WB=() WK=()
 # HSEL: a linked computer's heading is selected (the PANES list's headings are rows too: Enter
 # folds one to its heading line). SEL stays on one of its panes, so the rest still has a pane.
 # FOLD: the computers folded, kept in REVIVE_DIR so they stay folded the next time.
@@ -1519,7 +1550,7 @@ draw_panes() {
 		((i < PO)) && up=1
 		((i >= PO + PH)) && dn=1
 	done
-	sbar "$PH" "$tot" "$PO" "$up" "$dn"
+	sbar "$PH" "$tot" "$PO" "$up" "$dn" "${WB[0]}"
 	for ((i = 0; i < PH && PO + i < tot; i++)); do
 		RBAR=${SB[i]:-}
 		row "${lr[PO + i]}"
@@ -1550,17 +1581,17 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 		draw_question "$1"
 		return
 	fi
-	((FOCUS == 1)) && fc=6 ft="▸ "
+	((WF == 1)) && fc=6 ft="▸ "
 	if ((FULL)); then kc c " collapse"; else kc x " full view"; fi
 	# Its agents working in the background don't keep it from taking what you type.
-	if [[ ${P_STATE[SEL]:-} == agents ]]; then sectk "${ft}PEEK · $name · agents busy, takes input" "$KC" $fc; else sectk "${ft}PEEK · $name" "$KC" $fc; fi
+	if [[ ${P_STATE[SEL]:-} == agents ]]; then sectk "${ft}PEEK · $name · agents busy, takes input" "$KC" $fc "${WB[1]}" "${WK[1]}"; else sectk "${ft}PEEK · $name" "$KC" $fc "${WB[1]}" "${WK[1]}"; fi
 	if [[ -n ${P_HOST[SEL]:-} ]]; then
 		remote_peek 60 # all it may ask for, to scroll back through
 	elif [[ -n $id ]]; then
 		mapfile -t L < <(tm capture-pane -p -t "$id" 2>/dev/null)
 		for i in "${!L[@]}"; do clean "L[$i]"; done # capture-pane passes C1 characters through
 	fi
-	peek_rows "$1" "$GRY" 0 "$FRAME"
+	peek_rows "$1" "$GRY" 0 "${WB[1]}"
 }
 # peek_rows LINES COLOUR STYLED BAR-COLOUR: the bottom of its screen (L), row for row: the box's
 # last line is the pane's last line, blank or not, and it reads upward from there, each after
@@ -1600,8 +1631,8 @@ draw_question() { # draw_question LINES
 		keys+=$KC
 	fi
 	# Focused, or answering, its title says so; its band stays magenta, the asking colour.
-	((FOCUS == 1 || ANSWERING)) && ft="▸ "
-	sectk "${ft}QUESTION · $name" "$keys" 5
+	((WF == 1)) && ft="▸ "
+	sectk "${ft}QUESTION · $name" "$keys" 5 "${WB[1]}" "${WK[1]}"
 	if ((ANSWERING)); then
 		L=("${QL[@]}") # answer() has just read it
 	elif [[ -n ${P_HOST[SEL]:-} ]]; then
@@ -1836,7 +1867,8 @@ draw_top() {
 	((HELP)) && { help_frame "$lines" "$BH"; return 1; } # the ? page takes everything below
 	counts="$BYEL$w working$R$GRY · $R$BMAG$a asking$R"
 	((a)) && counts="$BYEL$w working$R$GRY · $R$B$BMAG$BLINK$a asking$R"
-	if ((FOCUS == 0)); then sect "▸ PANES" "" 0 6; else sect "PANES"; fi
+	if ((WF == 0)); then sect "▸ PANES" 6 "${WB[0]}" "${WK[0]}"; else sect PANES 4 "${WB[0]}" "${WK[0]}"; fi
+	ROWL=${WB[0]} ROWR=${WB[0]}
 	draw_panes
 	# CPU across every pane, as a running graph.
 	for i in "${!P_CPU[@]}"; do [[ -z ${P_HOST[i]} ]] && total=$((total + P_CPU[i])); done
@@ -1845,6 +1877,7 @@ draw_top() {
 	vlen "$counts"
 	spark $((IW - 8 - VLEN))
 	row "$GRY cpu $R$SPARK  $counts"
+	ROWL=$FRAME ROWR=$FRAME
 }
 
 draw() {
@@ -1867,6 +1900,13 @@ draw() {
 	[[ -n $HSEL ]] || sst=${P_STATE[SEL]:-}
 	# Another pane selected: its peek starts at the bottom of its screen.
 	[[ "$SEL_ID|$HSEL" == "$PB_FOR" ]] || PB=0 PB_FOR="$SEL_ID|$HSEL"
+	# A question needs every row it can get: the messages step aside until it's answered.
+	local msgs=1 ask=0
+	[[ $sst == asking ]] && msgs=0 ask=1
+	# The styles for PANES's title, drawn first: whether Tab goes to PANES next turns on the
+	# windows after the focused one, MESSAGES and LINKS · SAVES, known already.
+	WON[2]=$msgs WON[3]=$msgs
+	wstyle $ask
 	if ((ANSWERING && ${#ATOP[@]})); then
 		# Answering: nothing above the question can change (no panes are gathered meanwhile),
 		# so those rows are kept from the first frame, and only the question and the bar drawn.
@@ -1876,10 +1916,10 @@ draw() {
 		((ANSWERING)) && ATOP=("${OUT[@]}") ATOP_BH=$BH
 	fi
 
-	# A question needs every row it can get: the messages step aside until it's answered, and
-	# aren't looked at meanwhile. Moving the selection can't change them, so they're kept.
-	local bottom=-1 msgs=0 bcap
-	if [[ $sst == asking ]]; then
+	# Nor are the messages looked at meanwhile. Moving the selection can't change them, so
+	# they're kept.
+	local bottom=-1 bcap
+	if ((ask)); then
 		MSG_OLD=1
 	else
 		((nav && !MSG_OLD)) || { messages; links_saves; MSG_OLD=0; }
@@ -1887,7 +1927,7 @@ draw() {
 		# at most (4 rows at least): MESSAGES and LINKS · SAVES scroll past that.
 		bottom=$((${#MSG[@]} - MOLD))
 		((${#SIDE[@]} > bottom)) && bottom=${#SIDE[@]}
-		msgs=1 bcap=$((lines / 4))
+		bcap=$((lines / 4))
 		((bcap < 4)) && bcap=4
 		((bottom > bcap)) && bottom=$bcap
 	fi
@@ -1906,6 +1946,7 @@ draw() {
 	# The windows drawn, for Tab; one that's gone hands the focus back to PANES, drawn again.
 	WON=(1 "$show" "$msgs" "$msgs")
 	((ANSWERING || WON[FOCUS])) || { FOCUS=0; draw; return; }
+	wstyle $ask
 	if ((show)); then
 		# Rows with its title: 15 is the 14 it always had.
 		peek_h=$((avail * 2 / 3))
@@ -1914,7 +1955,9 @@ draw() {
 		((peek_h > avail || avail - peek_h < 4 || FULL)) && peek_h=$avail
 		[[ $sst == asking ]] && peek_h=$avail
 		avail=$((avail - peek_h))
+		ROWL=${WB[1]} ROWR=${WB[1]}
 		draw_peek $((peek_h - 1))
+		ROWL=$FRAME ROWR=$FRAME
 	fi
 	if ((avail >= 3)); then
 		sect "ART · ${TITLES[SCENE]}"
@@ -1927,10 +1970,11 @@ draw() {
 	WH=("$PH" $((peek_h - 1)) "$bottom" "$bottom")
 	LW=$(((IW - 3) * 3 / 5)) RW=$((IW - 3 - LW))
 	if ((msgs)); then
-		local mt="MESSAGES" st="LINKS · SAVES" mc=4 sc=4
-		((FOCUS == 2)) && mt="▸ $mt" mc=6
-		((FOCUS == 3)) && st="▸ $st" sc=6
-		sect "$mt" "$st" "$((LW + 1))" $mc $sc
+		# The │ between them, and the ╤ over it, are the focused one's edge when either is.
+		local mt="MESSAGES" st="LINKS · SAVES" mc=4 sc=4 mid=$FRAME
+		((WF == 2)) && mt="▸ $mt" mc=6 mid=${WB[2]}
+		((WF == 3)) && st="▸ $st" sc=6 mid=${WB[3]}
+		sect2 "$((LW + 1))" "$mid" "$mt" $mc "${WB[2]}" "${WK[2]}" "$st" $sc "${WB[3]}" "${WK[3]}"
 		# MESSAGES shows its newest unless scrolled by hand, but never past the first access
 		# waiting on you. Rows waiting on you (access, or a message not delivered) out of view
 		# light that end's arrow.
@@ -1946,10 +1990,11 @@ draw() {
 			((i < MO)) && up=1
 			((i >= MO + bottom)) && dn=1
 		done
-		sbar "$bottom" "$mn" "$MO" "$up" "$dn"
+		sbar "$bottom" "$mn" "$MO" "$up" "$dn" "${WB[2]}"
 		msb=("${SB[@]}")
-		sbar "$bottom" "${#SIDE[@]}" "$SO" 0 0
+		sbar "$bottom" "${#SIDE[@]}" "$SO" 0 0 "${WB[3]}"
 		ssb=("${SB[@]}")
+		ROWL=${WB[2]} ROWR=${WB[3]}
 		((${#msb[@]})) && lw=$((LW - 1))
 		((${#ssb[@]})) && rw=$((RW - 1))
 		for ((i = 0; i < bottom; i++)); do
@@ -1963,9 +2008,9 @@ draw() {
 			vlen "$r"
 			((VLEN > rw)) && { trim_colored "$r" "$rw"; r=$TRIM; }
 			RBAR=${ssb[i]:-}
-			if ((${#msb[@]})); then row "$l$FRAME│$R $r"; else row "$l $FRAME│$R $r"; fi
+			if ((${#msb[@]})); then row "$l$mid│$R $r"; else row "$l $mid│$R $r"; fi
 		done
-		RBAR=""
+		RBAR="" ROWL=$FRAME ROWR=$FRAME
 	fi
 
 	# Command bar.
@@ -1999,11 +2044,11 @@ draw() {
 		fi
 	done
 	vlen "$k"
-	# How to move: in PANES the arrows select, elsewhere they scroll; Tab goes window to window.
+	# How to move: in PANES the arrows select, elsewhere they scroll. Tab is on the title of the
+	# window it goes to.
 	if ((FOCUS)); then
-		if ((VLEN + 37 <= IW)); then k+="$GRY↑↓ PgUp PgDn scroll · Tab next window$R"
+		if ((VLEN + 19 <= IW)); then k+="$GRY↑↓ PgUp PgDn scroll$R"
 		elif ((VLEN + 9 <= IW)); then k+="$GRY↑↓ scroll$R"; fi
-	elif ((VLEN + 32 <= IW)); then k+="$GRY↑↓ 0-9 select · Tab next window$R"
 	elif ((VLEN + 15 <= IW)); then k+="$GRY↑↓ 0-9 select$R"; fi
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	# While answering every key goes to the agent, so the bar says that and how to stop.
@@ -2398,7 +2443,7 @@ answer() {
 	trap 'exit 0' INT
 	case $why in
 	left) flash "left the question; nothing more was sent" ;;
-	tab) flash "back to the panes · Enter returns to the question" ;;
+	tab) FOCUS=0; flash "back to the panes · Enter returns to the question" ;;
 	answered)
 		flash "${P_NAME[SEL]:-${P_LOC[SEL]:-the pane}} has its answer"
 		# Rows from over there asked for before this still say asking: they don't count now.
@@ -2842,11 +2887,8 @@ act() {
 		done ;;
 	up | down | pgup | pgdn | home | end) scroll "$1" ;;
 	# Tab: the focus to the next window drawn (Shift-Tab: the one before).
-	tab | btab)
-		local f=$FOCUS j d=1
-		[[ $1 == btab ]] && d=3
-		for j in 1 2 3 4; do f=$(((f + d) % 4)); ((WON[f])) && break; done
-		FOCUS=$f ;;
+	tab) tab_next; FOCUS=$NEXTW ;;
+	btab) tab_next 3; FOCUS=$NEXTW ;;
 	esac
 	SEL_ID=${P_ID[SEL]:-}
 }
