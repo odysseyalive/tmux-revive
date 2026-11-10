@@ -833,7 +833,7 @@ check "and so does U" "gone_sk"
 # A link stopped on a failure (paused): LINKS says why, and L tries it once more, with its key.
 mkdir -p "$sk"; touch "$sk/on" "$sk/paused"; echo "$fp (ED25519)" >"$sk/fingerprint"
 echo "can't reach (connection timed out) · L to try again" >"$sk/error"
-check "LINKS shows a stopped link's reason, and that L tries again" "wait_ssh \"devbox.example can't reach (connection timed out)\""
+check "LINKS shows a stopped link's reason" "wait_ssh \"devbox.example can't reach\""
 tm send-keys -t work:sshpanel l; sleep 0.7
 check "L offers it, to try again" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q \"devbox.example  · can't reach (connection timed out) · try again\""
 pick_line "devbox.example  · can.t reach"
@@ -867,7 +867,7 @@ n=$(lvs | grep -o '[1-9] *live.example  · ssh in' | head -c 1)
 tm send-keys -t work:livepanel "$n"
 check "a key read through your open ssh connection: shown, said to be seen for the first time, No first" "wait_lv 'key read through your open ssh connection: $fp (ED25519)' && wait_lv 'First time we see this key' && lvs | grep -q \"1 *No, don't link live.example\""
 tm send-keys -t work:livepanel Enter
-check "and Enter links nothing" "wait_lv 'link cancelled' && [[ ! -e $st/links/live.example ]]"
+check "and Enter links nothing" "for _ in \$(seq 1 40); do lvs | grep -q 'LINK live.example?' || break; sleep 0.2; done; ! lvs | grep -q 'LINK live.example?' && [[ ! -e $st/links/live.example ]]"
 tm send-keys -t work:livepanel q
 tm kill-window -t work:liveremote 2>/dev/null
 

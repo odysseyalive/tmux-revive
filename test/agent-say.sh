@@ -385,7 +385,7 @@ check "the link still works when the other side has no named panes" "wait_seen $
 # named pane there (codex is unnamed above), so its line is always the last one read.
 NA=$("$T/rbin/tmux" new-window -d -P -F '#{pane_id}' -t r 'exec /bin/bash --norc --noprofile')
 "$T/rbin/tmux" set-option -p -t "$NA" @agent noagent
-sleep 1.5
+for _ in $(seq 40); do grep -qx noagent "$(dirname "$AGENT_SAY_MAILBOX")/links/devbox/names" 2>/dev/null && break; sleep 0.25; done # a check-in or two
 check "a pane there with no agent session in it doesn't stop the link" "say link | grep -q '^devbox  running' && grep -qx noagent \$(dirname $AGENT_SAY_MAILBOX)/links/devbox/names"
 "$T/rbin/tmux" kill-pane -t "$NA"
 "$T/rbin/tmux" set-option -p -t "$RC" @agent codex
