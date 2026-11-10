@@ -633,6 +633,31 @@ out=$(in0 $LA "$ROOT/bin/agent-say lc 'after no'")
 check "and later ones are refused ($out)" "[[ \$out == *'declined: the user on laptop declined your messages to lc@laptop.' ]] && ! seen $LK 'after no'"
 out=$(in0 $LK "$ROOT/bin/agent-say la 'the other way'")
 check "a decline covers the pair both ways ($out)" "[[ \$out == *'declined: the user on laptop declined your messages to la@laptop.' ]] && ! seen $LA 'the other way' && ! say intros | grep -F 'lc@laptop wants' >/dev/null"
+# Both wrote before you answered: an introduction waits each way. One answer settles both.
+for f in ld le lf lg; do mkfifo "$T/run.$f"; done
+LD=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/runner $T/run.ld")
+LE=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/runner $T/run.le")
+LF=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/runner $T/run.lf")
+LG=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/runner $T/run.lg")
+FIFO[0$LD]=$T/run.ld FIFO[0$LE]=$T/run.le FIFO[0$LF]=$T/run.lf FIFO[0$LG]=$T/run.lg
+for p in LD:ld LE:le LF:lf LG:lg; do v=${p%:*}; AGENT_SAY_PANE=${!v} say name "${p#*:}" >/dev/null; done
+in0 $LD "$ROOT/bin/agent-say le 'ld here, first'" >/dev/null
+in0 $LE "$ROOT/bin/agent-say ld 'le here, crossing'" >/dev/null
+in0 $LE "$ROOT/bin/agent-say ld 'le here, again'" >/dev/null
+check "both wrote first: an introduction waits each way" "wait_intro 'ld@laptop wants to talk with le@laptop' && wait_intro 'le@laptop wants to talk with ld@laptop (2 held'"
+out=$(allow_intro "$(intro_id 'ld@laptop wants to talk with le@laptop')" 2>&1)
+check "one approve connects them both ways ($out)" "[[ \$out == 'allowed ld@laptop and le@laptop; 3 held messages delivered' ]] && ! say intros | grep -E '(ld|le)@laptop wants' >/dev/null"
+check "and delivers what each side held, in order" "wait_seen $LE '(introduction, allowed by the user on laptop) ld here, first' && wait_seen $LD '(introduction, allowed by the user on laptop) le here, crossing' && wait_seen $LD 'le here, again'"
+check "the other way's introduction is logged as answered with it" "grep -q ' allowed with ld@laptop and le@laptop: introduction [0-9a-f]* from le@laptop to ld@laptop, 2 held\$' $T/grants.log"
+out=$(in0 $LE "$ROOT/bin/agent-say ld 'le, after'")
+check "nothing asks again ($out)" "[[ \$out == 'sent to ld'* ]] && wait_seen $LD 'le, after'"
+in0 $LF "$ROOT/bin/agent-say lg 'lf here'" >/dev/null
+in0 $LG "$ROOT/bin/agent-say lf 'lg here'" >/dev/null
+wait_intro 'lg@laptop wants to talk with lf@laptop' >/dev/null
+out=$(say _intro deny "$(intro_id 'lf@laptop wants to talk with lg@laptop')" 2>&1)
+check "one deny declines them both ways ($out)" "[[ \$out == 'declined lf@laptop and lg@laptop' ]] && ! say intros | grep -E '(lf|lg)@laptop wants' >/dev/null"
+check "each sender is told, and nothing is delivered" "wait_seen $LF 'declined: the user on laptop declined your messages to lg@laptop.' && wait_seen $LG 'declined: the user on laptop declined your messages to lf@laptop.' && ! seen $LG 'lf here' && ! seen $LF 'lg here'"
+for p in $LD $LE $LF $LG; do tmux kill-pane -t "$p"; done
 # The watchman-dev case: an agent on a linked server writing to one here.
 out=$(in1 $CX "$ROOT/bin/agent-say la 'cx on devbox, for la'")
 check "an agent there writing to one here waits for you, and is told so ($out)" "[[ \$out == *'queued for la@laptop'* ]] && wait_seen1 $CX 'introduction sent to la@laptop; waiting for the user on laptop to allow it.' && ! seen $LA 'cx on devbox'"
@@ -755,7 +780,7 @@ in1 $CX "$ROOT/bin/agent-say --from cx tt-dev 'from the old cx'" >/dev/null
 wait_intro 'cx@devbox wants to talk with tt-dev' >/dev/null
 check "(cx restarts)" "restart $T/rbin/tmux $CX $T/run.cx cx devbox"
 out=$(allow_intro "$(intro_id 'cx@devbox wants to talk with tt-dev')" 2>&1)
-check "approved, it says the sender restarted ($out)" "[[ \$out == *'it restarted since asking, so what it sent before was dropped'* ]]"
+check "approved, it says the sender restarted ($out)" "[[ \$out == 'allowed cx@devbox and tt-dev@dev.example.com; cx restarted since asking, so what it sent before was dropped' ]]"
 check "what the old session sent isn't delivered, and its row says why" "wait_mail 'cx@devbox -> tt-dev@dev.example.com .*(NOT DELIVERED: cx restarted before approval)' && sleep 2 && ! seen2 $TT 'from the old cx' && ! seen1 $CX \"wasn't delivered\""
 in1 $CX "$ROOT/bin/agent-say --from cx tt-dev 'from the new cx'" >/dev/null
 check "and its new session talks with no new introduction" "wait_seen2 $TT 'from the new cx' && ! say intros | grep waiting >/dev/null"

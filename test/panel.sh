@@ -554,6 +554,13 @@ intro() { # intro ID FROM TO TEXT
 }
 intro $ia live-root@far.invalid dev-root@near.invalid 'may I ask dev-root about the failing build?'
 intro $ib cx@far.invalid dev-root@near.invalid 'hello'
+# And each answered the other before you did: an introduction waits the other way too.
+ic=3333333333333333cccccccccccccccc id=4444444444444444dddddddddddddddd
+back() { # back ID AS-ID: AS-ID's introduction the other way, from the same two sessions
+	intro "$1" "$(cat "$T/mail/intros/$2/to")" "$(cat "$T/mail/intros/$2/from")" 'and back'
+	cp "$T/mail/intros/$2/to-session" "$T/mail/intros/$1/from-session"; cp "$T/mail/intros/$2/from-session" "$T/mail/intros/$1/to-session"
+}
+back $ic $ia; back $id $ib
 # The agent sessions each link reports in those panes now: the same ones that asked.
 mkdir -p "$T/mail/links/far.invalid" "$T/mail/links/near.invalid"
 printf 'live-root %s\ncx %s\n' $ia $ib >"$T/mail/links/far.invalid/sessions"
@@ -590,11 +597,13 @@ check "Esc there closes it too, nothing changed" "gone_a '2  Deny' && [[ \$(stat
 echo wrong >"$T/popup.code"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; akey 1
 check "Approve asks for the code in a popup; a wrong one approves nothing" "wait_a \"not approved: the code didn't match, so it's still waiting\" && grep -q '^display-popup ' $T/popup.log && [[ \$(state) == '$before' ]]"
-echo right >"$T/popup.code"
+echo right >"$T/popup.code"; : >"$T/popup.log"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; akey 1
-check "the code typed back approves it" "wait_a 'allowed live-root@far.invalid to talk with dev-root@near.invalid' && [[ ! -e $T/mail/intros/$ia ]] && grep -q '^allow s:$ia@far.invalid s:to$ia@near.invalid live-root@far.invalid dev-root@near.invalid [0-9]*\$' $T/mail/grants"
+check "the code typed back approves it" "wait_a 'allowed live-root@far.invalid and dev-root@near.invalid' && [[ ! -e $T/mail/intros/$ia ]] && grep -q '^allow s:$ia@far.invalid s:to$ia@near.invalid live-root@far.invalid dev-root@near.invalid [0-9]*\$' $T/mail/grants"
+check "the one the other way with it, and only that one" "[[ ! -e $T/mail/intros/$ic && -e $T/mail/intros/$ib && -e $T/mail/intros/$id ]]"
+check "and then just the panel: no box asks again" "sleep 1 && ! ascreen | grep -qE 'ACCESS|[0-9]  (Approve|Deny)' && [[ \$(grep -c '^display-popup ' $T/popup.log) == 1 ]]"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '2  Deny' >/dev/null; akey 2
-check "Deny declines it" "wait_a 'declined cx@far.invalid to dev-root@near.invalid' && [[ ! -e $T/mail/intros/$ib ]] && grep -q '^deny s:$ib@far.invalid ' $T/mail/grants"
+check "Deny declines it, both ways" "wait_a 'declined cx@far.invalid and dev-root@near.invalid' && [[ ! -e $T/mail/intros/$ib && ! -e $T/mail/intros/$id ]] && [[ \$(grep -c '^deny s:$ib@far.invalid ' $T/mail/grants) == 1 ]]"
 check "with nothing waiting, MESSAGES has no waiting line" "gone_a 'waiting for [G]rant access' && wait_a '✓ 2 approved'"
 before=$(state)
 akey g; wait_a 'APPROVED' >/dev/null
