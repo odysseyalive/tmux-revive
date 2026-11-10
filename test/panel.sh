@@ -723,7 +723,7 @@ tm kill-window -t work:asker2
 
 echo "ssh links"
 # Which host an ssh command line connects to, as agent-say link takes it.
-dest() { bash -c 'source <(sed -n "/^ssh_dest() {/,/^}/p" "$1"); ssh_dest "$2"' _ "$ROOT/scripts/panel.sh" "$1"; }
+dest() { bash -c 'source <(sed -n "/^ssh_dest() {/,/^}/p" "$1"); ssh_dest "$2"; printf %s "$SSHD"' _ "$ROOT/scripts/panel.sh" "$1"; }
 check "ssh host" "[[ \$(dest 'ssh devbox') == devbox ]]"
 check "ssh with options, a user and a command" "[[ \$(dest 'ssh -i /k -p 22 me@h.example ls -la') == h.example ]]"
 check "ssh:// with a port" "[[ \$(dest 'ssh ssh://me@h2.example:2222') == h2.example ]]"

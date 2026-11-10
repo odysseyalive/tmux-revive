@@ -287,16 +287,35 @@ put() { # put ROW COL CHAR COLOUR (off the canvas: ignored)
 }
 rnd() { SEED=$(((SEED * 1103515245 + 12345) & 2147483647)) RV=$((SEED >> 8)); } # same seed, same picture
 emit() { # -> ART rows, switching colour only where it changes
-	local r c i out cur col
+	# Only the cells drawn on are visited (put sets CH and CO together); the empty sky between
+	# them goes in as one run of spaces. Visiting every cell made the art most of a frame.
+	local r=0 c=0 i x out="" cur="" pad
 	ART=()
-	for ((r = 0; r < ART_H; r++)); do
-		out="" cur=""
-		for ((c = 0; c < ART_W; c++)); do
-			i=$((r * ART_W + c)) col=${CO[i]-}
-			[[ $col == "$cur" ]] || { out+="$R$col"; cur=$col; }
-			out+=${CH[i]:- }
+	for i in "${!CO[@]}"; do
+		while ((i / ART_W > r)); do
+			if ((c < ART_W)); then
+				[[ -z $cur ]] || out+=$R
+				printf -v pad '%*s' $((ART_W - c)) ''
+				out+=$pad
+			fi
+			ART+=("$out$R") out="" cur="" c=0 r=$((r + 1))
 		done
-		ART+=("$out$R")
+		x=$((i % ART_W))
+		if ((x > c)); then
+			[[ -z $cur ]] || out+=$R cur=""
+			printf -v pad '%*s' $((x - c)) ''
+			out+=$pad
+		fi
+		[[ ${CO[i]} == "$cur" ]] || { cur=${CO[i]}; out+="$R$cur"; }
+		out+=${CH[i]:- } c=$((x + 1))
+	done
+	for (( ; r < ART_H; r++)); do
+		if ((c < ART_W)); then
+			[[ -z $cur ]] || out+=$R
+			printf -v pad '%*s' $((ART_W - c)) ''
+			out+=$pad
+		fi
+		ART+=("$out$R") out="" cur="" c=0
 	done
 }
 stars() { # stars ROWS ONE-IN-N: sky dust in the top ROWS rows, holding still
@@ -318,20 +337,31 @@ twinkle() { # twinkle N ROWS: N stars in the top ROWS rows that take turns shini
 		if (((AT + k) % 2)); then put $r $c "*" "$BWHT"; else put $r $c "·" "$GRY"; fi
 	done
 }
-declare -A ART_MEMO=()
+# Every how many frames each scene (as SCENES) looks the same again: city, mountains and circuit
+# only blink, on odd and even frames (AT % 2). Space's comet and the grid's clouds travel, so
+# theirs (0) is too long to keep. A scene whose animation changes must change its number here.
+ART_LOOP=(2 2 0 2 0)
+declare -A ART_MEMO=() ART_ROWS=()
 art() { # art WIDTH HEIGHT [still] -> ART rows of the current scene; "still" stops its animation
-	local k rows
+	local k i n
 	if [[ ${3:-} == still ]]; then AT=0; else AT=$TICK; fi
-	# The same frame again (a redraw that only moved the selection) is kept, not redrawn.
-	k="$SCENE $1 $2 $AT"
-	if [[ -n ${ART_MEMO[$k]+set} ]]; then mapfile -t ART <<<"${ART_MEMO[$k]}"; return; fi
+	# The same frame again (a redraw that only moved the selection, or a scene come round to a
+	# frame it drew already) is kept, not redrawn: drawing one is most of what a frame costs.
+	i=$AT
+	((ART_LOOP[SCENE])) && i=$((AT % ART_LOOP[SCENE]))
+	k="$SCENE $1 $2 $i"
+	if [[ -n ${ART_MEMO[$k]+set} ]]; then
+		ART=() n=${ART_MEMO[$k]}
+		for ((i = 0; i < n; i++)); do ART+=("${ART_ROWS[$k:$i]}"); done
+		return
+	fi
 	canvas "$1" "$2"
 	SEED=$((7919 * (SCENE + 1)))
 	((ART_W > 0 && ART_H > 0)) && "scene_${SCENES[SCENE]}"
 	emit
-	((${#ART_MEMO[@]} > 6)) && ART_MEMO=()
-	printf -v rows '%s\n' "${ART[@]}"
-	ART_MEMO[$k]=${rows%$'\n'}
+	((${#ART_MEMO[@]} > 6)) && ART_MEMO=() ART_ROWS=()
+	ART_MEMO[$k]=${#ART[@]}
+	for i in "${!ART[@]}"; do ART_ROWS[$k:$i]=${ART[i]}; done
 }
 
 scene_city() { # towers with lit windows under the stars; one star and two windows change
@@ -580,14 +610,15 @@ Q_RE='do you want to|would you like to|allow (once|always)|\(y/n\)|\[y/n\]|enter
 W_RE='esc to interrupt|ctrl\+c to interrupt'
 # The line a question's dialog starts under: a horizontal rule, or the top of a box.
 
-agent_kind() { # agent_kind ARGS -> claude/codex/cursor/crush/gemini or nothing (as agent-say does)
+agent_kind() { # agent_kind ARGS -> AKIND: claude/codex/cursor/crush/gemini or nothing (as agent-say does)
+	AKIND=""
 	case " $1 " in
 	*app-server*) ;;
-	*/claude\ * | " claude "* | *" claude --"*) echo claude ;;
-	*/codex\ * | " codex "*) echo codex ;;
-	*cursor-agent*) echo cursor ;;
-	*/crush\ * | " crush "*) echo crush ;;
-	*/gemini\ * | *" gemini "*) echo gemini ;;
+	*/claude\ * | " claude "* | *" claude --"*) AKIND=claude ;;
+	*/codex\ * | " codex "*) AKIND=codex ;;
+	*cursor-agent*) AKIND=cursor ;;
+	*/crush\ * | " crush "*) AKIND=crush ;;
+	*/gemini\ * | *" gemini "*) AKIND=gemini ;;
 	esac
 }
 
@@ -628,7 +659,12 @@ claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting
 	CST="" CBG=0
 	claude_record "$1"
 	[[ -n $RECORD ]] || return 0
-	IFS=$'\t' read -r CST sid < <(jq -r '[.status // "", .sessionId // ""] | @tsv' "$RECORD" 2>/dev/null)
+	if [[ -n ${JQ_ST[$RECORD]+set} ]]; then
+		CST=${JQ_ST[$RECORD]} sid=${JQ_SID[$RECORD]} # read already, with the other agents' (agents_look)
+	else
+		IFS=$'\t' read -r CST sid < <(jq -r '[.status // "", .sessionId // ""] | @tsv' "$RECORD" 2>/dev/null)
+	fi
+	CL_REC=$RECORD CL_SID=$sid # ctx_left, next, needs the session too: one jq for both
 	# "shell": its turn is over but a background shell it started still runs. That's work in
 	# the background, the same as idle with a command still running under it.
 	[[ $CST == shell ]] && { CST=idle CBG=1; return 0; }
@@ -755,7 +791,8 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 	claude)
 		claude_record "$apid"
 		sid=""
-		[[ -n $RECORD ]] && sid=$(jq -r '.sessionId // empty' "$RECORD" 2>/dev/null)
+		if [[ -n $RECORD && $RECORD == "${CL_REC:-}" ]]; then sid=$CL_SID
+		elif [[ -n $RECORD ]]; then sid=$(jq -r '.sessionId // empty' "$RECORD" 2>/dev/null); fi
 		ctx_reported "$pane" "$apid" "$sid"
 		[[ -n $CTX ]] && return 0
 		if [[ -z $RECORD ]]; then
@@ -776,11 +813,10 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 	esac
 }
 
-screen_state() { # screen_state PANE -> asking / working / waiting, read off the bottom of the screen
+screen_state() { # screen_state PANE -> LSTATE: asking / working / waiting, read off the bottom of the screen
 	local -a SL
 	mapfile -t SL < <(tm capture-pane -p -t "$1" 2>/dev/null)
 	lines_state SL
-	echo "$LSTATE"
 }
 lines_state() { # lines_state ARRAY -> LSTATE: the same, for a screen already read (a linked computer's peek)
 	local -n L=$1
@@ -802,9 +838,10 @@ lines_state() { # lines_state ARRAY -> LSTATE: the same, for a screen already re
 # git in a pane's folder, which may be anyone's repo: its config must not get to run a
 # command (core.fsmonitor, hooks), and the panel must not take the index lock from you.
 pgit() { GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor= -c core.hooksPath=/dev/null --no-optional-locks -C "$@"; }
-git_info() { # git_info DIR -> "branch" or "branch*" (uncommitted changes), cached 15 s
+git_info() { # git_info DIR -> GITI: "branch" or "branch*" (uncommitted changes), cached 15 s
+	# Not called in a $( ): the cache must outlive the call, or git runs for every pane every frame.
 	local d=$1 b dirty filters
-	if [[ -n ${GIT_T[$d]:-} ]] && ((SECONDS - GIT_T[$d] < 15)); then printf '%s' "${GIT[$d]}"; return; fi
+	if [[ -n ${GIT_T[$d]:-} ]] && ((SECONDS - GIT_T[$d] < 15)); then GITI=${GIT[$d]}; return; fi
 	b=$(pgit "$d" symbolic-ref --short -q HEAD 2>/dev/null || pgit "$d" rev-parse --short HEAD 2>/dev/null)
 	if [[ -n $b ]]; then
 		# A clean/process filter would run while status rehashes files. Yours (global, system,
@@ -817,20 +854,28 @@ git_info() { # git_info DIR -> "branch" or "branch*" (uncommitted changes), cach
 		fi
 	fi
 	clean b
-	GIT[$d]=$b GIT_T[$d]=$SECONDS
-	printf '%s' "$b"
+	GIT[$d]=$b GIT_T[$d]=$SECONDS GITI=$b
 }
 
-tree_ticks() { # tree_ticks PID...: CPU ticks used so far by these processes (Linux)
+STAT_RE='^([^ ]+ +){11}([0-9-]+) +([0-9-]+) +([0-9-]+) +([0-9-]+)'
+tree_ticks() { # tree_ticks PID... -> TICKS: CPU ticks used so far by these processes (Linux)
 	# Their children's that have ended count too (cutime, cstime), so a command an agent ran
 	# between two looks still shows, where it would drop out of the tree uncounted.
-	local p l f t=0
+	local p l t=0
 	for p in "$@"; do
 		read -r l 2>/dev/null <"/proc/$p/stat" || continue # gone since ps ran
-		read -ra f <<<"${l##*) }"
-		t=$((t + f[11] + f[12] + f[13] + f[14]))
+		# Fields 14-17 (utime stime cutime cstime): the 12th to 15th after the name's ")".
+		[[ ${l##*) } =~ $STAT_RE ]] || continue
+		t=$((t + BASH_REMATCH[2] + BASH_REMATCH[3] + BASH_REMATCH[4] + BASH_REMATCH[5]))
 	done
-	echo "$t"
+	TICKS=$t
+}
+# usecs TIME -> US: a time as EPOCHREALTIME gives it (or whole seconds) in microseconds, so the
+# CPU sums are done in the shell's integers rather than an awk run for each pane.
+usecs() {
+	local s=${1%%[.,]*} f=000000
+	[[ $1 == *[.,]* ]] && f=${1#*[.,]}000000
+	US=$((10#$s * 1000000 + 10#${f:0:6}))
 }
 
 # One record per pane, in these parallel arrays. P_RID is a linked computer's own pane id,
@@ -863,11 +908,13 @@ user_inst() {
 	return 0
 }
 P_GROUPS=0
-# ssh_dest ARGS -> the host an `ssh ...` command line connects to, as agent-say link takes it
-# (no user@, no port), or nothing. Options that take a value are skipped with their value.
+# ssh_dest ARGS -> SSHD: the host an `ssh ...` command line connects to, as agent-say link takes
+# it (no user@, no port), or nothing. Options that take a value are skipped with their value.
 ssh_dest() {
 	local -a a
 	local i d
+	SSHD=""
+	[[ $1 == *ssh* ]] || return 0 # most command lines: no need to split them
 	read -ra a <<<"$1"
 	[[ ${a[0]##*/} == ssh ]] || return 0
 	for ((i = 1; i < ${#a[@]}; i++)); do
@@ -876,21 +923,78 @@ ssh_dest() {
 		-*) ;;
 		*)
 			d=${a[i]#ssh://} d=${d##*@} d=${d%%:*}
-			[[ $d =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && printf '%s' "$d"
+			[[ $d =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && SSHD=$d
 			return 0 ;;
 		esac
 	done
 }
 linked() { [[ -f $ASTATE/links/$1/on ]]; }
+# agents_look: P_STATE and P_CTX for the agent panes gather listed (A_AT, the row of each, with
+# A_KIND, A_PID and A_TREE). A run of tmux for each agent's screen and of jq for each Claude
+# Code record is what made a look at the panes slow on a busy machine: here it's one of each,
+# a marker line after each screen to tell them apart. tmux stops at a pane that has closed
+# meanwhile, and jq at a record caught half written: those after it are looked at one by one,
+# the way they were before.
+declare -A JQ_ST=() JQ_SID=()
+agents_look() {
+	local i j n=0 kind apid st mark f s sid
+	local -a cmd=() out=() recs=() ast=() SL
+	JQ_ST=() JQ_SID=()
+	((${#A_AT[@]})) || return 0
+	mark="@@revive-$RANDOM$RANDOM$RANDOM@@"
+	for i in "${A_AT[@]}"; do cmd+=(capture-pane -p -t "${P_ID[i]}" \; display-message -p "$mark" \;); done
+	mapfile -t out < <(tm "${cmd[@]:0:${#cmd[@]}-1}" 2>/dev/null)
+	j=0
+	for i in "${!out[@]}"; do
+		((j < ${#A_AT[@]})) || break
+		[[ ${out[i]} == "$mark" ]] || continue
+		SL=("${out[@]:n:i-n}")
+		lines_state SL
+		ast[j]=$LSTATE n=$((i + 1)) j=$((j + 1))
+	done
+	for ((; j < ${#A_AT[@]}; j++)); do screen_state "${P_ID[A_AT[j]]}"; ast[j]=$LSTATE; done
+	# Claude Code's records, for the agents whose screen isn't asking.
+	for j in "${!A_AT[@]}"; do
+		[[ ${A_KIND[j]} == claude && ${ast[j]} != asking ]] || continue
+		claude_record "${A_PID[j]}"
+		[[ -n $RECORD ]] && recs+=("$RECORD")
+	done
+	if ((${#recs[@]})); then
+		while IFS=$'\t' read -r f s sid; do
+			[[ -n $f && -z ${JQ_ST[$f]+set} ]] && JQ_ST[$f]=$s JQ_SID[$f]=$sid
+		done < <(jq -r '[input_filename, .status // "", .sessionId // ""] | @tsv' "${recs[@]}" 2>/dev/null)
+	fi
+	for j in "${!A_AT[@]}"; do
+		i=${A_AT[j]} kind=${A_KIND[j]} apid=${A_PID[j]} st=${ast[j]}
+		CL_REC="" # what claude_look read is for this pane only
+		# Claude Code's record says for itself whether it is busy, and outranks the screen.
+		# With nothing in it to go by (no record found for this process, or one with no
+		# status), the screen decides, as it does for the other agents. Idle while work it
+		# started goes on in the background is working, but takes input.
+		if [[ $kind == claude && $st != asking ]]; then
+			claude_look "$apid"
+			case $CST in busy) st=working ;; "") ;; *) st=waiting; ((CBG)) && st=agents ;; esac
+		fi
+		# shellcheck disable=SC2086
+		ctx_left "$kind" "$apid" "${P_ID[i]}" ${A_TREE[j]}
+		P_STATE[i]=$st P_CTX[i]=$CTX
+	done
+	JQ_ST=() JQ_SID=()
+}
 gather() {
-	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh ctx k
+	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh ctx k all
 	local -A tnow=()
 	PCHILD=() PARGS=() PRSS=() PCPU=() PPAR=() PUID=() INPANE=()
+	# Read from a string, not straight from ps: read takes a pipe a byte at a time, and every
+	# process's whole command line is in there.
+	all=$(ps -ww -eo pid=,ppid=,uid=,rss=,pcpu=,args= 2>/dev/null) # -ww: never cut to $COLUMNS
 	while read -r pid ppid uid rss pcpu args; do
+		[[ -n $pid ]] || continue
 		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu PPAR[$pid]=$ppid PUID[$pid]=$uid
-	done < <(ps -ww -eo pid=,ppid=,uid=,rss=,pcpu=,args= 2>/dev/null) # -ww: never cut to $COLUMNS
+	done <<<"$all"
 	now=${EPOCHREALTIME:-$SECONDS}
 	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=()
+	A_AT=() A_KIND=() A_PID=() A_TREE=()
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
 		clean loc cmd path name
 		# The pane's process tree, breadth-first, and the first agent in it.
@@ -898,7 +1002,7 @@ gather() {
 		while ((${#q[@]})); do
 			p=${q[0]} q=("${q[@]:1}")
 			tree+=("$p") INPANE[$p]=1
-			if [[ -z $kind ]]; then kind=$(agent_kind "${PARGS[$p]:-}"); [[ -n $kind ]] && apid=$p; fi
+			if [[ -z $kind ]]; then agent_kind "${PARGS[$p]:-}"; kind=$AKIND; [[ -n $kind ]] && apid=$p; fi
 			# shellcheck disable=SC2206
 			[[ -n ${PCHILD[$p]:-} ]] && q+=(${PCHILD[$p]})
 		done
@@ -906,33 +1010,38 @@ gather() {
 		for p in "${tree[@]}"; do mem=$((mem + ${PRSS[$p]:-0})); done
 		# CPU now, not the lifetime average ps reports: ticks used since the last frame.
 		if [[ -r /proc/$ppid0/stat ]]; then
-			t=$(tree_ticks "${tree[@]}")
+			tree_ticks "${tree[@]}"
+			t=$TICKS
 			cpu=0
 			# Kept by pane and its process: a pane id tmux gives out again is another pane.
 			if [[ -n $T_PREV && -n ${TICKS_PREV[$id:$ppid0]:-} ]]; then
-				dt=$(awk -v a="$now" -v b="$T_PREV" 'BEGIN{printf "%.3f", a-b}')
-				cpu=$(awk -v d=$((t - TICKS_PREV[$id:$ppid0])) -v c="$CLK" -v s="$dt" 'BEGIN{v = s > 0 ? d / c / s * 100 : 0; if (v < 0) v = 0; printf "%d", v + 0.5}')
+				# The time between the looks in ms, then ticks / CLK_TCK / seconds as a whole
+				# percent, rounded half up; none over no time, and never below 0.
+				usecs "$now"
+				dt=$US
+				usecs "$T_PREV"
+				dt=$(((dt - US + 500) / 1000))
+				k=$((t - TICKS_PREV[$id:$ppid0]))
+				((dt > 0 && k > 0)) && cpu=$(((2 * k * 100000 + CLK * dt) / (2 * CLK * dt)))
 			fi
 			tnow[$id:$ppid0]=$t
 		else
+			# ps's own figure (macOS): a percent with decimals, summed and rounded at each step.
 			cpu=0
-			for p in "${tree[@]}"; do cpu=$(awk -v a="$cpu" -v b="${PCPU[$p]:-0}" 'BEGIN{printf "%d", a + b + 0.5}'); done
+			for p in "${tree[@]}"; do
+				[[ ${PCPU[$p]:-0} =~ ^([0-9]*)(\.([0-9]*))? ]]
+				dt=${BASH_REMATCH[3]}000
+				cpu=$((((cpu + 10#0${BASH_REMATCH[1]}) * 1000 + 10#${dt:0:3} + 500) / 1000))
+			done
 		fi
 		ctx=""
 		if [[ $id == "${TMUX_PANE:-}" ]]; then
 			st=self P_APP+=("panel") P_AGENT+=(0)
 		elif [[ -n $kind ]]; then
-			st=$(screen_state "$id")
-			# Claude Code's record says for itself whether it is busy, and outranks the screen.
-			# With nothing in it to go by (no record found for this process, or one with no
-			# status), the screen decides, as it does for the other agents. Idle while work it
-			# started goes on in the background is working, but takes input.
-			if [[ $kind == claude && $st != asking ]]; then
-				claude_look "$apid"
-				case $CST in busy) st=working ;; "") ;; *) st=waiting; ((CBG)) && st=agents ;; esac
-			fi
-			ctx_left "$kind" "$apid" "$id" "${tree[@]}"
-			ctx=$CTX
+			# Its state and context left are looked at once every pane is listed (agents_look):
+			# then one tmux reads all the agents' screens, and one jq Claude Code's records.
+			st=agent
+			A_AT+=("${#P_ID[@]}") A_KIND+=("$kind") A_PID+=("$apid") A_TREE+=("${tree[*]}")
 			P_APP+=("$kind") P_AGENT+=(1)
 		elif [[ $SHELLS == *" ${cmd#-} "* ]]; then
 			st=shell P_APP+=("${cmd#-}") P_AGENT+=(0)
@@ -943,7 +1052,8 @@ gather() {
 		ssh=""
 		if [[ $st == program ]]; then
 			for p in "${tree[@]}"; do
-				ssh=$(ssh_dest "${PARGS[$p]:-}")
+				ssh_dest "${PARGS[$p]:-}"
+				ssh=$SSHD
 				[[ -n $ssh ]] && break
 			done
 		fi
@@ -955,8 +1065,10 @@ gather() {
 		user_inst "$UNAME"
 		P_SSH+=("$ssh") P_HOST+=("") P_RID+=("") P_WP+=("${loc##*:}") P_USER+=("$UNAME") P_INST+=("$INST")
 		P_ID+=("$id") P_LOC+=("$loc") P_NAME+=("$name") P_STATE+=("$st")
-		P_DIR+=("$path") P_GIT+=("$(git_info "$path")") P_CPU+=("$cpu") P_MEM+=("$mem") P_CTX+=("$ctx")
+		git_info "$path"
+		P_DIR+=("$path") P_GIT+=("$GITI") P_CPU+=("$cpu") P_MEM+=("$mem") P_CTX+=("$ctx")
 	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
+	agents_look
 	# Only the panes there now: a closed pane's count goes with it.
 	TICKS_PREV=()
 	for k in "${!tnow[@]}"; do TICKS_PREV[$k]=${tnow[$k]}; done
@@ -1225,7 +1337,9 @@ outside_ssh() {
 	for pid in "${!PARGS[@]}"; do
 		[[ -n ${INPANE[$pid]:-} || ${PUID[$pid]:-} != "$UID" ]] && continue
 		a=${PARGS[$pid]}
-		h=$(ssh_dest "$a")
+		[[ $a == *ssh* ]] || continue # most of them: no need to look closer
+		ssh_dest "$a"
+		h=$SSHD
 		[[ -n $h ]] || continue
 		[[ $a == *BatchMode=yes* || $a == *agent-say* || $a == *git-upload-pack* || $a == *git-receive-pack* ||
 			$a == *"rsync --server"* || $a == *" -s "* || $a == *sftp* ]] && continue
@@ -1732,7 +1846,12 @@ links_saves() { # -> SIDE lines: saves, then links
 	SIDE=()
 	local last at reason n iv d h pid names err mode al
 	last=$(cd -P "$DIR/last" 2>/dev/null && pwd)
-	n=$(find "$DIR/snapshots" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+	# The folders in snapshots/ (as find -type d counts them: dot ones too, no links), without a
+	# find and a wc each frame.
+	n=0
+	for d in "$DIR"/snapshots/* "$DIR"/snapshots/.[!.]* "$DIR"/snapshots/..?*; do
+		[[ -d $d && ! -L $d ]] && ((n++))
+	done
 	iv=$(opt @revive-interval 60)
 	if [[ -n $last && -f $last/state.json ]]; then
 		IFS=$'\t' read -r at reason < <(jq -r '[.saved_at, .reason] | @tsv' "$last/state.json" 2>/dev/null)
@@ -2944,11 +3063,14 @@ if ((ASKMODE)); then
 		q=("$ppid0") kind=""
 		while ((${#q[@]})) && [[ -z $kind ]]; do
 			p=${q[0]} q=("${q[@]:1}")
-			kind=$(agent_kind "${PARGS[$p]:-}")
+			agent_kind "${PARGS[$p]:-}"
+			kind=$AKIND
 			# shellcheck disable=SC2206
 			[[ -n ${PCHILD[$p]:-} ]] && q+=(${PCHILD[$p]})
 		done
-		[[ -n $kind && $(screen_state "$id") == asking ]] || continue
+		[[ -n $kind ]] || continue
+		screen_state "$id"
+		[[ $LSTATE == asking ]] || continue
 		clean loc name
 		printf '%s\t%s\t%s\n' "$id" "$loc" "$name" # place before name: a name may be empty
 	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{@agent}' 2>/dev/null)
@@ -3039,6 +3161,10 @@ keys() {
 		case $key in
 		# Moving the selection, scrolling and moving the focus only redraw.
 		up | down | pgup | pgdn | home | end | tab | btab | [0-9]) act "$key"; nav=1 ;;
+		# Keys that only change the view (peek, full view, collapse, art) are drawn at once from
+		# what was gathered last, then looked at again like any other key: on a busy machine
+		# the look at every pane is what takes the time.
+		p | P | x | X | c | C | a | A) act "$key"; nav=1; draw; nav=0; break ;;
 		"") ;;
 		*) act "$key"; nav=0; break ;;
 		esac
