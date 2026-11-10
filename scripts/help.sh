@@ -4,7 +4,7 @@
 # up); this draws them BBS style, scrolls them, and runs the two buttons in the ads.
 #
 # Sourced by panel.sh, which gives it the colours, row/sect/tab, draw and flash. Run on its
-# own, `help.sh --install-workforce` is what the install button starts in a new tmux window.
+# own, `help.sh --install workforce|playwright` is what an install button starts in a new tmux window.
 
 HELP_FILE="$(dirname "${BASH_SOURCE[0]}")/help.txt"
 HELP=0 HELP_TOP=0 HELP_VIEW=1 HELP_W=-1 HROWS=()
@@ -14,6 +14,7 @@ HELP=0 HELP_TOP=0 HELP_VIEW=1 HELP_W=-1 HROWS=()
 
 WF_URL=https://raw.githubusercontent.com/odysseyalive/claude-workforce/main/install
 PW_URL=https://github.com/odysseyalive/playwright-mcp
+PWI_URL=https://raw.githubusercontent.com/odysseyalive/playwright-mcp/main/install
 
 # Claude Workforce's own one-line installer for this system, from its README: the bash one
 # for Linux and macOS (WSL is Linux), the PowerShell one on Windows. What the confirmation
@@ -23,6 +24,26 @@ workforce_cmd() {
 	case $(uname -s) in
 	Linux | Darwin | *BSD) printf 'bash -c "$(curl -fsSL %s)"' "$WF_URL" ;;
 	MINGW* | MSYS* | CYGWIN*) printf 'powershell.exe -NoProfile -Command "irm %s.ps1 | iex"' "$WF_URL" ;;
+	*) return 1 ;;
+	esac
+}
+
+# playwright-mcp's one-line installer, the same way (it also updates an install that's there).
+# REVIVE_PLAYWRIGHT_INSTALL_CMD stands in for it in tests.
+playwright_cmd() {
+	if [[ -n ${REVIVE_PLAYWRIGHT_INSTALL_CMD:-} ]]; then printf '%s' "$REVIVE_PLAYWRIGHT_INSTALL_CMD"; return; fi
+	case $(uname -s) in
+	Linux | Darwin | *BSD) printf 'bash -c "$(curl -fsSL %s.sh)"' "$PWI_URL" ;;
+	MINGW* | MSYS* | CYGWIN*) printf 'powershell.exe -NoProfile -Command "irm %s.ps1 | iex"' "$PWI_URL" ;;
+	*) return 1 ;;
+	esac
+}
+# what WHAT -> WNAME, WCMD, WWIN, WENV: the name shown, the installer's command, the window it
+# runs in, and the stand-in tests set.
+what() {
+	case $1 in
+	workforce) WNAME="Claude Workforce" WCMD=workforce_cmd WWIN=workforce WENV=REVIVE_WORKFORCE_INSTALL_CMD ;;
+	playwright) WNAME="playwright-mcp" WCMD=playwright_cmd WWIN=playwright-mcp WENV=REVIVE_PLAYWRIGHT_INSTALL_CMD ;;
 	*) return 1 ;;
 	esac
 }
@@ -354,7 +375,7 @@ help_frame() {
 		row "$k"
 	done
 	last=$((HELP_TOP + view < n ? HELP_TOP + view : n))
-	kcs ↑↓ " scroll" PgUp/PgDn " page" i " install" o " open" Esc " close"
+	kcs ↑↓ " scroll" PgUp/PgDn " page" i/p " install" Esc " close"
 	k=$KC
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	vlen "$k"
@@ -405,7 +426,8 @@ help_view() {
 		case $k in
 		x | X | q | Q | '?') break ;;
 		' ') HELP_TOP=$((HELP_TOP + HELP_VIEW - 1)) ;;
-		i | I) help_install ;;
+		i | I) help_install workforce ;;
+		p | P) help_install playwright ;;
 		o | O) help_open "$PW_URL" ;;
 		$'\e')
 			rest="" seq=""
@@ -435,9 +457,9 @@ help_confirm() {
 	rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80)
 	w=$((cols - 8 < 76 ? cols - 8 : 76))
 	help_wrap "$2" $((w - 8))
-	L=("" "This runs Claude Workforce's installer:" "")
+	L=("" "This runs $WNAME's installer:" "")
 	for i in "${WRAP[@]}"; do L+=("  $BYEL$i"); done
-	L+=("" "in a new tmux window, so you can watch it and answer" "its question there." "")
+	L+=("" "in a new tmux window, so you can watch it there." "")
 	top=$(((rows - ${#L[@]} - 4) / 2)) left=$(((cols - w) / 2))
 	((top < 1)) && top=1
 	((left < 1)) && left=1
@@ -467,20 +489,20 @@ help_confirm() {
 
 # The install button: ask, then run the installer in a new tmux window of its own, where its
 # output and its question can be seen. Nothing runs without a y.
-help_install() {
-	local cmd
-	cmd=$(workforce_cmd) || { flash "no Claude Workforce installer for $OS"; return; }
-	[[ -n ${REVIVE_WORKFORCE_INSTALL_CMD:-} || $cmd == powershell* ]] || command -v curl >/dev/null ||
-		{ flash "installing Claude Workforce needs curl"; return; }
-	help_confirm "INSTALL CLAUDE WORKFORCE?" "$cmd" || { flash "install cancelled · nothing was run"; return; }
+help_install() { # help_install workforce|playwright
+	local cmd run
+	what "$1" || return
+	cmd=$("$WCMD") || { flash "no $WNAME installer for $OS"; return; }
+	[[ -n ${!WENV:-} || $cmd == powershell* ]] || command -v curl >/dev/null ||
+		{ flash "installing $WNAME needs curl"; return; }
+	help_confirm "INSTALL ${WNAME^^}?" "$cmd" || { flash "install cancelled · nothing was run"; return; }
 	# A new window gets tmux's environment, not the panel's: a stand-in goes along by hand.
-	local run
-	printf -v run '%q %q --install-workforce' "$BASH" "$REVIVE_ROOT/scripts/help.sh"
-	[[ -n ${REVIVE_WORKFORCE_INSTALL_CMD:-} ]] && printf -v run 'env REVIVE_WORKFORCE_INSTALL_CMD=%q %s' "$REVIVE_WORKFORCE_INSTALL_CMD" "$run"
-	tm new-window -n workforce "$run" ||
+	printf -v run '%q %q --install %q' "$BASH" "$REVIVE_ROOT/scripts/help.sh" "$1"
+	[[ -n ${!WENV:-} ]] && printf -v run 'env %s=%q %s' "$WENV" "${!WENV}" "$run"
+	tm new-window -n "$WWIN" "$run" ||
 		{ flash "couldn't open a tmux window for the installer"; return; }
 	[[ -n ${REVIVE_PANEL_POPUP:-} ]] && exit 0 # out of the way of the window it opened
-	flash "installing in the new tmux window: workforce"
+	flash "installing in the new tmux window: $WWIN"
 }
 
 # The link button: the page in a browser, or the address to open by hand.
@@ -496,12 +518,16 @@ help_open() {
 
 # ------------------------------------------------------------------ run on its own
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
-	[[ ${1:-} == --install-workforce ]] || { echo "usage: help.sh --install-workforce" >&2; exit 2; }
-	cmd=$(workforce_cmd) || { echo "There's no Claude Workforce installer for $(uname -s)."; exit 1; }
-	printf 'Installing Claude Workforce:\n  %s\n\n' "$cmd"
+	# --install-workforce: what older panels run.
+	case ${1:-} in --install) w=${2:-} ;; --install-workforce) w=workforce ;; *) w="" ;; esac
+	what "$w" || { echo "usage: help.sh --install workforce|playwright" >&2; exit 2; }
+	cmd=$("$WCMD") || { echo "There's no $WNAME installer for $(uname -s)."; exit 1; }
+	printf 'Installing %s:\n  %s\n\n' "$WNAME" "$cmd"
 	bash -c "$cmd"
 	st=$?
-	if ((st)); then printf '\nThe installer stopped (exit %s).' "$st"; else printf '\nDone.'; fi
+	if ((st)); then printf '\nThe installer stopped (exit %s).' "$st"
+	elif [[ $w == playwright ]]; then printf '\nDone. Restart Claude Code to use it.'
+	else printf '\nDone.'; fi
 	printf ' Press Enter to close this window.'
 	read -r _
 	exit "$st"

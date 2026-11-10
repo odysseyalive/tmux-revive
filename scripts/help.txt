@@ -54,5 +54,5 @@ I wanted Claude to browse the web the way I do.
 - Log in to a site once and Claude can use it everywhere. Your password never goes to Claude.
 - Pages come back with their author, date and publisher, so citing them is easy.
 - It can also write a ready-to-run e2e test suite for a site you're logged in to. Those tests run on their own, no Claude needed.
-.button o Open it on GitHub
+.button p Install playwright-mcp
 .end
