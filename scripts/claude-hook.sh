@@ -54,7 +54,7 @@ To reach agents in other tmux panes, or on servers linked with agent-say, run $a
 - $as NAME \"message\": send to one (use NAME@server for a linked server)
 - $as show ID: read a message by the id in its notice
 Messages and replies arrive as a prompt that starts with [agent-msg from=NAME ...] and ends with the exact command to answer with.
-Your first message to any other agent, here or on another server, waits as an introduction until the user approves it in the tmux-revive panel."
+Your first message to any other agent, on this computer or another server, waits as an introduction until the user approves it in the tmux-revive panel."
 
 jq=$(command -v jq) || jq=$ROOT/vendor/bin/jq
 if [[ -x $jq ]]; then

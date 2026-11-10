@@ -208,11 +208,11 @@ off.
 ### Linked computers in the panel
 
 When a pane ssh's into another computer, the panel spots it and offers to link the
-agents there. **L** links it and **U** unlinks it. Linking is one yes or no: the
+agents there. **L** links it and **U** unlinks it. Linking is one yes or no. The
 panel finds the key ssh uses for that computer (your known_hosts, or the ssh
 connection you have open to it) and shows it, and pops up a box for the password
-if the server takes one. A key not in your known_hosts is one you haven't
-confirmed yet, so there No comes first. A link that stops working shows why in LINKS,
+if the server takes one. If the key isn't in your known_hosts, you haven't
+confirmed it yet, so No comes first. A link that stops working shows why in LINKS,
 and **L** on it tries it once more. **L** on a working link links it again or
 unlinks it.
 
@@ -346,7 +346,7 @@ with its `HostName`, `Port`, `HostKeyAlias` and known_hosts files.
 If ssh already trusts the server (its key is in a known_hosts file ssh reads for
 it), it links with no questions, and that key is recorded with the link. Linking
 it again while it still has the key you confirmed asks nothing either. Otherwise
-it shows you one fingerprint, the key type ssh would pick, and asks you to confirm
+it shows you one fingerprint, for the key type ssh would pick, and asks you to confirm
 it, as ssh does for a key it hasn't seen. With no key in known_hosts (say
 `UserKnownHostsFile /dev/null`) but an ssh connection of yours open to it through a
 `ControlMaster`, that key is read through your connection, with no new one made.
@@ -415,13 +415,13 @@ access**, and the asking agent's STATE
 blinks **[G]RANT ACCESS**. Press **G** to grant access,
 pick it, read why it's asking, and choose Approve or Deny.
 
-The same goes for every pair of agents, not only across servers: two agents on
-your computer, an agent on a server and one on your computer, either way. What you
+The same goes for every pair of agents, not only across servers. That means two agents on
+your computer, or an agent on a server and one on your computer, either way. What you
 send yourself, from a shell or the panel, needs no permission.
 
 Approve shows a four-digit code in a popup for you to type back. Then it delivers
 the introduction and anything sent since, in order, and the two can talk both ways.
-Deny drops them, and the asking agent can't write to the other one again, nor the other to it.
+Deny drops them, and neither agent can write to the other again.
 
 An agent can restart while it waits. Approve covers whoever is in those two panes
 now. If the recipient restarted, it still gets what waited. If the sender restarted,
@@ -432,8 +432,8 @@ through is told so it can send it again. While any approval is in force, MESSAGE
 ends with one line counting them.
 
 Permission is per pair of agent sessions, so a new session in a pane asks again.
-**G** also lists what you've approved: pick one to Refresh it (another 24 hours, with a code as for Approve)
-or Cancel it. Esc closes without changing anything. The sending agent is
+**G** also lists what you've approved. Pick one to Refresh it for another 24 hours (with a code, as for Approve),
+or to Cancel it. Esc closes without changing anything. The sending agent is
 told plainly what happened (`introduction sent`, `held`, `declined`). At most 5
 messages wait per pair, and 3 introductions per server. `agent-say intros` lists
 them from a terminal.

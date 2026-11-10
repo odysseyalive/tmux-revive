@@ -2056,7 +2056,7 @@ code_popup() {
 	local q=$1 verb=$2 out="$ASTATE/intros/.allow.out" pc
 	shift 2
 	mkdir -p "$ASTATE/intros"
-	pc=$(printf '%q ' bash -c 'c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); printf "\n  %s\n\n  Type %s and Enter to %s (anything else: no): " "$1" "$c" "$2"; IFS= read -r r; [[ $r == "$c" ]] || exit 1; export AGENT_SAY_MAILBOX="$3" AGENT_SAY_APPROVE_CODE="$c"; o=$4 s=$5; shift 5; source "$s" && "$@" "$c" >"$o" 2>&1' _ "$q" "$verb" "$AMAIL" "$out" "$ASAY" "$@")
+	pc=$(printf '%q ' bash -c 'c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); printf "\n  %s\n\n  Type %s and press Enter to %s (anything else means no): " "$1" "$c" "$2"; IFS= read -r r; [[ $r == "$c" ]] || exit 1; export AGENT_SAY_MAILBOX="$3" AGENT_SAY_APPROVE_CODE="$c"; o=$4 s=$5; shift 5; source "$s" && "$@" "$c" >"$o" 2>&1' _ "$q" "$verb" "$AMAIL" "$out" "$ASAY" "$@")
 	rm -f "$out"
 	tm display-popup -E -w 76 -h 9 "$pc" 2>/dev/null
 	tail -n 1 "$out" 2>/dev/null || true
@@ -2637,7 +2637,7 @@ act() {
 			fi
 			if ((${#keys[@]})); then note+=": ${keys[0]}"; else note="no key found (not in known_hosts, no answer to ssh-keyscan)" first=""; fi
 			notes=("$NOTE$note")
-			[[ -n $first ]] && notes+=("${NOTE}First time we see this key: check it matches your server.")
+			[[ -n $first ]] && notes+=("${NOTE}First time we see this key, so check it matches your server.")
 			pick "$title" "${notes[@]}" "${yn[@]}" || { flash "link cancelled"; return; }
 			PICKED=$((PICKED - ${#notes[@]} + 1))
 			[[ ${yn[PICKED - 1]} == Yes* ]] || { flash "link cancelled"; return; }

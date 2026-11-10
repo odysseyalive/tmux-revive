@@ -1733,7 +1733,7 @@ case "$cmd" in
 			[[ $KEY_STATE == trusted ]] && { echo "$host's host key, as ssh already trusts it (known_hosts):"; sed 's/^/  /' <<<"$keys"; }
 			# Read through your open connection: what answers there says it, so it is confirmed as a
 			# key seen for the first time is.
-			[[ $KEY_STATE == live ]] && echo "(read through your open ssh connection to $host; the first time this key is seen here: check it matches your server)"
+			[[ $KEY_STATE == live ]] && echo "(read through your open ssh connection to $host. This key is new here, so check it matches your server.)"
 			[[ $KEY_STATE == changed || $KEY_STATE == unknown || $KEY_STATE == live ]] && confirm_keys
 		fi
 		mkdir -p "$d"
