@@ -1187,6 +1187,12 @@ printf 'livebox.internal %s\n' "$(cut -d' ' -f1,2 "$T/hostkey2.pub")" >"$T/live_
 n=$(ridden)
 check "with another key in known_hosts, your connection isn't ridden: it stops instead" "for _ in \$(seq 40); do [[ -e $lvl/paused ]] && break; sleep 0.25; done; [[ -e $lvl/paused && \$(ridden) == $n ]]"
 lv unlink livebox >/dev/null 2>&1
+# Its key in known_hosts again, but your config doesn't check keys (StrictHostKeyChecking no): what
+# your connection was opened to, ssh never checked, so it isn't ridden either.
+printf 'livebox.internal %s\n' "$(cut -d' ' -f1,2 "$T/hostkey1.pub")" >"$T/live_kh"; echo false >"$T/live.strict"
+n=$(ridden)
+out=$(lv link livebox 2>&1 </dev/null)
+check "with keys not checked, your connection isn't ridden, even with its key in known_hosts ($out)" "[[ \$(ridden) == $n && \$out == *'timed out'* && ! -e $lvl/on ]]"
 rm -f "$T/live.master" "$T/scan.presented"
 
 
