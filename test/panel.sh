@@ -590,7 +590,7 @@ check "I, the key it had before, still opens it" "wait_a 'ACCESS' && wait_a 'WAI
 akey 1
 check "a waiting one shows its words, and Approve or Deny" "wait_a 'may I ask dev-root about the failing build?' && wait_a '1  Approve' && wait_a '2  Deny' && ! ascreen | grep -cF 'restarted' >/dev/null"
 check "under its title, why each of the two asks, one line each, never a choice" "wait_a 'why (live-root): needs the logs' && wait_a 'why (dev-root): and back' && ! ascreen | grep -qE '[0-9]  why'"
-check "and the escapes in a reason don't paint the screen" "! tm capture-pane -p -e -t work:acc | grep -qF '48;5;201' && ! tm capture-pane -p -t work:acc | grep -qF \$'\\e'"
+check "and the escapes in a reason don't paint the screen" "! tm capture-pane -p -e -t work:acc | grep -qF \$'\\e[48;5;201m' && ascreen | grep -qF 'needs the logs[48;5;201m]0;pwned'"
 akey Escape; gone_a '2  Deny' >/dev/null
 # Its agent restarted since asking (another session in that pane now): the window says so.
 printf 'live-root s-new\ncx %s\n' $ib >"$T/mail/links/far.invalid/sessions"
