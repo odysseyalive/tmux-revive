@@ -1350,7 +1350,7 @@ JU="env -u TMUX -u TMUX_PANE -u AGENT_SAY_PANE -u AGENT_SAY_MAILBOX -u XDG_STATE
 inj() { run "0$1" "$JU $2"; }
 sleep 0.3
 out=$(inj $JV "AGENT_SAY_ASK_WAIT=1 $ROOT/bin/agent-say list") && rc=0 || rc=$?
-check "with root's side not answering, it fails and says what to do ($out)" "((rc != 0)) && [[ \$out == *\"root's tmux-revive didn't answer for it within 1s\"*'update tmux-revive as root'* ]] && [[ -z \$(ls $T/jhome/.local/state/agent-say/ask) ]]"
+check "with root's side not answering, it fails and says what to do ($out)" "((rc != 0)) && [[ \$out == *\"root's tmux-revive didn't answer for it in 1s\"*'update tmux-revive as root'* ]] && [[ -z \$(ls $T/jhome/.local/state/agent-say/ask) ]]"
 check "its folder is the user's own, closed to others" "[[ \$(stat -c %a $T/jhome/.local/state/agent-say/ask) == 700 ]]"
 $E0 AGENT_SAY_TEST_ASKER="$T/jhome" "$ROOT/bin/agent-say" _serve "$(id -u)" >"$T/serve.log" 2>&1 &
 sleep 0.5
@@ -1384,7 +1384,7 @@ printf '## [jt -> jv %s] #dup-1\nfor jv\n\n## [jt -> jt %s] #dup-1\nnot for jv\n
 out=$(inj $JV "$ROOT/bin/agent-say show dup-1")
 check "show: of entries sharing an id, only its own ($out)" "[[ \$out == *'for jv'* && \$out != *'not for jv'* ]]"
 out=$(inj $JV "$ROOT/bin/agent-say link elsewhere.example") && rc=0 || rc=$?
-check "link isn't run for it ($out)" "((rc != 0)) && [[ \$out == *\"agent-say link isn't run for another user's pane\"* ]] && [[ ! -e $T/links/elsewhere.example ]]"
+check "link isn't run for it ($out)" "((rc != 0)) && [[ \$out == *\"agent-say link doesn't run for another user's pane\"* ]] && [[ ! -e $T/links/elsewhere.example ]]"
 out=$(inj $JV "$ROOT/bin/agent-say _ctx s-jv 50; $ROOT/bin/agent-say _user-installed 1.2.3") && rc=0 || rc=$?
 check "_ctx and _user-installed ask nothing: root reads those itself ($out)" "((rc == 0)) && [[ -z \$out && ! -e $T/ctx/${JV#%} && ! -e $T/users ]]"
 # A request naming another process than its own: one in the person's pane, which holds no such file.
@@ -1397,13 +1397,13 @@ check "a run that says it answers for another process, without agent-say's own k
 mkdir -p "$T/jhome2/.local/state/agent-say" "$T/elsewhere"
 ln -s "$T/elsewhere" "$T/jhome2/.local/state/agent-say/ask"
 out=$(inj $JV "HOME=$T/jhome2 $ROOT/bin/agent-say list") && rc=0 || rc=$?
-check "a folder that is a symbolic link isn't used ($out)" "((rc != 0)) && [[ \$out == *\"can't be used to reach it\"* && -z \$(ls $T/elsewhere) ]]"
+check "a folder that is a symbolic link isn't used ($out)" "((rc != 0)) && [[ \$out == *\"can't reach it\"* && -z \$(ls $T/elsewhere) ]]"
 # Claude Code's SessionStart hook there, which can't look at root's tmux itself.
 out=$(inj $JV "bash $ROOT/scripts/claude-hook.sh </dev/null")
 check "Claude Code's start hook there gives the pane its name ($out)" '[[ $out == *"tmux pane '"$JV"', named \\\"jv\\\" for agent-say"* ]]'
 # Two users, neither root, and no sudo between them: said plainly, to the agent too.
 out=$(inj $JV "AGENT_SAY_TEST_OWNER=admin:$HOME bash $ROOT/scripts/claude-hook.sh </dev/null")
-check "where it can't be reached at all, the hook says why ($out)" "[[ \$out == *\"can't reach right now: this pane is in admin's tmux\"* ]]"
+check "where it can't be reached at all, the hook says why ($out)" "[[ \$out == *\"can't be reached by agent-say right now: this pane is in admin's tmux\"* ]]"
 # Requests in another process's name that it does hold open: a file of the user's that jp's
 # shell keeps open, linked in as jp's request, or moved there. Neither is jp's agent-say's own.
 ask=$T/jhome/.local/state/agent-say/ask

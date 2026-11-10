@@ -93,7 +93,7 @@ ask_owner() {
 	[[ ${1:-} == _ctx || ${1:-} == _user-installed ]] && exit 0
 	[[ $w =~ ^[0-9]+$ ]] || w=8
 	mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null
-	[[ -d $dir && ! -L $dir && -O $dir ]] || die "this pane is in root's tmux, and $dir can't be used to reach it"
+	[[ -d $dir && ! -L $dir && -O $dir ]] || die "this pane is in root's tmux, so $dir can't reach it"
 	f=$dir/$$.req
 	rm -f "$f" "$dir/$$.res"
 	t="$(mktemp "$dir/.$$.XXXXXX")" || die "can't write to $dir"
@@ -107,11 +107,11 @@ ask_owner() {
 	for ((i = 0; i < w * 10; i++)); do [[ -e $f ]] || break; sleep 0.1; done
 	if [[ -e $f ]]; then
 		rm -f "$f"
-		die "this pane is in root's tmux, and root's tmux-revive didn't answer for it within ${w}s. Try again in a few seconds. If it keeps happening, update tmux-revive as root (tmux-revive update, in a root pane)"
+		die "this pane is in root's tmux, and root's tmux-revive didn't answer for it in ${w}s. Try again in a few seconds. If it keeps happening, update tmux-revive as root (run tmux-revive update in a root pane)"
 	fi
 	# A send may wait a while for someone to finish typing there.
 	for ((i = 0; i < 3000; i++)); do [[ -e $dir/$$.res ]] && break; sleep 0.1; done
-	[[ -e $dir/$$.res ]] || die "root's agent-say took this but never answered"
+	[[ -e $dir/$$.res ]] || die "root's agent-say got this but never answered"
 	{ read -r rc nout nerr && head -c "$nout"; } <"$dir/$$.res"
 	[[ ${nerr:-0} =~ ^[0-9]+$ ]] && ((nerr > 0)) && tail -c "$nerr" "$dir/$$.res" >&2
 	rm -f "$dir/$$.res"
@@ -1747,7 +1747,7 @@ ownname="" since=""
 if ((ORIGIN != $$)); then
 	case $cmd in
 		name | list | show | read | _pane) ;;
-		_* | link | unlink | intros | revoke) die "agent-say $cmd isn't run for another user's pane. Run it as $(id -un)" ;;
+		_* | link | unlink | intros | revoke) die "agent-say $cmd doesn't run for another user's pane. Run it as $(id -un)" ;;
 	esac
 	since="~" # nothing (after every date), until known
 	p="$(self_pane)"
@@ -2441,7 +2441,7 @@ case "$cmd" in
 			[[ $uname =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ && $gid =~ ^[0-9]+$ && $home == /* ]] || die "user $u has no home directory here"
 			if command -v setpriv >/dev/null; then drop=(setpriv --reuid="$u" --regid="$gid" --init-groups --)
 			elif command -v runuser >/dev/null; then drop=(runuser -u "$uname" --)
-			else die "neither setpriv nor runuser is here, to answer as $uname"; fi
+			else die "can't answer as $uname: neither setpriv nor runuser is installed here"; fi
 		fi
 		# One for each user: a second one (two tmux starts at once) leaves.
 		if command -v flock >/dev/null && [[ -z ${AGENT_SAY_SERVE_LOCKED:-} ]]; then

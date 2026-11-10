@@ -54,7 +54,7 @@ fi
 if [[ -n $name ]]; then
 	where="This Claude Code session is in tmux pane $pane, named \"$name\" for agent-say."
 elif [[ -n $why ]]; then
-	where="This Claude Code session is in a tmux pane agent-say can't reach right now: $why"
+	where="This Claude Code session's tmux pane can't be reached by agent-say right now: $why"
 else
 	where="This Claude Code session is in a tmux pane with no agent-say name yet. Run $as name NAME to give it one."
 fi
