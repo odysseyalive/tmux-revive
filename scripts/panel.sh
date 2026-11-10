@@ -634,12 +634,32 @@ agent_kind() { # agent_kind ARGS -> AKIND: claude/codex/cursor/crush/gemini or n
 	esac
 }
 
+# One running as another user (in root's tmux, a pane where root ran su - USER) keeps it in its
+# own config, which its environment names, readable here only as root: looked for there again
+# every 30 s until found.
+declare -A CL_EREC=() CL_EREC_T=()
 claude_record() { # claude_record PID -> RECORD: Claude Code's session record for it, or nothing
-	local f
+	local f e
+	local -a d=()
 	RECORD=""
 	for f in "$HOME"/.claude*/sessions/"$1".json ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR/sessions/$1.json"}; do
 		[[ -f $f ]] && { RECORD=$f; return; }
 	done
+	[[ $1 =~ ^[0-9]+$ && -r /proc/$1/environ ]] || return 0
+	if [[ -z ${CL_EREC[$1]:-} ]] && { [[ -z ${CL_EREC_T[$1]:-} ]] || ((SECONDS - CL_EREC_T[$1] >= 30)); }; then
+		CL_EREC_T[$1]=$SECONDS
+		while IFS= read -r -d '' e; do
+			case $e in
+			CLAUDE_CONFIG_DIR=/*) d=("${e#*=}" "${d[@]}") ;;
+			HOME=/*) d+=("${e#*=}/.claude") ;;
+			esac
+		done <"/proc/$1/environ" 2>/dev/null
+		for f in "${d[@]}"; do
+			[[ -f $f/sessions/$1.json ]] && { CL_EREC[$1]=$f/sessions/$1.json; break; }
+		done
+	fi
+	[[ -n ${CL_EREC[$1]:-} && -f ${CL_EREC[$1]} ]] && RECORD=${CL_EREC[$1]}
+	return 0
 }
 # Claude Code's record says idle between turns even while agents it started in the background
 # (the Agent tool's run_in_background, background shells) go on working, and it has no field
@@ -897,24 +917,37 @@ usecs() {
 P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=()
 ME=$(id -un 2>/dev/null)
 USER_RE='^[A-Za-z_][A-Za-z0-9_.-]{0,31}$'
-declare -A UNAMES=()
+declare -A UNAMES=() UHOMES=() UAPPS=()
 user_of() { # user_of UID -> UNAME: its user name (the number if it has none)
-	local n
+	local n="" h=""
 	if [[ -z ${UNAMES[$1]+x} ]]; then
-		n=$(getent passwd "$1" 2>/dev/null | cut -d: -f1)
+		IFS=: read -r n _ _ _ _ h _ < <(getent passwd "$1" 2>/dev/null)
 		[[ -n $n ]] || n=$(id -un "$1" 2>/dev/null)
 		[[ $n =~ $USER_RE ]] || n=$1
-		UNAMES[$1]=$n
+		UNAMES[$1]=$n UHOMES[$1]=$h
 	fi
 	UNAME=${UNAMES[$1]}
 }
-# user_inst NAME -> INST: as P_INST. Another user's install inside this tmux leaves its version
-# here (agent-say _user-installed), since their home can't be looked in.
+# user_inst NAME UID PID -> INST: as P_INST. Another user's install, where it can be read (as
+# root, in root's tmux): its own app folder, as install.sh finds it (XDG_DATA_HOME as that
+# user's process has it, else their home's), looked for once a user. Else what their install
+# left here (agent-say _user-installed), when their home can't be looked in.
 user_inst() {
-	local v=""
+	local v="" e d="" a=""
 	INST=owner
 	[[ $1 == "$ME" ]] && return 0
 	INST=""
+	if [[ -n ${2:-} && -z ${UAPPS[$2]+x} ]]; then
+		[[ ${UHOMES[$2]:-} == /* ]] && d=${UHOMES[$2]}/.local/share
+		if [[ ${3:-} =~ ^[0-9]+$ && -r /proc/$3/environ && "$(stat -c %u "/proc/$3" 2>/dev/null)" == "$2" ]]; then
+			while IFS= read -r -d '' e; do [[ $e == XDG_DATA_HOME=/* ]] && d=${e#*=}; done <"/proc/$3/environ" 2>/dev/null
+		fi
+		UAPPS[$2]=${d:+$d/tmux-revive/app}
+	fi
+	[[ -n ${2:-} ]] && a=${UAPPS[$2]}
+	[[ -n $a && -f $a/VERSION && ! -L $a/VERSION ]] && read -r v <"$a/VERSION" 2>/dev/null
+	[[ $v =~ $VER_RE ]] && { INST=$v; return 0; }
+	v=""
 	[[ $1 =~ $USER_RE && -f $ASTATE/users/$1 ]] && read -r v <"$ASTATE/users/$1" 2>/dev/null
 	[[ $v =~ $VER_RE ]] && INST=$v
 	return 0
@@ -1074,7 +1107,7 @@ gather() {
 		p=${apid:-${tree[${#tree[@]} - 1]}}
 		UNAME=""
 		[[ -n ${PUID[$p]:-} ]] && user_of "${PUID[$p]}"
-		user_inst "$UNAME"
+		user_inst "$UNAME" "${PUID[$p]:-}" "$p"
 		P_SSH+=("$ssh") P_HOST+=("") P_RID+=("") P_WP+=("${loc##*:}") P_USER+=("$UNAME") P_INST+=("$INST")
 		P_ID+=("$id") P_LOC+=("$loc") P_NAME+=("$name") P_STATE+=("$st")
 		git_info "$path"

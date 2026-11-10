@@ -769,8 +769,11 @@ main() {
 	if [ -n "${sha:-}" ]; then say "installed $REPO commit $sha to $APP"; else say "installed to $APP"; fi
 	# Inside someone else's tmux (sudo -i or su in one of their panes), their panel shows which
 	# tmux-revive this user has: agent-say keeps it in that user's state. Outside tmux, or in
-	# your own, nothing is kept.
-	! is_version "$now" || "$APP/bin/agent-say" _user-installed "$now" </dev/null >/dev/null 2>&1 || true
+	# your own, nothing is kept. When it can't be (that tmux is another user's, and this user
+	# can't become them), why is said.
+	if is_version "$now" && ! err=$("$APP/bin/agent-say" _user-installed "$now" </dev/null 2>&1 >/dev/null); then
+		warn "the panel in this tmux won't show this install's version: ${err#agent-say: }"
+	fi
 	old_root_copy
 
 	# ------------------------------------------------------------ tmux config

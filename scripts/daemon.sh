@@ -83,6 +83,25 @@ question_alerts() {
 	for id in "${!ASKED[@]}"; do [[ $now == *" $id "* ]] || unset 'ASKED[$id]'; done
 }
 
+# Root's tmux, with a pane where root ran su - USER: USER's agent-say can't reach this tmux,
+# and asks root's for it instead (bin/agent-say, ask_owner). agent-say _serve answers, one for
+# each such user, started here when a pane of theirs shows up, and leaving once none is left.
+# Only in root's tmux: nothing runs for anyone else's.
+declare -A SERVING=()
+serve_users() {
+	local u sock
+	((EUID == 0)) || return 0
+	for u in $({ tm list-panes -a -F 'P #{pane_pid}' 2>/dev/null; ps -eo pid=,ppid=,uid= 2>/dev/null; } |
+		awk '$1 == "P" {top[$2] = 1; next} {up[$1] = $2; id[$1] = $3}
+			END {for (p in id) if (id[p] != 0) {q = p; for (i = 0; i < 64 && q > 1; i++) {if (q in top) {print id[p]; break} q = up[q]}}}' | sort -u); do
+		[[ $u =~ ^[0-9]+$ ]] || continue
+		[[ -n ${SERVING[$u]:-} ]] && kill -0 "${SERVING[$u]}" 2>/dev/null && continue
+		sock=$(tm display-message -p '#{socket_path}' 2>/dev/null) || return 0
+		TMUX="$sock,$spid,0" "$REVIVE_ROOT/bin/agent-say" _serve "$u" </dev/null >/dev/null 2>&1 &
+		SERVING[$u]=$!
+	done
+}
+
 log "daemon up for server $spid"
 elapsed=0
 tick=${REVIVE_DAEMON_TICK:-5} # tests shorten it
@@ -90,6 +109,7 @@ while same_server; do
 	sleep "$tick" # short ticks so the daemon dies within seconds of its server
 	((elapsed += tick))
 	question_alerts
+	serve_users
 	# Backstop for the close hooks: a server left with no sessions is one
 	# you closed down; record that and let it exit (see revive.tmux).
 	if [[ $(opt @revive-exit-empty on) == on && -z $(tm list-sessions -F x 2>/dev/null) ]] && same_server; then
