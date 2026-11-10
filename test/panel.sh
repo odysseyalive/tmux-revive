@@ -810,7 +810,8 @@ broken
 check "LINKS says the failing link's error plainly" "wait_ssh 'devbox.example stopped: host key changed'"
 tm send-keys -t work:sshpanel l; sleep 0.7
 check "L offers the failing link, to link again" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q 'devbox.example  · stopped: host key changed.* · link again'"
-tm send-keys -t work:sshpanel Enter
+pick_line() { tm send-keys -t work:sshpanel "$(sshscreen | grep -o "[1-9] *$1" | head -c 1)"; } # the popup line showing that
+pick_line "devbox.example  · stopped"
 check "picking it asks: leave it, link it again, or unlink it" "wait_ssh 'LINK devbox.example AGAIN?' && wait_ssh 'No, leave it as it is' && wait_ssh 'Yes, link devbox.example again' && wait_ssh 'Unlink devbox.example'"
 tm send-keys -t work:sshpanel 2
 # It was linked to another key: that is said, with No first, though known_hosts has this one.
@@ -818,25 +819,27 @@ check "linking again shows the key ssh uses now, warns it isn't the one linked b
 tm send-keys -t work:sshpanel 2
 check "and yes unlinks the old one and links again (its old key and error gone)" "wait_ssh \"couldn't run agent-say on devbox.example\" && [[ ! -e $sk/on && ! -e $sk/error && ! -e $sk/fingerprint ]]"
 broken
-tm send-keys -t work:sshpanel l; sleep 0.7; wait_ssh 'link again' >/dev/null; tm send-keys -t work:sshpanel Enter
+tm send-keys -t work:sshpanel l; sleep 0.7; wait_ssh "link again" >/dev/null; pick_line "devbox.example  · stopped"
 wait_ssh 'LINK devbox.example AGAIN?' >/dev/null; tm send-keys -t work:sshpanel 1
 check "No there leaves it as it was" "wait_ssh 'link cancelled' && [[ -e $sk/on && -s $sk/error ]]"
-tm send-keys -t work:sshpanel l; sleep 0.7; wait_ssh 'link again' >/dev/null; tm send-keys -t work:sshpanel Enter
+tm send-keys -t work:sshpanel l; sleep 0.7; wait_ssh "link again" >/dev/null; pick_line "devbox.example  · stopped"
 wait_ssh 'LINK devbox.example AGAIN?' >/dev/null; tm send-keys -t work:sshpanel 3
-check "Unlink there unlinks the failing link" "wait_ssh 'unlinked devbox.example' && [[ ! -e $sk ]]"
+# Each unlink says the same, so wait for the link itself to go, not only for the words.
+gone_sk() { for _ in $(seq 1 50); do [[ -e $sk ]] || break; sleep 0.2; done; [[ ! -e $sk ]] && wait_ssh 'unlinked devbox.example'; }
+check "Unlink there unlinks the failing link" "gone_sk"
 broken
 tm send-keys -t work:sshpanel u; sleep 0.7; wait_ssh 'UNLINK' >/dev/null; tm send-keys -t work:sshpanel 1
-check "and so does U" "wait_ssh 'unlinked devbox.example' && [[ ! -e $sk ]]"
+check "and so does U" "gone_sk"
 # A link stopped on a failure (paused): LINKS says why, and L tries it once more, with its key.
 mkdir -p "$sk"; touch "$sk/on" "$sk/paused"; echo "$fp (ED25519)" >"$sk/fingerprint"
 echo "can't reach (connection timed out) · L to try again" >"$sk/error"
 check "LINKS shows a stopped link's reason, and that L tries again" "wait_ssh \"devbox.example can't reach (connection timed out)\""
 tm send-keys -t work:sshpanel l; sleep 0.7
 check "L offers it, to try again" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q \"devbox.example  · can't reach (connection timed out) · try again\""
-tm send-keys -t work:sshpanel Enter
+pick_line "devbox.example  · can.t reach"
 check "picking it tries once, with no questions, and says why it failed again" "wait_ssh 'devbox.example: ssh to devbox.example failed' && ! sshscreen | grep -q 'AGAIN?' && [[ -e $sk/paused && -e $sk/on ]] && grep -q 'L to try again' $sk/error"
 tm send-keys -t work:sshpanel u; sleep 0.7; wait_ssh 'UNLINK' >/dev/null; tm send-keys -t work:sshpanel 1
-check "U unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $sk ]]"
+check "U unlinks it" "gone_sk"
 tm send-keys -t work:sshpanel q
 tm kill-window -t work:remote 2>/dev/null
 # live.example: ssh keeps no key for it (known_hosts /dev/null, keys not checked), but an ssh
