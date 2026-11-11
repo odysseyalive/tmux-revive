@@ -2381,9 +2381,10 @@ code_popup() {
 	shift 2
 	mkdir -p "$ASTATE/intros"
 	# agent-say is read in first for its input box; the code is made after, in the popup only.
-	pc=$(printf '%q ' bash -c 'export AGENT_SAY_MAILBOX="$3"; o=$4 s=$5; source "$s" || exit 1; c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); input_box "$1" "Type $c and press Enter to $2" plain "Anything else counts as no · Esc cancels" && [[ $BOX_REPLY == "$c" ]] || exit 1; export AGENT_SAY_APPROVE_CODE="$c"; shift 5; "$@" "$c" >"$o" 2>&1' _ "$q" "$verb" "$AMAIL" "$out" "$ASAY" "$@")
+	pc=$(printf '%q ' bash -c 'export AGENT_SAY_MAILBOX="$3"; o=$4 s=$5; source "$s" || exit 1; c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); input_box ACCESS "Type $c and press Enter to $2" plain "Anything else counts as no · Esc cancels" "$1" && [[ $BOX_REPLY == "$c" ]] || exit 1; export AGENT_SAY_APPROVE_CODE="$c"; shift 5; "$@" "$c" >"$o" 2>&1' _ "$q" "$verb" "$AMAIL" "$out" "$ASAY" "$@")
 	rm -f "$out"
-	tm display-popup -E -w 76 -h 11 "$pc" 2>/dev/null
+	# Tall enough for the question whole, however long the names in it are (it wraps, never cut).
+	tm display-popup -E -w 76 -h $((12 + ${#q} / 60)) "$pc" 2>/dev/null
 	tail -n 1 "$out" 2>/dev/null || true
 	rm -f "$out"
 }

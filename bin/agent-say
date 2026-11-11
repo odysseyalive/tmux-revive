@@ -39,15 +39,18 @@ die() { echo "agent-say: $*" >&2; exit 1; }
 unset LINK_TRY # set only inside agent-say, never from outside (see ssh_to)
 
 # --- the input box -----------------------------------------------------------------------
-# input_box TITLE PROMPT [secret|plain|note] [HINT] -> BOX_REPLY: one line typed into a
+# input_box TITLE PROMPT [secret|plain|note] [HINT] [QUESTION] -> BOX_REPLY: one line typed into a
 # highlighted field in a blue box, on the alternate screen, with a blinking cursor; secret shows
 # a * for each character typed. The panel's popups use it (a code to type back, a password for
 # ssh). Enter accepts; Esc, Ctrl-C or an empty Enter backs out (returns 1). note: no field, only
-# the words; any key closes it.
+# the words; any key closes it. QUESTION: shown whole above the prompt, wrapped over as many
+# lines as it takes, never cut (what is being approved, with the names in it).
 # Whatever is shown is shown as text: control characters (a server's own prompt) go first.
 input_box() {
 	local title=${1//[[:cntrl:]]/} prompt=${2//[[:cntrl:]]/} mode=${3:-plain} hint=${4:-"Enter sends · Esc cancels"}
-	local e=$'\e' fd ofd rows=24 cols=80 w h top left fw k rest show sz ok=1 INTR=0 i
+	local q=${5:-} e=$'\e' fd ofd rows=24 cols=80 w h top left fw k rest show sz ok=1 INTR=0 i o cut
+	local -a ql=()
+	q=${q//[[:cntrl:]]/}
 	BOX_REPLY=""
 	# On the terminal it runs in; for askpass (IB_TTY=1), whose stdout is ssh's pipe, /dev/tty.
 	if [[ ${IB_TTY:-} == 1 ]]; then exec {fd}<>/dev/tty 2>/dev/null || return 1; ofd=$fd
@@ -58,9 +61,20 @@ input_box() {
 	w=$((${#prompt} + 6))
 	((${#title} + 12 > w)) && w=$((${#title} + 12))
 	((${#hint} + 6 > w)) && w=$((${#hint} + 6))
+	((${#q} + 6 > w)) && w=$((${#q} + 6))
 	((w < 44)) && w=44
 	((w > cols - 2)) && w=$((cols - 2))
-	h=7 fw=$((w - 6))
+	# The question, wrapped at spaces (a word longer than a line, at the line's end).
+	rest=$q
+	while [[ -n $rest ]]; do
+		if ((${#rest} <= w - 4)); then ql+=("$rest"); break; fi
+		cut=${rest:0:$((w - 4))}
+		[[ $cut == *" "* ]] && cut=${cut% *}
+		ql+=("$cut"); rest=${rest:${#cut}}; rest=${rest# }
+	done
+	((${#ql[@]})) && ql+=("") # a line between it and the prompt
+	o=${#ql[@]}
+	h=$((7 + o)) fw=$((w - 6))
 	top=$(((rows - h) / 2 + 1)) left=$(((cols - w) / 2 + 1))
 	((top < 1)) && top=1
 	((left < 1)) && left=1
@@ -72,20 +86,21 @@ input_box() {
 	printf '%s' "$e[?1049h$e[2J$e[$top;${left}H$line" >&$ofd
 	_ib_row 1 "$blank"
 	# Padded by characters, not bytes (printf's widths count bytes: a · or … is two or three).
-	printf -v k '  %s%*s' "$prompt" $((w - 4 - ${#prompt})) ''; _ib_row 2 "$k"
-	_ib_row 4 "$blank"
-	printf -v k '  %s%s%*s' "$e[37m" "$hint" $((w - 4 - ${#hint})) ''; _ib_row 5 "$k"
+	for ((i = 0; i < o; i++)); do printf -v k '  %s%*s' "${ql[i]}" $((w - 4 - ${#ql[i]})) ''; _ib_row $((2 + i)) "$k"; done
+	printf -v k '  %s%*s' "$prompt" $((w - 4 - ${#prompt})) ''; _ib_row $((2 + o)) "$k"
+	_ib_row $((4 + o)) "$blank"
+	printf -v k '  %s%s%*s' "$e[37m" "$hint" $((w - 4 - ${#hint})) ''; _ib_row $((5 + o)) "$k"
 	printf -v k '%*s' $((w - 2)) ''
-	printf '%s' "$e[$((top + 6));${left}H$bg$fg╚${k// /═}╝$R$sh$e[$((top + 7));$((left + 1))H$e[90m${k// /░}░░$R" >&$ofd
+	printf '%s' "$e[$((top + 6 + o));${left}H$bg$fg╚${k// /═}╝$R$sh$e[$((top + 7 + o));$((left + 1))H$e[90m${k// /░}░░$R" >&$ofd
 	trap 'INTR=1' INT
 	while :; do
-		if [[ $mode == note ]]; then _ib_row 3 "$blank"; printf '%s' "$e[?25l" >&$ofd; IFS= read -rsn1 -u "$fd" _ || true; ok=0; break; fi
+		if [[ $mode == note ]]; then _ib_row $((3 + o)) "$blank"; printf '%s' "$e[?25l" >&$ofd; IFS= read -rsn1 -u "$fd" _ || true; ok=0; break; fi
 		if [[ $mode == secret ]]; then printf -v show '%*s' ${#BOX_REPLY} ''; show=${show// /*}; else show=$BOX_REPLY; fi
 		((${#show} > fw - 1)) && show="…${show: -$((fw - 2))}"
 		printf -v k '  %s %s%*s%s  ' "$field" "$show" $((fw - 1 - ${#show})) '' "$bg$fg"
-		_ib_row 3 "$k"
+		_ib_row $((3 + o)) "$k"
 		# The cursor at the end of what's typed, blinking.
-		printf '%s' "$e[$((top + 3));$((left + 4 + ${#show}))H$e[1 q$e[?25h" >&$ofd
+		printf '%s' "$e[$((top + 3 + o));$((left + 4 + ${#show}))H$e[1 q$e[?25h" >&$ofd
 		k=""
 		until IFS= read -rsn1 -t 0.2 -u "$fd" k; do
 			(($? <= 128 || INTR)) && { k=CANCEL; break; }
@@ -2051,6 +2066,13 @@ case "$cmd" in
 			done <<<"$allow"
 		fi
 		d="$STATE/links/$host"
+		# A link waiting for you (a login, or stopped on a failure) is tried again only by you: the
+		# panel's B, or agent-say in a shell with no agent in it. An agent retrying it would put a
+		# refused login in that server's log each time, which is what gets an address banned.
+		if [[ ( -f "$d/login" || -f "$d/paused" ) ]] && ! master_up "$host"; then
+			rc=0; sending_agent || rc=$?
+			((rc == 0)) && [[ -z $AGENT_PANE ]] || die "the link to $host needs you first ($(head -n 1 "$d/error" 2>/dev/null || echo stopped)): press B in the panel. Not tried from an agent"
+		fi
 		# The host key, confirmed where ssh itself would ask you (a host it has no key for), and
 		# again if it changed since you linked it. A host ssh already trusts, or one linked before
 		# that still has the key you confirmed, links as it is: ssh -G says how ssh reaches it.
