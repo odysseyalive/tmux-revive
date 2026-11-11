@@ -809,6 +809,105 @@ claude_transcript() { # claude_transcript PID -> TRANSCRIPT, or nothing
 	((n == 1)) && CL_TR[$pid]=$f TRANSCRIPT=$f
 	return 0
 }
+# Codex 0.167 on keeps no rollout open in its own process: a shared app-server daemon, not in
+# the pane, writes it. Its rollout is then looked for in its sessions folder (CODEX_HOME from
+# its own environment, else its HOME's .codex): one whose first line (session_meta) names its
+# working folder and a start no more than 2 s before its own, the newest written since it
+# started (a /new starts another). One started before it only for a `codex resume`, then the
+# newest written since. With another codex in the same folder, a rollout is the one's started
+# last before it, within 120 s (a /new there isn't followed), and one claimed for another pane
+# is never taken. Nothing sure: nothing shown. Looked for again every 30 s.
+declare -A CX_RO=() CX_RO_T=() CX_START=() CX_META=() CX_CLAIM=()
+proc_cwd() { # proc_cwd PID: its working folder
+	if [[ -e /proc/$1/cwd ]]; then readlink "/proc/$1/cwd" 2>/dev/null
+	else lsof -a -d cwd -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p'; fi
+}
+proc_start() { # proc_start PID -> PSTART: when it started, in seconds since the epoch (worked out once)
+	local e
+	PSTART=${CX_START[$1]:-}
+	[[ -n $PSTART ]] && return 0
+	e=$(ps -o etime= -p "$1" 2>/dev/null)
+	e=${e//[[:space:]]/}
+	[[ $e =~ ^(([0-9]+)-)?(([0-9]+):)?([0-9]+):([0-9]+)$ ]] || return 0
+	PSTART=$((${EPOCHSECONDS:-$(date +%s)} - 10#${BASH_REMATCH[2]:-0} * 86400 - 10#${BASH_REMATCH[4]:-0} * 3600 - 10#${BASH_REMATCH[5]} * 60 - 10#${BASH_REMATCH[6]}))
+	CX_START[$1]=$PSTART
+}
+codex_meta() { # codex_meta FILE...: CX_META[FILE]=its session's folder TAB its start (epoch), from line 1
+	local f
+	local -a l=() m=()
+	for f in "$@"; do [[ -n ${CX_META[$f]+set} ]] || l+=("$f"); done
+	((${#l[@]})) || return 0
+	# One line in and one out per file, a bad or empty first line too, so they stay paired.
+	mapfile -t m < <(for f in "${l[@]}"; do printf '%s\n' "$(head -n 1 -- "$f" 2>/dev/null)"; done |
+		jq -Rr '(fromjson? // {}) | (.payload // {}) | [(.cwd // "" | tostring),
+			((.timestamp // "") | tostring | sub("\\.[0-9]+"; "") | (fromdateiso8601? // ""))] | @tsv' 2>/dev/null)
+	# Kept only once read whole: a first line still being written is read again next time.
+	for f in "${!l[@]}"; do [[ ${m[f]:-} =~ ^/.*$'\t'[0-9]+$ ]] && CX_META[${l[f]}]=${m[f]}; done
+}
+codex_rollout() { # codex_rollout PID -> ROLLOUT, or nothing
+	local pid=$1 e d="" cwd p c t f mt now best="" bt=0 st resume=0 owner os
+	local -a peers=() files=()
+	local -A pst=()
+	ROLLOUT=""
+	if [[ -n ${CX_RO_T[$pid]:-} ]] && ((SECONDS - CX_RO_T[$pid] < 30)); then
+		[[ -f ${CX_RO[$pid]} ]] && ROLLOUT=${CX_RO[$pid]}
+		return 0
+	fi
+	CX_RO[$pid]="" CX_RO_T[$pid]=$SECONDS
+	proc_start "$pid"
+	st=$PSTART
+	cwd=$(proc_cwd "$pid")
+	[[ -n $st && -n $cwd ]] || return 0
+	[[ -r /proc/$pid/environ ]] && while IFS= read -r -d '' e; do
+		case $e in
+		CODEX_HOME=/*) d=${e#*=} ;;
+		HOME=/*) [[ -n $d ]] || d=${e#*=}/.codex ;;
+		esac
+	done <"/proc/$pid/environ" 2>/dev/null
+	[[ -n $d ]] || d=${CODEX_HOME:-$HOME/.codex}
+	[[ -d $d/sessions ]] || return 0
+	[[ " ${PARGS[$pid]:-} " == *" resume "* ]] && resume=1
+	# The other codex processes in the same folder (a wrapper's codex under it is the same one).
+	for p in "${!PARGS[@]}"; do
+		[[ $p == "$pid" ]] && continue
+		agent_kind "${PARGS[$p]}"
+		[[ $AKIND == codex ]] || continue
+		agent_kind "${PARGS[${PPAR[$p]:-0}]:-}"
+		[[ $AKIND == codex ]] && continue
+		c=$(proc_cwd "$p")
+		[[ $c == "$cwd" ]] || continue
+		proc_start "$p"
+		[[ -n $PSTART ]] && peers+=("$p") pst[$p]=$PSTART
+	done
+	now=${EPOCHSECONDS:-$(date +%s)}
+	mapfile -t files < <(find "$d/sessions" -type f -name 'rollout-*.jsonl' -mmin -$(((now - st) / 60 + 2)) 2>/dev/null)
+	((${#files[@]})) || return 0
+	codex_meta "${files[@]}"
+	for f in "${files[@]}"; do
+		IFS=$'\t' read -r c t <<<"${CX_META[$f]}"
+		[[ $c == "$cwd" && $t =~ ^[0-9]+$ ]] || continue
+		mt=$(stat -c %Y -- "$f" 2>/dev/null || stat -f %m -- "$f" 2>/dev/null)
+		[[ $mt =~ ^[0-9]+$ ]] && ((mt >= st)) || continue
+		# Another user's (found by its environment): the file must be its own too.
+		[[ ${PUID[$pid]:-$UID} == "$UID" ]] || own_plain "$f" "${PUID[$pid]}" || continue
+		owner=${CX_CLAIM[$f]:-}
+		[[ -n $owner && $owner != "$pid" && -n ${PARGS[$owner]:-} ]] && continue
+		if ((t >= st - 2)); then
+			# Started after it: its own, unless another here started later, still before it.
+			os=$st
+			for p in "${peers[@]}"; do
+				((pst[$p] > os && pst[$p] <= t + 2)) && os=${pst[$p]}
+			done
+			((os == st)) || continue
+			((${#peers[@]} == 0 || t - st <= 120)) || continue
+		else
+			((resume && ${#peers[@]} == 0)) || continue
+		fi
+		((mt > bt)) && best=$f bt=$mt
+	done
+	[[ -n $best ]] || return 0
+	CX_CLAIM[$best]=$pid CX_RO[$pid]=$best ROLLOUT=$best
+}
 # ctx_reported PANE AGENT_PID [SESSION] -> CTX: what the Claude Code in PANE last reported,
 # if it was that process (and that session, when known) and within REVIVE_CTX_TTL (600 s).
 ctx_reported() {
@@ -852,7 +951,9 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 			while IFS= read -r f; do
 				[[ $f == */sessions/*/rollout-*.jsonl && -f $f ]] && { ctx_cached "$f" codex_ctx_file; return 0; }
 			done < <(open_files "$p")
-		done ;;
+		done
+		codex_rollout "$apid"
+		[[ -n $ROLLOUT ]] && ctx_cached "$ROLLOUT" codex_ctx_file ;;
 	esac
 }
 

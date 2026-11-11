@@ -455,6 +455,35 @@ out=$(cframe)
 check "the next turn counts again (500k: 50% left)" "grep -q 'claude .* 50%' <<<\"\$out\""
 rows=$(tm run-shell "HOME=$H REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows")
 check "--rows gives each pane's context left on a line of its own, before its row" "grep -A1 '^#ctx %[0-9]* 20$' <<<\"\$rows\" | grep -q $'\x1fcodex\x1f'"
+# Codex 0.167 on holds no rollout open (a daemon outside the pane writes it): its rollout is the
+# one under its own CODEX_HOME (from its environment, not the panel's) for its folder, started
+# since it did. One for another folder, though newer, is no one else's.
+CX=$T/cxhome
+mkdir -p "$CX/sessions/2026/01/02" "$T/cxw" "$T/cxo"
+tm new-window -d -t work -n cx2 -c "$T/cxw" "env CODEX_HOME=$CX $T/bin/codex -c 'sleep 300; :'"
+tm new-window -d -t work -n cx3 -c "$T/cxo" "env CODEX_HOME=$CX $T/bin/codex -c 'sleep 300; :'"
+sleep 1.5
+cxmeta() { printf '{"type":"session_meta","payload":{"id":"%s","timestamp":"%s","cwd":"%s","originator":"codex-tui"}}\n' "$1" "$(date -u +%Y-%m-%dT%H:%M:%S.123Z)" "$2"; }
+cxtok() { printf '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":%s},"model_context_window":%s}}}\n' "$1" "$2"; }
+{ cxmeta a "$(cd "$T/cxw" && pwd -P)"; cxtok 100000 400000; } >"$CX/sessions/2026/01/02/rollout-2026-01-02T00-00-00-a.jsonl"
+sleep 1
+{ cxmeta b "$(cd "$T" && pwd -P)/elsewhere"; cxtok 150000 250000; } >"$CX/sessions/2026/01/02/rollout-2026-01-02T00-00-01-b.jsonl"
+out=$(cframe 160)
+check "Codex holding no rollout open: its own, by its CODEX_HOME and folder (100k of 400k: 75%)" "[[ \$(grep -c 'codex .* 75% ║' <<<\"\$out\") == 1 ]]"
+check "a rollout for another folder isn't used: a dash" "[[ \$(grep -c 'codex .*·····    – ║' <<<\"\$out\") == 1 ]] && ! grep -q 'codex .* 40% ║' <<<\"\$out\""
+# A second codex in the same folder, started later, has the rollout started since it did; the
+# first keeps its own. A `codex resume` has the older one it goes on writing.
+sleep 2.5
+tm new-window -d -t work -n cx4 -c "$T/cxw" "env CODEX_HOME=$CX $T/bin/codex -c 'sleep 300; :'"
+mkdir -p "$T/cxr"
+tm new-window -d -t work -n cx5 -c "$T/cxr" "env CODEX_HOME=$CX $T/bin/codex -c 'sleep 300; :' resume"
+sleep 1.5
+{ cxmeta c "$(cd "$T/cxw" && pwd -P)"; cxtok 50000 250000; } >"$CX/sessions/2026/01/02/rollout-2026-01-02T00-00-02-c.jsonl"
+{ printf '{"type":"session_meta","payload":{"id":"r","timestamp":"2026-01-01T00:00:00.000Z","cwd":"%s"}}\n' "$(cd "$T/cxr" && pwd -P)"; cxtok 100000 250000; } >"$CX/sessions/2026/01/02/rollout-2026-01-01T00-00-00-r.jsonl"
+out=$(cframe 160)
+check "two codex in one folder: each its own rollout (75% and 80%), none twice" "[[ \$(grep -c 'codex .* 75% ║' <<<\"\$out\") == 1 && \$(grep -c 'codex .* 80% ║' <<<\"\$out\") == 1 ]]"
+check "a codex resume: the older rollout it writes (60%)" "[[ \$(grep -c 'codex .* 60% ║' <<<\"\$out\") == 1 ]]"
+tm kill-window -t work:cx2; tm kill-window -t work:cx3; tm kill-window -t work:cx4; tm kill-window -t work:cx5
 # Idle between turns while its agents work in the background (their output under its temp
 # folder written to just now): WORKING, and its peek says it still takes input.
 mkdir -p "$T/ltmp/claude-$UID/-w/s-1/tasks"
