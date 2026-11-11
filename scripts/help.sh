@@ -121,8 +121,8 @@ hrule() {
 # below pad it, and a fade frames it from outside: nothing shaded touches the words.
 hbutton() {
 	local fg bg cap blk n
-	if ((HBN % 2)); then fg=$BLU bg="$e[44m$B$BWHT" cap="$e[40m$B$BWHT"
-	else fg=$BYEL bg="$e[103m$B$e[30m" cap="$e[40m$B$BYEL"; fi
+	if ((HBN % 2)); then fg=$BLU bg="${e}[44m$B$BWHT" cap="${e}[40m$B$BWHT"
+	else fg=$BYEL bg="${e}[103m$B${e}[30m" cap="${e}[40m$B$BYEL"; fi
 	HBN=$((HBN + 1))
 	blk="$bg $cap $1 $R$bg  $2  $R"
 	n=$((${#2} + 8))
@@ -399,11 +399,11 @@ help_frame() {
 	local buf=""
 	for i in "${!OUT[@]}"; do
 		[[ ${OUT[i]} == "${PREV[i]-}" ]] && continue
-		buf+="$e[$((i + 1));1H${OUT[i]}$e[K"
+		buf+="${e}[$((i + 1));1H${OUT[i]}${e}[K"
 	done
-	((${#OUT[@]} < ${#PREV[@]})) && buf+="$e[$((${#OUT[@]} + 1));1H$e[J"
+	((${#OUT[@]} < ${#PREV[@]})) && buf+="${e}[$((${#OUT[@]} + 1));1H${e}[J"
 	PREV=("${OUT[@]}")
-	[[ -n $buf ]] && printf '%s' "$e[?2026h$buf$e[?2026l"
+	[[ -n $buf ]] && printf '%s' "${e}[?2026h$buf${e}[?2026l"
 }
 
 # ------------------------------------------------------------------ keys
@@ -454,7 +454,7 @@ help_view() {
 # help_confirm TITLE COMMAND: a popup like pick's showing the command that would run. Only y
 # says yes; n, Esc or any other key says no (returns 1).
 help_confirm() {
-	local title=$1 rows cols w top left i k INTR=0 bg="$e[44m"
+	local title=$1 rows cols w top left i k INTR=0 bg="${e}[44m"
 	local -a L=()
 	rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80)
 	w=$((cols - 8 < 76 ? cols - 8 : 76))
@@ -466,18 +466,18 @@ help_confirm() {
 	((top < 1)) && top=1
 	((left < 1)) && left=1
 	rep ═ $((w - ${#title} - 11))
-	printf '%s' "$e[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
+	printf '%s' "${e}[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
 	for i in "${!L[@]}"; do
 		padv "$bg$BWHT${L[i]}" $((w - 4))
-		printf '%s' "$e[$((top + 1 + i));${left}H$bg$BWHT║ $PADV$bg$BWHT ║$R$GRY░$R"
+		printf '%s' "${e}[$((top + 1 + i));${left}H$bg$BWHT║ $PADV$bg$BWHT ║$R$GRY░$R"
 	done
 	i=${#L[@]}
 	padv "$B${BYEL}[y]$BWHT yes, run it     $B${BYEL}[n]$BWHT no, cancel" $((w - 4))
-	printf '%s' "$e[$((top + 1 + i));${left}H$bg$BWHT║ $PADV$bg$BWHT ║$R$GRY░$R"
+	printf '%s' "${e}[$((top + 1 + i));${left}H$bg$BWHT║ $PADV$bg$BWHT ║$R$GRY░$R"
 	rep ═ $((w - 2))
-	printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT╚$REP╝$R$GRY░$R"
+	printf '%s' "${e}[$((top + 2 + i));${left}H$bg$BWHT╚$REP╝$R$GRY░$R"
 	rep ░ "$w"
-	printf '%s' "$e[$((top + 3 + i));$((left + 1))H$GRY$REP$R"
+	printf '%s' "${e}[$((top + 3 + i));$((left + 1))H$GRY$REP$R"
 	trap 'INTR=1' INT
 	k=""
 	until IFS= read -rsn1 -t 0.2 k; do

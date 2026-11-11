@@ -611,7 +611,7 @@ uninstall() {
 	done
 	if have tmux && tmux_ours && tmux info >/dev/null 2>&1; then
 		for h in client-detached pane-exited after-kill-pane window-unlinked session-closed; do
-			tmux set-hook -gu "$h[77]" 2>/dev/null || true
+			tmux set-hook -gu "${h}[77]" 2>/dev/null || true
 		done
 		ee=$(tmux show-option -gqv @revive-exit-empty)
 		[ -n "$ee" ] && tmux set-option -g exit-empty "$ee" && tmux set-option -gu @revive-exit-empty

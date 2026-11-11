@@ -67,7 +67,7 @@ tmux set-hook -g 'client-detached[77]' "run-shell -b $(tq "$(rs save.sh detach)"
 	tmux set-option -g @revive-exit-empty "$(tmux show-option -gv exit-empty)"
 tmux set-option -g exit-empty off
 for h in pane-exited after-kill-pane window-unlinked session-closed; do
-	tmux set-hook -g "$h[77]" "run-shell -b $(tq "$(rs save.sh close --quiet)")"
+	tmux set-hook -g "${h}[77]" "run-shell -b $(tq "$(rs save.sh close --quiet)")"
 done
 
 # Interval saves + a final save on shutdown/suspend (one daemon per server).

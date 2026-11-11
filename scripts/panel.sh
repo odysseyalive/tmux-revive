@@ -70,10 +70,10 @@ ver_lt() { # ver_lt A B: is version A older than B?
 
 # ------------------------------------------------------------------ colours
 e=$'\e'
-R="$e[0m" B="$e[1m" DIM="$e[2m" BLINK="$e[5m" REV="$e[7m"
-BLU="$e[34m" BBLU="$e[94m" CYN="$e[36m" BCYN="$e[96m" MAG="$e[35m" BMAG="$e[95m"
-YEL="$e[33m" BYEL="$e[93m" GRN="$e[32m" BGRN="$e[92m" BRED="$e[91m" BWHT="$e[97m" GRY="$e[90m"
-BGBLU="$e[44m"
+R="${e}[0m" B="${e}[1m" DIM="${e}[2m" BLINK="${e}[5m" REV="${e}[7m"
+BLU="${e}[34m" BBLU="${e}[94m" CYN="${e}[36m" BCYN="${e}[96m" MAG="${e}[35m" BMAG="${e}[95m"
+YEL="${e}[33m" BYEL="${e}[93m" GRN="${e}[32m" BGRN="${e}[92m" BRED="${e}[91m" BWHT="${e}[97m" GRY="${e}[90m"
+BGBLU="${e}[44m"
 FRAME="$BLU"
 
 # ------------------------------------------------------------------ drawing
@@ -150,7 +150,7 @@ sbar() {
 # A section title on a solid blue band that fades into the black on both sides: shading as
 # a short transition between two colours, the way the artpack groups used it.
 # A question waiting on you gets the band in magenta, the colour of the asking state.
-tab() { local c=${2:-4}; TAB="$e[3${c}m░▒▓$e[4${c}m$B$BWHT $1 $R$e[3${c}m▓▒░$R"; } # tab TITLE [COLOUR 0-7] -> TAB
+tab() { local c=${2:-4}; TAB="${e}[3${c}m░▒▓${e}[4${c}m$B$BWHT $1 $R${e}[3${c}m▓▒░$R"; } # tab TITLE [COLOUR 0-7] -> TAB
 # seg TAB HINT KEYS WIDTH BORDER -> SEG: a divider's run, WIDTH wide, in BORDER: ═, the title
 # band, ═ up to the keys at its right end, ══. HINT goes before the keys; short of room it's
 # all that's kept, and shorter still it's cut.
@@ -289,7 +289,7 @@ SCENES=(city mountains space circuit grid)
 TITLES=("night city" "mountains" "deep space" "circuit board" "neon grid")
 SCENE=$((RANDOM % ${#SCENES[@]}))
 for i in "${!SCENES[@]}"; do [[ ${SCENES[i]} == "${REVIVE_PANEL_ART:-}" ]] && SCENE=$i; done
-BGBLK="$e[40m" BGGRY="$e[100m"
+BGBLK="${e}[40m" BGGRY="${e}[100m"
 
 # A canvas of characters and colours, filled by a scene and turned into rows by emit.
 canvas() { ART_W=$1 ART_H=$2 CH=() CO=(); }
@@ -387,7 +387,7 @@ scene_city() { # towers with lit windows under the stars; one star and two windo
 		rnd; bw=$((3 + RV % 6))
 		rnd; bh=$((H / 3 + RV % (H - H / 3 + 1)))
 		((bh < 1)) && bh=1
-		rnd; if ((RV % 2)); then top=$BLU body="$e[44m"; else top=$GRY body=$BGGRY; fi
+		rnd; if ((RV % 2)); then top=$BLU body="${e}[44m"; else top=$GRY body=$BGGRY; fi
 		for ((c = x; c < x + bw && c < W; c++)); do
 			put $((H - bh)) $c "▄" "$top"
 			for ((r = H - bh + 1; r < H; r++)); do
@@ -421,10 +421,10 @@ pixel_cell() { # pixel_cell ROW COL TOP BOTTOM
 	local t=$3 b=$4 tf bb
 	((t < 0 && b < 0)) && return
 	tf=$((t < 8 ? 30 + t : 82 + t)) bb=$((b < 8 ? 40 + b : 92 + b))
-	if ((t == b)); then put "$1" "$2" " " "$e[${bb}m"
-	elif ((t < 0)); then put "$1" "$2" "▄" "$e[$((b < 8 ? 30 + b : 82 + b))m"
-	elif ((b < 0)); then put "$1" "$2" "▀" "$e[${tf}m"
-	else put "$1" "$2" "▀" "$e[${tf};${bb}m"; fi
+	if ((t == b)); then put "$1" "$2" " " "${e}[${bb}m"
+	elif ((t < 0)); then put "$1" "$2" "▄" "${e}[$((b < 8 ? 30 + b : 82 + b))m"
+	elif ((b < 0)); then put "$1" "$2" "▀" "${e}[${tf}m"
+	else put "$1" "$2" "▀" "${e}[${tf};${bb}m"; fi
 }
 
 scene_mountains() { # a snow-capped range under the moon, dark wooded hills in front
@@ -1077,7 +1077,7 @@ gather() {
 				dt=$US
 				usecs "$T_PREV"
 				dt=$(((dt - US + 500) / 1000))
-				k=$((t - TICKS_PREV[$id:$ppid0]))
+				k=$((t - ${TICKS_PREV[$id:$ppid0]}))
 				((dt > 0 && k > 0)) && cpu=$(((2 * k * 100000 + CLK * dt) / (2 * CLK * dt)))
 			fi
 			tnow[$id:$ppid0]=$t
@@ -1666,7 +1666,7 @@ draw_panes() {
 		i=$en
 		name=${nm[i]}
 		printf -v pad '%*s' $((KW - ${#lab[i]} - 2)) ''
-		if [[ -n ${lab[i]} ]]; then key="$BBLU[$BWHT$B${lab[i]}$R$BBLU]$R$pad"; else key="$GRY ·$R$pad"; fi
+		if [[ -n ${lab[i]} ]]; then key="${BBLU}[$BWHT$B${lab[i]}$R$BBLU]$R$pad"; else key="$GRY ·$R$pad"; fi
 		folder=${P_DIR[i]/#$HOME/\~}
 		folder=${folder##*/}
 		git=${P_GIT[i]}
@@ -1739,7 +1739,7 @@ ctx_cell() { # ctx_cell PERCENT AGENT -> CTX_CELL: context left as a meter, red 
 	printf -v CTX_CELL '%s %3s%%' "$c$METER$R" "$1"
 }
 # kc KEY LABEL -> KC: a key as the command bar shows it. kcs KEY LABEL...: several, two spaces apart
-kc() { KC="$BBLU[$B$BYEL$1$R$BBLU]$R$BWHT$2$R"; }
+kc() { KC="${BBLU}[$B$BYEL$1$R$BBLU]$R$BWHT$2$R"; }
 kcs() {
 	local k=""
 	while (($# >= 2)); do kc "$1" "$2"; k+="${k:+  }$KC"; shift 2; done
@@ -1846,7 +1846,7 @@ question_parts() {
 		elif [[ ${L[i]} =~ ^[[:space:]]*[─━═╌]{8,} ]]; then QSTYLE[i]=$MAG  # its rules
 		elif ((i < first)); then QSTYLE[i]=$B$BYEL                         # the question
 		elif ((last >= 0 && i >= last)); then QSTYLE[i]=$GRY                # the footer
-		elif [[ ${L[i]} =~ ^[[:space:]│]*❯ ]]; then QSTYLE[i]=$e[44m$B$BCYN  # the highlighted choice
+		elif [[ ${L[i]} =~ ^[[:space:]│]*❯ ]]; then QSTYLE[i]=${e}[44m$B$BCYN  # the highlighted choice
 		elif [[ ${L[i]} =~ ^[[:space:]│]*(\[.\][[:space:]]*)?[0-9]+\. ]]; then QSTYLE[i]=$BWHT # a choice
 		else QSTYLE[i]=$GRY; fi                                               # a choice's description
 	done
@@ -1925,7 +1925,7 @@ messages() { # -> MSG lines for the message center; INTRO_ON
 	[[ $ttl =~ ^[1-9][0-9]{0,9}$ ]] || ttl=86400
 	printf -v now '%(%s)T' -1
 	gn=$(awk -v c="$((now - ttl))" '$1 == "allow" && $6 ~ /^[0-9]+$/ && $6 > c {n++} END {print n + 0}' "$ASTATE/grants" 2>/dev/null)
-	((gn)) && INTRO_ON=1 && MSG+=("$BGRN✓$R $GRY$gn approved · $R$BBLU[$B${BYEL}G$R$BBLU]$R$GRY to see$R")
+	((gn)) && INTRO_ON=1 && MSG+=("$BGRN✓$R $GRY$gn approved · $R${BBLU}[$B${BYEL}G$R$BBLU]$R$GRY to see$R")
 	qn=$(find "$ASTATE/queue" -maxdepth 1 -name 'msg.*' ! -name '*.err' 2>/dev/null | wc -l)
 	((qn)) && MSG+=("$BYEL⧗ $qn queued, waiting for a busy pane$R")
 }
@@ -1966,7 +1966,7 @@ links_saves() { # -> SIDE lines: saves, then links
 		if [[ -n $pid ]] && [[ $(ps -ww -o args= -p "$pid" 2>/dev/null) == *"_poll $h"* ]] && [[ ! -s $d/error ]]; then
 			SIDE+=("$BGRN●$R $BWHT$h$R$mode $GRY· linked · ${names:-0} names$R")
 		elif [[ -f $d/login ]]; then
-			SIDE+=("$BYEL●$R $BWHT$h$R$mode $BYEL· needs login ·$R $BBLU[$B${BYEL}B$R$BBLU]$R${BWHT} log in$R")
+			SIDE+=("$BYEL●$R $BWHT$h$R$mode $BYEL· needs login ·$R ${BBLU}[$B${BYEL}B$R$BBLU]$R${BWHT} log in$R")
 		elif [[ -s $d/error ]]; then
 			SIDE+=("$BRED●$R $BWHT$h$R$mode $BRED$err$R")
 		else
@@ -1987,14 +1987,14 @@ links_saves() { # -> SIDE lines: saves, then links
 		[[ -z $h || $seen == *" $h "* ]] && continue
 		seen+="$h "
 		linked "$h" && continue
-		SIDE+=("$BYEL◇$R $BWHT$h$R $GRY· ssh in ${P_NAME[i]:-${P_LOC[i]}} ·$R $BBLU[$B${BYEL}B$R$BBLU]$R${BWHT}ridge?$R")
+		SIDE+=("$BYEL◇$R $BWHT$h$R $GRY· ssh in ${P_NAME[i]:-${P_LOC[i]}} ·$R ${BBLU}[$B${BYEL}B$R$BBLU]$R${BWHT}ridge?$R")
 	done
 	for i in "${!X_SSH[@]}"; do
 		h=${X_SSH[i]}
 		[[ $seen == *" $h "* ]] && continue
 		seen+="$h "
 		linked "$h" && continue
-		SIDE+=("$BYEL◇$R $BWHT$h$R $GRY· ssh in ${X_WHERE[i]} ·$R $BBLU[$B${BYEL}B$R$BBLU]$R${BWHT}ridge?$R")
+		SIDE+=("$BYEL◇$R $BWHT$h$R $GRY· ssh in ${X_WHERE[i]} ·$R ${BBLU}[$B${BYEL}B$R$BBLU]$R${BWHT}ridge?$R")
 	done
 	((${#SIDE[@]} > 2)) || SIDE+=("$GRY  no links · ssh to a host and press B$R")
 }
@@ -2191,11 +2191,11 @@ draw() {
 
 	# Command bar.
 	local k=""
-	((!ANSWERING)) && [[ $sst == asking ]] && k="$B$BMAG[Enter]$R$B$BWHT answer$R  "
+	((!ANSWERING)) && [[ $sst == asking ]] && k="$B${BMAG}[Enter]$R$B$BWHT answer$R  "
 	if [[ -n $HSEL ]]; then
-		if [[ -n ${FOLD[$HSEL]:-} ]]; then k="$BBLU[$B${BYEL}Enter$R$BBLU]$R$BWHT unfold$R  "; else k="$BBLU[$B${BYEL}Enter$R$BBLU]$R$BWHT fold$R  "; fi
+		if [[ -n ${FOLD[$HSEL]:-} ]]; then k="${BBLU}[$B${BYEL}Enter$R$BBLU]$R$BWHT unfold$R  "; else k="${BBLU}[$B${BYEL}Enter$R$BBLU]$R$BWHT fold$R  "; fi
 	elif [[ -n ${P_HOST[SEL]:-} ]]; then
-		k+="$BBLU[$B${BYEL}f$R$BBLU]$R$BWHT fold$R  "
+		k+="${BBLU}[$B${BYEL}f$R$BBLU]$R$BWHT fold$R  "
 	fi
 	# Keys that can't act on the selected pane are faded: on a linked computer's pane, nothing
 	# to rename unless its rows say which pane it is, and never O: opening it would move
@@ -2216,9 +2216,9 @@ draw() {
 	cs+=("P:eek" "A:rt" "S:ave" "Q:uit" "?: help")
 	for c in "${cs[@]}"; do
 		if [[ $off == *" ${c%%:*} "* ]]; then
-			k+="$GRY[${c%%:*}]${c#*:}$R  "
+			k+="${GRY}[${c%%:*}]${c#*:}$R  "
 		else
-			k+="$BBLU[$B$BYEL${c%%:*}$R$BBLU]$R$BWHT${c#*:}$R  "
+			k+="${BBLU}[$B$BYEL${c%%:*}$R$BBLU]$R$BWHT${c#*:}$R  "
 		fi
 	done
 	vlen "$k"
@@ -2230,7 +2230,7 @@ draw() {
 	elif ((VLEN + 15 <= IW)); then k+="$GRY↑↓ 0-9 select$R"; fi
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	# While answering every key goes to the agent, so the bar says that and how to stop.
-	((ANSWERING)) && k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Ctrl-]$R$BMAG leaves$R"
+	((ANSWERING)) && k="${e}[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Ctrl-]$R$BMAG leaves$R"
 	rep ═ $((W - 2))
 	line "$FRAME╠$REP╣$R"
 	row "$k"
@@ -2248,11 +2248,11 @@ draw() {
 		local buf="" i
 		for i in "${!OUT[@]}"; do
 			[[ ${OUT[i]} == "${PREV[i]-}" ]] && continue
-			buf+="$e[$((i + 1));1H${OUT[i]}$e[K"
+			buf+="${e}[$((i + 1));1H${OUT[i]}${e}[K"
 		done
-		((${#OUT[@]} < ${#PREV[@]})) && buf+="$e[$((${#OUT[@]} + 1));1H$e[J"
+		((${#OUT[@]} < ${#PREV[@]})) && buf+="${e}[$((${#OUT[@]} + 1));1H${e}[J"
 		PREV=("${OUT[@]}")
-		[[ -n $buf ]] && printf '%s' "$e[?2026h$buf$e[?2026l"
+		[[ -n $buf ]] && printf '%s' "${e}[?2026h$buf${e}[?2026l"
 	fi
 }
 
@@ -2341,7 +2341,7 @@ ask() { # ask PROMPT -> REPLY on the bottom line. Enter accepts; Esc, Ctrl-C or 
 		((room < 10)) && room=10
 		show=$REPLY
 		((${#show} > room)) && show="…${show: -$((room - 1))}"
-		printf '%s' "$e[${rows};1H$e[2K  $B$BYEL$1$R $show$GRY▏ Enter sends · Esc cancels$R$e[${rows};$((4 + ${#1} + ${#show}))H$e[?25h"
+		printf '%s' "${e}[${rows};1H${e}[2K  $B$BYEL$1$R $show$GRY▏ Enter sends · Esc cancels$R${e}[${rows};$((4 + ${#1} + ${#show}))H${e}[?25h"
 		k=""
 		until IFS= read -rsn1 -t 0.2 k; do
 			# Over 128 is the timeout slice; anything else means the input closed.
@@ -2364,7 +2364,7 @@ ask() { # ask PROMPT -> REPLY on the bottom line. Enter accepts; Esc, Ctrl-C or 
 		esac
 	done
 	trap 'exit 0' INT
-	printf '%s' "$e[?25l$e[${rows};1H$e[2K"
+	printf '%s' "${e}[?25l${e}[${rows};1H${e}[2K"
 	((ok)) && [[ -n $REPLY ]] && return 0
 	REPLY=""
 	return 1
@@ -2394,41 +2394,41 @@ pick() {
 	top=$(((rows - h) / 2)) left=$(((cols - w) / 2))
 	((top < 1)) && top=1
 	((left < 1)) && left=1
-	local bg="$e[44m" hi="$e[46m$e[30m"
+	local bg="${e}[44m" hi="${e}[46m${e}[30m"
 	trap 'INTR=1' INT
 	while :; do
 		# Frame, title tab and shadow.
 		rep ═ $((w - ${#title} - 11))
 		line="$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
-		printf '%s' "$e[$top;${left}H$line"
+		printf '%s' "${e}[$top;${left}H$line"
 		rep ' ' $((w - 2))
 		local blank=$REP
-		printf '%s' "$e[$((top + 1));${left}H$bg$BWHT║$blank║$R$GRY░$R"
+		printf '%s' "${e}[$((top + 1));${left}H$bg$BWHT║$blank║$R$GRY░$R"
 		for ((i = 0; i < ${#items[@]}; i++)); do
 			local key="  "
 			if [[ ${items[i]} == "$NOTE"* ]]; then
 				fld "${items[i]#"$NOTE"}" $((w - 6))
-				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║  $BCYN$FLD$BWHT  ║$R$GRY░$R"
+				printf '%s' "${e}[$((top + 2 + i));${left}H$bg$BWHT║  $BCYN$FLD$BWHT  ║$R$GRY░$R"
 				continue
 			fi
 			((num[i] < 9)) && key="$((num[i] + 1)) "
 			if ((i == sel)); then
 				fld " $key ${items[i]}" $((w - 5))
-				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║ $hi$B▶$FLD$R$bg$BWHT ║$R$GRY░$R"
+				printf '%s' "${e}[$((top + 2 + i));${left}H$bg$BWHT║ $hi$B▶$FLD$R$bg$BWHT ║$R$GRY░$R"
 			else
 				fld "$key" 3
 				local kf=$FLD
 				fld "${items[i]}" $((w - 9))
-				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║  $BYEL$kf$BWHT$FLD  ║$R$GRY░$R"
+				printf '%s' "${e}[$((top + 2 + i));${left}H$bg$BWHT║  $BYEL$kf$BWHT$FLD  ║$R$GRY░$R"
 			fi
 		done
-		printf '%s' "$e[$((top + 2 + ${#items[@]}));${left}H$bg$BWHT║$blank║$R$GRY░$R"
+		printf '%s' "${e}[$((top + 2 + ${#items[@]}));${left}H$bg$BWHT║$blank║$R$GRY░$R"
 		fld "$hint" $((w - 4))
-		printf '%s' "$e[$((top + 3 + ${#items[@]}));${left}H$bg$BWHT║ $BCYN$FLD$BWHT ║$R$GRY░$R"
+		printf '%s' "${e}[$((top + 3 + ${#items[@]}));${left}H$bg$BWHT║ $BCYN$FLD$BWHT ║$R$GRY░$R"
 		rep ═ $((w - 2))
-		printf '%s' "$e[$((top + 4 + ${#items[@]}));${left}H$bg$BWHT╚$REP╝$R$GRY░$R"
+		printf '%s' "${e}[$((top + 4 + ${#items[@]}));${left}H$bg$BWHT╚$REP╝$R$GRY░$R"
 		rep ░ "$w"
-		printf '%s' "$e[$((top + 5 + ${#items[@]}));$((left + 1))H$GRY$REP$R"
+		printf '%s' "${e}[$((top + 5 + ${#items[@]}));$((left + 1))H$GRY$REP$R"
 		k=""
 		until IFS= read -rsn1 -t 0.2 k; do
 			(($? <= 128 || INTR)) && { k=CLOSE; break; }
@@ -2679,19 +2679,19 @@ note() {
 	((top < 1)) && top=1
 	((left < 1)) && left=1
 	rep ═ $((w - ${#title} - 11))
-	printf '%s' "$e[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
+	printf '%s' "${e}[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
 	rep ' ' $((w - 2))
-	printf '%s' "$e[$((top + 1));${left}H$BGBLU$BWHT║$REP║$R$GRY░$R"
+	printf '%s' "${e}[$((top + 1));${left}H$BGBLU$BWHT║$REP║$R$GRY░$R"
 	for ((i = 0; i < ${#ls[@]}; i++)); do
 		fld "${ls[i]}" $((w - 4))
-		printf '%s' "$e[$((top + 2 + i));${left}H$BGBLU$BWHT║ $B$FLD$R$BGBLU$BWHT ║$R$GRY░$R"
+		printf '%s' "${e}[$((top + 2 + i));${left}H$BGBLU$BWHT║ $B$FLD$R$BGBLU$BWHT ║$R$GRY░$R"
 	done
 	fld "$hint" $((w - 4))
-	printf '%s' "$e[$((top + 2 + ${#ls[@]}));${left}H$BGBLU$BWHT║ $BCYN$FLD$BWHT ║$R$GRY░$R"
+	printf '%s' "${e}[$((top + 2 + ${#ls[@]}));${left}H$BGBLU$BWHT║ $BCYN$FLD$BWHT ║$R$GRY░$R"
 	rep ═ $((w - 2))
-	printf '%s' "$e[$((top + 3 + ${#ls[@]}));${left}H$BGBLU$BWHT╚$REP╝$R$GRY░$R"
+	printf '%s' "${e}[$((top + 3 + ${#ls[@]}));${left}H$BGBLU$BWHT╚$REP╝$R$GRY░$R"
 	rep ░ "$w"
-	printf '%s' "$e[$((top + 4 + ${#ls[@]}));$((left + 1))H$GRY$REP$R"
+	printf '%s' "${e}[$((top + 4 + ${#ls[@]}));$((left + 1))H$GRY$REP$R"
 	trap 'INTR=1' INT
 	until IFS= read -rsn1 -t 0.2 k; do (($? <= 128 || INTR)) && break; done
 	# The rest of a key sequence (an arrow) goes too.
@@ -3138,7 +3138,7 @@ scroll() {
 
 restore_term() {
 	[[ -n ${STTY_SAVED:-} ]] && stty "$STTY_SAVED" 2>/dev/null
-	printf '%s' "$e[?25h$e[?1049l"
+	printf '%s' "${e}[?25h${e}[?1049l"
 }
 
 # Dial-up welcome, the first time the panel opens on a tmux server (REVIVE_PANEL_SPLASH=1
@@ -3149,11 +3149,11 @@ splash() {
 	top=$(((rows - 13) / 2)) left=$(((cols - 44) / 2))
 	((top < 1)) && top=1
 	((left < 1)) && left=1
-	printf '%s' "$e[2J"
-	for i in 0 1 2 3 4 5; do printf '%s' "$e[$((top + i));${left}H${BIG_ROWS[i]}"; done
+	printf '%s' "${e}[2J"
+	for i in 0 1 2 3 4 5; do printf '%s' "${e}[$((top + i));${left}H${BIG_ROWS[i]}"; done
 	pause() { ! IFS= read -rsn1 -t "$1" _; }
 	typed() { # typed ROW COLOUR TEXT: one character at a time, like a slow modem
-		printf '%s' "$e[$1;${left}H$2"
+		printf '%s' "${e}[$1;${left}H$2"
 		for ((c = 0; c < ${#3}; c++)); do printf '%s' "${3:c:1}"; pause 0.02 || return 1; done
 		printf '%s' "$R"
 	}
@@ -3162,7 +3162,7 @@ splash() {
 		typed $((t + 1)) "$GRY" "RINGING..." && pause 0.4 &&
 		typed $((t + 2)) "$B$BGRN" "CONNECT 33600/ARQ/V.42bis" && pause 0.25 &&
 		typed $((t + 4)) "$B$BCYN" "Welcome to the tmux-revive BBS, ${USER:-friend}!" && pause 0.9
-	printf '%s' "$e[2J"
+	printf '%s' "${e}[2J"
 }
 
 # ------------------------------------------------------------------ main
@@ -3261,7 +3261,7 @@ if ((ONCE)); then
 	exit 0
 fi
 [[ -t 0 && -t 1 ]] || { echo "tmux-revive panel needs a terminal" >&2; exit 1; }
-printf '%s' "$e[?1049h$e[?25l$e[2J"
+printf '%s' "${e}[?1049h${e}[?25l${e}[2J"
 # Keys pressed while the panel is busy gathering must not be echoed: an arrow's ^[[A printed at
 # the bottom line scrolls the whole screen. Echo stays off for the panel's whole run (keys are
 # read one at a time anyway) and the terminal's own settings come back on exit.
@@ -3271,7 +3271,7 @@ on_exit restore_term
 # Other computers' screens it fetched go when it closes.
 on_exit 'for f in "${!PEEK_FILES[@]}"; do rm -f "$f" "$f.fail"; done'
 trap 'exit 0' INT TERM
-trap 'printf "%s" "$e[2J"; PREV=() TCOLS="" ATOP=()' WINCH
+trap 'printf "%s" "${e}[2J"; PREV=() TCOLS="" ATOP=()' WINCH
 case ${REVIVE_PANEL_SPLASH:-} in
 1) splash ;;
 0) ;;
