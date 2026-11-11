@@ -386,6 +386,7 @@ check "none left: enter starts a fresh one" "for _ in \$(seq 30); do [[ \$(tmux 
 tmux new-session -d -s victim -c "$T/proj"
 dec=$(tmux new-session -d -P -F '#{session_name}' -s victim:0 -c "$T/proj")
 abc=$(tmux new-session -d -P -F '#{session_name}' -s a:b.c -c "$T/proj")
+echo "DIAG names: dec=$dec abc=$abc sleep=$(readlink -f "$(command -v sleep)")"; tmux list-sessions -F "#{session_id} #{session_name}"
 picker
 keys "$(row "$dec")" x
 keys y
