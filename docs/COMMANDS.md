@@ -159,11 +159,11 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 
 | Key | What it does |
 |---|---|
-| Up / Down | pick a pane (the list wraps around), or scroll the window you tabbed to |
+| Up / Down (`k` / `j`) | pick a pane (the list wraps around), or scroll the window you tabbed to |
 | PgUp / PgDn, Home / End | a page at a time, or to the top or bottom |
-| Tab (Shift-Tab) | move to the next window (or back): PANES, PEEK, MESSAGES, LINKS · SAVES |
+| Tab / Shift-Tab, Right / Left, `l` / `h` | next window, or back: PANES, PEEK, MESSAGES, LINKS · SAVES |
 | `0`-`9` | go to that window's first pane |
-| `J` | jump to the pane on this computer (when the panel is a popup, it closes) |
+| `J` | jump to the pane on this computer (a popup panel closes). Capital only, since `j` moves down |
 | `M` | message the pane's agent |
 | `N` | name the pane |
 | `P` | show or hide a quick peek at its screen |
@@ -171,7 +171,7 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 | `C` | put the artwork back |
 | Enter | answer the question the selected agent is asking, or open a folded computer |
 | `F` | fold the selected pane's linked computer into one line |
-| `L` | link a computer you ssh into |
+| `L` | link a computer you ssh into. Capital only, since `l` moves to the next window |
 | `U` (or `D`) | unlink a computer |
 | `V` | update tmux-revive on a linked computer, or copy the install or update command for another user's pane |
 | `G` | grant access: agents on linked computers waiting to talk, and the ones you approved |

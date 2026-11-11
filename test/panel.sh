@@ -196,6 +196,17 @@ tm send-keys -t work:panel n; sleep 0.5
 tm send-keys -t work:panel 'top-watch' Enter
 named() { for _ in $(seq 1 30); do tm list-panes -a -F '#{@agent}' | grep -qx "$1" && return 0; sleep 0.2; done; return 1; }
 check "N renames the selected pane" "named top-watch && wait_screen '▶ top-watch'"
+# Typed into N, h j k l are letters of the name, not moves.
+tm send-keys -t work:panel n; wait_screen 'New name for' >/dev/null
+tm send-keys -t work:panel -l 'hjkl-top'; tm send-keys -t work:panel Enter
+check "a name with h, j, k and l in it goes through N whole" "named hjkl-top && wait_screen '▶ hjkl-top'"
+tm send-keys -t work:panel n; wait_screen 'New name for' >/dev/null
+tm send-keys -t work:panel -l 'top-watch'; tm send-keys -t work:panel Enter
+named top-watch >/dev/null; wait_screen '▶ top-watch' >/dev/null
+# J (the capital) jumps: the selected pane becomes tmux's active one.
+tm send-keys -t work:panel J
+check "J jumps to the selected pane" "wait_screen 'jumped to top-watch' && [[ \$(tm display -p -t work:0 '#{pane_index}') == 1 ]]"
+tm select-pane -t work:0.0
 tm send-keys -t work:panel s
 check "S saves" "wait_screen '(manual)'"
 check "the peek box shows the selected pane" "screen | grep -q 'PEEK · top-watch'"
@@ -222,6 +233,11 @@ check "Down from the last pane selects the first" "wait_screen '[0.0] ▶'"
 tm send-keys -t work:panel 0; wait_screen '[0.0] ▶' >/dev/null
 tm send-keys -t work:panel Up
 check "Up from the first pane selects the last" "wait_screen '[1.0] ▶' && seen '] ▶' && seen '[1.1]' 0"
+# The vim keys: j is Down and k is Up, round the list the same way.
+tm send-keys -t work:panel j
+check "j moves the selection down (from the last, round to the first)" "wait_screen '[0.0] ▶' && seen '] ▶'"
+tm send-keys -t work:panel k
+check "k moves it up" "wait_screen '[1.0] ▶' && seen '] ▶'"
 # Held arrows: quick to follow, nothing echoed, nothing scrolled.
 tm send-keys -t work:panel Up Up
 quick() { local s=$EPOCHREALTIME; tm send-keys -t work:panel Down; for _ in $(seq 1 40); do screen | grep -qF "[$1] ▶" && break; sleep 0.05; done; awk -v a=$s -v b=$EPOCHREALTIME 'BEGIN{exit !(b - a < 1.0)}'; }
@@ -828,7 +844,7 @@ check "a new ssh connection is announced" "wait_ssh 'new ssh: devbox.example · 
 check "and offered for linking" "wait_ssh 'devbox.example · ssh in'"
 tm send-keys -t work:sshpanel u
 check "U with nothing linked says so" "wait_ssh 'nothing is linked'"
-tm send-keys -t work:sshpanel l; sleep 0.7
+tm send-keys -t work:sshpanel L; sleep 0.7
 check "L opens a popup listing the ssh hosts" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q 'devbox.example  · ssh in' && sshscreen | grep -q 'other host'"
 check "the popup says how to close it" "sshscreen | grep -q 'Esc closes'"
 # Every row of the popup has its right edge in the same column as the top-right corner.
@@ -850,13 +866,13 @@ check "Esc closes the popup" "wait_ssh 'link cancelled' && ! sshscreen | grep -q
 ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey"
 : >"$T/known_hosts"
 fp=$(ssh-keygen -lf "$T/hostkey.pub" | awk '{print $2}')
-tm send-keys -t work:sshpanel l; sleep 0.7; tm send-keys -t work:sshpanel Enter
+tm send-keys -t work:sshpanel L; sleep 0.7; tm send-keys -t work:sshpanel Enter
 check "picking a host ssh has no key for asks yes or no, and says none was found" "wait_ssh 'LINK devbox.example?' && wait_ssh 'no key found (not in known_hosts' && wait_ssh \"No, don't link\" && wait_ssh 'Yes, link devbox.example'"
 tm send-keys -t work:sshpanel Enter
 check "No links nothing" "wait_ssh 'link cancelled' && [[ ! -e $(dirname "$AGENT_SAY_MAILBOX")/links/devbox.example ]]"
 # A host ssh already trusts (its key in known_hosts): only yes or no, Yes first, its key shown.
 printf 'devbox.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >"$T/known_hosts"
-tm send-keys -t work:sshpanel l; sleep 0.7; tm send-keys -t work:sshpanel Enter
+tm send-keys -t work:sshpanel L; sleep 0.7; tm send-keys -t work:sshpanel Enter
 check "a host ssh already trusts: one yes or no, with the key from your known_hosts, no list of keys" "wait_ssh 'LINK devbox.example?' && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -q '1 *Yes, link devbox.example' && ! sshscreen | grep -q 'its key is'"
 tm send-keys -t work:sshpanel Enter
 check "Enter links it, and shows what happened" "wait_ssh \"couldn't run agent-say on devbox.example\""
@@ -878,7 +894,7 @@ broken() { mkdir -p "$sk"; touch "$sk/on"; echo "$(ssh-keygen -lf "$T/oldkey.pub
 	echo "stopped: host key changed since you linked it. Press L to link it again" >"$sk/error"; }
 broken
 check "LINKS says the failing link's error plainly" "wait_ssh 'devbox.example stopped: host key changed'"
-tm send-keys -t work:sshpanel l; sleep 0.7
+tm send-keys -t work:sshpanel L; sleep 0.7
 check "L offers the failing link, to link again" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q 'devbox.example  · stopped: host key changed.* · link again'"
 pick_line() { tm send-keys -t work:sshpanel "$(sshscreen | grep -o "[1-9] *$1" | head -c 1)"; } # the popup line showing that
 pick_line "devbox.example  · stopped"
@@ -889,10 +905,10 @@ check "linking again shows the key ssh uses now, warns it isn't the one linked b
 tm send-keys -t work:sshpanel 2
 check "and yes unlinks the old one and links again (its old key and error gone)" "wait_ssh \"couldn't run agent-say on devbox.example\" && [[ ! -e $sk/on && ! -e $sk/error && ! -e $sk/fingerprint ]]"
 broken
-tm send-keys -t work:sshpanel l; sleep 0.7; wait_ssh "link again" >/dev/null; pick_line "devbox.example  · stopped"
+tm send-keys -t work:sshpanel L; sleep 0.7; wait_ssh "link again" >/dev/null; pick_line "devbox.example  · stopped"
 wait_ssh 'LINK devbox.example AGAIN?' >/dev/null; tm send-keys -t work:sshpanel 1
 check "No there leaves it as it was" "wait_ssh 'link cancelled' && [[ -e $sk/on && -s $sk/error ]]"
-tm send-keys -t work:sshpanel l; sleep 0.7; wait_ssh "link again" >/dev/null; pick_line "devbox.example  · stopped"
+tm send-keys -t work:sshpanel L; sleep 0.7; wait_ssh "link again" >/dev/null; pick_line "devbox.example  · stopped"
 wait_ssh 'LINK devbox.example AGAIN?' >/dev/null; tm send-keys -t work:sshpanel 3
 # Each unlink says the same, so wait for the link itself to go, not only for the words.
 gone_sk() { for _ in $(seq 1 50); do [[ -e $sk ]] || break; sleep 0.2; done; [[ ! -e $sk ]] && wait_ssh 'unlinked devbox.example'; }
@@ -904,7 +920,7 @@ check "and so does U" "gone_sk"
 mkdir -p "$sk"; touch "$sk/on" "$sk/paused"; echo "$fp (ED25519)" >"$sk/fingerprint"
 echo "can't reach (connection timed out) · L to try again" >"$sk/error"
 check "LINKS shows a stopped link's reason" "wait_ssh \"devbox.example can't reach\""
-tm send-keys -t work:sshpanel l; sleep 0.7
+tm send-keys -t work:sshpanel L; sleep 0.7
 check "L offers it, to try again" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q \"devbox.example  · can't reach (connection timed out) · try again\""
 pick_line "devbox.example  · can.t reach"
 check "picking it tries once, with no questions, and says why it failed again" "wait_ssh 'devbox.example: ssh to devbox.example failed' && ! sshscreen | grep -q 'AGAIN?' && [[ -e $sk/paused && -e $sk/on ]] && grep -q 'L to try again' $sk/error"
@@ -932,7 +948,7 @@ tm new-window -d -t work -n liveremote "bash -c 'exec -a \"ssh live.example\" sl
 lvs() { tm capture-pane -p -t work:livepanel; }
 wait_lv() { for _ in $(seq 1 40); do lvs | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 wait_lv 'live.example · ssh in' >/dev/null
-tm send-keys -t work:livepanel l; wait_lv 'LINK AGENTS ON' >/dev/null
+tm send-keys -t work:livepanel L; wait_lv 'LINK AGENTS ON' >/dev/null
 n=$(lvs | grep -o '[1-9] *live.example  · ssh in' | head -c 1)
 tm send-keys -t work:livepanel "$n"
 check "a key read through your open ssh connection: shown, said to be seen for the first time, No first" "wait_lv 'key read through your open ssh connection: $fp (ED25519)' && wait_lv 'First time we see this key' && lvs | grep -q \"1 *No, don't link live.example\""
@@ -1377,7 +1393,7 @@ tm new-window -d -t work -n farssh "bash -c 'exec -a \"ssh far.example\" sleep 3
 herewin=$(tm display -p -t work '#{window_name}')
 sleep 2.5
 check "with a pane here ssh'd there, J stays faded" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\""
-tm send-keys -t work:farpanel j
+tm send-keys -t work:farpanel J
 check "J there only says so" "wait_far 'J jumps to panes on this computer only'"
 check "and moves nothing, here or over there" "[[ \$(tm display -p -t work '#{window_name}') == '$herewin' && \$(rt display -p -t far '#{window_name}') == elsewhere && ! -e $T/show.cmd ]]"
 rm -f "$st/links/far.example/read-only"
@@ -1433,7 +1449,7 @@ tm new-window -d -t work -n farnames "env AGENT_SAY_SSH=$T/logssh REVIVE_DIR=$RE
 fn() { tm capture-pane -p -t work:farnames; }
 for _ in $(seq 1 60); do fn | grep -q 'far-two *◌ linked' && break; sleep 0.25; done
 for _ in $(seq 1 25); do fn | grep -q '▶ far-two' && break; tm send-keys -t work:farnames Down; sleep 0.4; done
-tm select-window -t work:farnames; tm send-keys -t work:farnames j
+tm select-window -t work:farnames; tm send-keys -t work:farnames J
 check "J on a names-only row moves nothing, and asks nothing over there" "for _ in \$(seq 1 30); do fn | grep -c 'J jumps to panes on this computer only' >/dev/null && break; sleep 0.2; done; fn | grep -c 'J jumps to panes on this computer only' >/dev/null && [[ \$(tm display -p -t work '#{window_name}') == farnames ]] && ! grep -c -- '--show' $T/ssh.log >/dev/null && [[ ! -e $T/show.cmd ]]"
 tm send-keys -t work:farnames q; tm kill-window -t work:farssh
 
@@ -1549,7 +1565,7 @@ login_typed() {
 wait_pw 'C O N T R O L' >/dev/null
 wait_pw 'pw.example · ssh in' >/dev/null
 # pw.example is in known_hosts: ssh trusts it, so L asks only yes or no, and the password goes to that key.
-tm send-keys -t work:pwpanel l; wait_pw 'LINK AGENTS ON' >/dev/null; tm send-keys -t work:pwpanel Enter
+tm send-keys -t work:pwpanel L; wait_pw 'LINK AGENTS ON' >/dev/null; tm send-keys -t work:pwpanel Enter
 wait_pw 'key from your known_hosts' >/dev/null; tm send-keys -t work:pwpanel Enter
 check "L on a host that wants a password opens a login, where ssh asks for it" "login_typed hunter2"
 check "and once it's typed, the link is made" "wait_pw 'linked to pw.example' 75 && [[ -e $pwl/on && -e $T/pw.master ]]"
@@ -1561,7 +1577,7 @@ check "its panes too, not as unreachable" "wait_pw 'needs login · L' 50 && ! pw
 pw_tries() { grep -c 'BatchMode=yes.* pw.example ' "$T/pwssh.log"; }
 n=$(pw_tries); sleep 3
 check "nothing is tried over ssh meanwhile, and no login opens by itself" "[[ \$(pw_tries) == $n ]] &&[[ \$(grep -c 'ControlMaster=yes' $T/pwssh.log) == 1 ]] && ! tm list-windows -t work -F '#{window_name}' | grep -q '^login'"
-tm send-keys -t work:pwpanel l; wait_pw 'needs login: type its password' >/dev/null
+tm send-keys -t work:pwpanel L; wait_pw 'needs login: type its password' >/dev/null
 check "L offers it first, to log in again" "pws | grep -q '1 *pw.example  · needs login: type its password'"
 tm send-keys -t work:pwpanel Enter
 check "and picking it opens the login again" "login_typed hunter2"
@@ -1582,7 +1598,7 @@ tm new-window -d -t work -n pwpanel "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCA
 login_win() { tm list-windows -t work -F '#{window_id} #{window_name}' | awk '$2 == "login" && $3 == "pw.example" {print $1}'; }
 link_pw() {
 	wait_pw 'pw.example · ssh in' 50 >/dev/null
-	tm send-keys -t work:pwpanel l; wait_pw 'LINK AGENTS ON' >/dev/null; tm send-keys -t work:pwpanel Enter
+	tm send-keys -t work:pwpanel L; wait_pw 'LINK AGENTS ON' >/dev/null; tm send-keys -t work:pwpanel Enter
 	wait_pw 'new host: first key seen' >/dev/null; tm send-keys -t work:pwpanel 2
 }
 link_pw
@@ -1866,6 +1882,19 @@ check "its border bright cyan: its right edge, not MESSAGES's left" "wait_ok '[[
 check "and [Tab] focus on PANES's title, as Tab goes round" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'PANES ▓▒░═* \[Tab\] focus ══╣'"
 tm_s Tab
 check "and round to PANES again" "wait_sp '▸ PANES' && ! sscr | grep -qF '▸ LINKS'"
+# l and Right are Tab, h and Left are Shift-Tab.
+tm_s l
+check "l moves the focus on, as Tab does" "wait_sp '▸ PEEK · ' && ! sscr | grep -qF '▸ PANES'"
+tm_s h
+check "h moves it back, as Shift-Tab does" "wait_sp '▸ PANES' && ! sscr | grep -qF '▸ PEEK'"
+tm_s Right
+check "Right moves it on too" "wait_sp '▸ PEEK · ' && ! sscr | grep -qF '▸ PANES'"
+tm_s Left
+check "and Left back" "wait_sp '▸ PANES' && ! sscr | grep -qF '▸ PEEK'"
+tm_s h
+check "h from PANES goes round to LINKS · SAVES" "wait_sp '▸ LINKS · SAVES' && ! sscr | grep -qF '▸ PANES'"
+tm_s l
+check "and l round to PANES again" "wait_sp '▸ PANES' && ! sscr | grep -qF '▸ LINKS'"
 check "where it's PANES's border in bright cyan again, [Tab] focus back on the peek" "wait_ok '[[ \$(scap | wcols PANES) == \"96 96\" ]]' && (( \$(stabs) == 1 )) && sscr | grep -q 'PEEK · .*\[Tab\] focus'"
 tm_s End
 check "in PANES, End selects the last row and the view follows it off the top" "wait_sp '▶ fold-b' && gone_sp '[0.0]'"

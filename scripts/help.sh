@@ -408,7 +408,7 @@ help_frame() {
 
 # ------------------------------------------------------------------ keys
 # help_view: the page stays up, redrawn every second (the clock, a resize), until Esc, x, q
-# or ? again. ↑↓ scroll a line, PgUp/PgDn and Space a page, Home and End go to either end.
+# or ? again. ↑↓ (or k and j) scroll a line, PgUp/PgDn and Space a page, Home and End go to either end.
 # Ctrl-C closes it too.
 help_view() {
 	local k rest seq st INTR=0 hsec=0
@@ -426,6 +426,8 @@ help_view() {
 		case $k in
 		x | X | q | Q | '?') break ;;
 		' ') HELP_TOP=$((HELP_TOP + HELP_VIEW - 1)) ;;
+		k) ((HELP_TOP--)) ;;
+		j) ((HELP_TOP++)) ;;
 		i | I) help_install workforce ;;
 		p | P) help_install playwright ;;
 		o | O) help_open "$PW_URL" ;;

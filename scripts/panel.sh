@@ -2371,7 +2371,7 @@ ask() { # ask PROMPT -> REPLY on the bottom line. Enter accepts; Esc, Ctrl-C or 
 }
 
 # pick TITLE ITEM...: a BBS-style popup over the panel, a blue double-line box with a shaded
-# shadow, listing ITEMs. ↑↓ or 1-9 choose, Enter picks (-> PICKED, the index), Esc or q closes
+# shadow, listing ITEMs. ↑↓ (j k) or 1-9 choose, Enter picks (-> PICKED, the index), Esc or q closes
 # it (returns 1). Ctrl-C closes it too, read in slices as in ask. An ITEM starting with $NOTE
 # is a line to read (a heading, some words), not a choice: unnumbered, and never picked.
 NOTE=$'\x1f' # clean takes control characters out of anything shown, so none can start with it
@@ -2444,6 +2444,8 @@ pick() {
 			'[A') ((num[sel] > 0)) && sel=${ch[num[sel] - 1]} ;;
 			'[B') ((num[sel] < ${#ch[@]} - 1)) && sel=${ch[num[sel] + 1]} ;;
 			esac ;;
+		k) ((num[sel] > 0)) && sel=${ch[num[sel] - 1]} ;;
+		j) ((num[sel] < ${#ch[@]} - 1)) && sel=${ch[num[sel] + 1]} ;;
 		[1-9]) ((k - 1 < ${#ch[@]})) && sel=${ch[k - 1]} && { PICKED=$sel; trap 'exit 0' INT; return 0; } ;;
 		"") PICKED=$sel; trap 'exit 0' INT; return 0 ;; # Enter
 		esac
@@ -2700,14 +2702,15 @@ note() {
 act() {
 	# A key may draw over the panel (popup, prompt) and return early: repaint it whole. Keys
 	# that only move the selection don't, so they keep the line-by-line redraw.
-	case $1 in up | down | pgup | pgdn | home | end | tab | btab | [0-9]) ;; *) PREV=() ;; esac
+	case $1 in up | down | pgup | pgdn | home | end | tab | btab | left | right | [0-9]) ;; *) PREV=() ;; esac
 	local id=${P_ID[SEL]:-} name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} out
 	# A heading selected: the keys for a pane wait for one.
 	if [[ -n $HSEL ]]; then
-		case $1 in j | J | m | M | n | N | v | V) flash "select one of ${HSEL}'s panes for that"; return ;; esac
+		case $1 in J | m | M | n | N | v | V) flash "select one of ${HSEL}'s panes for that"; return ;; esac
 	fi
 	case $1 in
-	j | J)
+	# J and L take the capital only: j and l are the vim keys, down and right.
+	J)
 		# Panes on this computer only. On a linked computer's row J does nothing but say so:
 		# focus moves only where you press J, never in tmux over there.
 		[[ -n ${P_HOST[SEL]:-} ]] && { flash "J jumps to panes on this computer only"; return; }
@@ -2754,7 +2757,7 @@ act() {
 		ask "New name for $name:" || { flash "rename cancelled"; return; }
 		out=$(AGENT_SAY_PANE=$id "$ASAY" name "$REPLY" 2>&1 | head -n 1)
 		flash "${out#agent-say: }" ;;
-	l | L)
+	L)
 		# Links waiting for their login first, then every ssh host not linked yet (the selected
 		# pane's first), then the links there are to link again (one that fails first), then
 		# "other host...".
@@ -3085,16 +3088,16 @@ act() {
 	# A digit N goes to window N, as the # column and tmux's status bar number it: the first pane
 	# on this computer, top of the list down, whose window is N (with several sessions, the
 	# first session listed that has one). None there: the selection stays. Windows 10 and up,
-	# and linked computers' panes, are reached with the arrows.
+	# and linked computers' panes, are reached with the arrows (or j and k).
 	[0-9])
 		local w
 		for w in "${!P_ID[@]}"; do
 			[[ -z ${P_HOST[w]} && ${P_WP[w]%%.*} == "$1" ]] && { SEL=$w HSEL=""; break; }
 		done ;;
 	up | down | pgup | pgdn | home | end) scroll "$1" ;;
-	# Tab: the focus to the next window drawn (Shift-Tab: the one before).
-	tab) tab_next; FOCUS=$NEXTW ;;
-	btab) tab_next 3; FOCUS=$NEXTW ;;
+	# Tab, Right or l: the focus to the next window drawn (Shift-Tab, Left or h: the one before).
+	tab | right) tab_next; FOCUS=$NEXTW ;;
+	btab | left) tab_next 3; FOCUS=$NEXTW ;;
 	esac
 	SEL_ID=${P_ID[SEL]:-}
 }
@@ -3283,14 +3286,16 @@ keys() {
 				while IFS= read -rsn1 -t 0.05 rest; do seq+=$rest; [[ $rest == [@-~] || ${#seq} -gt 8 ]] && break; done
 			fi
 			case $seq in
-			A) key=up ;; B) key=down ;; 5~) key=pgup ;; 6~) key=pgdn ;;
+			A) key=up ;; B) key=down ;; C) key=right ;; D) key=left ;; 5~) key=pgup ;; 6~) key=pgdn ;;
 			H | 1~ | 7~) key=home ;; F | 4~ | 8~) key=end ;; Z) key=btab ;; *) key="" ;;
 			esac
 		fi
 		[[ $key == $'\t' ]] && key=tab
+		# The vim keys, lowercase only: J and L keep jump and link.
+		case $key in h) key=left ;; j) key=down ;; k) key=up ;; l) key=right ;; esac
 		case $key in
 		# Moving the selection, scrolling and moving the focus only redraw.
-		up | down | pgup | pgdn | home | end | tab | btab | [0-9]) act "$key"; nav=1 ;;
+		up | down | pgup | pgdn | home | end | tab | btab | left | right | [0-9]) act "$key"; nav=1 ;;
 		# Keys that only change the view (peek, full view, collapse, art) are drawn at once from
 		# what was gathered last, then looked at again like any other key: on a busy machine
 		# the look at every pane is what takes the time.
