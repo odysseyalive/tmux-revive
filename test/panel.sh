@@ -483,7 +483,9 @@ check "with that output a minute old, WAITING ON YOU again" "grep -q 'claude *â—
 # work in the background, however stale the output. Another child (an MCP server) isn't.
 mkdir -p "$T/shell-snapshots" "$T/bin/mcp"
 : >"$T/shell-snapshots/snapshot-x.sh"
-cp "$(command -v sleep)" "$T/bin/mcp/mcp-server"
+# A script, not a copied sleep: a multi-call coreutils (uutils, as on Ubuntu 26.04) picks the
+# tool by its own name and would exit at once as "mcp-server".
+printf '#!/usr/bin/env bash\nsleep "$@"\n' >"$T/bin/mcp/mcp-server" && chmod +x "$T/bin/mcp/mcp-server"
 tm kill-window -t work:cl
 tm new-window -d -t work -n cl "$T/bin/claude -c '$T/bin/mcp/mcp-server 300 & bash -c \"source $T/shell-snapshots/snapshot-x.sh; sleep 300; :\" & wait'"
 sleep 0.5

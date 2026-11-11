@@ -104,7 +104,9 @@ t send-keys -t "=$EVIL:1" "$T/bin/claude forged-a" Enter
 t new-window -t "=$EVIL" -c "$T/proj" "$REVIVE_SHELL"
 t send-keys -t "=$EVIL:2" "$T/bin/claude forged-b" Enter
 mkdir -p "$T/vimproj" && : >"$T/vimproj/Session.vim"
-ln -s "$(command -v sleep)" "$T/bin/vim"
+# A script, not a renamed sleep: a multi-call coreutils (uutils, as on Ubuntu 26.04) picks
+# the tool by its own name and would exit at once as "vim".
+printf '#!/usr/bin/env bash\nsleep "$@"\n' >"$T/bin/vim" && chmod +x "$T/bin/vim"
 t new-window -t "=$EVIL" -c "$T/vimproj" "$REVIVE_SHELL"
 t send-keys -t "=$EVIL:3" "$T/bin/vim 300" Enter
 sleep 1
@@ -158,7 +160,8 @@ want='agent work '
 check "sessions back, placeholder gone ($sessions)" "[[ '$sessions' == '$want' ]]"
 check "work has 2 windows" "[[ \$(t list-windows -t work | wc -l) -eq 2 ]]"
 check "first window has 2 panes" "[[ \$(t list-panes -t work:0 | wc -l) -eq 2 ]]"
-check "layout restored exactly" "[[ \$(t display -p -t work:0 '#{window_layout}' | jq -c '[.L.c[].w]') == '[100,99]' ]]"
+# By the panes' widths: tmux 3.8 prints #{window_layout} as JSON, older ones as a layout string.
+check "layout restored exactly" "[[ \$(t list-panes -t work:0 -F '#{pane_width}' | tr '\n' ' ') == '100 99 ' ]]"
 check "claude resumed exactly once, in its project" "[[ \$(wc -l <$T/claude-launches) -eq 1 ]] && grep -q '^$T/proj --resume 11111111-2222-3333-4444-555555555555' $T/claude-launches"
 check "scrollback replayed" "t capture-pane -p -t work:0.1 -S -50 | grep -q marker-from-before-reboot"
 check "pager relaunched" "t list-panes -a -F '#{pane_current_command}' | grep -q less"
@@ -378,16 +381,18 @@ check "none left: enter starts a fresh one" "for _ in \$(seq 30); do [[ \$(tmux 
 
 # Names that aren't what they look like. tmux splits even an =exact target at : and .
 # so the list acts by session id ($N), never by name.
+# Some tmux versions turn : and . in a new name into _ (victim_0, a_b_c): the checks go by
+# the name it gave.
 tmux new-session -d -s victim -c "$T/proj"
-tmux new-session -d -s victim:0 -c "$T/proj"
-tmux new-session -d -s a:b.c -c "$T/proj"
+dec=$(tmux new-session -d -P -F '#{session_name}' -s victim:0 -c "$T/proj")
+abc=$(tmux new-session -d -P -F '#{session_name}' -s a:b.c -c "$T/proj")
 picker
-keys "$(row victim:0)" x
+keys "$(row "$dec")" x
 keys y
-check "closing a decoy victim:0 closes the decoy, not victim" "! has victim:0 && has victim"
-keys "$(row 'a:b\.c')" x
+check "closing a decoy victim:0 ($dec) closes the decoy, not victim" "! has '$dec' && has victim"
+keys "$(row "${abc//./\\.}")" x
 keys y
-check "a session named a:b.c can be closed" "! has a:b.c && has victim"
+check "a session named a:b.c ($abc) can be closed" "! has '$abc' && has victim"
 keys q
 n0=$(nsess)
 o respawn-pane -k -t outer "$PICK"
