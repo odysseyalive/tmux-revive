@@ -53,7 +53,7 @@ Got agents on a remote server? I wanted mine right here with the rest.
 
 1. Open another terminal and ssh into the server.
 2. Install tmux-revive there too, then start tmux.
-3. Back in the panel, press `L` to link it.
+3. Back in the panel, press `B` to bridge it.
 
 As long as tmux keeps running there, its windows show up right here in the panel, even after you close that terminal.
 

@@ -1079,7 +1079,7 @@ check "stopped on its key, it stays stopped: tmux starting again doesn't restart
 rm -f "$T/scan.presented" "$nl/error" "$nl/pin" "$nl/pin.fps" "$nl/paused"
 n=$(nb_tries)
 nb _resume-links
-check "with no key to bind it to, it is unreachable, not changed or 'needs login', and stops" "for _ in \$(seq 40); do grep -q \"couldn't read nullbox's host key\" $nl/error 2>/dev/null && break; sleep 0.25; done; grep -q \"couldn't read nullbox's host key.*· L to try again\" $nl/error && for _ in \$(seq 20); do pollers nullbox >/dev/null || break; sleep 0.25; done; ! pollers nullbox >/dev/null && [[ -e $nl/paused && ! -e $nl/login ]] && ! nb link | grep 'nullbox' | grep -q 'needs login\|host key changed'"
+check "with no key to bind it to, it is unreachable, not changed or 'needs login', and stops" "for _ in \$(seq 40); do grep -q \"couldn't read nullbox's host key\" $nl/error 2>/dev/null && break; sleep 0.25; done; grep -q \"couldn't read nullbox's host key.*· B to try again\" $nl/error && for _ in \$(seq 20); do pollers nullbox >/dev/null || break; sleep 0.25; done; ! pollers nullbox >/dev/null && [[ -e $nl/paused && ! -e $nl/login ]] && ! nb link | grep 'nullbox' | grep -q 'needs login\|host key changed'"
 check "and nothing is sent to it meanwhile" "[[ \$(nb_tries) == $n ]]"
 nb unlink nullbox >/dev/null 2>&1
 check "unlink stops it" "! pollers nullbox >/dev/null"
@@ -1213,13 +1213,13 @@ check "one poller tree per link: every process of it in the poller's session" "[
 : >"$T/live.log"
 rm -f "$T/live.net"
 tries() { grep -v ' -G \| -O ' "$T/live.log" | grep -c . || true; }
-check "a timeout stops it, saying 'can't reach (connection timed out) · L to try again'" "for _ in \$(seq 40); do [[ -e $lvl/paused ]] && break; sleep 0.25; done; [[ \$(cat $lvl/error) == \"can't reach (connection timed out) · L to try again\" ]] && for _ in \$(seq 20); do pollers livebox >/dev/null || break; sleep 0.25; done; ! pollers livebox >/dev/null"
+check "a timeout stops it, saying 'can't reach (connection timed out) · B to try again'" "for _ in \$(seq 40); do [[ -e $lvl/paused ]] && break; sleep 0.25; done; [[ \$(cat $lvl/error) == \"can't reach (connection timed out) · B to try again\" ]] && for _ in \$(seq 20); do pollers livebox >/dev/null || break; sleep 0.25; done; ! pollers livebox >/dev/null"
 check "with ssh's own words kept in the link's log" "grep -q 'ssh: connect to host livebox.internal port 22: Connection timed out' $lvl/log"
 check "it tried twice: when it dropped, and once more at once" "[[ \$(tries) == 2 ]]"
 lv _resume-links; sleep 1.5
 check "then never again, not even when tmux starts again" "[[ \$(tries) == 2 ]] && ! pollers livebox >/dev/null"
 out=$(lv link livebox 2>&1 </dev/null)
-check "trying again (L, or agent-say link) tries once, and stays stopped" "[[ \$(tries) == 3 ]] && grep -q 'timed out.*L to try again' $lvl/error && [[ -e $lvl/paused ]] && ! pollers livebox >/dev/null"
+check "trying again (B, or agent-say link) tries once, and stays stopped" "[[ \$(tries) == 3 ]] && grep -q 'timed out.*B to try again' $lvl/error && [[ -e $lvl/paused ]] && ! pollers livebox >/dev/null"
 # A link that hasn't got through since it started (tmux started again, say): one try, then stops.
 rm -f "$lvl/paused" "$lvl/error"
 lv _resume-links
@@ -1252,7 +1252,7 @@ lw() { printf '%s\n' "$3" >"$T/why.err"; bash -c 'source "$1"; link_why "$2" "$3
 check "connection timed out" "[[ \$(lw h 255 'ssh: connect to host 5.78.159.151 port 22: Connection timed out') == \"can't reach (connection timed out)\" ]]"
 check "connection refused" "[[ \$(lw h 255 'ssh: connect to host h port 22: Connection refused') == \"can't reach (connection refused)\" ]]"
 check "no such host" "[[ \$(lw h 255 'ssh: Could not resolve hostname h: Name or service not known') == \"can't reach (no such host name)\" ]]"
-check "host key" "[[ \$(lw h 255 'Host key verification failed.') == \"host key doesn't match: press L to link again\" ]]"
+check "host key" "[[ \$(lw h 255 'Host key verification failed.') == \"host key doesn't match: press B to bridge again\" ]]"
 check "login refused" "[[ \$(lw h 255 'me@h: Permission denied (publickey).') == 'login refused (key)' ]]"
 check "agent-say missing there" "[[ \$(lw h 127 'bash: agent-say: command not found') == \"agent-say isn't installed there\" ]]"
 check "agent-say's own words, without its name" "[[ \$(lw h 255 \"agent-say: couldn't read h's host key\") == \"couldn't read h's host key\" ]]"

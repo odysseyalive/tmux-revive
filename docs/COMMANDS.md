@@ -159,19 +159,19 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 
 | Key | What it does |
 |---|---|
-| Up / Down (`k` / `j`) | pick a pane (the list wraps around), or scroll the window you tabbed to |
+| Up / Down (`k` / `j`) | pick a pane (the list wraps around), or scroll the window you moved to |
 | PgUp / PgDn, Home / End | a page at a time, or to the top or bottom |
-| Tab / Shift-Tab, Right / Left, `l` / `h` | next window, or back: PANES, PEEK, MESSAGES, LINKS · SAVES |
+| `J` / `K` | next window, or back: PANES, PEEK, MESSAGES, LINKS · SAVES |
 | `0`-`9` | go to that window's first pane |
-| `J` | jump to the pane on this computer (a popup panel closes). Capital only, since `j` moves down |
+| `O` | open the pane on this computer (a popup panel closes) |
 | `M` | message the pane's agent |
 | `N` | name the pane |
 | `P` | show or hide a quick peek at its screen |
 | `X` | spread the peek over the artwork too |
 | `C` | put the artwork back |
 | Enter | answer the question the selected agent is asking, or open a folded computer |
-| `F` | fold the selected pane's linked computer into one line |
-| `L` | link a computer you ssh into. Capital only, since `l` moves to the next window |
+| `f` | fold the selected pane's linked computer into one line |
+| `B` | bridge a computer you ssh into |
 | `U` (or `D`) | unlink a computer |
 | `V` | update tmux-revive on a linked computer, or copy the install or update command for another user's pane |
 | `G` | grant access: agents on linked computers waiting to talk, and the ones you approved |
@@ -183,14 +183,14 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 ### Scrolling
 
 When a window has more than fits, a scroll bar shows on its right edge. Press
-**Tab** to move to that window (its title lights up), then scroll it with the
+**J** to move to that window (its title lights up), then scroll it with the
 arrows, PgUp and PgDn. In PANES the arrows still pick a pane, and the list
 follows. If something that needs you is scrolled out of view, like a question or
 an access request, the arrow on that side blinks yellow.
 
 PANES takes about half the screen at most, so the peek always has room.
 
-On a linked computer's pane, **F** folds that computer's panes into its heading
+On a linked computer's pane, **f** folds that computer's panes into its heading
 line, which still says how many need you. The arrows skip an open computer's
 heading but stop on a folded one. Press **Enter** there to open it. Folds are
 remembered for next time.
@@ -200,7 +200,7 @@ remembered for next time.
 When the selected agent is asking a question, the peek shows the question instead.
 Press **Enter** to answer it right there. Your keys go to the agent as if you were
 in its pane, typed answers included, until it has its answer or you press
-**Ctrl-]**. For a real chat with the agent, **J** takes you to its pane.
+**Ctrl-]**. For a real chat with the agent, **O** takes you to its pane.
 
 You don't need the panel open to hear about questions. When any agent starts
 asking one, tmux shows a message naming the pane and rings the bell, once per
@@ -210,12 +210,12 @@ off.
 ### Linked computers in the panel
 
 When a pane ssh's into another computer, the panel spots it and offers to link the
-agents there. **L** links it and **U** unlinks it. Linking is one yes or no. The
+agents there. **B** links it and **U** unlinks it. Linking is one yes or no. The
 panel finds the key ssh uses for that computer (your known_hosts, or the ssh
 connection you have open to it) and shows it, and pops up a box for the password
 if the server takes one. If the key isn't in your known_hosts, you haven't
 confirmed it yet, so No comes first. A link that stops working shows why in LINKS,
-and **L** on it tries it once more. **L** on a working link links it again or
+and **B** on it tries it once more. **B** on a working link links it again or
 unlinks it.
 
 Once linked, that computer's panes show up in the list too, grouped under its
@@ -223,7 +223,7 @@ name, with their USER and VER. Select one of your panes there and press **V** to
 update tmux-revive over ssh, once you say yes. On another user's pane there, **V**
 gives you the command to run in it (see Several users in one tmux). **N** names one of its panes over ssh.
 
-**J** is faded on its panes. Nothing there moves your focus, here or in tmux over
+**O** is faded on its panes. Nothing there moves your focus, here or in tmux over
 there, so a question on that computer can't pull you away from what you're doing.
 
 ## agent-say: agents talking to each other
@@ -335,7 +335,7 @@ Agents still need your permission to talk across links, same as before.
 
 Link tmux on your computer to tmux on a server, and the agents on both sides
 can talk to each other by name. Run this once on **your own computer**, using
-the same name you'd type after `ssh` (or press **L** in the panel):
+the same name you'd type after `ssh` (or press **B** in the panel):
 
 ```sh
 agent-say link devbox
@@ -343,11 +343,11 @@ agent-say link devbox
 
 The server needs `agent-say` installed too. With an ssh key, the link logs in on
 its own. A server that only takes a password works too. ssh asks you for it once
-(in a small popup when you press **L** in the panel), and the link keeps that
+(in a small popup when you press **B** in the panel), and the link keeps that
 connection open. tmux-revive never sees or stores the password, and ssh only asks
 for it after the server has shown the host key you confirmed. If the connection
 drops, say that server reboots or the network goes away for a while, the panel
-marks the link `needs login` and **L** asks for the password again. Nothing logs
+marks the link `needs login` and **B** asks for the password again. Nothing logs
 back in by itself.
 
 Linking follows your ssh setup. The host is resolved the way `ssh -G` resolves it,
@@ -369,9 +369,9 @@ checks host keys, and your known_hosts has the key the link was confirmed with).
 
 A link that can't reach its server doesn't keep trying, so a server's fail2ban
 never takes it for an attack. If a working link drops, it tries once more right
-away, then stops and LINKS says why, like `can't reach (connection timed out) · L
+away, then stops and LINKS says why, like `can't reach (connection timed out) · B
 to try again`. Nothing reconnects by itself after that, not even when tmux starts
-again. **L** in the panel, or `agent-say link <host>`, tries once more. ssh's own
+again. **B** in the panel, or `agent-say link <host>`, tries once more. ssh's own
 error is kept in `links/<host>/log` in agent-say's state folder.
 
 If that key changes later, or you revoke it (`@revoked` in known_hosts), the link

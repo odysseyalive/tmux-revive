@@ -11,8 +11,8 @@
 #   panel.sh --show %ID  retired: changes nothing, and fails (an older computer's J asked for it)
 #   panel.sh --asking   the panes whose agent is asking a question now: id, place, name (daemon.sh)
 #
-# REVIVE_PANEL_POPUP=1 (set by @revive-panel-key) closes the panel after a jump, since a popup
-# would otherwise sit on top of the pane you jumped to.
+# REVIVE_PANEL_POPUP=1 (set by @revive-panel-key) closes the panel after O opens a pane, since a
+# popup would otherwise sit on top of the pane it opened.
 set -uo pipefail
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -166,7 +166,7 @@ seg() {
 	else rep ═ $(($4 - a - 1)); SEG="$5═$1$5$REP"; fi
 }
 # sectk TITLE KEYS [COLOUR [BORDER [HINT]]]: a divider with a title, and the keys for that
-# section at its right end, HINT ("[Tab] focus") first. BORDER: its rule's colour (FRAME).
+# section at its right end, HINT ("[J] focus") first. BORDER: its rule's colour (FRAME).
 sectk() {
 	local b=${4:-$FRAME}
 	tab "$1" "${3:-4}"
@@ -1186,7 +1186,7 @@ remote_run() { # remote_run HOST COMMAND: run it on that computer over the link'
 	# that wants a password) carries these too. While the link waits for one, nothing is tried:
 	# each try would be a refused login in that host's log.
 	# Nor while it is stopped on a failure: each try would be one more failed connection there
-	# (a server's fail2ban counts them). It waits for you to press L.
+	# (a server's fail2ban counts them). It waits for you to press B.
 	[[ -f $ASTATE/links/$1/login || -f $ASTATE/links/$1/paused ]] && return 255
 	# Bound to the host key you confirmed for the link, as agent-say's own calls are: ssh checks
 	# it against the link's pin, whatever the ssh config says. agent-say _pin checks it afresh
@@ -1276,7 +1276,7 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 	local h=${P_HOST[SEL]} id=${P_RID[SEL]:-} n=$1 f l
 	L=("" "  on $h: no peek (update tmux-revive there)")
 	[[ ${P_STATE[SEL]:-} == unreachable ]] && L=("" "  on $h: can't be reached to peek")
-	[[ ${P_STATE[SEL]:-} == login ]] && L=("" "  on $h: needs login · press L to type its password")
+	[[ ${P_STATE[SEL]:-} == login ]] && L=("" "  on $h: needs login · press B to type its password")
 	[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $id =~ ^%[0-9]+$ ]] || return 0
 	((n > 60)) && n=60
 	f="$RDIR/$h.peek-${id#%}"
@@ -1303,7 +1303,7 @@ remote_panes() {
 		[[ -f $d/on ]] || continue
 		h=$(basename "$d")
 		[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
-		# A link waiting for its login (press L) shows its names, marked so, and isn't asked.
+		# A link waiting for its login (press B) shows its names, marked so, and isn't asked.
 		lg=0
 		[[ -f $d/login ]] && lg=1
 		if ((lg)); then :; elif ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
@@ -1426,7 +1426,7 @@ nav=0 MSG=() SIDE=() MSG_OLD=1 TCOLS="" TLINES=""
 # QRAW as it came, QSHOT the same as one string).
 ATOP=() ATOP_BH=3 QL=() QRAW=() QSHOT=""
 SPIN=(▖ ▘ ▝ ▗)
-# The windows: 0 PANES, 1 PEEK (or the question), 2 MESSAGES, 3 LINKS · SAVES. Tab moves FOCUS
+# The windows: 0 PANES, 1 PEEK (or the question), 2 MESSAGES, 3 LINKS · SAVES. J moves FOCUS
 # along the ones drawn (WON, from the last frame); the arrows and PgUp/PgDn/Home/End scroll
 # the focused one. Each window's view: PO the first PANES row shown (it follows the selection),
 # PB how far the peek is scrolled back from the bottom of the screen, MO and SO the first
@@ -1435,7 +1435,7 @@ SPIN=(▖ ▘ ▝ ▗)
 # last drawn, for a page's worth. PB_FOR: whose screen PB is for.
 FOCUS=0 PO=0 PB=0 MO=0 SO=0 MMAN=0 PB_FOR="" MOLD=0 MWAIT=-1
 WON=(1 0 0 0) WH=(1 1 1 1)
-tab_next() { # tab_next [STEP] -> NEXTW: the window Tab (STEP 1) or Shift-Tab (3) moves the focus to
+tab_next() { # tab_next [STEP] -> NEXTW: the window J (STEP 1) or K (3) moves the focus to
 	local j f=$FOCUS
 	NEXTW=$FOCUS
 	for j in 1 2 3 4; do f=$(((f + ${1:-1}) % 4)); ((WON[f])) && { NEXTW=$f; return; }; done
@@ -1443,18 +1443,18 @@ tab_next() { # tab_next [STEP] -> NEXTW: the window Tab (STEP 1) or Shift-Tab (3
 # wstyle ASKING -> WF the window with the focus (the question's while answering it), WB each
 # window's border colour and WK the key hint on its title. The focused one's border is bright
 # cyan, as its title band, or bright magenta on a question, the asking colour; the others are
-# FRAME. "[Tab] focus" goes on the window Tab moves to next, when there's more than one; none
-# while answering, where Tab goes back to the panes and the question says so.
+# FRAME. "[J] focus" goes on the window J moves to next, when there's more than one; none
+# while answering, where every key but Ctrl-] goes to the agent and the question says so.
 wstyle() {
 	WF=$FOCUS WB=("$FRAME" "$FRAME" "$FRAME" "$FRAME") WK=("" "" "" "")
 	((ANSWERING)) && WF=1
 	if ((WF == 1 && $1)); then WB[1]=$BMAG; else WB[WF]=$BCYN; fi
 	((ANSWERING)) && return
 	tab_next
-	((NEXTW != FOCUS)) && { kc Tab " focus"; WK[NEXTW]=$KC; }
+	((NEXTW != FOCUS)) && { kc J " focus"; WK[NEXTW]=$KC; }
 }
 WF=0 WB=() WK=()
-# HSEL: a linked computer's heading is selected (F on one of its panes folds it to that line,
+# HSEL: a linked computer's heading is selected (f on one of its panes folds it to that line,
 # a row the arrows stop on; Enter opens it again). SEL stays on one of its panes, so the rest
 # still has a pane.
 # FOLD: the computers folded, kept in REVIVE_DIR so they stay folded the next time.
@@ -1545,7 +1545,7 @@ state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
 	self) CELL="$BBLU✦ this panel      $R" ;;
 	linked) CELL="$GRY◌ linked          $R" ;;
 	unreachable) CELL="$BRED◌ unreachable     $R" ;;
-	login) CELL="$BYEL◌ needs login · L $R" ;;
+	login) CELL="$BYEL◌ needs login · B $R" ;;
 	*) CELL="$CYN▸ running         $R" ;;
 	esac
 }
@@ -1789,14 +1789,14 @@ peek_rows() {
 
 # The question the selected pane is asking, in place of its peek: only the dialog at the
 # bottom of its screen, bright, from the top of the box down. Enter answers it from here (keys
-# go to the pane until Ctrl-]); a chat with the agent is J, in the pane itself.
+# go to the pane until Ctrl-]); a chat with the agent is O, in the pane itself.
 draw_question() { # draw_question LINES
 	local id=${P_ID[SEL]:-} i keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} ft=""
 	if ((ANSWERING)); then
-		kcs Tab " back to panes" "Ctrl-]" " leaves"
+		kcs "Ctrl-]" " leaves"
 		keys="$B${BMAG}keys go to $name$R  $KC"
 	else
-		if [[ -n ${P_HOST[SEL]:-} ]]; then kcs Enter " answer"; else kcs Enter " answer" J " open the chat"; fi
+		if [[ -n ${P_HOST[SEL]:-} ]]; then kcs Enter " answer"; else kcs Enter " answer" O " open the chat"; fi
 		keys="$KC  "
 		if ((FULL)); then kc c " collapse"; else kc x " full view"; fi
 		keys+=$KC
@@ -1966,7 +1966,7 @@ links_saves() { # -> SIDE lines: saves, then links
 		if [[ -n $pid ]] && [[ $(ps -ww -o args= -p "$pid" 2>/dev/null) == *"_poll $h"* ]] && [[ ! -s $d/error ]]; then
 			SIDE+=("$BGRN●$R $BWHT$h$R$mode $GRY· linked · ${names:-0} names$R")
 		elif [[ -f $d/login ]]; then
-			SIDE+=("$BYEL●$R $BWHT$h$R$mode $BYEL· needs login ·$R $BBLU[$B${BYEL}L$R$BBLU]$R${BWHT}og in$R")
+			SIDE+=("$BYEL●$R $BWHT$h$R$mode $BYEL· needs login ·$R $BBLU[$B${BYEL}B$R$BBLU]$R${BWHT} log in$R")
 		elif [[ -s $d/error ]]; then
 			SIDE+=("$BRED●$R $BWHT$h$R$mode $BRED$err$R")
 		else
@@ -1980,23 +1980,23 @@ links_saves() { # -> SIDE lines: saves, then links
 		if [[ -n $(find "$d/alive" -mmin -1 2>/dev/null) ]]; then SIDE+=("$BGRN◌$R $BWHT$h$R $GRY· checks in here$R"); fi
 	done
 	# Access waiting and approved shows in MESSAGES (messages()), not here.
-	# ssh connections in panes that aren't linked yet: offered for linking with L.
+	# ssh connections in panes that aren't linked yet: offered for linking with B.
 	local i seen=" "
 	for i in "${!P_SSH[@]}"; do
 		h=${P_SSH[i]}
 		[[ -z $h || $seen == *" $h "* ]] && continue
 		seen+="$h "
 		linked "$h" && continue
-		SIDE+=("$BYEL◇$R $BWHT$h$R $GRY· ssh in ${P_NAME[i]:-${P_LOC[i]}} ·$R $BBLU[$B${BYEL}L$R$BBLU]$R${BWHT}ink?$R")
+		SIDE+=("$BYEL◇$R $BWHT$h$R $GRY· ssh in ${P_NAME[i]:-${P_LOC[i]}} ·$R $BBLU[$B${BYEL}B$R$BBLU]$R${BWHT}ridge?$R")
 	done
 	for i in "${!X_SSH[@]}"; do
 		h=${X_SSH[i]}
 		[[ $seen == *" $h "* ]] && continue
 		seen+="$h "
 		linked "$h" && continue
-		SIDE+=("$BYEL◇$R $BWHT$h$R $GRY· ssh in ${X_WHERE[i]} ·$R $BBLU[$B${BYEL}L$R$BBLU]$R${BWHT}ink?$R")
+		SIDE+=("$BYEL◇$R $BWHT$h$R $GRY· ssh in ${X_WHERE[i]} ·$R $BBLU[$B${BYEL}B$R$BBLU]$R${BWHT}ridge?$R")
 	done
-	((${#SIDE[@]} > 2)) || SIDE+=("$GRY  no links · ssh to a host and press L$R")
+	((${#SIDE[@]} > 2)) || SIDE+=("$GRY  no links · ssh to a host and press B$R")
 }
 
 # draw_top: draw's rows from the top of the frame down to the CPU graph, and BH, the banner's
@@ -2079,7 +2079,7 @@ draw() {
 	# A question needs every row it can get: the messages step aside until it's answered.
 	local msgs=1 ask=0
 	[[ $sst == asking ]] && msgs=0 ask=1
-	# The styles for PANES's title, drawn first: whether Tab goes to PANES next turns on the
+	# The styles for PANES's title, drawn first: whether J goes to PANES next turns on the
 	# windows after the focused one, MESSAGES and LINKS · SAVES, known already.
 	WON[2]=$msgs WON[3]=$msgs
 	wstyle $ask
@@ -2119,7 +2119,7 @@ draw() {
 	if ((n && avail >= 4)) && [[ -n $sst && $sst != self ]]; then
 		((PEEK)) || [[ $sst == asking ]] && show=1
 	fi
-	# The windows drawn, for Tab; one that's gone hands the focus back to PANES, drawn again.
+	# The windows drawn, for J and K; one that's gone hands the focus back to PANES, drawn again.
 	WON=(1 "$show" "$msgs" "$msgs")
 	((ANSWERING || WON[FOCUS])) || { FOCUS=0; draw; return; }
 	wstyle $ask
@@ -2195,21 +2195,21 @@ draw() {
 	if [[ -n $HSEL ]]; then
 		if [[ -n ${FOLD[$HSEL]:-} ]]; then k="$BBLU[$B${BYEL}Enter$R$BBLU]$R$BWHT unfold$R  "; else k="$BBLU[$B${BYEL}Enter$R$BBLU]$R$BWHT fold$R  "; fi
 	elif [[ -n ${P_HOST[SEL]:-} ]]; then
-		k+="$BBLU[$B${BYEL}F$R$BBLU]$R$BWHT fold$R  "
+		k+="$BBLU[$B${BYEL}f$R$BBLU]$R$BWHT fold$R  "
 	fi
 	# Keys that can't act on the selected pane are faded: on a linked computer's pane, nothing
-	# to rename unless its rows say which pane it is, and never J: a jump there would move
+	# to rename unless its rows say which pane it is, and never O: opening it would move
 	# focus somewhere you may be busy (another pane, or tmux over there). On a heading, none
 	# of the pane's own keys.
 	local off=" " rh=${P_HOST[SEL]:-}
 	if [[ -n $HSEL ]]; then
-		off+="J M N V "
+		off+="O M N V "
 	elif [[ -n $rh ]]; then
 		[[ -n ${P_RID[SEL]:-} ]] || off+="N "
 		[[ -n ${P_NAME[SEL]:-} ]] || off+="M "
-		off+="J "
+		off+="O "
 	fi
-	local cs=("J:ump" "M:essage" "N:ame" "L:ink" "U:nlink")
+	local cs=("O:pen" "M:essage" "N:ame" "B:ridge" "U:nlink")
 	v_mode # tmux-revive for that row's user, or on that computer
 	case $VMODE in host | update) cs+=("V: update") ;; install) cs+=("V: install") ;; esac
 	((${INTRO_ON:-0})) && cs+=("G:rant access")
@@ -2222,7 +2222,7 @@ draw() {
 		fi
 	done
 	vlen "$k"
-	# How to move: in PANES the arrows select, elsewhere they scroll. Tab is on the title of the
+	# How to move: in PANES the arrows select, elsewhere they scroll. J is on the title of the
 	# window it goes to.
 	if ((FOCUS)); then
 		if ((VLEN + 19 <= IW)); then k+="$GRY↑↓ PgUp PgDn scroll$R"
@@ -2230,7 +2230,7 @@ draw() {
 	elif ((VLEN + 15 <= IW)); then k+="$GRY↑↓ 0-9 select$R"; fi
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	# While answering every key goes to the agent, so the bar says that and how to stop.
-	((ANSWERING)) && k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Tab$R$BMAG back to the panes ·$R $B${BYEL}Ctrl-]$R$BMAG leaves$R"
+	((ANSWERING)) && k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Ctrl-]$R$BMAG leaves$R"
 	rep ═ $((W - 2))
 	line "$FRAME╠$REP╣$R"
 	row "$k"
@@ -2524,7 +2524,7 @@ question_look() {
 # The question is drawn again when the agent's screen changes: looked at every 40 ms for half
 # a second after a key is sent, to show it react, and every 0.3 s otherwise. Ctrl-] (or
 # Ctrl-C) leaves without sending anything; it ends by itself once the pane stops asking.
-# Questions only: a chat with the agent is J, in its own pane.
+# Questions only: a chat with the agent is O, in its own pane.
 answer() {
 	local h=${P_HOST[SEL]:-} id=${P_ID[SEL]:-} k rest seq txt st got gone=0 why=left pend="" INTR=0 f
 	local shot="" sent=0 skips=0 idle=0 poll=0 tl=0 w to
@@ -2580,7 +2580,7 @@ answer() {
 		case $k in
 		$'\x1d') break ;;                    # Ctrl-]
 		"" | $'\r' | $'\n') TOKS=(Enter) ;;
-		$'\t') why=tab; break ;;            # Tab: focus back to the panes
+		$'\t') TOKS=(Tab) ;;
 		$'\x7f' | $'\b') TOKS=(BSpace) ;;
 		$'\e')
 			# A lone Esc is Escape; the arrows and the like arrive as sequences.
@@ -2623,7 +2623,6 @@ answer() {
 	trap 'exit 0' INT
 	case $why in
 	left) flash "left the question; nothing more was sent" ;;
-	tab) FOCUS=0; flash "back to the panes · Enter returns to the question" ;;
 	answered)
 		flash "${P_NAME[SEL]:-${P_LOC[SEL]:-the pane}} has its answer"
 		# Rows from over there asked for before this still say asking: they don't count now.
@@ -2702,25 +2701,24 @@ note() {
 act() {
 	# A key may draw over the panel (popup, prompt) and return early: repaint it whole. Keys
 	# that only move the selection don't, so they keep the line-by-line redraw.
-	case $1 in up | down | pgup | pgdn | home | end | tab | btab | left | right | [0-9]) ;; *) PREV=() ;; esac
+	case $1 in up | down | pgup | pgdn | home | end | J | K | [0-9]) ;; *) PREV=() ;; esac
 	local id=${P_ID[SEL]:-} name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} out
 	# A heading selected: the keys for a pane wait for one.
 	if [[ -n $HSEL ]]; then
-		case $1 in J | m | M | n | N | v | V) flash "select one of ${HSEL}'s panes for that"; return ;; esac
+		case $1 in o | O | m | M | n | N | v | V) flash "select one of ${HSEL}'s panes for that"; return ;; esac
 	fi
 	case $1 in
-	# J and L take the capital only: j and l are the vim keys, down and right.
-	J)
-		# Panes on this computer only. On a linked computer's row J does nothing but say so:
-		# focus moves only where you press J, never in tmux over there.
-		[[ -n ${P_HOST[SEL]:-} ]] && { flash "J jumps to panes on this computer only"; return; }
+	o | O)
+		# Panes on this computer only. On a linked computer's row O does nothing but say so:
+		# focus moves only where you press O, never in tmux over there.
+		[[ -n ${P_HOST[SEL]:-} ]] && { flash "O opens panes on this computer only"; return; }
 		[[ -n $id ]] || return
 		if [[ -n ${TMUX:-} ]]; then
 			tm switch-client -t "$id" 2>/dev/null
 			tm select-window -t "$id" 2>/dev/null
 			tm select-pane -t "$id" 2>/dev/null
 			[[ -n ${REVIVE_PANEL_POPUP:-} ]] && exit 0
-			flash "jumped to $name"
+			flash "opened $name"
 		else
 			tm select-window -t "$id" 2>/dev/null
 			tm select-pane -t "$id" 2>/dev/null
@@ -2757,7 +2755,7 @@ act() {
 		ask "New name for $name:" || { flash "rename cancelled"; return; }
 		out=$(AGENT_SAY_PANE=$id "$ASAY" name "$REPLY" 2>&1 | head -n 1)
 		flash "${out#agent-say: }" ;;
-	L)
+	b | B)
 		# Links waiting for their login first, then every ssh host not linked yet (the selected
 		# pane's first), then the links there are to link again (one that fails first), then
 		# "other host...".
@@ -2784,7 +2782,7 @@ act() {
 				h=$(basename "$d")
 				[[ -f $d/on && $seen != *" $h "* && $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
 				why=$(head -n 1 "$d/error" 2>/dev/null)
-				why=${why% · L to try again}
+				why=${why% · [LB] to try again} # L: what agent-say wrote before B
 				clean why
 				if [[ $pass == error && -f $d/paused ]]; then
 					seen+="$h " hosts+=("$h") labels+=("$h  · ${why:0:40} · try again")
@@ -3072,12 +3070,23 @@ act() {
 	enter)
 		if [[ -n $HSEL ]]; then fold_toggle "$HSEL"; [[ -n ${FOLD[$HSEL]:-} ]] || PO=$((1 << 30)) # opened: its panes into view, under its heading
 		elif [[ ${P_STATE[SEL]:-} == asking ]]; then answer; fi ;;
-	# F: fold the selected pane's linked computer to its heading, which the selection moves to
+	# f: fold the selected pane's linked computer to its heading, which the selection moves to
 	# (on a folded heading, open it again, as Enter does).
-	f | F)
+	f)
 		if [[ -n $HSEL ]]; then act enter; return
 		elif [[ -z ${P_HOST[SEL]:-} ]]; then flash "this computer can't be folded"; return; fi
 		fold_toggle "${P_HOST[SEL]}" && HSEL=${P_HOST[SEL]} ;;
+	# F, a shortcut the bar doesn't list: fold every linked computer (never this one), or, with
+	# all of them folded already, open them all. A selection inside one folded moves to its heading.
+	F)
+		local -A seen=()
+		local h all=1
+		for h in "${P_HOST[@]}"; do [[ -n $h ]] && seen[$h]=1; done
+		((${#seen[@]})) || { flash "nothing is bridged"; return; }
+		for h in "${!seen[@]}"; do [[ -n ${FOLD[$h]:-} ]] || all=0; done
+		for h in "${!seen[@]}"; do ((all)) || [[ -z ${FOLD[$h]:-} ]] && fold_toggle "$h"; done
+		if ((all)); then HSEL=""
+		elif [[ -n ${P_HOST[SEL]:-} ]]; then HSEL=${P_HOST[SEL]}; fi ;;
 	a | A)
 		SCENE=$(((SCENE + 1) % ${#SCENES[@]}))
 		flash "art: ${TITLES[SCENE]}" ;;
@@ -3095,9 +3104,9 @@ act() {
 			[[ -z ${P_HOST[w]} && ${P_WP[w]%%.*} == "$1" ]] && { SEL=$w HSEL=""; break; }
 		done ;;
 	up | down | pgup | pgdn | home | end) scroll "$1" ;;
-	# Tab, Right or l: the focus to the next window drawn (Shift-Tab, Left or h: the one before).
-	tab | right) tab_next; FOCUS=$NEXTW ;;
-	btab | left) tab_next 3; FOCUS=$NEXTW ;;
+	# J: the focus to the next window drawn, round to the first (K: the one before).
+	J) tab_next; FOCUS=$NEXTW ;;
+	K) tab_next 3; FOCUS=$NEXTW ;;
 	esac
 	SEL_ID=${P_ID[SEL]:-}
 }
@@ -3286,16 +3295,16 @@ keys() {
 				while IFS= read -rsn1 -t 0.05 rest; do seq+=$rest; [[ $rest == [@-~] || ${#seq} -gt 8 ]] && break; done
 			fi
 			case $seq in
-			A) key=up ;; B) key=down ;; C) key=right ;; D) key=left ;; 5~) key=pgup ;; 6~) key=pgdn ;;
-			H | 1~ | 7~) key=home ;; F | 4~ | 8~) key=end ;; Z) key=btab ;; *) key="" ;;
+			A) key=up ;; B) key=down ;; 5~) key=pgup ;; 6~) key=pgdn ;;
+			H | 1~ | 7~) key=home ;; F | 4~ | 8~) key=end ;; *) key="" ;; # Left, Right, Shift-Tab: nothing
 			esac
 		fi
-		[[ $key == $'\t' ]] && key=tab
-		# The vim keys, lowercase only: J and L keep jump and link.
-		case $key in h) key=left ;; j) key=down ;; k) key=up ;; l) key=right ;; esac
+		[[ $key == $'\t' ]] && key="" # Tab does nothing: J and K move between windows
+		# j and k move in the focused window, as Down and Up do; J and K (in act) between windows.
+		case $key in j) key=down ;; k) key=up ;; esac
 		case $key in
 		# Moving the selection, scrolling and moving the focus only redraw.
-		up | down | pgup | pgdn | home | end | tab | btab | left | right | [0-9]) act "$key"; nav=1 ;;
+		up | down | pgup | pgdn | home | end | J | K | [0-9]) act "$key"; nav=1 ;;
 		# Keys that only change the view (peek, full view, collapse, art) are drawn at once from
 		# what was gathered last, then looked at again like any other key: on a busy machine
 		# the look at every pane is what takes the time.
@@ -3317,8 +3326,8 @@ while :; do
 			[[ -n $h && -z ${SSH_SEEN[$h]:-} ]] || continue
 			SSH_SEEN[$h]=1
 			# Only one opened since the panel started: those open before are in LINKS already
-			# ([L]ink?), and a flash for each would cover the key bar as it opens.
-			((SSH_FIRST)) || linked "$h" || flash "new ssh: $h · L links it"
+			# ([B]ridge?), and a flash for each would cover the key bar as it opens.
+			((SSH_FIRST)) || linked "$h" || flash "new ssh: $h · B bridges it"
 		done
 		SSH_FIRST=0
 		# A link whose login dropped (a reboot over there, the network gone): said once.
@@ -3326,7 +3335,7 @@ while :; do
 			h=$(basename "$d")
 			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
 			if [[ -f $d/on && -f $d/login ]]; then
-				[[ -n ${LOGIN_SEEN[$h]:-} ]] || flash "$h needs login · L to type its password"
+				[[ -n ${LOGIN_SEEN[$h]:-} ]] || flash "$h needs login · B to type its password"
 				LOGIN_SEEN[$h]=1
 			else
 				LOGIN_SEEN[$h]=""

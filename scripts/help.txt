@@ -21,6 +21,14 @@
 .tag C H E A T   S H E E T
 .tag Turn your computer off and on, type tmux, and it's all back. Your AI agents too.
 
+= Getting around
+
+I'm a vim person, but the arrow keys work everywhere too.
+- `j` and `k` go down and up, same as the up and down arrows.
+- Capital `J` and `K` switch windows.
+- A number goes straight to that tmux window.
+- `o` opens the pane you picked, and `f` folds a linked computer down to one line.
+
 = Get your agents talking
 .art talk
 
@@ -35,7 +43,7 @@ I like my agents working together. Revive lets any AI session talk to any other,
 Got agents on a remote server? I wanted mine right here with the rest.
 1. Open another terminal and ssh into the server.
 2. Install tmux-revive there too, then start tmux.
-3. Back in this panel, press L to link it.
+3. Back in this panel, press B to bridge it.
 
 As long as tmux keeps running there, its windows show up right here in the Revive panel, even after you close that terminal.
 

@@ -16,7 +16,7 @@
 #                                      confirm (--yes when not on a terminal). No host: list links.
 #                                      A host that asks for a password: ssh asks for it once, and
 #                                      the link keeps that connection open (link it again after
-#                                      the connection drops, or press L in the panel).
+#                                      the connection drops, or press B in the panel).
 #     --read-only                      its agents may see names here, but nothing they send is
 #                                      typed in: it is held in the mailbox (--read-write undoes it)
 #     --allow name1,name2              what it sends may reach only these panes (--allow-all)
@@ -722,7 +722,7 @@ link_why() { # link_why HOST STATUS STDERR-FILE
 		*"Could not resolve hostname"* | *"Name or service not known"* | *"nodename nor servname"*) echo "can't reach (no such host name)" ;;
 		*"No route to host"* | *"Network is unreachable"*) echo "can't reach (no network route)" ;;
 		*"Connection closed"* | *"Connection reset"* | *"kex_exchange_identification"* | *"Broken pipe"*) echo "can't reach (connection closed)" ;;
-		*"Host key verification failed"*) echo "host key doesn't match: press L to link again" ;;
+		*"Host key verification failed"*) echo "host key doesn't match: press B to bridge again" ;;
 		*"Permission denied"* | *"Too many authentication failures"*) echo "login refused (key)" ;;
 		"agent-say: "*) e="${e#agent-say: }"; echo "${e%%$'\n'*}" ;;
 		"") echo "ssh to $1 failed (status $2)" ;;
@@ -1985,7 +1985,7 @@ case "$cmd" in
 		fi
 		if ((rc)) && needs_login "$host" "$rc" "$d/check.err"; then
 			rm -f "$d/check.err"
-			[[ -t 0 ]] || die "$host needs a login (a password, or its host key accepted): run agent-say link $host on a terminal, or press L in the panel"
+			[[ -t 0 ]] || die "$host needs a login (a password, or its host key accepted): run agent-say link $host on a terminal, or press B in the panel"
 			echo "$host asks for a password: ssh asks you for it now, once; the link keeps that connection open."
 			ssh_login "$host" "$keys" || die "not logged in to $host; not linked"
 			rc=0; link_check || rc=$?
@@ -1993,7 +1993,7 @@ case "$cmd" in
 		if ((rc)); then
 			# Tried once, and that's all: a link there already says why, and stays stopped.
 			link_log "$d/check.err"
-			[[ -f "$d/on" ]] && echo "$(link_why "$host" "$rc" "$d/check.err") · L to try again" >"$d/error" && touch "$d/paused"
+			[[ -f "$d/on" ]] && echo "$(link_why "$host" "$rc" "$d/check.err") · B to try again" >"$d/error" && touch "$d/paused"
 			cat "$d/check.err" >&2; rm -f "$d/check.err"
 			die "couldn't run agent-say on $host over ssh. It needs ssh to log in (with a key, or once with its password), and agent-say installed there (run the tmux-revive installer on $host)."
 		fi
@@ -2121,7 +2121,7 @@ case "$cmd" in
 				sleep 5; continue
 			fi
 			fails=0
-			# Waiting for a login (press L in the panel): nothing goes over the network until one
+			# Waiting for a login (press B in the panel): nothing goes over the network until one
 			# is open. Each try would be a refused login in that host's log.
 			if [[ -f "$d/login" ]] && ! master_up "$host"; then
 				sleep 2; continue
@@ -2265,7 +2265,7 @@ case "$cmd" in
 				fi
 				# Its login dropped (or it never had one): say so, and wait for one. Only you open it.
 				if needs_login "$host" "$rc" "$d/error.new"; then
-					echo "needs login: $host asks for a password; press L in the panel, or run: agent-say link $host" >"$d/error"
+					echo "needs login: $host asks for a password; press B in the panel, or run: agent-say link $host" >"$d/error"
 					rm -f "$d/error.new"
 					touch "$d/login"
 					sleep 2; continue
@@ -2280,7 +2280,7 @@ case "$cmd" in
 					rm -f "$d/error.new"
 					continue
 				fi
-				echo "$(link_why "$host" "$rc" "$d/error.new") · L to try again" >"$d/error"
+				echo "$(link_why "$host" "$rc" "$d/error.new") · B to try again" >"$d/error"
 				rm -f "$d/error.new"
 				touch "$d/paused"
 				break
