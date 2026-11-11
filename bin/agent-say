@@ -36,6 +36,108 @@ set -euo pipefail
 umask 077 # the mailbox holds whatever agents say to each other: yours only
 
 die() { echo "agent-say: $*" >&2; exit 1; }
+unset LINK_TRY # set only inside agent-say, never from outside (see ssh_to)
+
+# --- the input box -----------------------------------------------------------------------
+# input_box TITLE PROMPT [secret|plain|note] [HINT] -> BOX_REPLY: one line typed into a
+# highlighted field in a blue box, on the alternate screen, with a blinking cursor; secret shows
+# a * for each character typed. The panel's popups use it (a code to type back, a password for
+# ssh). Enter accepts; Esc, Ctrl-C or an empty Enter backs out (returns 1). note: no field, only
+# the words; any key closes it.
+# Whatever is shown is shown as text: control characters (a server's own prompt) go first.
+input_box() {
+	local title=${1//[[:cntrl:]]/} prompt=${2//[[:cntrl:]]/} mode=${3:-plain} hint=${4:-"Enter sends · Esc cancels"}
+	local e=$'\e' fd ofd rows=24 cols=80 w h top left fw k rest show sz ok=1 INTR=0 i
+	BOX_REPLY=""
+	# On the terminal it runs in; for askpass (IB_TTY=1), whose stdout is ssh's pipe, /dev/tty.
+	if [[ ${IB_TTY:-} == 1 ]]; then exec {fd}<>/dev/tty 2>/dev/null || return 1; ofd=$fd
+	else exec {fd}<&0 {ofd}>&1; fi
+	sz=$(stty size <&$fd 2>/dev/null) && read -r rows cols <<<"$sz"
+	((${#title} > cols - 16)) && title="${title:0:$((cols - 17))}…"
+	((${#prompt} > cols - 8)) && prompt="${prompt:0:$((cols - 9))}…"
+	w=$((${#prompt} + 6))
+	((${#title} + 12 > w)) && w=$((${#title} + 12))
+	((${#hint} + 6 > w)) && w=$((${#hint} + 6))
+	((w < 44)) && w=44
+	((w > cols - 2)) && w=$((cols - 2))
+	h=7 fw=$((w - 6))
+	top=$(((rows - h) / 2 + 1)) left=$(((cols - w) / 2 + 1))
+	((top < 1)) && top=1
+	((left < 1)) && left=1
+	local bg="$e[44m" fg="$e[1;97m" R="$e[0m" sh="$e[90m░$e[0m" field="$e[47m$e[30m" line blank fill
+	printf -v blank '%*s' $((w - 2)) ''
+	printf -v fill '%*s' $((w - ${#title} - 11)) ''
+	line="$bg$fg╔═$R$e[34m░▒▓$bg$fg $title $R$e[34m▓▒░$bg$fg${fill// /═}╗$R"
+	_ib_row() { printf '%s' "$e[$((top + $1));${left}H$bg$fg║$2$bg$fg║$R$sh" >&$ofd; } # row N TEXT (w-2 wide)
+	printf '%s' "$e[?1049h$e[2J$e[$top;${left}H$line" >&$ofd
+	_ib_row 1 "$blank"
+	# Padded by characters, not bytes (printf's widths count bytes: a · or … is two or three).
+	printf -v k '  %s%*s' "$prompt" $((w - 4 - ${#prompt})) ''; _ib_row 2 "$k"
+	_ib_row 4 "$blank"
+	printf -v k '  %s%s%*s' "$e[37m" "$hint" $((w - 4 - ${#hint})) ''; _ib_row 5 "$k"
+	printf -v k '%*s' $((w - 2)) ''
+	printf '%s' "$e[$((top + 6));${left}H$bg$fg╚${k// /═}╝$R$sh$e[$((top + 7));$((left + 1))H$e[90m${k// /░}░░$R" >&$ofd
+	trap 'INTR=1' INT
+	while :; do
+		if [[ $mode == note ]]; then _ib_row 3 "$blank"; printf '%s' "$e[?25l" >&$ofd; IFS= read -rsn1 -u "$fd" _ || true; ok=0; break; fi
+		if [[ $mode == secret ]]; then printf -v show '%*s' ${#BOX_REPLY} ''; show=${show// /*}; else show=$BOX_REPLY; fi
+		((${#show} > fw - 1)) && show="…${show: -$((fw - 2))}"
+		printf -v k '  %s %s%*s%s  ' "$field" "$show" $((fw - 1 - ${#show})) '' "$bg$fg"
+		_ib_row 3 "$k"
+		# The cursor at the end of what's typed, blinking.
+		printf '%s' "$e[$((top + 3));$((left + 4 + ${#show}))H$e[1 q$e[?25h" >&$ofd
+		k=""
+		until IFS= read -rsn1 -t 0.2 -u "$fd" k; do
+			(($? <= 128 || INTR)) && { k=CANCEL; break; }
+			k=""
+		done
+		case $k in
+		CANCEL) ok=0; break ;;
+		$'\e')
+			rest=""
+			IFS= read -rsn1 -t 0.05 -u "$fd" rest || true
+			[[ -z $rest ]] && { ok=0; break; }
+			IFS= read -rsn4 -t 0.02 -u "$fd" _ || true ;; # an arrow or other key: ignored
+		"") break ;;
+		$'\x7f' | $'\b') BOX_REPLY=${BOX_REPLY%?} ;;
+		$'\x15') BOX_REPLY="" ;; # Ctrl-U
+		[[:cntrl:]]) ;;
+		*) BOX_REPLY+=$k ;;
+		esac
+	done
+	trap - INT
+	printf '%s' "$e[0 q$e[0m$e[?1049l" >&$ofd
+	exec {fd}<&- {ofd}>&- 2>/dev/null || true
+	unset -f _ib_row
+	((ok)) && [[ -n $BOX_REPLY ]] && return 0
+	BOX_REPLY=""
+	return 1
+}
+
+# ssh's SSH_ASKPASS for a login (ssh_login sets it, with AGENT_SAY_ASKPASS=1): ssh runs agent-say
+# with its prompt, and gets the password typed into the box on stdout, in a pipe to ssh alone,
+# never in a file, an argument or the environment. Backing out stops ssh then and there: it
+# would otherwise send an empty password, which a server counts as a failed login.
+askpass() {
+	case ${SSH_ASKPASS_PROMPT:-} in
+	none) return 0 ;; # a notice from ssh, nothing to answer
+	confirm) IB_TTY=1 input_box "${AGENT_SAY_LOGIN_HOST:-ssh}" "${1:-} (yes/no)" plain "Enter answers · Esc says no" && [[ ${BOX_REPLY,,} == yes ]]; return ;;
+	esac
+	local p=${1:-Password:}
+	# ssh names the host by the alias its key is checked under (PIN_ALIAS); say the host's name.
+	[[ -n ${AGENT_SAY_LOGIN_HOST:-} ]] && p=${p//@agent-say-confirmed/@$AGENT_SAY_LOGIN_HOST}
+	if IB_TTY=1 input_box "LOG IN TO ${AGENT_SAY_LOGIN_HOST:-ssh}" "$p" secret "Enter logs in (one try) · Esc cancels"; then
+		printf '%s\n' "$BOX_REPLY"
+		BOX_REPLY=""
+		return 0
+	fi
+	# For _login: cancelled, so its popup just closes. (Run this early, STATE isn't set yet.)
+	local st
+	st="$(dirname "${AGENT_SAY_MAILBOX:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-say/mailbox.md}")"
+	[[ ${AGENT_SAY_LOGIN_HOST:-} =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && { : >"$st/login-cancelled.$AGENT_SAY_LOGIN_HOST"; } 2>/dev/null
+	[[ $(ps -o comm= -p "$PPID" 2>/dev/null) == ssh* ]] && kill -INT "$PPID" 2>/dev/null # INT: no "Terminated" from the shell that ran it
+	return 1
+}
 
 # --- whose tmux this is ------------------------------------------------------------------
 # Names, links and the mailbox belong to the user who runs the tmux server a pane is in: that
@@ -197,6 +299,8 @@ own_delivery="" # set only by deliver_here, never from the environment (see send
 # Where the walks up to this run's pane start: this process, or for a request _serve answers,
 # the process that asked (set below, only with agent-say's own key).
 ORIGIN=$$
+# Run by ssh as its askpass (only ssh_login sets this): the box, nothing else.
+[[ "${BASH_SOURCE[0]}" == "$0" && ${AGENT_SAY_ASKPASS:-} == 1 && -n ${SSH_ASKPASS_REQUIRE:-} && $# -le 1 ]] && { askpass "${1:-}"; exit; }
 [[ "${BASH_SOURCE[0]}" != "$0" ]] || follow_tmux_owner "$@"
 
 MAILBOX="${AGENT_SAY_MAILBOX:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-say/mailbox.md}"
@@ -502,6 +606,13 @@ ssh_to() { # ssh_to HOST REMOTE-COMMAND (stdin passes through)
 		$SSH "${MUX_OPTS[@]}" "$1" "$2"
 		return
 	fi
+	# A link waiting for you (a login, or stopped on a failure) gets nothing over ssh from a send
+	# or a notice: each would be one more refused login in its log, and agents try again. Only
+	# you start it again (B, or agent-say link), and only that and its poller pass (LINK_TRY=1).
+	if [[ -z ${LINK_TRY:-} && ( -f "$STATE/links/$1/login" || -f "$STATE/links/$1/paused" ) ]] && ! master_up "$1"; then
+		echo "agent-say: the link to $1 needs you first ($(head -n 1 "$STATE/links/$1/error" 2>/dev/null || echo stopped)); nothing was sent over ssh" >&2
+		return 1
+	fi
 	pin_opts "$1" || return 255
 	$SSH "${SSH_OPTS[@]}" "${PIN_OPTS[@]}" "$1" "$2"
 }
@@ -536,11 +647,12 @@ riding() {
 
 # --- logging in --------------------------------------------------------------------------
 # Every call above is BatchMode: it never asks anything. A host that wants a password (or a
-# host key accepted) is logged into once by hand instead: ssh_login runs ssh with nothing but
-# its own prompts, on your terminal or in the panel's popup, and leaves that connection open
-# as the master on the same socket, kept until it drops (ControlPersist=yes; the keepalives
-# notice a dead network). Every BatchMode call then rides it with no prompt. agent-say never
-# sees the password: ssh reads it from the terminal itself.
+# host key accepted) is logged into once by hand instead: ssh_login runs ssh, on your terminal
+# or in the panel's popup, and leaves that connection open as the master on the same socket,
+# kept until it drops (ControlPersist=yes; the keepalives notice a dead network). Every
+# BatchMode call then rides it with no prompt. ssh asks for the password once, through the
+# box (askpass), which hands it straight to ssh and keeps nothing; one wrong password ends
+# the login, so a typo is one failed try on the server, not three.
 #
 # A password goes only to a computer holding a key you confirmed: that login's ssh checks the
 # host against a known_hosts file of its own (PIN) with those keys and nothing else, strictly,
@@ -564,7 +676,8 @@ pin_keys() {
 		done < <(if [[ $src == kh ]]; then
 			for f in "${KH_FILES[@]}"; do [[ -r $f ]] && ssh-keygen -F "$KH_KEY" -f "$f" 2>/dev/null; done | grep -v '^[#@]'
 		else
-			kh_scan_lines
+			# The types of the keys confirmed, so a host whose first type is another still matches.
+			SCAN_TYPES="$(grep -oE '\((ED25519|ECDSA|RSA)\)$' <<<"$2" | tr -d '()' | tr 'A-Z' 'a-z' | sort -u | paste -sd' ')" kh_scan_lines
 		fi | sort -u)
 		[[ -n $got ]] && return 0
 	done
@@ -637,6 +750,14 @@ pin_opts() {
 			return 1 ;;
 	esac
 }
+# The box can ask for the password: a terminal, and an ssh that takes SSH_ASKPASS_REQUIRE (8.4).
+askpass_ok() {
+	local v
+	[[ -t 0 && -t 2 ]] && { : <>/dev/tty; } 2>/dev/null || return 1
+	v="$($SSH -V 2>&1 </dev/null || true)"
+	[[ $v =~ OpenSSH_([0-9]+)\.([0-9]+) ]] || return 1
+	((BASH_REMATCH[1] > 8 || (BASH_REMATCH[1] == 8 && BASH_REMATCH[2] >= 4)))
+}
 ssh_login() { # ssh_login HOST FINGERPRINTS (one per line: the keys you confirmed for it)
 	local lines pin rc=0
 	[[ "$1" != -* ]] || die "not a host: $1"
@@ -647,7 +768,11 @@ ssh_login() { # ssh_login HOST FINGERPRINTS (one per line: the keys you confirme
 		{ echo "agent-say: none of $1's keys is one you confirmed; not logging in (agent-say link $1 shows its key)" >&2; return 1; }
 	pin="$(mktemp "$STATE/pin.XXXXXX")"
 	sed "s/^/$PIN_ALIAS /" <<<"$lines" >"$pin"
-	$SSH -o BatchMode=no -o ConnectTimeout=10 -o ControlMaster=yes -o "$CONTROL" -o ControlPersist=yes \
+	# One password per login: a wrong one ends it (ssh would ask three times), and on a terminal
+	# it is typed into the box (askpass) rather than at ssh's bare prompt.
+	local ask=()
+	askpass_ok && ask=(env SSH_ASKPASS="$(readlink -f -- "${BASH_SOURCE[0]}")" SSH_ASKPASS_REQUIRE=force AGENT_SAY_ASKPASS=1 AGENT_SAY_LOGIN_HOST="$1")
+	"${ask[@]}" $SSH -o BatchMode=no -o NumberOfPasswordPrompts=1 -o ConnectTimeout=10 -o ControlMaster=yes -o "$CONTROL" -o ControlPersist=yes \
 		-o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
 		-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$pin" -o GlobalKnownHostsFile=/dev/null \
 		-o HostKeyAlias=$PIN_ALIAS -o CheckHostIP=no -o UpdateHostKeys=no -N -f "$1" || rc=$?
@@ -657,8 +782,8 @@ ssh_login() { # ssh_login HOST FINGERPRINTS (one per line: the keys you confirme
 	# so the link's key checks have it to look at.
 	kh_find "$1"
 	if [[ -z "$(kh_keys)" ]]; then
-		mkdir -p "$(dirname "${KH_FILES[0]}")"
-		sed "s/^/$KH_KEY /" <<<"$lines" >>"${KH_FILES[0]}"
+		mkdir -p "$(dirname "$KH_USER")"
+		sed "s/^/$KH_KEY /" <<<"$lines" >>"$KH_USER"
 	fi
 	rm -f "$STATE/links/$1/login"
 }
@@ -737,7 +862,7 @@ link_why() { # link_why HOST STATUS STDERR-FILE
 # and the name it looks the key up by in them (HostKeyAlias as is, else name or [name]:port).
 kh_find() { # kh_find HOST -> KH_KEY (as known_hosts names it), KH_FILES, KH_NAME, KH_PORT, KH_ALGS
 	local name=$1 port=22 alias="" k v f
-	KH_FILES=() KH_ALGS="" KH_STRICT=""
+	KH_FILES=() KH_ALGS="" KH_STRICT="" KH_USER=""
 	while read -r k v; do
 		case $k in
 			hostname) name=$v ;;
@@ -745,12 +870,17 @@ kh_find() { # kh_find HOST -> KH_KEY (as known_hosts names it), KH_FILES, KH_NAM
 			hostkeyalias) alias=$v ;;
 			hostkeyalgorithms) KH_ALGS=$v ;;
 			stricthostkeychecking) KH_STRICT=$v ;;
-			userknownhostsfile | globalknownhostsfile) for f in $v; do KH_FILES+=("${f/#\~/$HOME}"); done ;;
+			userknownhostsfile | globalknownhostsfile) for f in $v; do
+				KH_FILES+=("${f/#\~/$HOME}")
+				[[ $k == userknownhostsfile && -z $KH_USER ]] && KH_USER=${f/#\~/$HOME}
+			done ;;
 		esac
 	done < <(timeout 5 $SSH -G "$1" 2>/dev/null </dev/null)
 	# shellcheck disable=SC2206 # a list of paths, as ssh's own option takes it
-	[[ -n ${AGENT_SAY_KNOWN_HOSTS:-} ]] && KH_FILES=($AGENT_SAY_KNOWN_HOSTS)
+	[[ -n ${AGENT_SAY_KNOWN_HOSTS:-} ]] && KH_FILES=($AGENT_SAY_KNOWN_HOSTS) KH_USER=""
 	((${#KH_FILES[@]})) || KH_FILES=("$HOME/.ssh/known_hosts" "$HOME/.ssh/known_hosts2" /etc/ssh/ssh_known_hosts)
+	# Where a login records a key: your own known_hosts (ssh -G lists the system's first).
+	[[ -n $KH_USER ]] || KH_USER=${KH_FILES[0]}
 	KH_KEY=$name KH_NAME=$name KH_PORT=$port
 	[[ $port == 22 ]] || KH_KEY="[$name]:$port"
 	[[ -z $alias || $alias == none ]] || KH_KEY=$alias
@@ -764,7 +894,34 @@ kh_keys() { # fingerprints for KH_KEY in KH_FILES
 # What ssh-keyscan of the HostName and Port ssh -G resolved shows (after kh_find): the key lines
 # (host type key), or their fingerprints. Whatever answers says these itself, so they are only
 # ever shown for you to confirm, or matched against a key you confirmed; never taken alone.
-kh_scan_lines() { ${AGENT_SAY_KEYSCAN:-ssh-keyscan} -T 5 -p "$KH_PORT" -- "$KH_NAME" 2>/dev/null </dev/null | grep -v '^[#@]' || true; }
+# Each key type ssh-keyscan asks for is a connection of its own that never logs in, and a server
+# counts those (sshd's own PerSourcePenalties, fail2ban, CSF): all six types, three times in one
+# B, got an address shut out. So it asks one type at a time, in the order ssh would take them,
+# and stops at the first the host has: one connection, as a rule. What it got is kept for a
+# while you do one thing (AGENT_SAY_SCAN_ID: one B in the panel, one agent-say link), so its
+# steps (show the key, check it, log in) share one scan; the next thing you do scans afresh.
+kh_scan_lines() {
+	local id=${AGENT_SAY_SCAN_ID:-} f="" t out="" types=() a
+	# SCAN_TYPES (pin_keys): only those; else the order ssh would take them.
+	# shellcheck disable=SC2206 # a list of words
+	[[ -n ${SCAN_TYPES:-} ]] && types=($SCAN_TYPES)
+	if [[ $id =~ ^[A-Za-z0-9]{1,32}$ ]]; then
+		f="$STATE/scans/$id.${KH_NAME//[^A-Za-z0-9._-]/_}_$KH_PORT.${SCAN_TYPES:-any}"
+		f=${f// /-}
+		[[ -f $f ]] && { cat -- "$f"; return 0; }
+		find "$STATE/scans" -maxdepth 1 -type f -mmin +10 -delete 2>/dev/null || true
+	fi
+	((${#types[@]})) || for a in ${KH_ALGS//,/ } ssh-ed25519 ecdsa-sha2-nistp256 rsa-sha2-512; do
+		case $a in ssh-ed25519*) t=ed25519 ;; ecdsa-sha2-*) t=ecdsa ;; rsa-sha2-* | ssh-rsa*) t=rsa ;; *) continue ;; esac
+		[[ " ${types[*]} " == *" $t "* ]] || types+=("$t")
+	done
+	for t in "${types[@]}"; do
+		out="$(${AGENT_SAY_KEYSCAN:-ssh-keyscan} -T 5 -t "$t" -p "$KH_PORT" -- "$KH_NAME" 2>/dev/null </dev/null | grep -v '^[#@]' || true)"
+		[[ -n $out ]] && break
+	done
+	if [[ -n $f ]]; then mkdir -p "$STATE/scans" && printf '%s\n' "$out" | sed '/^$/d' >"$f.$$" && mv "$f.$$" "$f"; fi
+	printf '%s\n' "$out" | sed '/^$/d'
+}
 kh_scan() { kh_scan_lines | ssh-keygen -lf - 2>/dev/null | awk '{print $2, $NF}' | sort -u || true; }
 # Keys you revoked: every @revoked line in the known_hosts files ssh reads for the host (after
 # kh_find), whatever host it names. kh_revoked gives their fingerprints. A revoked key is never
@@ -1849,6 +2006,7 @@ case "$cmd" in
 		done ;;
 	link)
 		host="" yes="" ro="" allow="" set_allow="" given="" no_key=""
+		[[ -n ${AGENT_SAY_SCAN_ID:-} ]] || export AGENT_SAY_SCAN_ID="l$$$RANDOM" # one scan for this link
 		shift
 		while (($#)); do
 			case $1 in
@@ -1954,7 +2112,7 @@ case "$cmd" in
 		link_check() {
 			local rc=0
 			{ local_names | sed 's/^/N /'; via_names "$host"; } |
-				ssh_to "$host" "$REMOTE_CMD _sync $(printf %q "$LABEL")" 2>"$d/check.err" >"$d/check.out" || rc=$?
+				LINK_TRY=1 ssh_to "$host" "$REMOTE_CMD _sync $(printf %q "$LABEL")" 2>"$d/check.err" >"$d/check.out" || rc=$?
 			# Each file whole or not at all: the poller may be reading them right now.
 			sed -n 's/^N //p' "$d/check.out" >"$d/names.$$" && mv "$d/names.$$" "$d/names"
 			sed -n 's/^I //p' "$d/check.out" | while read -r n s _; do valid_name "$n" && valid_session "${s:-}" && echo "$n $s"; done >"$d/sessions.$$" || true
@@ -2067,8 +2225,8 @@ case "$cmd" in
 		riding "$2" || exit 1
 		printf '%s\n' "${MUX_OPTS[@]}" ;;
 	_login)
-		# The panel's L for a host that wants a password, run in a popup over the panel: ssh's own
-		# prompts, typed straight into ssh. --check: is a login open for it? The keys a password
+		# The panel's B for a host that wants a password, run in a popup over the panel: ssh's
+		# prompts in the box (askpass), each answer handed straight to ssh. --check: is a login open for it? The keys a password
 		# may go to: the fingerprints given (the ones you just confirmed in the panel), or else the
 		# one its link recorded. Neither: no login.
 		valid_host "${2:-}" || die "usage: agent-say _login <ssh-host> [--check | 'SHA256:... (TYPE)'...]"
@@ -2080,12 +2238,20 @@ case "$cmd" in
 			pins+="$k"$'\n'
 		done
 		[[ -n $pins ]] || pins="$(cat "$STATE/links/$host/fingerprint" 2>/dev/null || true)"
-		echo "Logging in to $host for its link: ssh asks here for its password. The link keeps this"
-		echo "connection open, so you won't be asked again until it drops (a reboot, or the network"
-		echo "going away). Only a computer holding the host key you confirmed gets this far."
-		echo
+		if ! askpass_ok; then
+			echo "Logging in to $host for its link: ssh asks here for its password, once. The link keeps"
+			echo "this connection open, so you won't be asked again until it drops (a reboot, or the"
+			echo "network going away). Only a computer holding the host key you confirmed gets this far."
+			echo
+		fi
+		rm -f "$STATE/login-cancelled.$host"
 		ssh_login "$host" "${pins%$'\n'}" && exit 0
-		[[ -t 0 ]] && { read -r -p "Not logged in to $host. Press Enter to close. " _ || true; }
+		# Cancelled in the box: nothing to read, it just closes.
+		[[ -e "$STATE/login-cancelled.$host" ]] && { rm -f "$STATE/login-cancelled.$host"; exit 1; }
+		if [[ -t 0 ]]; then
+			if askpass_ok; then input_box "NOT LOGGED IN" "Couldn't log in to $host. It won't try again." note "Press Enter to close" || true
+			else read -r -p "Couldn't log in to $host. It won't try again. Press Enter to close. " _ || true; fi
+		fi
 		exit 1 ;;
 	_resume-links)
 		# After a reboot (run by tmux-revive when tmux starts): restart every link that was on,
@@ -2131,7 +2297,7 @@ case "$cmd" in
 			# Permissions, introductions (with what they held) and senders lapse after a day.
 			cull_sessions
 			if out="$( { local_names | sed 's/^/N /'; via_names "$host"; sed 's/^/A /' "$d/acks.sent"; } |
-				ssh_to "$host" "$REMOTE_CMD _sync $(printf %q "$LABEL")" 2>"$d/error.new")"; then
+				LINK_TRY=1 ssh_to "$host" "$REMOTE_CMD _sync $(printf %q "$LABEL")" 2>"$d/error.new")"; then
 				rm -f "$d/error" "$d/error.new" "$d/login"
 				worked=1 retried=""
 				[[ -s "$d/fingerprint" ]] || tofu_record "$host"

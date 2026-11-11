@@ -342,13 +342,14 @@ agent-say link devbox
 ```
 
 The server needs `agent-say` installed too. With an ssh key, the link logs in on
-its own. A server that only takes a password works too. ssh asks you for it once
-(in a small popup when you press **B** in the panel), and the link keeps that
-connection open. tmux-revive never sees or stores the password, and ssh only asks
-for it after the server has shown the host key you confirmed. If the connection
-drops, say that server reboots or the network goes away for a while, the panel
-marks the link `needs login` and **B** asks for the password again. Nothing logs
-back in by itself.
+its own. A server that only takes a password works too. You type the password
+once into a box that shows stars, and the link keeps that connection open. You
+get one try. A wrong password closes the box, and nothing tries again until you
+press **B**. The box passes the password straight to ssh and nothing stores it,
+and ssh only asks for it after the server has shown the host key you confirmed.
+If the connection drops, for example when the server reboots or the network goes
+away for a while, the panel marks the link `needs login` and **B** asks for the
+password again. Nothing logs back in by itself.
 
 Linking follows your ssh setup. The host is resolved the way `ssh -G` resolves it,
 with its `HostName`, `Port`, `HostKeyAlias` and known_hosts files.
