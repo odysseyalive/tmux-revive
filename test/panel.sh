@@ -315,7 +315,7 @@ check "Down scrolls a line" "hwait '▲ 2-'"
 tm send-keys -t work:helpw NPage; sleep 0.5
 p1=$(hpos)
 check "PgDn scrolls a page ($p1)" "(( \${p1%%-*} > 10 )) && hwhole"
-hwhole || { echo "DIAG pgdn top/bottom:"; hscreen | sed -n '1p;$p' | cat -v; hscreen | cat -v | head -40; tmux -V; }
+hwhole || { echo "DIAG pgdn: pane $(tm display -p -t work:helpw '#{pane_width}x#{pane_height}')"; hscreen | while IFS= read -r l; do echo "${#l} ${l: -6}"; done | cat -v; hscreen | tail -3 | cat -v; }
 tm send-keys -t work:helpw End; sleep 0.5
 p2=$(hpos) last=${p2#*-} last=${last%% *}
 check "End shows the bottom: the ads ($p2)" "[[ $last == \${p2##* } ]] && hscreen | grep -q 'Install playwright-mcp'"
@@ -1326,7 +1326,7 @@ rm -f "$st/panel/far.example.rows" "$st/panel/far.example.peek-"*
 out=$(farsel "$T/hostilessh" evil@far.example)
 bare=$(sed 's/\x1b\[[0-9;]*m//g' <<<"$out")
 check "a peek from the other side is cleaned" "peekbox <<<\"\$bare\" | grep -qF 'top]52;c;aGk=[2Jbottom31m-end' && ! LC_ALL=C grep -q '[[:cntrl:]]' <<<\"\$bare\""
-echo "DIAG peek:"; peekbox <<<"$bare" | cat -v | cut -c1-300 | head -70; LC_ALL=C grep -n '[[:cntrl:]]' <<<"$bare" | cat -v | cut -c1-200 | head; locale; locale charmap
+echo "DIAG peek2:"; ls -la "$st/panel/" | grep peek; for f in "$st"/panel/far.example.peek-*; do wc -lc "$f"; tail -n 60 "$f" | wc -lc; tail -n 3 "$f" | cut -c1-60 | cat -v; done; head -c 65536 "$T/hostilepeek" | tail -n 60 | wc -lc; tail --version | head -1; head --version | head -1; grep -c 'line-' <<<"$bare"; grep -m3 -n 'top\|WWW\|asking\|no peek' <<<"$bare" | cut -c1-120 | cat -v
 check "and capped: no line past the frame, no more lines than the box" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$bare\") == 1 ]] && (( \$(peekbox <<<\"\$bare\" | grep -c '│') <= 60 )) && [[ \$(stat -c %s $st/panel/far.example.peek-9 2>/dev/null || echo 0) -le 65536 ]]"
 # Rows from over there are capped in bytes too: an endless line can't freeze the panel.
 printf '#!/bin/bash\nif [[ ${!#} == *--rows* ]]; then head -c 20000000 /dev/zero | tr "\\\\0" A; echo; cat %q; fi\n' "$T/hostile" >"$T/hugessh"; chmod +x "$T/hugessh"
