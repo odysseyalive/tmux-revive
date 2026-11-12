@@ -27,7 +27,7 @@ I'm a vim person, but the arrow keys work everywhere too.
 - `j` and `k` go down and up, same as the up and down arrows.
 - Capital `J` and `K` switch windows.
 - A number goes straight to that tmux window.
-- `o` opens the pane you picked, and `f` folds a linked computer down to one line.
+- `o` opens the pane you picked, and `f` folds a linked computer down to one line. Capital `F` folds them all at once; hit it again to open them back up.
 
 = Get your agents talking
 .art talk

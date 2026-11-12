@@ -152,6 +152,7 @@ out=$(frame 130)
 check "a shell pane shows as a shell" "grep -q 'bash *· shell' <<<\"\$out\""
 check "a program shows as running" "grep -q 'top *▸ running' <<<\"\$out\""
 check "the command keys are listed" "grep -qF '[O]pen  [M]essage  [N]ame  [B]ridge  [U]nlink  [P]eek  [A]rt  [S]ave  [Q]uit' <<<\"\$out\""
+check "with no computer linked, no fold keys" "! grep -qF '[F]' <<<\"\$out\" && ! grep -qF '[f]' <<<\"\$out\""
 # Under heavy load one frame can come back short, so allow three looks; a real regression
 # misses every time, and then the frame is printed to show what was seen.
 narrow_ok() { local i f; for i in 1 2 3; do f=$(frame 80); grep -q 'top *▸ running' <<<"$f" && return 0; done; printf '%s\n' "$f" | grep -E '\[[0-9]\]' >&2; return 1; }
@@ -1981,20 +1982,20 @@ top_sp() { for _ in $(seq 1 30); do sscr | grep -q '\[0\.0\] *▶' && return 0; 
 tm_s Up
 check "Up skips an open computer's heading" "gone_sp '▶ fold-a' && ! sscr | grep -qF '▶▒░ FOLD.EXAMPLE'"
 tm_s Down
-check "and so does Down, back to its first pane, where f offers to fold it" "wait_sp '▶ fold-a' && ! sscr | grep -qF '▶▒░ FOLD.EXAMPLE' && wait_sp '[f] fold' && sscr | grep -qF '[?] help'"
+check "and so does Down, back to its first pane, where the bar offers [F]old" "wait_sp '▶ fold-a' && ! sscr | grep -qF '▶▒░ FOLD.EXAMPLE' && wait_sp '[F]old' && sscr | grep -qF '[?] help'"
 tm_s f
-check "f folds it to its heading line, selected, saying what needs you" "wait_sp '▶▒░ FOLD.EXAMPLE' && wait_sp 'FOLD.EXAMPLE · linked · 2 panes · 1 needs you' && gone_sp 'fold-a' && wait_sp '[Enter] unfold'"
+check "f folds it to its heading line, selected, saying what needs you" "wait_sp '▶▒░ FOLD.EXAMPLE' && wait_sp 'FOLD.EXAMPLE · linked · 2 panes · 1 needs you' && gone_sp 'fold-a' && wait_sp '[F] unfold'"
 check "and the fold is kept for next time" "[[ -e $REVIVE_DIR/panel/fold/fold.example ]]"
 tm_s Down; top_sp >/dev/null
 tm_s Up
-check "a folded heading is still a stop for the arrows" "wait_sp '▶▒░ FOLD.EXAMPLE' && wait_sp '[Enter] unfold'"
+check "a folded heading is still a stop for the arrows" "wait_sp '▶▒░ FOLD.EXAMPLE' && wait_sp '[F] unfold'"
 tm_s Enter
 check "Enter on it unfolds it" "wait_sp 'fold-a' && [[ ! -e $REVIVE_DIR/panel/fold/fold.example ]]"
 tm_s Home; top_sp >/dev/null
 tm_s f
 check "f on this computer's pane says it can't be folded" "wait_sp \"this computer can't be folded\" && [[ ! -e $REVIVE_DIR/panel/fold/fold.example ]]"
-# A second linked computer: f folds one, F (a shortcut the bar doesn't list) every one, and F
-# again opens them all. This computer's panes never fold.
+# A second linked computer: f folds one, F every one, and F again opens them all. This
+# computer's panes never fold. F is the help page's secret: the bar offers only [F]old, for one.
 mkdir -p "$T/smail/links/later.example"; touch "$T/smail/links/later.example/on"
 printf 'later-a\nlater-b\n' >"$T/smail/links/later.example/names"
 lrows() { printf '#owner fx\n%s\n%s\n' "%1"$'\x1f'"main:3.0"$'\x1f'"later-a"$'\x1f'"bash"$'\x1f'"shell"$'\x1f'"/tmp"$'\x1f\x1f'"0"$'\x1f'"1000"$'\x1f'"0" "%2"$'\x1f'"main:3.1"$'\x1f'"later-b"$'\x1f'"bash"$'\x1f'"shell"$'\x1f'"/tmp"$'\x1f\x1f'"0"$'\x1f'"1000"$'\x1f'"0" >"$T/smail/panel/later.example.rows"; }
@@ -2012,6 +2013,7 @@ check "F again, with every one folded, opens them all" "wait_sp 'fold-a' && wait
 tm_s Home; sel_sp '\[0\.0\] *▶' >/dev/null
 tm_s F
 check "F from this computer's pane folds them too, and the selection stays" "gone_sp 'later-a' && gone_sp 'fold-a' && sscr | grep -q '\[0\.0\] *▶' && [[ \$(folds) == 'fold.example later.example ' ]]"
+check "on this computer's pane the bar offers no fold" "! sscr | grep -qF '[F]' && sscr | grep -qF '[?] help'"
 tm_s F; wait_sp 'later-a' >/dev/null
 tm_s q
 sm kill-server

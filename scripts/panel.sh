@@ -2346,11 +2346,6 @@ draw() {
 	# Command bar.
 	local k=""
 	((!ANSWERING)) && [[ $sst == asking ]] && k="$B$BMAG[Enter]$R$B$BWHT answer$R  "
-	if [[ -n $HSEL ]]; then
-		if [[ -n ${FOLD[$HSEL]:-} ]]; then k="$BBLU[$B${BYEL}Enter$R$BBLU]$R$BWHT unfold$R  "; else k="$BBLU[$B${BYEL}Enter$R$BBLU]$R$BWHT fold$R  "; fi
-	elif [[ -n ${P_HOST[SEL]:-} ]]; then
-		k+="$BBLU[$B${BYEL}f$R$BBLU]$R$BWHT fold$R  "
-	fi
 	# Keys that can't act on the selected pane are faded: on a linked computer's pane, nothing
 	# to rename unless its rows say which pane it is, and never O: opening it would move
 	# focus somewhere you may be busy (another pane, or tmux over there). On a heading, none
@@ -2364,6 +2359,12 @@ draw() {
 		off+="O "
 	fi
 	local cs=("O:pen" "M:essage" "N:ame" "B:ridge" "U:nlink")
+	# f on a linked computer's pane or heading: fold that computer to its heading, or open it.
+	# (F, every one at once, is the help page's.)
+	local fh=${HSEL:-${P_HOST[SEL]:-}}
+	if [[ -n $fh ]]; then
+		if [[ -n ${FOLD[$fh]:-} ]]; then cs+=("F: unfold"); else cs+=("F:old"); fi
+	fi
 	v_mode # tmux-revive for that row's user, or on that computer
 	case $VMODE in host | update) cs+=("V: update") ;; install) cs+=("V: install") ;; esac
 	((${INTRO_ON:-0})) && cs+=("G:rant access")
@@ -3240,8 +3241,8 @@ act() {
 		if [[ -n $HSEL ]]; then act enter; return
 		elif [[ -z ${P_HOST[SEL]:-} ]]; then flash "this computer can't be folded"; return; fi
 		fold_toggle "${P_HOST[SEL]}" && HSEL=${P_HOST[SEL]} ;;
-	# F, a shortcut the bar doesn't list: fold every linked computer (never this one), or, with
-	# all of them folded already, open them all. A selection inside one folded moves to its heading.
+	# F, a shortcut the help page tells of, not the bar: fold every linked computer (never
+	# this one), or, with all of them folded already, open them all. A selection inside one folded moves to its heading.
 	F)
 		local -A seen=()
 		local h all=1
