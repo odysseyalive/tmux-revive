@@ -71,6 +71,7 @@ ver_lt() { # ver_lt A B: is version A older than B?
 # ------------------------------------------------------------------ colours
 e=$'\e'
 R="$e[0m" B="$e[1m" DIM="$e[2m" BLINK="$e[5m" REV="$e[7m"
+SELBG="$e[48;5;236m" # the selected row's faint background, with the focus in PANES
 BLU="$e[34m" BBLU="$e[94m" CYN="$e[36m" BCYN="$e[96m" MAG="$e[35m" BMAG="$e[95m"
 YEL="$e[33m" BYEL="$e[93m" GRN="$e[32m" BGRN="$e[92m" BRED="$e[91m" BWHT="$e[97m" GRY="$e[90m"
 BGBLU="$e[44m"
@@ -1827,9 +1828,23 @@ draw_panes() {
 		((i >= PO + PH)) && dn=1
 	done
 	sbar "$PH" "$tot" "$PO" "$up" "$dn" "${WB[0]}"
+	local w
 	for ((i = 0; i < PH && PO + i < tot; i++)); do
 		RBAR=${SB[i]:-}
-		row "${lr[PO + i]}"
+		c=${lr[PO + i]}
+		# With the focus in PANES, the selected row has a faint background right across, so its
+		# numbers on the far right are easy to match to its name. Every reset puts it back.
+		if ((WF == 0 && PO + i == NAT)); then
+			w=$IW
+			[[ -n $RBAR ]] && w=$((IW - 1))
+			vlen "$c"
+			((VLEN > w)) && { trim_colored "$c" "$w"; c=$TRIM VLEN=$w; }
+			printf -v pad '%*s' $((w - VLEN)) ''
+			c="$SELBG${c//$R/$R$SELBG}$pad$R"
+			row "$c" "$w"
+		else
+			row "$c"
+		fi
 	done
 	RBAR=""
 }

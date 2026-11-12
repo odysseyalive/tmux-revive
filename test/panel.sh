@@ -174,6 +174,8 @@ check "the peek's title offers p to hide it, not x or c" "grep -q 'PEEK · .*\[p
 check "the key bar no longer offers P" "! grep -q '\[P\]eek' <<<\"\$peek\""
 hidden=$(tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
 check "hidden, only its title stays, offering p, with the artwork below" "grep -q 'PEEK · .*\[p\] show' <<<\"\$hidden\" && grep -A1 'PEEK · ' <<<\"\$hidden\" | tail -1 | grep -q 'ART · '"
+raw=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
+check "with the focus in PANES, only the selected row has the faint background" "[[ \$(grep -cF $'\\e[48;5;236m' <<<\"\$raw\") == 1 ]] && grep -F $'\\e[48;5;236m' <<<\"\$raw\" | grep -q '▶'"
 tm kill-window -t work:numbers
 
 echo "keys"
