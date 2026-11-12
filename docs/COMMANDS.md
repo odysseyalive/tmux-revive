@@ -200,7 +200,9 @@ remembered for next time.
 When the selected agent is asking a question, the peek shows the question instead.
 Press **Enter** to answer it right there. Your keys go to the agent as if you were
 in its pane, typed answers included, until it has its answer or you press
-**Ctrl-]**. For a real chat with the agent, **O** takes you to its pane.
+**Esc** or **Ctrl-]**. Leaving sends the agent nothing: the question waits, with
+anything you ticked, until you come back and submit it. For a real chat with the
+agent, **O** takes you to its pane.
 
 You don't need the panel open to hear about questions. When any agent starts
 asking one, tmux shows a message naming the pane and rings the bell, once per

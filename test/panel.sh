@@ -695,6 +695,8 @@ akey q
 tm kill-window -t work:acc 2>/dev/null
 rm -rf "$T/mail/intros" "$T/mail/grants"* "$T/popup.log"
 echo "questions"
+# rv LINE: a coloured capture's line has reverse video on (the highlighted choice's mark).
+rv() { [[ $1 =~ $'\e'\[([0-9]+\;)*7(\;[0-9]+)*m ]]; }
 # A stand-in agent (a copy of bash named codex) asking a question the way Claude Code draws
 # one. Every key it reads is logged to OUT.keys; the answer it got goes to OUT.
 mkdir -p "$T/bin" && cp "$(command -v bash)" "$T/bin/codex"
@@ -710,7 +712,7 @@ show() {
 	# Claude Code's real layout: a rule, the header and question, choices 1-5, ANOTHER rule
 	# before the last choice, then the footer. (A rule inside the dialog broke the old view.)
 	echo; printf '─%.0s' {1..50}; echo
-	echo " ☐ Cleanup"; echo; echo " Bash command:   rm -rf build"; echo " Do you want to proceed?"; echo
+	printf '←  \e[48;5;153m ☐ Cleanup \e[49m  ✔ Submit  →\n'; echo; echo " Bash command:   rm -rf build"; echo " Do you want to proceed?"; echo
 	for i in 1 2 3 4 5 6; do
 		((i == 6)) && { printf '─%.0s' {1..50}; echo; }
 		label=${opts[i-1]}
@@ -757,11 +759,12 @@ for want in 'Do you want to proceed?' 'rm -rf build' '❯ 1. Yes' '5. Type somet
 done
 lastrow() { tm capture-pane -p -t work:asker | tail -1 | sed 's/[[:space:]]*$//'; }
 boxrow() { qbox | grep '│' | tail -1 | sed 's/^║[^│]*│ \{0,1\}//; s/[[:space:]]*[▲▼░▓]\{0,1\}║$//; s/[[:space:]]*$//'; }
-# The question stands out: bold yellow; the highlighted choice on a band; the rest plainer.
+# The question stands out: bold yellow; the highlighted choice in reverse video; the rest plainer.
 qcolor() { tm capture-pane -e -p -t work:qpanel | grep -F -- "$1" | head -1; }
 check "the question itself is bold yellow" "[[ \$(qcolor 'Do you want to proceed?') == *'93'* ]]"
-check "the highlighted choice sits on a band" "[[ \$(qcolor '❯ 1. Yes') == *'44'* ]]"
-check "the other choices don't" "[[ \$(qcolor '2. No') != *'44'* ]]"
+check "the highlighted choice is in reverse video, visible on any palette" "rv \"\$(qcolor '❯ 1. Yes')\""
+check "the other choices aren't" "! rv \"\$(qcolor '2. No')\""
+check "the tab Claude Code highlights by colour alone is in reverse video too" "rv \"\$(qcolor 'Cleanup')\" && ! rv \"\$(qcolor 'Do you want to proceed?')\""
 check "its last row is the agent's last row" "[[ \"\$(boxrow)\" == \"\$(lastrow)\" ]]"
 check "Enter offers to answer it, O the chat" "qhas '[Enter] answer' && qhas '[O] open the chat' && ! qhas '[Tab] answer'"
 check "the messages step aside while a question shows" "! qhas 'MESSAGES'"
@@ -778,7 +781,7 @@ check "J only moves the focus to the question, sending nothing" "wait_q '▸ QUE
 check "focused, the question's border is bright magenta, the asking colour; PANES's the frame's blue" "[[ \$(qcap | wcols '▸ QUESTION') == '95 95' && \$(qcap | wcols 'PANES') == '34 34' ]]"
 check "and [J] focus moves to PANES's title" "wait_ok '(( \$(qtabs) == 1 ))' && qscreen | grep -q 'PANES .*\[J\] focus ══╣' && ! qscreen | grep -q 'QUESTION.*\[J\] focus'"
 tm send-keys -t work:qpanel Enter
-check "Enter answers, and Ctrl-] is the only way out it offers" "wait_q 'ANSWERING asker' && qhas 'Ctrl-] leaves' && ! qhas 'Tab back'"
+check "Enter answers, and Esc or Ctrl-] are the ways out it offers" "wait_q 'ANSWERING asker' && qhas 'Esc or Ctrl-] leaves' && ! qhas 'Tab back'"
 check "while answering no title says [J] focus: the question says how to leave" "(( \$(qtabs) == 0 ))"
 tm send-keys -t work:qpanel Tab
 check "Tab while answering goes to the agent, and the panel stays answering" "for _ in \$(seq 1 25); do grep -qxF \"\$'\\t'\" $T/ans1.keys 2>/dev/null && break; sleep 0.2; done; grep -qxF \"\$'\\t'\" $T/ans1.keys && qhas 'ANSWERING asker' && ! qhas '▸ PANES'"
@@ -790,6 +793,11 @@ tm send-keys -t work:qpanel Enter
 check "Enter starts answering, and says how to leave" "wait_q 'ANSWERING asker' && qhas 'Ctrl-] leaves'"
 tm send-keys -t work:qpanel C-]
 check "Ctrl-] leaves without sending anything" "wait_q 'left the question' && ! qhas 'ANSWERING' && [[ ! -s $T/ans1.keys && ! -e $T/ans1 ]]"
+# Esc leaves too, and isn't sent: in Claude Code it cancels the question, and the agent is told
+# you declined to answer.
+tm send-keys -t work:qpanel Enter; wait_q 'ANSWERING asker' >/dev/null
+tm send-keys -t work:qpanel Escape
+check "Esc leaves without sending anything, the question still waiting" "wait_q 'left the question' && ! qhas 'ANSWERING' && qhas 'QUESTION · asker' && [[ ! -s $T/ans1.keys && ! -e $T/ans1 ]]"
 tm send-keys -t work:qpanel Enter; wait_q 'ANSWERING asker' >/dev/null
 tm send-keys -t work:qpanel Down
 check "keys reach the question, and the view follows it" "wait_q '❯ 2. No' 15"
@@ -852,6 +860,10 @@ check "a multi-select with its cursor on Submit is still asking (Enter there ans
 check "a ticked choice stands out from the unticked ones" "msq | grep -qxF 'BG|  1. [✔] Apple' && msq | grep -qxF 'W|  2. [ ] Banana'"
 printf '%s\n' 'chat' "$(printf '─%.0s' {1..50})" '❯ do you want to see it' "$(printf '─%.0s' {1..50})" >"$T/msq.txt"
 check "the agent's own prompt, typed into, is still not a question" "[[ \$(msq | head -1) == waiting ]]"
+# The step after Submit (captured): no footer, only its own question.
+printf '%s\n' '←  ☒ Fruit  ✔ Submit  →' '' 'Review your answers' '' ' ● Which fruits?' '   → Banana' '' \
+	'Ready to submit your answers?' '' '❯ 1. Submit answers' '  2. Cancel' '' '' >"$T/msq.txt"
+check "the review after Submit is still asking (Enter there sends the answers)" "[[ \$(msq | head -1) == asking ]]"
 
 echo "ssh links"
 # Which host an ssh command line connects to, as agent-say link takes it.
@@ -1513,7 +1525,7 @@ far_tm new-window -d -t far -n w2 "sleep 300"; far_tm select-window -t far:0
 check "--show, which an older computer's J asks for, changes nothing and fails" "! rpanel --show \$(far_tm display -p -t far:w2 '#{pane_id}') && ! rpanel --show '%0;touch $T/pwn' && [[ ! -e $T/pwn && \$(far_tm display -p -t far '#{window_index}') == 0 ]]"
 far_tm kill-window -t far:w2
 check "--keys turns away a bad pane id" "! rpanel --keys 'far:0.0' Enter && ! rpanel --keys '%0;touch $T/pwn' Enter && ! rpanel --keys %999 Enter && ! rpanel --keys $farid && [[ ! -e $T/pwn ]]"
-check "--keys turns away keys not on its list" "! rpanel --keys $farid 'Enter;touch $T/pwn' && ! rpanel --keys $farid F1 && ! rpanel --keys $farid 'send-keys' && ! rpanel --keys $farid '\$(touch $T/pwn)' && [[ ! -e $T/pwn ]]"
+check "--keys turns away keys not on its list, Escape too (it would cancel a question)" "! rpanel --keys $farid Escape && ! rpanel --keys $farid 'Enter;touch $T/pwn' && ! rpanel --keys $farid F1 && ! rpanel --keys $farid 'send-keys' && ! rpanel --keys $farid '\$(touch $T/pwn)' && [[ ! -e $T/pwn ]]"
 check "--keys text: no control characters, bidi overrides or endless text" "! rpanel --keys $farid lit:0a && ! rpanel --keys $farid lit:\$(hex \$'a\\e[2J') && ! rpanel --keys $farid lit:c29b && ! rpanel --keys $farid lit:\$(hex \$'\\u202e') && ! rpanel --keys $farid lit:00 && ! rpanel --keys $farid lit:\$(hex \$(printf 'a%.0s' {1..65})) && ! rpanel --keys $farid lit:4"
 
 # A question on the linked computer, answered from here over the link. Over there you're busy
@@ -1538,13 +1550,13 @@ check "its question view offers Enter, not O" "fq | grep -qF '[Enter] answer' &&
 # Its highlighted choice sits on a band here too, before answering, once Enter starts it, and
 # after a key moves it over the link.
 fqcolor() { tm capture-pane -e -p -t work:farq | grep -F -- "$1" | head -1; }
-wait_fqband() { for _ in $(seq 1 ${2:-50}); do [[ $(fqcolor "$1") == *'44'* ]] && return 0; sleep 0.2; done; return 1; }
+wait_fqband() { for _ in $(seq 1 ${2:-50}); do rv "$(fqcolor "$1")" && return 0; sleep 0.2; done; return 1; }
 check "a linked computer's highlighted choice sits on a band" "wait_fqband '❯ 1. Yes'"
 tm send-keys -t work:farq Enter; wait_fq 'ANSWERING far-ask' >/dev/null
 check "answering it, the highlighted choice is still on its band" "wait_fqband '❯ 1. Yes'"
 tm send-keys -t work:farq Down
 check "and its dialog follows the keys sent over the link" "wait_fq '❯ 2. No'"
-check "the band moves with the highlighted choice" "wait_fqband '❯ 2. No' && [[ \$(fqcolor '1. Yes') != *'44'* ]]"
+check "the band moves with the highlighted choice" "wait_fqband '❯ 2. No' && ! rv \"\$(fqcolor '1. Yes')\""
 tm send-keys -t work:farq Enter
 check "and is answered from here" "for _ in \$(seq 1 40); do [[ -s $T/ans3 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans3 2>/dev/null) == picked:2 ]]"
 check "then its peek comes back" "wait_fq 'PEEK · far-ask' 100 && ! fq | grep -c 'ANSWERING' >/dev/null"
@@ -1690,7 +1702,7 @@ n=$(wc -l <"$T/slowpeeks")
 for _ in $(seq 1 100); do (($(wc -l <"$T/slowpeeks") > n)) && break; sleep 0.05; done
 tm send-keys -t work:farq Down
 # Within 7 s of the key: one screen asked for after it (4 s and the asking), not two (8 s).
-band_within() { local end=$((${EPOCHREALTIME/./} + $1 * 1000000)); while ((${EPOCHREALTIME/./} < end)); do [[ $(fqcolor "$2") == *'44'* ]] && return 0; sleep 0.1; done; return 1; }
+band_within() { local end=$((${EPOCHREALTIME/./} + $1 * 1000000)); while ((${EPOCHREALTIME/./} < end)); do rv "$(fqcolor "$2")" && return 0; sleep 0.1; done; return 1; }
 check "on a slow link, the band follows a key without waiting out the screen already coming" "band_within 7 '❯ 2. No'"
 tm send-keys -t work:farq C-]; sleep 0.3; tm send-keys -t work:farq q; sleep 5
 check "the screen it didn't wait for is thrown away, not left behind" "! ls $st/panel/ | grep -cE 'peek-[0-9]+\\.' >/dev/null"

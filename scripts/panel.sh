@@ -617,8 +617,10 @@ declare -A PCHILD PARGS PRSS PCPU PPAR PUID INPANE TICKS_PREV GIT GIT_T
 X_SSH=() X_WHERE=()
 T_PREV=""
 SHELLS=" sh bash zsh fish dash ksh tcsh csh nu "
-# An agent asking you something: a permission prompt or a multiple-choice question.
-Q_RE='do you want to|would you like to|allow (once|always)|\(y/n\)|\[y/n\]|enter to select|esc to cancel|trust (this|the) folder|yes, proceed|press enter to continue'
+# An agent asking you something: a permission prompt or a multiple-choice question. Claude
+# Code's last step of a question, "Ready to submit your answers?", has no footer: named here,
+# or Enter on a multi-select's Submit seemed to answer it, and the panel stopped there.
+Q_RE='do you want to|would you like to|allow (once|always)|\(y/n\)|\[y/n\]|enter to select|esc to cancel|trust (this|the) folder|yes, proceed|press enter to continue|ready to submit your answers'
 W_RE='esc to interrupt|ctrl\+c to interrupt'
 # The line a question's dialog starts under: a horizontal rule, or the top of a box.
 
@@ -1873,7 +1875,7 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 # shorter than the box is padded above, so the bottoms still line up; a taller one scrolls
 # back PB rows from the bottom, with a scroll bar in BAR-COLOUR.
 peek_rows() {
-	local h=$1 c=$2 n=${#L[@]} start i w=$((IW - 2)) vw=$IW st
+	local h=$1 c=$2 n=${#L[@]} start i w=$((IW - 2)) vw=$IW st a b
 	((PB > n - h)) && PB=$((n - h))
 	((PB < 0)) && PB=0
 	start=$((n - h - PB))
@@ -1885,7 +1887,12 @@ peek_rows() {
 		RBAR=${SB[i]:-}
 		fld "${L[start + i]}" "$w"
 		if (($3)); then st=${QSTYLE[start + i]:-$BWHT}; else st=$DIM; fi
-		row "$c│$R $st$FLD$R" "$vw"
+		if (($3)) && [[ -n ${QHI[start + i]:-} ]]; then
+			read -r a b <<<"${QHI[start + i]}"
+			row "$c│$R $st${FLD:0:a}$e[7m${FLD:a:b}$e[27m${FLD:a+b}$R" "$vw"
+		else
+			row "$c│$R $st$FLD$R" "$vw"
+		fi
 	done
 	RBAR=""
 }
@@ -1896,7 +1903,7 @@ peek_rows() {
 draw_question() { # draw_question LINES
 	local id=${P_ID[SEL]:-} i keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} ft=""
 	if ((ANSWERING)); then
-		kcs "Ctrl-]" " leaves"
+		kcs "Esc" " or" "Ctrl-]" " leaves"
 		keys="$B${BMAG}keys go to $name$R  $KC"
 	else
 		if [[ -n ${P_HOST[SEL]:-} ]]; then kcs Enter " answer"; else kcs Enter " answer" O " open the chat"; fi
@@ -1919,7 +1926,47 @@ draw_question() { # draw_question LINES
 	# exactly like the peek: the question, every choice and the footer, nothing cut out.
 	# (Cutting it at a rule lost the question: Claude Code draws one between its choices.)
 	question_parts
+	QHI=()
+	[[ -z ${P_HOST[SEL]:-} && -n $id ]] && qhi "$id"
 	peek_rows "$1" "$BMAG" 1 "$BMAG"
+}
+
+# qhi %ID -> QHI[i]="START LENGTH": on a question's tab bar ("←  ☐ Fruit  ✔ Submit  →"), the
+# tab Claude Code highlights, which it marks only by a background colour that the plain
+# capture loses. Read from the pane's coloured capture, SGR codes only; START counts
+# characters of the plain line, which is the same text. Drawn in reverse video (peek_rows).
+qhi() {
+	local i s p c pos st en on
+	local -a E P
+	QHI=()
+	for i in "${!L[@]}"; do [[ ${L[i]} =~ ^[[:space:]]*←.*→[[:space:]]*$ ]] && break; done
+	[[ ${L[i]:-} =~ ^[[:space:]]*←.*→[[:space:]]*$ ]] || return 0
+	mapfile -t E < <(tm capture-pane -e -p -t "$1" 2>/dev/null)
+	for i in "${!L[@]}"; do
+		[[ ${L[i]} =~ ^[[:space:]]*←.*→[[:space:]]*$ ]] || continue
+		s=${E[i]:-} pos=0 st=-1 en=-1 on=0
+		while [[ -n $s ]]; do
+			if [[ $s =~ ^$e\[([0-9\;:]*)m ]]; then
+				s=${s:${#BASH_REMATCH[0]}}
+				IFS=';' read -ra P <<<"${BASH_REMATCH[1]:-0}"
+				((${#P[@]})) || P=(0)
+				for ((c = 0; c < ${#P[@]}; c++)); do
+					p=${P[c]%%:*}
+					case $p in
+					"" | 0 | 27 | 49) on=0 ;;
+					7 | 4[0-7] | 10[0-7]) on=1 ;;
+					48) on=1; [[ ${P[c + 1]:-} == 5 ]] && ((c += 2)); [[ ${P[c + 1]:-} == 2 ]] && ((c += 4)) ;;
+					38 | 58) [[ ${P[c + 1]:-} == 5 ]] && ((c += 2)); [[ ${P[c + 1]:-} == 2 ]] && ((c += 4)) ;;
+					esac
+				done
+			else
+				[[ ${s:0:1} == "$e" ]] && { s=${s:1}; continue; } # any other escape: not text
+				if ((on)) && [[ ${s:0:1} != " " || $st -ge 0 ]]; then ((st < 0)) && st=$pos; [[ ${s:0:1} != " " ]] && en=$pos; fi
+				s=${s:1} pos=$((pos + 1))
+			fi
+		done
+		((st >= 0 && en >= st)) && QHI[i]="$st $((en - st + 1))"
+	done
 }
 
 # question_parts: a colour for each line of L by what it is, so the question stands out:
@@ -1949,8 +1996,10 @@ question_parts() {
 		elif [[ ${L[i]} =~ ^[[:space:]]*[─━═╌]{8,} ]]; then QSTYLE[i]=$MAG  # its rules
 		elif ((i < first)); then QSTYLE[i]=$B$BYEL                         # the question
 		elif ((last >= 0 && i >= last)); then QSTYLE[i]=$GRY                # the footer
-		elif [[ ${L[i]} =~ ^[[:space:]│]*❯.*\[[^[:space:]]\] ]]; then QSTYLE[i]=$e[44m$B$BGRN # highlighted, and ticked
-		elif [[ ${L[i]} =~ ^[[:space:]│]*❯ ]]; then QSTYLE[i]=$e[44m$B$BCYN  # the highlighted choice
+		# The highlighted choice in reverse video: the terminal's own colours swapped, so it
+		# stands out whatever its palette (a blue band was hard to see on some).
+		elif [[ ${L[i]} =~ ^[[:space:]│]*❯.*\[[^[:space:]]\] ]]; then QSTYLE[i]=$e[7m$B$BGRN # highlighted, and ticked
+		elif [[ ${L[i]} =~ ^[[:space:]│]*❯ ]]; then QSTYLE[i]=$e[7m$B$BCYN  # the highlighted choice
 		elif [[ ${L[i]} =~ ^[[:space:]│]*[0-9]+\.[[:space:]]*\[[^[:space:]]\] ]]; then QSTYLE[i]=$B$BGRN # a ticked choice ([✔], as Claude Code greens it)
 		elif [[ ${L[i]} =~ ^[[:space:]│]*(\[.\][[:space:]]*)?[0-9]+\. ]]; then QSTYLE[i]=$BWHT # a choice
 		else QSTYLE[i]=$GRY; fi                                               # a choice's description
@@ -2335,7 +2384,7 @@ draw() {
 	elif ((VLEN + 15 <= IW)); then k+="$GRY↑↓ 0-9 select$R"; fi
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	# While answering every key goes to the agent, so the bar says that and how to stop.
-	((ANSWERING)) && k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Ctrl-]$R$BMAG leaves$R"
+	((ANSWERING)) && k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Esc$R$BMAG or $B${BYEL}Ctrl-]$R$BMAG leaves$R"
 	rep ═ $((W - 2))
 	line "$FRAME╠$REP╣$R"
 	row "$k"
@@ -2563,7 +2612,8 @@ pick() {
 # Keys for a question, as they travel: tmux key names from a short list, or literal text as
 # lit:HEX. Hex, so no shell on the way, here or on a linked computer, can read anything into
 # it. Checked before a command line is built from them, and again where they're sent.
-KEY_RE='^(Up|Down|Left|Right|Home|End|PPage|NPage|IC|DC|Enter|Escape|Tab|BTab|BSpace|Space|C-[a-z])$'
+# No Escape: in Claude Code's question it cancels, and the agent is told you declined.
+KEY_RE='^(Up|Down|Left|Right|Home|End|PPage|NPage|IC|DC|Enter|Tab|BTab|BSpace|Space|C-[a-z])$'
 key_ok() { # key_ok TOKEN: may it be sent? A lit: token's text -> LIT (64 characters at most)
 	local h=${1#lit:} i esc="" t
 	LIT=""
@@ -2629,8 +2679,8 @@ question_look() {
 
 # answer: every key goes to the selected pane's question, as if typed in its own console.
 # The question is drawn again when the agent's screen changes: looked at every 40 ms for half
-# a second after a key is sent, to show it react, and every 0.3 s otherwise. Ctrl-] (or
-# Ctrl-C) leaves without sending anything; it ends by itself once the pane stops asking.
+# a second after a key is sent, to show it react, and every 0.3 s otherwise. Esc, Ctrl-] (or
+# Ctrl-C) leave without sending anything; it ends by itself once the pane stops asking.
 # Questions only: a chat with the agent is O, in its own pane.
 answer() {
 	local h=${P_HOST[SEL]:-} id=${P_ID[SEL]:-} k rest seq txt st got gone=0 why=left pend="" INTR=0 f
@@ -2694,7 +2744,11 @@ answer() {
 			rest="" seq=""
 			IFS= read -rsn1 -t 0.03 rest
 			case $rest in
-			"") TOKS=(Escape) ;;
+			# Esc leaves, like Ctrl-]: sent on, it would cancel the question and the agent
+			# would be told you declined. What you ticked stays there, sent only by its Submit.
+			# A sequence that came in too slowly to tell from Esc is let go of, not left
+			# for the panel to read as keys of its own.
+			"") while IFS= read -rsn1 -t 0.05 rest; do :; done; break ;;
 			'[') while IFS= read -rsn1 -t 0.03 rest; do seq+=$rest; [[ $rest == [@-~] || ${#seq} -gt 8 ]] && break; done ;;
 			O) IFS= read -rsn1 -t 0.03 seq ;;
 			esac
