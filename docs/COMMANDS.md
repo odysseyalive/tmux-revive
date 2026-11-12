@@ -166,9 +166,7 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 | `O` | open the pane on this computer (a popup panel closes) |
 | `M` | message the pane's agent |
 | `N` | name the pane |
-| `P` | show or hide a quick peek at its screen |
-| `X` | spread the peek over the artwork too |
-| `C` | put the artwork back |
+| `P` | show or hide a peek at its screen (offered on the peek's title) |
 | Enter | answer the question the selected agent is asking, or open a folded computer |
 | `f` | fold the selected pane's linked computer into one line |
 | `B` | bridge a computer you ssh into |
@@ -188,7 +186,8 @@ arrows, PgUp and PgDn. In PANES the arrows still pick a pane, and the list
 follows. If something that needs you is scrolled out of view, like a question or
 an access request, the arrow on that side blinks yellow.
 
-PANES takes about half the screen at most, so the peek always has room.
+PANES takes about half the screen at most, and the peek takes the rest. Hidden,
+only its title stays, so **P** is there to bring it back.
 
 On a linked computer's pane, **f** folds that computer's panes into its heading
 line, which still says how many need you. The arrows skip an open computer's

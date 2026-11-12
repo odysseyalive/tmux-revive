@@ -151,7 +151,7 @@ check "and nothing shows through the sun" "artband grid 1 | python3 $T/sun.py"
 out=$(frame 130)
 check "a shell pane shows as a shell" "grep -q 'bash *· shell' <<<\"\$out\""
 check "a program shows as running" "grep -q 'top *▸ running' <<<\"\$out\""
-check "the command keys are listed" "grep -qF '[O]pen  [M]essage  [N]ame  [B]ridge  [U]nlink  [P]eek  [A]rt  [S]ave  [Q]uit' <<<\"\$out\""
+check "the command keys are listed" "grep -qF '[O]pen  [M]essage  [N]ame  [B]ridge  [U]nlink  [A]rt  [S]ave  [Q]uit' <<<\"\$out\""
 check "with no computer linked, no fold keys" "! grep -qF '[F]' <<<\"\$out\" && ! grep -qF '[f]' <<<\"\$out\""
 # Under heavy load one frame can come back short, so allow three looks; a real regression
 # misses every time, and then the frame is printed to show what was seen.
@@ -168,13 +168,12 @@ pane_tail=$(tm capture-pane -p -t "$nid" | tail -2 | sed 's/[[:space:]]*$//' | t
 peek=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
 box_tail=$(awk '/PEEK · /{on=1; next} on && /MESSAGES|ART · /{exit} on' <<<"$peek" | tail -2 | sed 's/^║ │ \{0,1\}//; s/[[:space:]]*[▲▼░▓]\{0,1\}║$//; s/[[:space:]]*$//' | tr '\n' '|')
 check "the peek's bottom rows are the pane's bottom rows ($pane_tail)" "[[ '$box_tail' == '$pane_tail' ]]"
-# The peek gets about two thirds of the free rows, the artwork the rest.
-prows=$(awk '/PEEK · /{on=1; next} on && /ART · |MESSAGES/{exit} on' <<<"$peek" | wc -l)
-arows=$(awk '/ART · /{on=1; next} on && /MESSAGES/{exit} on' <<<"$peek" | wc -l)
-check "the peek takes two thirds of the space, the artwork the rest ($prows, $arows)" "(( prows >= 14 && arows >= 3 && prows >= 2 * arows - 2 && prows <= 2 * arows + 4 ))"
-check "the peek's title offers the full view" "grep -q 'PEEK · .*\[x\] full view' <<<\"\$peek\""
-small=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=100 LINES=34 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
-check "with too little left for the artwork, the peek takes it all" "grep -q 'PEEK · ' <<<\"\$small\" && ! grep -q 'ART · ' <<<\"\$small\" && [[ \$(wc -l <<<\"\$small\") == 34 ]]"
+# The peek takes all the free rows: no artwork, no full view or collapse to choose.
+check "the peek takes all the space, the artwork none" "grep -q 'PEEK · ' <<<\"\$peek\" && ! grep -q 'ART · ' <<<\"\$peek\" && [[ \$(wc -l <<<\"\$peek\") == 50 ]]"
+check "the peek's title offers p to hide it, not x or c" "grep -q 'PEEK · .*\[p\] hide' <<<\"\$peek\" && ! grep -q 'full view\|collapse' <<<\"\$peek\""
+check "the key bar no longer offers P" "! grep -q '\[P\]eek' <<<\"\$peek\""
+hidden=$(tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+check "hidden, only its title stays, offering p, with the artwork below" "grep -q 'PEEK · .*\[p\] show' <<<\"\$hidden\" && grep -A1 'PEEK · ' <<<\"\$hidden\" | tail -1 | grep -q 'ART · '"
 tm kill-window -t work:numbers
 
 echo "keys"
@@ -211,21 +210,14 @@ tm select-pane -t work:0.0
 tm send-keys -t work:panel s
 check "S saves" "wait_screen '(manual)'"
 check "the peek box shows the selected pane" "screen | grep -q 'PEEK · top-watch'"
-# x: the peek over the whole artwork, and x again keeps it there; only c brings the art back.
-# Every row is repainted right.
+# Every row is repainted right as p hides and shows it.
 whole() { local s; s=$(screen); [[ ${s%%$'\n'*} == ╔* && ${s##*$'\n'} == *╝ ]] && seen 'PEEK · ' && seen 'MESSAGES'; }
-tm send-keys -t work:panel x
-check "x gives the peek the artwork's space too" "wait_screen '[c] collapse' && seen 'ART · ' 0 && whole"
-check "the full view's hint offers c to collapse, not x" "seen '[c] collapse' && seen '[x] full view' 0 && seen '[x] back' 0"
-tm send-keys -t work:panel c
-check "c collapses it back, artwork and all" "wait_screen '[x] full view' && wait_screen 'ART · ' && whole"
-tm send-keys -t work:panel x; wait_screen '[c] collapse' >/dev/null
-tm send-keys -t work:panel x; sleep 1.5
-check "x again keeps it expanded" "seen '[c] collapse' && seen 'ART · ' 0 && seen '[x] full view' 0 && whole"
-tm send-keys -t work:panel c
-check "and c collapses it again" "wait_screen '[x] full view' && wait_screen 'ART · ' && whole"
-tm send-keys -t work:panel p; sleep 1.5
-check "P hides the peek box" "! screen | grep -q 'PEEK'"
+check "the peek fills the space, the artwork gone" "seen '[p] hide' && seen 'ART · ' 0 && whole"
+tm send-keys -t work:panel p
+check "p hides the peek to its title, the artwork back" "wait_screen '[p] show' && wait_screen 'ART · ' && seen '[p] hide' 0 && whole"
+tm send-keys -t work:panel p
+check "p shows it again" "wait_screen '[p] hide' && seen 'ART · ' 0 && whole"
+tm send-keys -t work:panel p; wait_screen '[p] show' >/dev/null
 tm send-keys -t work:panel Down
 check "the arrow keys move the selection" "wait_screen '[1.0] ▶'"
 # The list goes round: Down past the last pane comes back to the first, Up past the first to the last.
@@ -753,6 +745,9 @@ qbox() { qscreen | sed -n '/QUESTION · /,/ART · \|MESSAGES/p'; }
 wait_q 'asker'
 for _ in $(seq 1 20); do qscreen | grep -q '▶ asker' && break; tm send-keys -t work:qpanel Down; sleep 0.3; done
 check "a pane asking a question shows its question in place of the peek" "wait_q 'QUESTION · asker'"
+aid=$(tm display -p -t work:asker '#{pane_id}')
+hq=$(tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_SEL=$aid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+check "with the peek hidden, a question still opens it" "grep -q 'QUESTION · asker' <<<\"\$hq\" && ! grep -q '\[p\] show' <<<\"\$hq\""
 # All of it, as in Claude Code: the question, the first and the last choice, and the footer,
 # with the rule between choices 5 and 6 not cutting anything off.
 for want in 'Do you want to proceed?' 'rm -rf build' '❯ 1. Yes' '5. Type something.' '6. Chat about this' 'Enter to select'; do
@@ -1924,7 +1919,7 @@ wait_sp 'C O N T R O L' >/dev/null
 stabs() { sscr | grep -oF '[⇧J] focus' | wc -l; }
 scap() { sm capture-pane -e -p -t s:sp; }
 check "PANES has the focus to start with: its title is highlighted" "wait_sp '▸ PANES'"
-check "and [⇧J] focus is on the peek's title, before its own key" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'PEEK · .*\[⇧J\] focus  \[x\] full view'"
+check "and [⇧J] focus is on the peek's title, before its own key" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'PEEK · .*\[⇧J\] focus  \[p\] hide'"
 tm_s() { sm send-keys -t s:sp "$@"; }
 tm_s J
 check "J moves the focus to the peek" "wait_sp '▸ PEEK · ' && ! sscr | grep -qF '▸ PANES'"

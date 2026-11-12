@@ -1521,7 +1521,7 @@ outside_ssh() {
 }
 
 # ------------------------------------------------------------------ sections
-SEL=0 SEL_ID="" PEEK=${REVIVE_PANEL_PEEK:-1} FULL=0 ANSWERING=0 FLASH="" FLASH_T=0 TICK=0
+SEL=0 SEL_ID="" PEEK=${REVIVE_PANEL_PEEK:-1} ANSWERING=0 FLASH="" FLASH_T=0 TICK=0
 # nav: this frame only moves the selection. Then the messages, links and saves (MSG, SIDE) are
 # kept from the last frame, unless MSG_OLD says they're due a look (new panes were gathered,
 # or they were hidden). TCOLS and TLINES: the terminal's size, asked again with the panes.
@@ -1858,7 +1858,7 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 		return
 	fi
 	((WF == 1)) && fc=6 ft="▸ "
-	if ((FULL)); then kc c " collapse"; else kc x " full view"; fi
+	kc p " hide"
 	# Its agents working in the background don't keep it from taking what you type.
 	if [[ ${P_STATE[SEL]:-} == agents ]]; then sectk "${ft}PEEK · $name · agents busy, takes input" "$KC" $fc "${WB[1]}" "${WK[1]}"; else sectk "${ft}PEEK · $name" "$KC" $fc "${WB[1]}" "${WK[1]}"; fi
 	if [[ -n ${P_HOST[SEL]:-} ]]; then
@@ -1907,9 +1907,7 @@ draw_question() { # draw_question LINES
 		keys="$B${BMAG}keys go to $name$R  $KC"
 	else
 		if [[ -n ${P_HOST[SEL]:-} ]]; then kcs Enter " answer"; else kcs Enter " answer" O " open the chat"; fi
-		keys="$KC  "
-		if ((FULL)); then kc c " collapse"; else kc x " full view"; fi
-		keys+=$KC
+		keys=$KC
 	fi
 	# Focused, or answering, its title says so; its band stays magenta, the asking colour.
 	((WF == 1)) && ft="▸ "
@@ -2262,32 +2260,30 @@ draw() {
 		((bottom > bcap)) && bottom=$bcap
 	fi
 	# Fixed rows: frame 2, banner, section bars 3, column header 1, totals 1, keys 1. The peek
-	# matters more than the artwork: it takes about two thirds of the rest (14 rows or more
-	# when they're there) and the scene the others, unless that leaves the scene too little to
-	# be worth drawing. X gives the peek all of it. With no peek (P hides it, or nothing to
-	# peek at) the scene fills the space, so the panel fills its pane. A question shows even
-	# with the peek hidden: it's waiting on you.
+	# takes all the rest. Hidden (P), only its title stays, offering P to show it, and the
+	# scene fills the space below, so the panel fills its pane. With nothing to peek at (a
+	# heading, the panel's own pane) neither shows. A question shows even with the peek
+	# hidden: it's waiting on you.
 	avail=$((lines - BH - 8 - PH - bottom))
 	# No peek at the panel's own pane: it would only show itself. Nor at a heading.
-	local show=0
+	local show=0 bar=0
 	if ((n && avail >= 4)) && [[ -n $sst && $sst != self ]]; then
-		((PEEK)) || [[ $sst == asking ]] && show=1
+		if ((PEEK)) || [[ $sst == asking ]]; then show=1; else bar=1; fi
 	fi
 	# The windows drawn, for J and K; one that's gone hands the focus back to PANES, drawn again.
 	WON=(1 "$show" "$msgs" "$msgs")
 	((ANSWERING || WON[FOCUS])) || { FOCUS=0; draw; return; }
 	wstyle $ask
 	if ((show)); then
-		# Rows with its title: 15 is the 14 it always had.
-		peek_h=$((avail * 2 / 3))
-		((peek_h < 15)) && peek_h=15
-		# A question takes all the room: its top (the question itself) must not be cut off.
-		((peek_h > avail || avail - peek_h < 4 || FULL)) && peek_h=$avail
-		[[ $sst == asking ]] && peek_h=$avail
-		avail=$((avail - peek_h))
+		# All the room, title and all.
+		peek_h=$avail avail=0
 		ROWL=${WB[1]} ROWR=${WB[1]}
 		draw_peek $((peek_h - 1))
 		ROWL=$FRAME ROWR=$FRAME
+	elif ((bar)); then
+		kc p " show"
+		sectk "PEEK · ${P_NAME[SEL]:-${P_LOC[SEL]:-}}" "$KC" 4
+		avail=$((avail - 1))
 	fi
 	if ((avail >= 3)); then
 		sect "ART · ${TITLES[SCENE]}"
@@ -2368,7 +2364,7 @@ draw() {
 	v_mode # tmux-revive for that row's user, or on that computer
 	case $VMODE in host | update) cs+=("V: update") ;; install) cs+=("V: install") ;; esac
 	((${INTRO_ON:-0})) && cs+=("G:rant access")
-	cs+=("P:eek" "A:rt" "S:ave" "Q:uit" "?: help")
+	cs+=("A:rt" "S:ave" "Q:uit" "?: help")
 	for c in "${cs[@]}"; do
 		if [[ $off == *" ${c%%:*} "* ]]; then
 			k+="$GRY[${c%%:*}]${c#*:}$R  "
@@ -3228,8 +3224,6 @@ act() {
 		clean out
 		flash "${out#agent-say: }" ;;
 	p | P) PEEK=$((!PEEK)) ;;
-	x | X) FULL=1 PEEK=1 ;; # the peek over the whole art; pressed again, it stays there
-	c | C) FULL=0 ;;        # only c puts the art back
 	# Enter: on a linked computer's heading, fold it to that line (or open it again); on a pane
 	# asking a question, answer it.
 	enter)
@@ -3470,10 +3464,10 @@ keys() {
 		case $key in
 		# Moving the selection, scrolling and moving the focus only redraw.
 		up | down | pgup | pgdn | home | end | J | K | [0-9]) act "$key"; nav=1 ;;
-		# Keys that only change the view (peek, full view, collapse, art) are drawn at once from
+		# Keys that only change the view (peek, art) are drawn at once from
 		# what was gathered last, then looked at again like any other key: on a busy machine
 		# the look at every pane is what takes the time.
-		p | P | x | X | c | C | a | A) act "$key"; nav=1; draw; nav=0; break ;;
+		p | P | a | A) act "$key"; nav=1; draw; nav=0; break ;;
 		"") ;;
 		*) act "$key"; nav=0; break ;;
 		esac
