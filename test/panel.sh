@@ -1389,7 +1389,7 @@ touch -d '-2 minutes' "$st/panel/far.example.peek-77"
 farsel "$T/fakessh" far-sh@far.example >/dev/null
 check "the cache is private (700, files 600)" "[[ \$(stat -c %a $st/panel) == 700 && \$(stat -c %a $st/panel/far.example.rows) == 600 ]] && ! find $st/panel -type f -perm /077 | grep -c . >/dev/null"
 check "a peek over a minute old is deleted" "[[ ! -e $st/panel/far.example.peek-77 ]]"
-check "and no temporary files are left" "! ls $st/panel | grep -cvE '^(ticks|far\\.example\\.(rows(\\.old)?|peek-[0-9]+(\\.fail)?))$' >/dev/null"
+check "and no temporary files are left" "! ls $st/panel | grep -cvE '^(ticks|panel\\.err|far\\.example\\.(rows(\\.old)?|peek-[0-9]+(\\.fail)?))$' >/dev/null"
 # Bidi overrides and zero-width characters from over there are stripped like controls.
 printf '%%9\x1fbidi\xe2\x80\xae0:0\x1fzw\xe2\x80\x8bname\x1fapp\x1fwaiting\x1ffo\xe2\x81\xa6ld\x1fmain\x1f1\x1f1\x1f1\n' >"$T/bidirows"
 printf '#!/bin/sh\ncat %s\n' "$T/bidirows" >"$T/bidissh"; chmod +x "$T/bidissh"

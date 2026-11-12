@@ -656,7 +656,9 @@ claude_record() { # claude_record PID -> RECORD: Claude Code's session record fo
 			CLAUDE_CONFIG_DIR=/*) d=("${e#*=}" "${d[@]}") ;;
 			HOME=/*) d+=("${e#*=}/.claude") ;;
 			esac
-		done <"/proc/$1/environ" 2>/dev/null
+		# 2> before <: the other way round, a file gone or unreadable (the process ended since)
+		# is reported to the screen before stderr is put away.
+		done 2>/dev/null <"/proc/$1/environ"
 		for f in "${d[@]}"; do
 			own_plain "$f/sessions/$1.json" "$(stat -c %u "/proc/$1" 2>/dev/null)" && { CL_EREC[$1]=$f/sessions/$1.json; break; }
 		done
@@ -776,7 +778,7 @@ claude_transcript() { # claude_transcript PID -> TRANSCRIPT, or nothing
 		CLAUDE_CONFIG_DIR=/*) dirs=("${e#*=}" "${dirs[@]}") ;;
 		HOME=/*) dirs+=("${e#*=}/.claude") ;;
 		esac
-	done <"/proc/$pid/environ" 2>/dev/null
+	done 2>/dev/null <"/proc/$pid/environ"
 	dirs+=("$HOME"/.claude ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR"})
 	while IFS= read -r f; do
 		[[ $f =~ $UUID_RE ]] && { sid=${BASH_REMATCH[1]}; break; }
@@ -866,7 +868,7 @@ codex_rollout() { # codex_rollout PID -> ROLLOUT, or nothing
 		CODEX_HOME=/*) d=${e#*=} ;;
 		HOME=/*) [[ -n $d ]] || d=${e#*=}/.codex ;;
 		esac
-	done <"/proc/$pid/environ" 2>/dev/null
+	done 2>/dev/null <"/proc/$pid/environ"
 	[[ -n $d ]] || d=${CODEX_HOME:-$HOME/.codex}
 	[[ -d $d/sessions ]] || return 0
 	[[ " ${PARGS[$pid]:-} " == *" resume "* ]] && resume=1
@@ -916,7 +918,7 @@ codex_rollout() { # codex_rollout PID -> ROLLOUT, or nothing
 ctx_reported() {
 	local f=$ASTATE/ctx/${1#%} id sid pct at pid
 	[[ -f $f ]] || return 0
-	read -r id sid pct at pid _ <"$f" 2>/dev/null || return 0
+	read -r id sid pct at pid _ 2>/dev/null <"$f" || return 0
 	[[ $id == "$1" && $pid == "$2" && $pct =~ ^[0-9]{1,3}$ && $at =~ ^[0-9]+$ ]] && ((pct <= 100)) || return 0
 	[[ -z ${3:-} || $sid == "$3" ]] || return 0
 	((${EPOCHSECONDS:-$(date +%s)} - at <= ${REVIVE_CTX_TTL:-600})) && CTX=$pct
@@ -990,6 +992,8 @@ pgit() { GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor= -c core.hooksPath=/dev/null
 git_info() { # git_info DIR -> GITI: "branch" or "branch*" (uncommitted changes), cached 15 s
 	# Not called in a $( ): the cache must outlive the call, or git runs for every pane every frame.
 	local d=$1 b dirty filters
+	# No folder (tmux can't read the cwd of a process that isn't yours): no key for the cache.
+	[[ -n $d ]] || { GITI=""; return; }
 	if [[ -n ${GIT_T[$d]:-} ]] && ((SECONDS - GIT_T[$d] < 15)); then GITI=${GIT[$d]}; return; fi
 	b=$(pgit "$d" symbolic-ref --short -q HEAD 2>/dev/null || pgit "$d" rev-parse --short HEAD 2>/dev/null)
 	if [[ -n $b ]]; then
@@ -1057,15 +1061,15 @@ user_inst() {
 	if [[ -n ${2:-} && -z ${UAPPS[$2]+x} ]]; then
 		[[ ${UHOMES[$2]:-} == /* ]] && d=${UHOMES[$2]}/.local/share
 		if [[ ${3:-} =~ ^[0-9]+$ && -r /proc/$3/environ && "$(stat -c %u "/proc/$3" 2>/dev/null)" == "$2" ]]; then
-			while IFS= read -r -d '' e; do [[ $e == XDG_DATA_HOME=/* ]] && d=${e#*=}; done <"/proc/$3/environ" 2>/dev/null
+			while IFS= read -r -d '' e; do [[ $e == XDG_DATA_HOME=/* ]] && d=${e#*=}; done 2>/dev/null <"/proc/$3/environ"
 		fi
 		UAPPS[$2]=${d:+$d/tmux-revive/app}
 	fi
 	[[ -n ${2:-} ]] && a=${UAPPS[$2]}
-	[[ -n $a && -f $a/VERSION && ! -L $a/VERSION ]] && read -r v <"$a/VERSION" 2>/dev/null
+	[[ -n $a && -f $a/VERSION && ! -L $a/VERSION ]] && read -r v 2>/dev/null <"$a/VERSION"
 	[[ $v =~ $VER_RE ]] && { INST=$v; return 0; }
 	v=""
-	[[ $1 =~ $USER_RE && -f $ASTATE/users/$1 ]] && read -r v <"$ASTATE/users/$1" 2>/dev/null
+	[[ $1 =~ $USER_RE && -f $ASTATE/users/$1 ]] && read -r v 2>/dev/null <"$ASTATE/users/$1"
 	[[ $v =~ $VER_RE ]] && INST=$v
 	return 0
 }
@@ -1250,7 +1254,7 @@ rows_ticks_load() { # rows_ticks_load FILE -> T_PREV, TICKS_PREV
 		while read -r k v; do
 			[[ $k =~ ^%[0-9]{1,9}:[0-9]{1,10}$ && $v =~ ^[0-9]{1,15}$ ]] && TICKS_PREV[$k]=$v
 		done
-	} <"$1" 2>/dev/null
+	} 2>/dev/null <"$1"
 	[[ $t =~ ^[0-9]{1,12}[.,][0-9]+$ ]] || { TICKS_PREV=(); return 0; }
 	age=$((${now%[.,]*} - ${t%[.,]*}))
 	if ((age >= 1 && age <= 60)); then T_PREV=$t; else TICKS_PREV=(); fi
@@ -2410,7 +2414,9 @@ draw() {
 	else
 		# Only the lines that changed since the last frame are sent, each placed by row, and the
 		# whole update is wrapped in synchronized-output marks (?2026) so the terminal shows it at
-		# once. A twinkling star then rewrites one line, not the whole screen.
+		# once. A twinkling star then rewrites one line, not the whole screen. The cursor is left
+		# at the top: at the bottom right, past the last cell, a single character written there
+		# would scroll the whole panel.
 		local buf="" i
 		for i in "${!OUT[@]}"; do
 			[[ ${OUT[i]} == "${PREV[i]-}" ]] && continue
@@ -2418,7 +2424,7 @@ draw() {
 		done
 		((${#OUT[@]} < ${#PREV[@]})) && buf+="$e[$((${#OUT[@]} + 1));1H$e[J"
 		PREV=("${OUT[@]}")
-		[[ -n $buf ]] && printf '%s' "$e[?2026h$buf$e[?2026l"
+		[[ -n $buf ]] && printf '%s' "$e[?2026h$buf$e[H$e[?2026l"
 	fi
 }
 
@@ -2830,7 +2836,7 @@ user_note() {
 			while IFS= read -r l; do
 				l=${l#\#   }
 				[[ $l =~ ^curl\ -fsSL\ https://[A-Za-z0-9./_-]+/install\.sh\ \|\ sh$ ]] && { cmd=$l; break 2; }
-			done <"$f" 2>/dev/null
+			done 2>/dev/null <"$f"
 		done
 		[[ -n $cmd ]] || return
 	fi
@@ -2896,7 +2902,7 @@ act() {
 			tm select-window -t "$id" 2>/dev/null
 			tm select-pane -t "$id" 2>/dev/null
 			restore_term
-			exec tmux attach -t "${P_LOC[SEL]%%:*}"
+			exec tmux attach -t "${P_LOC[SEL]%%:*}" 2>&1 # its messages on the screen again
 		fi ;;
 	m | M)
 		[[ -n $id ]] || { [[ -n ${P_HOST[SEL]:-} ]] && flash "that pane has no name; name it on ${P_HOST[SEL]} to message it"; return; }
@@ -3435,6 +3441,15 @@ if ((ONCE)); then
 	exit 0
 fi
 [[ -t 0 && -t 1 ]] || { echo "tmux-revive panel needs a terminal" >&2; exit 1; }
+# Only the frames may reach the screen. A stray message from bash or a command lands where the
+# last frame left the cursor, often the bottom row, and scrolls the whole panel up; only the
+# rows that change are drawn again, so the rest stayed out of place until it was restarted.
+# Messages go to a file of yours alone instead, emptied once it passes 64 KB.
+cache_dir
+PANEL_ERR=$RDIR/panel.err
+[[ -n $(find "$PANEL_ERR" -size +64k 2>/dev/null) ]] && rm -f "$PANEL_ERR"
+(umask 077; : >>"$PANEL_ERR") 2>/dev/null
+exec 2>>"$PANEL_ERR" || exec 2>/dev/null
 printf '%s' "$e[?1049h$e[?25l$e[2J"
 # Keys pressed while the panel is busy gathering must not be echoed: an arrow's ^[[A printed at
 # the bottom line scrolls the whole screen. Echo stays off for the panel's whole run (keys are
@@ -3490,7 +3505,7 @@ keys() {
 		read -t 0 && IFS= read -rsn1 key || break
 	done
 }
-held=0 SSH_FIRST=1
+held=0 SSH_FIRST=1 FULL_T=$SECONDS
 while :; do
 	# Moving the selection only redraws from what was gathered last; everything is looked at
 	# again on the next refresh or any other key, so the arrows stay quick.
@@ -3532,6 +3547,9 @@ while :; do
 		continue
 	fi
 	held=0
+	# All of it drawn again every 15 s, not only what changed: anything else that reached the
+	# screen (a program writing to the terminal itself) is gone within that.
+	((SECONDS - FULL_T >= 15)) && PREV=() FULL_T=$SECONDS
 	draw
 	nav=0
 	key=""
