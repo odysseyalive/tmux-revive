@@ -102,6 +102,21 @@ pane_cmd() { # pane_cmd PANE_JSON -> shell command line for the new pane
 	cmd=$(jq -r '.cmd // empty' <<<"$1")
 	scroll=$(jq -r '.scrollback // empty' <<<"$1")
 	[[ -n $scroll ]] && scroll=$snap/$scroll
+	# An nvim whose session was saved reopens it: windows, cursors, and its unsaved text. The
+	# file names are checked, since they become a path; the session is nvim's own, written into
+	# this private snapshot, never one found in the project.
+	local ses uns
+	read -r ses uns < <(jq -r '[.detail.session // "", .detail.unsaved // ""] | @tsv' <<<"$1")
+	# nvim gets copies, which it deletes once read: the next save may replace the snapshot's own
+	# before a slow start has read them.
+	if [[ -n $cmd && $ses =~ ^nvim-[0-9]+-[0-9]+\.vim$ && $uns == "${ses%.vim}.json" && -f $snap/$ses && -f $snap/$uns ]]; then
+		local sesf unsf
+		sesf=$(mktemp "$DIR/panes/nvim.XXXXXX") && cp -p "$snap/$ses" "$sesf"
+		unsf=$(mktemp "$DIR/panes/nvim.XXXXXX") && cp -p "$snap/$uns" "$unsf"
+		# Its own command line (flags, files) with the session after it.
+		cmd="REVIVE_NVIM_LUA=$(printf '%q' "$REVIVE_ROOT/scripts/nvim-revive.lua") REVIVE_NVIM_SESSION=$(printf '%q' "$sesf") REVIVE_NVIM_UNSAVED=$(printf '%q' "$unsf") $cmd"
+		cmd+=" --cmd 'lua dofile(vim.env.REVIVE_NVIM_LUA).restore()' -S $(printf '%q' "$sesf")"
+	fi
 	if [[ -n $cmd ]]; then
 		cmdf=$(mktemp "$DIR/panes/cmd.XXXXXX")
 		printf '%s' "$cmd" >"$cmdf"

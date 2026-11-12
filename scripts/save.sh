@@ -404,11 +404,61 @@ detect_program() { # foreground job of the pane's tty
 		ARGV=("${ARGV[1]%/scripts/panel.sh}/bin/tmux-revive" panel)
 	fi
 	[[ $PROGRAMS == *" :all: "* || $PROGRAMS == *" $name "* ]] || return 1
+	[[ $name == nvim ]] && nvim_strip_revive
 	# The argv as it ran, -S included if vim had one. Adding -S for a
 	# Session.vim that merely sits in the directory would source a file vim
 	# never trusted (a cloned repo can ship one).
 	CMD=$(quote_argv "${ARGV[@]}")
 	DETAIL=$(jq -cn --arg n "$name" '{program: $n}')
+	[[ $name == nvim ]] && nvim_capture "$fg"
+	return 0
+}
+
+# A restored nvim runs with the flags restore gave it (--cmd ...restore(), -S <snapshot>/...):
+# its plain command drops them, since that snapshot is pruned in time.
+nvim_strip_revive() {
+	local -a out=()
+	local i=0
+	while ((i < ${#ARGV[@]})); do
+		if [[ ${ARGV[i]} == --cmd && ${ARGV[i + 1]:-} == *REVIVE_NVIM_LUA* ]] ||
+			[[ ${ARGV[i]} == -S && ${ARGV[i + 1]:-} == "$DIR"/* ]]; then
+			((i += 2))
+			continue
+		fi
+		out+=("${ARGV[i]}")
+		((i++))
+	done
+	ARGV=("${out[@]}")
+}
+
+# nvim_capture PID: ask the running nvim, over its socket, for its own session (tabs, splits,
+# cursors, folds) and the text of every buffer not yet written, into $work/nvim-TAG.{vim,json}.
+# Its socket is the one its --embed server listens on (nvim.<pid>.0), or its --listen address.
+# An nvim waiting at a prompt is not asked (the request would wait for you); this pane's files
+# from the last snapshot stand in, when they are this same nvim's.
+nvim_capture() {
+	local fg=$1 p sock="" listen tag client f
+	listen=$(argv_value --listen) && [[ -S $listen && -O $listen ]] && sock=$listen
+	if [[ -z $sock ]]; then
+		for p in $(descendants "$fg"); do
+			for f in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/nvim.$p.0" "${TMPDIR:-/tmp}"/nvim."${USER:-}"/*/nvim."$p".0; do
+				[[ -S $f && -O $f ]] && { sock=$f; break 2; }
+			done
+		done
+	fi
+	[[ -n $sock ]] || return 0
+	p=${sock##*/nvim.} p=${p%.0}
+	[[ $p =~ ^[0-9]+$ ]] || p=0
+	tag=${PANE_TAG}-$p
+	# The client is that nvim's own binary, which the daemon's PATH may not reach.
+	client=$(readlink "/proc/$fg/exe" 2>/dev/null) || client=${ARGV[0]}
+	[[ $client == */* && -x $client ]] || client=nvim
+	if ! timeout 3 "$client" -l "$REVIVE_ROOT/scripts/nvim-revive.lua" save "$sock" "$work" "$tag" </dev/null >/dev/null 2>&1; then
+		rm -f "$work/nvim-$tag.vim" "$work/nvim-$tag.json"
+		cp -p "$DIR/last/nvim-$tag.vim" "$DIR/last/nvim-$tag.json" "$work/" 2>/dev/null || return 0
+	fi
+	[[ -f $work/nvim-$tag.vim && -f $work/nvim-$tag.json ]] || return 0
+	DETAIL=$(jq -c --arg s "nvim-$tag.vim" --arg u "nvim-$tag.json" '. + {session: $s, unsaved: $u}' <<<"$DETAIL")
 }
 
 # ------------------------------------------------------------------- panes
@@ -430,6 +480,7 @@ while IFS=$S read -r sess attached widx wname layout wactive autoren zoomed pidx
 		if detect_crush "$p"; then kind=crush; break; fi
 		if detect_gemini "$p"; then kind=gemini; break; fi
 	done
+	PANE_TAG=${pid#%}
 	if [[ $kind == shell ]] && detect_program "$ppid"; then kind=program; fi
 	[[ $kind =~ ^(claude|codex|cursor|crush|gemini)$ ]] && ((agents++))
 	# Agents resume by project directory: start each where its session lives.
@@ -483,13 +534,13 @@ last="$DIR/last"
 same() { cmp -s <(jq -S 'del(.saved_at, .reason)' "$1") <(jq -S 'del(.saved_at, .reason)' "$2"); }
 if [[ -f $last/state.json ]] && same "$last/state.json" "$work/state.json"; then
 	target=$(cd -P "$last" && pwd)
-	rm -f "$target"/scroll-*.txt
+	rm -f "$target"/scroll-*.txt "$target"/nvim-*.vim "$target"/nvim-*.json
 else
 	target="$DIR/snapshots/$stamp"
 	[[ -e $target ]] && target+="-$$"
 	mkdir -p "$target"
 fi
-mv "$work"/scroll-*.txt "$target"/ 2>/dev/null
+mv "$work"/scroll-*.txt "$work"/nvim-*.vim "$work"/nvim-*.json "$target"/ 2>/dev/null
 mv "$work/state.json" "$target/state.json"
 ln -sfn "$target" "$last"
 

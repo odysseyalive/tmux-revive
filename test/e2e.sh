@@ -94,6 +94,29 @@ if command -v sqlite3 >/dev/null; then
 	sqlite3 "$CODEX_HOME/state_5.sqlite" "insert into threads values ('01aaaaaa-2222-7000-8000-000000000002', '$T/codexB', 'vscode', 0, $now), ('01aaaaaa-3333-7000-8000-000000000003', '$T/codexB', 'cli', 0, $((now - 86400))), ('01aaaaaa-4444-7000-8000-000000000004', '$T/codexB', 'exec', 0, $((now + 5)))"
 fi
 
+# A real nvim with an edit not yet written and a split, its swap files kept in the test.
+NVIM=0
+nvsock() { # the socket of the test's nvim (its --embed server)
+	local p f
+	for p in $(pgrep -f -- "--embed.*$T/nvswap"); do
+		for f in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/nvim.$p.0" "${TMPDIR:-/tmp}"/nvim."${USER:-}"/*/nvim."$p".0; do
+			[[ -S $f ]] && { echo "$f"; return; }
+		done
+	done
+}
+nvx() { timeout 3 nvim --server "$(nvsock)" --remote-expr "$1" </dev/null 2>/dev/null; }
+if command -v nvim >/dev/null; then
+	NVIM=1
+	mkdir -p "$T/ed" "$T/nvswap"
+	printf 'one\ntwo\nthree\n' >"$T/ed/notes.txt"
+	t new-session -d -s ed -x 120 -y 30 -c "$T/ed" "$REVIVE_SHELL"
+	t send-keys -t ed "nvim --clean --cmd 'set directory=$T/nvswap//' notes.txt" Enter
+	sleep 1.5
+	t send-keys -t ed 'jAUNSAVED' Escape ':vsplit' Enter
+	sleep 0.5
+	nv_before=$(nvx 'json_encode([getline(1, "$"), getcurpos()[1:2], winnr("$")])')
+fi
+
 # Hostile input, all in one session dropped again after the restore: names
 # that are tmux formats, forged Claude records, a planted Session.vim.
 # #() jobs run with the server's environment; '##' makes a literal '#'.
@@ -160,6 +183,7 @@ t kill-session -t "=$EVIL"
 sessions=$(t list-sessions -F '#{session_name}' | sort | tr '\n' ' ')
 want='agent work '
 ((AGENTS)) && want='agent cu cx work '
+((NVIM)) && want=${want/work /ed work }
 check "sessions back, placeholder gone ($sessions)" "[[ '$sessions' == '$want' ]]"
 check "work has 2 windows" "[[ \$(t list-windows -t work | wc -l) -eq 2 ]]"
 check "first window has 2 panes" "[[ \$(t list-panes -t work:0 | wc -l) -eq 2 ]]"
@@ -173,6 +197,26 @@ check "panel relaunched" "pgrep -f '$ROOT/scripts/panel.sh' >/dev/null"
 if ((AGENTS)); then
 	check "codex panes relaunched into their threads" "grep -q 'codexA resume 01aaaaaa-1111' $T/codex-launches && grep -q 'codexB resume 01aaaaaa-2222' $T/codex-launches"
 	check "cursor relaunched into its chat" "grep -q 'cur --resume chat-abc123 --model gpt-9' $T/cursor-launches"
+fi
+
+if ((NVIM)); then
+	for _ in $(seq 30); do [[ -n $(nvsock) ]] && break; sleep 0.2; done
+	sleep 0.5
+	check "nvim saved its own session and unsaved text into the snapshot" "jq -e '.. | objects | select(.detail?.program == \"nvim\") | .detail.session' $state >/dev/null && ls $REVIVE_DIR/last/nvim-*.json >/dev/null"
+	check "nvim: no swap-file prompt after its server was killed" "! t capture-pane -p -t ed | grep -q -e ATTENTION -e 'Found a swap'"
+	check "nvim: same text, cursor and windows as before ($nv_before)" "[[ \$(nvx 'json_encode([getline(1, \"\$\"), getcurpos()[1:2], winnr(\"\$\")])') == '$nv_before' && '$nv_before' == *UNSAVED* ]]"
+	check "nvim: the text is still unsaved, the file untouched" "[[ \$(nvx '&modified') == 1 && \$(cat $T/ed/notes.txt) == \$'one\\ntwo\\nthree' ]]"
+	check "nvim: the copies restore handed it are gone" "[[ -z \$(ls $REVIVE_DIR/panes/ | grep nvim) ]]"
+	# The next reboot: saved from the restored nvim, it keeps its own command line, not the
+	# flags restore gave it, and comes back the same again.
+	HOME=$FAKEHOME bash "$ROOT/scripts/save.sh" manual --quiet
+	nvcmd=$(jq -r '.. | objects | select(.detail?.program == "nvim") | .cmd' "$REVIVE_DIR/last/state.json")
+	check "nvim saved again from the restored one, with its own command line ($nvcmd)" "[[ \$nvcmd == *'nvim --clean --cmd'*notes.txt && \$nvcmd != *REVIVE* && \$nvcmd != *' -S '* ]] && jq -e '.. | objects | select(.detail?.program == \"nvim\") | .detail.session' $REVIVE_DIR/last/state.json >/dev/null"
+	t kill-session -t ed
+	bash "$ROOT/scripts/restore.sh"
+	for _ in $(seq 30); do [[ -n $(nvsock) ]] && break; sleep 0.2; done
+	sleep 0.5
+	check "nvim: a second restore brings the same text, cursor and windows back" "[[ \$(nvx 'json_encode([getline(1, \"\$\"), getcurpos()[1:2], winnr(\"\$\")])') == '$nv_before' && \$(nvx '&modified') == 1 ]] && ! t capture-pane -p -t ed | grep -q -e ATTENTION -e 'Found a swap'"
 fi
 
 echo "second restore is a no-op"
