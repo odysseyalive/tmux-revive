@@ -72,6 +72,10 @@ ver_lt() { # ver_lt A B: is version A older than B?
 e=$'\e'
 R="$e[0m" B="$e[1m" DIM="$e[2m" BLINK="$e[5m" REV="$e[7m"
 SELBG="$e[48;5;236m" # the selected row's faint background, with the focus in PANES
+# A question's highlighted choice, and the tab it highlights (Submit, Next): bold bright text
+# on a teal band. A fixed colour, not the palette's, so it shows on any (a palette blue was
+# hard to see on some); reverse video made the text the dark background, the band darker.
+QBAND="$e[48;5;31m"
 BLU="$e[34m" BBLU="$e[94m" CYN="$e[36m" BCYN="$e[96m" MAG="$e[35m" BMAG="$e[95m"
 YEL="$e[33m" BYEL="$e[93m" GRN="$e[32m" BGRN="$e[92m" BRED="$e[91m" BWHT="$e[97m" GRY="$e[90m"
 BGBLU="$e[44m"
@@ -1915,7 +1919,7 @@ peek_rows() {
 		if (($3)); then st=${QSTYLE[start + i]:-$BWHT}; else st=$DIM; fi
 		if (($3)) && [[ -n ${QHI[start + i]:-} ]]; then
 			read -r a b <<<"${QHI[start + i]}"
-			row "$c│$R $st${FLD:0:a}$e[7m${FLD:a:b}$e[27m${FLD:a+b}$R" "$vw"
+			row "$c│$R $st${FLD:0:a}$QBAND$B$BWHT${FLD:a:b}$R$st${FLD:a+b}$R" "$vw"
 		else
 			row "$c│$R $st$FLD$R" "$vw"
 		fi
@@ -1958,7 +1962,7 @@ draw_question() { # draw_question LINES
 # qhi %ID -> QHI[i]="START LENGTH": on a question's tab bar ("←  ☐ Fruit  ✔ Submit  →"), the
 # tab Claude Code highlights, which it marks only by a background colour that the plain
 # capture loses. Read from the pane's coloured capture, SGR codes only; START counts
-# characters of the plain line, which is the same text. Drawn in reverse video (peek_rows).
+# characters of the plain line, which is the same text. Drawn on the QBAND (peek_rows).
 qhi() {
 	local i s p c pos st en on
 	local -a E P
@@ -1994,7 +1998,7 @@ qhi() {
 }
 
 # question_parts: a colour for each line of L by what it is, so the question stands out:
-# the question itself bold yellow, the highlighted choice bold cyan on a band, the other
+# the question itself bold yellow, the highlighted choice bold bright white on a band, the other
 # choices white with their descriptions dim, the history above and the footer grey. Only
 # colours are chosen here, nothing is cut, so a dialog shaped some other way just looks
 # plainer. -> QSTYLE[i]
@@ -2020,10 +2024,9 @@ question_parts() {
 		elif [[ ${L[i]} =~ ^[[:space:]]*[─━═╌]{8,} ]]; then QSTYLE[i]=$MAG  # its rules
 		elif ((i < first)); then QSTYLE[i]=$B$BYEL                         # the question
 		elif ((last >= 0 && i >= last)); then QSTYLE[i]=$GRY                # the footer
-		# The highlighted choice in reverse video: the terminal's own colours swapped, so it
-		# stands out whatever its palette (a blue band was hard to see on some).
-		elif [[ ${L[i]} =~ ^[[:space:]│]*❯.*\[[^[:space:]]\] ]]; then QSTYLE[i]=$e[7m$B$BGRN # highlighted, and ticked
-		elif [[ ${L[i]} =~ ^[[:space:]│]*❯ ]]; then QSTYLE[i]=$e[7m$B$BCYN  # the highlighted choice
+		# The highlighted choice brighter than the rest, on the QBAND.
+		elif [[ ${L[i]} =~ ^[[:space:]│]*❯.*\[[^[:space:]]\] ]]; then QSTYLE[i]=$QBAND$B$BGRN # highlighted, and ticked
+		elif [[ ${L[i]} =~ ^[[:space:]│]*❯ ]]; then QSTYLE[i]=$QBAND$B$BWHT  # the highlighted choice
 		elif [[ ${L[i]} =~ ^[[:space:]│]*[0-9]+\.[[:space:]]*\[[^[:space:]]\] ]]; then QSTYLE[i]=$B$BGRN # a ticked choice ([✔], as Claude Code greens it)
 		elif [[ ${L[i]} =~ ^[[:space:]│]*(\[.\][[:space:]]*)?[0-9]+\. ]]; then QSTYLE[i]=$BWHT # a choice
 		else QSTYLE[i]=$GRY; fi                                               # a choice's description

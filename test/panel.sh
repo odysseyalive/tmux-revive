@@ -692,6 +692,8 @@ rm -rf "$T/mail/intros" "$T/mail/grants"* "$T/popup.log"
 echo "questions"
 # rv LINE: a coloured capture's line has reverse video on (the highlighted choice's mark).
 rv() { [[ $1 =~ $'\e'\[([0-9]+\;)*7(\;[0-9]+)*m ]]; }
+# band LINE: a coloured capture's line has the highlight's teal band on.
+band() { [[ $1 == *'48;5;31m'* ]]; }
 # A stand-in agent (a copy of bash named codex) asking a question the way Claude Code draws
 # one. Every key it reads is logged to OUT.keys; the answer it got goes to OUT.
 mkdir -p "$T/bin" && cp "$(command -v bash)" "$T/bin/codex"
@@ -760,9 +762,9 @@ boxrow() { qbox | grep '│' | tail -1 | sed 's/^║[^│]*│ \{0,1\}//; s/[[:s
 # The question stands out: bold yellow; the highlighted choice in reverse video; the rest plainer.
 qcolor() { tm capture-pane -e -p -t work:qpanel | grep -F -- "$1" | head -1; }
 check "the question itself is bold yellow" "[[ \$(qcolor 'Do you want to proceed?') == *'93'* ]]"
-check "the highlighted choice is in reverse video, visible on any palette" "rv \"\$(qcolor '❯ 1. Yes')\""
-check "the other choices aren't" "! rv \"\$(qcolor '2. No')\""
-check "the tab Claude Code highlights by colour alone is in reverse video too" "rv \"\$(qcolor 'Cleanup')\" && ! rv \"\$(qcolor 'Do you want to proceed?')\""
+check "the highlighted choice is bright, bold bright white on the teal band, not reverse video" "band \"\$(qcolor '❯ 1. Yes')\" && [[ \$(qcolor '❯ 1. Yes') == *$'\\e[97m'* ]] && ! rv \"\$(qcolor '❯ 1. Yes')\""
+check "the other choices aren't" "! band \"\$(qcolor '2. No')\""
+check "the tab Claude Code highlights by colour alone is on the same bright band" "band \"\$(qcolor 'Cleanup')\" && ! rv \"\$(qcolor 'Cleanup')\" && ! band \"\$(qcolor 'Do you want to proceed?')\""
 check "its last row is the agent's last row" "[[ \"\$(boxrow)\" == \"\$(lastrow)\" ]]"
 check "Enter offers to answer it, O the chat" "qhas '[Enter] answer' && qhas '[O] open the chat' && ! qhas '[Tab] answer'"
 check "the messages step aside while a question shows" "! qhas 'MESSAGES'"
@@ -1549,13 +1551,13 @@ check "its question view offers Enter, not O" "fq | grep -qF '[Enter] answer' &&
 # Its highlighted choice sits on a band here too, before answering, once Enter starts it, and
 # after a key moves it over the link.
 fqcolor() { tm capture-pane -e -p -t work:farq | grep -F -- "$1" | head -1; }
-wait_fqband() { for _ in $(seq 1 ${2:-50}); do rv "$(fqcolor "$1")" && return 0; sleep 0.2; done; return 1; }
+wait_fqband() { for _ in $(seq 1 ${2:-50}); do band "$(fqcolor "$1")" && return 0; sleep 0.2; done; return 1; }
 check "a linked computer's highlighted choice sits on a band" "wait_fqband '❯ 1. Yes'"
 tm send-keys -t work:farq Enter; wait_fq 'ANSWERING far-ask' >/dev/null
 check "answering it, the highlighted choice is still on its band" "wait_fqband '❯ 1. Yes'"
 tm send-keys -t work:farq Down
 check "and its dialog follows the keys sent over the link" "wait_fq '❯ 2. No'"
-check "the band moves with the highlighted choice" "wait_fqband '❯ 2. No' && ! rv \"\$(fqcolor '1. Yes')\""
+check "the band moves with the highlighted choice" "wait_fqband '❯ 2. No' && ! band \"\$(fqcolor '1. Yes')\""
 tm send-keys -t work:farq Enter
 check "and is answered from here" "for _ in \$(seq 1 40); do [[ -s $T/ans3 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans3 2>/dev/null) == picked:2 ]]"
 check "then its peek comes back" "wait_fq 'PEEK · far-ask' 100 && ! fq | grep -c 'ANSWERING' >/dev/null"
@@ -1701,7 +1703,7 @@ n=$(wc -l <"$T/slowpeeks")
 for _ in $(seq 1 100); do (($(wc -l <"$T/slowpeeks") > n)) && break; sleep 0.05; done
 tm send-keys -t work:farq Down
 # Within 7 s of the key: one screen asked for after it (4 s and the asking), not two (8 s).
-band_within() { local end=$((${EPOCHREALTIME/./} + $1 * 1000000)); while ((${EPOCHREALTIME/./} < end)); do rv "$(fqcolor "$2")" && return 0; sleep 0.1; done; return 1; }
+band_within() { local end=$((${EPOCHREALTIME/./} + $1 * 1000000)); while ((${EPOCHREALTIME/./} < end)); do band "$(fqcolor "$2")" && return 0; sleep 0.1; done; return 1; }
 check "on a slow link, the band follows a key without waiting out the screen already coming" "band_within 7 '❯ 2. No'"
 tm send-keys -t work:farq C-]; sleep 0.3; tm send-keys -t work:farq q; sleep 5
 check "the screen it didn't wait for is thrown away, not left behind" "! ls $st/panel/ | grep -cE 'peek-[0-9]+\\.' >/dev/null"
