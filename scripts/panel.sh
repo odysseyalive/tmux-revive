@@ -1553,15 +1553,22 @@ tab_next() { # tab_next [STEP] -> NEXTW: the window J (STEP 1) or K (3) moves th
 # wstyle ASKING -> WF the window with the focus (the question's while answering it), WB each
 # window's border colour and WK the key hint on its title. The focused one's border is bright
 # cyan, as its title band, or bright magenta on a question, the asking colour; the others are
-# FRAME. "[⇧J] focus" (Shift-J, not j) goes on the window J moves to next, when there's more than one; none
-# while answering, where every key but Ctrl-] goes to the agent and the question says so.
+# FRAME. "[⇧J] focus" (Shift-J, not j) goes on the window J moves to next and "[⇧K] focus" on the
+# one K moves to, both going round; with two windows they're the same one, "[⇧J/⇧K] focus". None
+# with one window, nor while answering, where every key but Ctrl-] goes to the agent and the
+# question says so.
 wstyle() {
 	WF=$FOCUS WB=("$FRAME" "$FRAME" "$FRAME" "$FRAME") WK=("" "" "" "")
 	((ANSWERING)) && WF=1
 	if ((WF == 1 && $1)); then WB[1]=$BMAG; else WB[WF]=$BCYN; fi
 	((ANSWERING)) && return
-	tab_next
-	((NEXTW != FOCUS)) && { kc ⇧J " focus"; WK[NEXTW]=$KC; }
+	local nj
+	tab_next; nj=$NEXTW
+	tab_next 3
+	((nj == FOCUS)) && return
+	if ((NEXTW == nj)); then kc ⇧J/⇧K " focus"; WK[nj]=$KC; return; fi
+	kc ⇧J " focus"; WK[nj]=$KC
+	kc ⇧K " focus"; WK[NEXTW]=$KC
 }
 WF=0 WB=() WK=()
 # HSEL: a linked computer's heading is selected (f on one of its panes folds it to that line,
