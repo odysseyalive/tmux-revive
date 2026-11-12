@@ -970,7 +970,9 @@ lines_state() { # lines_state ARRAY -> LSTATE: the same, for a screen already re
 		((n++))
 		tail+="${L[i]}"$'\n'
 		# The agent's own input prompt near the bottom: it is waiting for you, not asking.
-		if ((n <= 6)) && [[ ${L[i]//$'\xc2\xa0'/ } =~ ^(❯|›|\>)\ ? ]] && ! [[ ${L[i]} =~ ^(❯|›|\>)[[:space:]]+[0-9]+\. ]]; then prompt=1; fi
+		# A menu's cursor isn't it: on a numbered choice, or set apart by a gap, as on a
+		# multi-select's "❯    Submit" (read as the prompt, Enter there left the question).
+		if ((n <= 6)) && [[ ${L[i]//$'\xc2\xa0'/ } =~ ^(❯|›|\>)\ ? ]] && ! [[ ${L[i]} =~ ^(❯|›|\>)[[:space:]]+[0-9]+\. || ${L[i]} =~ ^(❯|›|\>)[[:space:]]{2,}[^[:space:]] ]]; then prompt=1; fi
 	done
 	shopt -s nocasematch
 	if ((!prompt)) && [[ $tail =~ $Q_RE ]]; then LSTATE=asking
@@ -1947,7 +1949,9 @@ question_parts() {
 		elif [[ ${L[i]} =~ ^[[:space:]]*[─━═╌]{8,} ]]; then QSTYLE[i]=$MAG  # its rules
 		elif ((i < first)); then QSTYLE[i]=$B$BYEL                         # the question
 		elif ((last >= 0 && i >= last)); then QSTYLE[i]=$GRY                # the footer
+		elif [[ ${L[i]} =~ ^[[:space:]│]*❯.*\[[^[:space:]]\] ]]; then QSTYLE[i]=$e[44m$B$BGRN # highlighted, and ticked
 		elif [[ ${L[i]} =~ ^[[:space:]│]*❯ ]]; then QSTYLE[i]=$e[44m$B$BCYN  # the highlighted choice
+		elif [[ ${L[i]} =~ ^[[:space:]│]*[0-9]+\.[[:space:]]*\[[^[:space:]]\] ]]; then QSTYLE[i]=$B$BGRN # a ticked choice ([✔], as Claude Code greens it)
 		elif [[ ${L[i]} =~ ^[[:space:]│]*(\[.\][[:space:]]*)?[0-9]+\. ]]; then QSTYLE[i]=$BWHT # a choice
 		else QSTYLE[i]=$GRY; fi                                               # a choice's description
 	done

@@ -838,6 +838,21 @@ check "and the answer arrives whole" "for _ in \$(seq 1 25); do [[ -s $T/ans4 ]]
 tm send-keys -t work:qshim q
 tm kill-window -t work:asker2
 
+# A multi-select question, as Claude Code 2.1 draws one (captured): Apple ticked, the cursor
+# on Submit, which has no number and sits apart from its ❯.
+printf '%s\n' '←  ☒ Fruit  ✔ Submit  →' '' 'Which fruits?' '' '  1. [✔] Apple' '         A sweet fruit' \
+	'  2. [ ] Banana' '         A soft fruit' '  3. [ ] Type something' '❯    Submit' "$(printf '─%.0s' {1..50})" \
+	'  4. Chat about this' '' 'Enter to select · ↑/↓ to navigate · Esc to cancel' >"$T/msq.txt"
+msq() { bash -c 'e=$'"'"'\e'"'"' B=B BYEL=Y GRY=g DIM=d MAG=m BWHT=W BCYN=C BGRN=G
+	eval "$(grep -E "^(Q_RE|W_RE)=" "$1")"
+	source <(sed -n "/^lines_state() {/,/^}/p;/^question_parts() {/,/^}/p" "$1")
+	mapfile -t SL <"$2"; lines_state SL; echo "$LSTATE"; L=("${SL[@]}"); question_parts
+	for i in "${!L[@]}"; do printf "%s|%s\n" "${QSTYLE[i]}" "${L[i]}"; done' _ "$ROOT/scripts/panel.sh" "$T/msq.txt"; }
+check "a multi-select with its cursor on Submit is still asking (Enter there answers it)" "[[ \$(msq | head -1) == asking ]]"
+check "a ticked choice stands out from the unticked ones" "msq | grep -qxF 'BG|  1. [✔] Apple' && msq | grep -qxF 'W|  2. [ ] Banana'"
+printf '%s\n' 'chat' "$(printf '─%.0s' {1..50})" '❯ do you want to see it' "$(printf '─%.0s' {1..50})" >"$T/msq.txt"
+check "the agent's own prompt, typed into, is still not a question" "[[ \$(msq | head -1) == waiting ]]"
+
 echo "ssh links"
 # Which host an ssh command line connects to, as agent-say link takes it.
 dest() { bash -c 'source <(sed -n "/^ssh_dest() {/,/^}/p" "$1"); ssh_dest "$2"; printf %s "$SSHD"' _ "$ROOT/scripts/panel.sh" "$1"; }
