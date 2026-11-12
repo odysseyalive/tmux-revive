@@ -166,7 +166,7 @@ seg() {
 	else rep ═ $(($4 - a - 1)); SEG="$5═$1$5$REP"; fi
 }
 # sectk TITLE KEYS [COLOUR [BORDER [HINT]]]: a divider with a title, and the keys for that
-# section at its right end, HINT ("[J] focus") first. BORDER: its rule's colour (FRAME).
+# section at its right end, HINT ("[⇧J] focus") first. BORDER: its rule's colour (FRAME).
 sectk() {
 	local b=${4:-$FRAME}
 	tab "$1" "${3:-4}"
@@ -1548,7 +1548,7 @@ tab_next() { # tab_next [STEP] -> NEXTW: the window J (STEP 1) or K (3) moves th
 # wstyle ASKING -> WF the window with the focus (the question's while answering it), WB each
 # window's border colour and WK the key hint on its title. The focused one's border is bright
 # cyan, as its title band, or bright magenta on a question, the asking colour; the others are
-# FRAME. "[J] focus" goes on the window J moves to next, when there's more than one; none
+# FRAME. "[⇧J] focus" (Shift-J, not j) goes on the window J moves to next, when there's more than one; none
 # while answering, where every key but Ctrl-] goes to the agent and the question says so.
 wstyle() {
 	WF=$FOCUS WB=("$FRAME" "$FRAME" "$FRAME" "$FRAME") WK=("" "" "" "")
@@ -1556,7 +1556,7 @@ wstyle() {
 	if ((WF == 1 && $1)); then WB[1]=$BMAG; else WB[WF]=$BCYN; fi
 	((ANSWERING)) && return
 	tab_next
-	((NEXTW != FOCUS)) && { kc J " focus"; WK[NEXTW]=$KC; }
+	((NEXTW != FOCUS)) && { kc ⇧J " focus"; WK[NEXTW]=$KC; }
 }
 WF=0 WB=() WK=()
 # HSEL: a linked computer's heading is selected (f on one of its panes folds it to that line,

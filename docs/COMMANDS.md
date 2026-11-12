@@ -183,7 +183,7 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 ### Scrolling
 
 When a window has more than fits, a scroll bar shows on its right edge. Press
-**J** to move to that window (its title lights up), then scroll it with the
+**Shift-J** (shown as ⇧J) to move to that window (its title lights up), then scroll it with the
 arrows, PgUp and PgDn. In PANES the arrows still pick a pane, and the list
 follows. If something that needs you is scrolled out of view, like a question or
 an access request, the arrow on that side blinks yellow.

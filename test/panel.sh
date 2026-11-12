@@ -769,10 +769,10 @@ check "the tab Claude Code highlights by colour alone is in reverse video too" "
 check "its last row is the agent's last row" "[[ \"\$(boxrow)\" == \"\$(lastrow)\" ]]"
 check "Enter offers to answer it, O the chat" "qhas '[Enter] answer' && qhas '[O] open the chat' && ! qhas '[Tab] answer'"
 check "the messages step aside while a question shows" "! qhas 'MESSAGES'"
-# [J] focus: once, on the title of the window J goes to next, before that title's own keys.
-qtabs() { qscreen | grep -oF '[J] focus' | wc -l; }
+# [⇧J] focus: once, on the title of the window J goes to next, before that title's own keys.
+qtabs() { qscreen | grep -oF '[⇧J] focus' | wc -l; }
 qcap() { tm capture-pane -e -p -t work:qpanel; }
-check "the question's title says [J] focus, before its own keys, and nothing else does" "wait_ok '(( \$(qtabs) == 1 ))' && qscreen | grep -q 'QUESTION · asker .*\[J\] focus  \[Enter\] answer'"
+check "the question's title says [⇧J] focus, before its own keys, and nothing else does" "wait_ok '(( \$(qtabs) == 1 ))' && qscreen | grep -q 'QUESTION · asker .*\[⇧J\] focus  \[Enter\] answer'"
 # Tab, Right and Left do nothing in the panel. J moves the focus to the question's window, but
 # doesn't answer it: Enter does.
 tm send-keys -t work:qpanel Tab Right Left; sleep 0.7
@@ -780,16 +780,16 @@ check "Tab, Right and Left don't move the focus" "qhas '▸ PANES' && ! qhas '�
 tm send-keys -t work:qpanel J
 check "J only moves the focus to the question, sending nothing" "wait_q '▸ QUESTION · asker' && ! qhas 'ANSWERING' && [[ ! -s $T/ans1.keys ]]"
 check "focused, the question's border is bright magenta, the asking colour; PANES's the frame's blue" "[[ \$(qcap | wcols '▸ QUESTION') == '95 95' && \$(qcap | wcols 'PANES') == '34 34' ]]"
-check "and [J] focus moves to PANES's title" "wait_ok '(( \$(qtabs) == 1 ))' && qscreen | grep -q 'PANES .*\[J\] focus ══╣' && ! qscreen | grep -q 'QUESTION.*\[J\] focus'"
+check "and [⇧J] focus moves to PANES's title" "wait_ok '(( \$(qtabs) == 1 ))' && qscreen | grep -q 'PANES .*\[⇧J\] focus ══╣' && ! qscreen | grep -q 'QUESTION.*\[⇧J\] focus'"
 tm send-keys -t work:qpanel Enter
 check "Enter answers, and Esc or Ctrl-] are the ways out it offers" "wait_q 'ANSWERING asker' && qhas 'Esc or Ctrl-] leaves' && ! qhas 'Tab back'"
-check "while answering no title says [J] focus: the question says how to leave" "(( \$(qtabs) == 0 ))"
+check "while answering no title says [⇧J] focus: the question says how to leave" "(( \$(qtabs) == 0 ))"
 tm send-keys -t work:qpanel Tab
 check "Tab while answering goes to the agent, and the panel stays answering" "for _ in \$(seq 1 25); do grep -qxF \"\$'\\t'\" $T/ans1.keys 2>/dev/null && break; sleep 0.2; done; grep -qxF \"\$'\\t'\" $T/ans1.keys && qhas 'ANSWERING asker' && ! qhas '▸ PANES'"
 tm send-keys -t work:qpanel C-]; wait_q 'left the question' >/dev/null
 : >"$T/ans1.keys"
 tm send-keys -t work:qpanel K
-check "K: the focus back on PANES's title highlighted, [J] focus on the question's" "wait_q '▸ PANES' && ! qhas '▸ QUESTION' && qscreen | grep -q 'QUESTION · asker .*\[J\] focus'"
+check "K: the focus back on PANES's title highlighted, [⇧J] focus on the question's" "wait_q '▸ PANES' && ! qhas '▸ QUESTION' && qscreen | grep -q 'QUESTION · asker .*\[⇧J\] focus'"
 tm send-keys -t work:qpanel Enter
 check "Enter starts answering, and says how to leave" "wait_q 'ANSWERING asker' && qhas 'Ctrl-] leaves'"
 tm send-keys -t work:qpanel C-]
@@ -1887,14 +1887,14 @@ check "and on the next tick it goes dark, as the help page's beacons do" "sframe
 # rule, the edges of its rows and its scroll bar's track. The others keep the frame's blue.
 check "the focused window's border is bright cyan: its rule, its edges, its scroll bar" "[[ \$(wcols PANES <<<\"\$raw\") == '96 96' ]] && grep -F '▸ PANES' <<<\"\$raw\" | grep -qF $'\\e[96m╠' &&plist <<<\"\$raw\" | grep -qF $'\\e[96m░'"
 check "and the others' are the frame's blue, as is the bar under them" "[[ \$(wcols MESSAGES <<<\"\$raw\") == '34 34' ]] &&(( \$(grep -cF $'\\e[96m╠' <<<\"\$raw\") == 1 ))"
-check "[J] focus is said once, on the title of the window J goes to next (MESSAGES)" "(( \$(grep -oF '[J] focus' <<<\"\$out\" | wc -l) == 1 )) && grep -q 'MESSAGES ▓▒░═* \[J\] focus ══╤' <<<\"\$out\""
+check "[⇧J] focus is said once, on the title of the window J goes to next (MESSAGES)" "(( \$(grep -oF '[⇧J] focus' <<<\"\$out\" | wc -l) == 1 )) && grep -q 'MESSAGES ▓▒░═* \[⇧J\] focus ══╤' <<<\"\$out\""
 out=$(sframe 80 | plain)
 check "with room for every row, no scroll bar" "plist <<<\"\$out\" | grep -q 'asker9' && ! plist <<<\"\$out\" | grep -q '[▲▼░▓]║$'"
 # With PANES the only window drawn (a question selected, no room to show it), J has nowhere
 # to go, and no title offers it.
 aid=$(sm display -p -t s:asker '#{pane_id}')
 out=$(sm run-shell "COLUMNS=130 LINES=16 REVIVE_PANEL_SEL=$aid REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$SMAIL AGENT_SAY_SSH=$T/deadssh bash $ROOT/scripts/panel.sh --once" | plain)
-check "with one window drawn, no [J] focus anywhere" "grep -q '▸ PANES' <<<\"\$out\" && ! grep -q 'QUESTION\|MESSAGES' <<<\"\$out\" && ! grep -qF '[J] focus' <<<\"\$out\""
+check "with one window drawn, no [⇧J] focus anywhere" "grep -q '▸ PANES' <<<\"\$out\" && ! grep -q 'QUESTION\|MESSAGES' <<<\"\$out\" && ! grep -qF '[⇧J] focus' <<<\"\$out\""
 out=$(sframe 80 | plain)
 check "a linked computer's heading counts its panes and the ones that need you" "grep -q 'FOLD.EXAMPLE · linked · 2 panes · 1 needs you' <<<\"\$out\""
 # MESSAGES: older messages above the newest; a message not delivered scrolled off the top
@@ -1919,17 +1919,17 @@ sscr() { sm capture-pane -p -t s:sp; }
 wait_sp() { for _ in $(seq 1 ${2:-30}); do sscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 gone_sp() { for _ in $(seq 1 ${2:-30}); do sscr | grep -qF -- "$1" || return 0; sleep 0.2; done; return 1; }
 wait_sp 'C O N T R O L' >/dev/null
-# [J] focus, said once, on the title of the window J goes to next; the focused window's
+# [⇧J] focus, said once, on the title of the window J goes to next; the focused window's
 # border in bright cyan (96), the others' the frame's blue (34).
-stabs() { sscr | grep -oF '[J] focus' | wc -l; }
+stabs() { sscr | grep -oF '[⇧J] focus' | wc -l; }
 scap() { sm capture-pane -e -p -t s:sp; }
 check "PANES has the focus to start with: its title is highlighted" "wait_sp '▸ PANES'"
-check "and [J] focus is on the peek's title, before its own key" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'PEEK · .*\[J\] focus  \[x\] full view'"
+check "and [⇧J] focus is on the peek's title, before its own key" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'PEEK · .*\[⇧J\] focus  \[x\] full view'"
 tm_s() { sm send-keys -t s:sp "$@"; }
 tm_s J
 check "J moves the focus to the peek" "wait_sp '▸ PEEK · ' && ! sscr | grep -qF '▸ PANES'"
 check "its border goes bright cyan, PANES's back to the frame's blue" "wait_ok '[[ \$(scap | wcols \"▸ PEEK\") == \"96 96\" && \$(scap | wcols PANES) == \"34 34\" && \$(scap | wcols MESSAGES) == \"34 34\" ]]'"
-check "[J] focus moves on, to MESSAGES's title, still once" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'MESSAGES ▓▒░═* \[J\] focus ══╤' && ! sscr | grep -q 'PEEK.*\[J\] focus'"
+check "[⇧J] focus moves on, to MESSAGES's title, still once" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'MESSAGES ▓▒░═* \[⇧J\] focus ══╤' && ! sscr | grep -q 'PEEK.*\[⇧J\] focus'"
 check "where the arrows scroll, and the bar says so (J is on the titles now)" "wait_sp '↑↓ PgUp PgDn scroll' && ! sscr | grep -qF 'Tab next window'"
 check "the peek shows the bottom of its pane's screen" "wait_sp 'srow-200'"
 tm_s PPage
@@ -1941,11 +1941,11 @@ check "J: then MESSAGES" "wait_sp '▸ MESSAGES'"
 # MESSAGES and LINKS · SAVES share a rule and a │: the half of the rule over the focused one,
 # its outer edge, and the │ between them take the focus colour.
 check "MESSAGES's border bright cyan: its half of the rule and its left edge, not LINKS's right" "wait_ok '[[ \$(scap | wcols MESSAGES) == \"96 34\" ]]'"
-check "[J] focus on LINKS · SAVES's half of the rule" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'LINKS · SAVES ▓▒░═* \[J\] focus ══╣'"
+check "[⇧J] focus on LINKS · SAVES's half of the rule" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'LINKS · SAVES ▓▒░═* \[⇧J\] focus ══╣'"
 tm_s J
 check "then LINKS · SAVES" "wait_sp '▸ LINKS · SAVES'"
 check "its border bright cyan: its right edge, not MESSAGES's left" "wait_ok '[[ \$(scap | wcols MESSAGES) == \"34 96\" ]]'"
-check "and [J] focus on PANES's title, as J goes round" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'PANES ▓▒░═* \[J\] focus ══╣'"
+check "and [⇧J] focus on PANES's title, as J goes round" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'PANES ▓▒░═* \[⇧J\] focus ══╣'"
 tm_s J
 check "and round to PANES again" "wait_sp '▸ PANES' && ! sscr | grep -qF '▸ LINKS'"
 # K goes back; Tab, Shift-Tab, Right, Left, l and h do nothing.
@@ -1960,7 +1960,7 @@ tm_s K
 check "K from PANES goes round to LINKS · SAVES" "wait_sp '▸ LINKS · SAVES' && ! sscr | grep -qF '▸ PANES'"
 tm_s J
 check "and J round to PANES again" "wait_sp '▸ PANES' && ! sscr | grep -qF '▸ LINKS'"
-check "where it's PANES's border in bright cyan again, [J] focus back on the peek" "wait_ok '[[ \$(scap | wcols PANES) == \"96 96\" ]]' && (( \$(stabs) == 1 )) && sscr | grep -q 'PEEK · .*\[J\] focus'"
+check "where it's PANES's border in bright cyan again, [⇧J] focus back on the peek" "wait_ok '[[ \$(scap | wcols PANES) == \"96 96\" ]]' && (( \$(stabs) == 1 )) && sscr | grep -q 'PEEK · .*\[⇧J\] focus'"
 tm_s End
 check "in PANES, End selects the last row and the view follows it off the top" "wait_sp '▶ fold-b' && gone_sp '[0.0]'"
 tm_s Home
