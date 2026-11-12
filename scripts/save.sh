@@ -286,8 +286,10 @@ detect_codex() {
 	if [[ -z $id && -n $start ]]; then # its log tags rows pid:<pid>:<uuid>
 		id=$(sq "$(newest "$home/logs_*.sqlite")" "select thread_id from logs where process_uuid like 'pid:$pid:%' and thread_id is not null and ts >= $start order by ts desc, ts_nanos desc limit 1") && how=process-log
 	fi
+	# A terminal thread is source 'cli', or 'vscode' since Codex's TUI went through its shared
+	# app-server (0.16x); not 'exec' (one-shot) or a subagent's JSON.
 	if [[ -z $id && -n $start && -n $cwd ]] && alone_in_cwd "$pid" "$cwd" is_codex; then
-		id=$(sq "$(newest "$home/state_*.sqlite")" "select id from threads where cwd = $(sql_str "$cwd") and source = 'cli' and archived = 0 and updated_at >= $start order by updated_at desc limit 1") && how=recent-in-project
+		id=$(sq "$(newest "$home/state_*.sqlite")" "select id from threads where cwd = $(sql_str "$cwd") and source in ('cli', 'vscode') and archived = 0 and updated_at >= $start order by updated_at desc limit 1") && how=recent-in-project
 	fi
 	codex_argv "$pid"
 	if [[ -z $id && ${ARGV[1]:-} == resume && ${ARGV[2]:-} =~ ^$UUID$ ]]; then
@@ -416,10 +418,10 @@ on_exit "rm -rf $(printf '%q' "$work")"
 : >"$work/panes.jsonl"
 lines=$(opt @revive-scrollback 2000)
 S=$'\x1f'
-fmt="#{session_name}${S}#{session_attached}${S}#{window_index}${S}#{window_name}${S}#{window_layout}${S}#{window_active}${S}#{automatic-rename}${S}#{window_zoomed_flag}${S}#{pane_index}${S}#{pane_id}${S}#{pane_pid}${S}#{pane_current_path}${S}#{pane_active}${S}#{pane_title}${S}#{session_last_attached}"
+fmt="#{session_name}${S}#{session_attached}${S}#{window_index}${S}#{window_name}${S}#{window_layout}${S}#{window_active}${S}#{automatic-rename}${S}#{window_zoomed_flag}${S}#{pane_index}${S}#{pane_id}${S}#{pane_pid}${S}#{pane_current_path}${S}#{pane_active}${S}#{pane_title}${S}#{session_last_attached}${S}#{@agent}${S}#{@agent-at}"
 
 count=0 agents=0
-while IFS=$S read -r sess attached widx wname layout wactive autoren zoomed pidx pid ppid cwd pactive title lastatt; do
+while IFS=$S read -r sess attached widx wname layout wactive autoren zoomed pidx pid ppid cwd pactive title lastatt agent agentat; do
 	kind=shell CMD="" DETAIL='{}' CWD_OVERRIDE=""
 	for p in $(descendants "$ppid"); do
 		if detect_claude "$p"; then kind=claude; break; fi
@@ -445,11 +447,13 @@ while IFS=$S read -r sess attached widx wname layout wactive autoren zoomed pidx
 		--arg widx "$widx" --arg wname "$wname" --arg layout "$layout" \
 		--arg wactive "$wactive" --arg autoren "$autoren" --arg zoomed "$zoomed" \
 		--arg pidx "$pidx" --arg cwd "$cwd" --arg pactive "$pactive" --arg title "$title" \
+		--arg agent "$agent" --arg agentat "$agentat" \
 		--arg kind "$kind" --arg cmd "$CMD" --argjson detail "$DETAIL" --arg scroll "$scroll" \
 		'{session: $session, attached: ($attached | tonumber > 0), last_attached: ($lastatt | tonumber? // 0),
 		  window: ($widx | tonumber), window_name: $wname, layout: $layout,
 		  window_active: ($wactive == "1"), auto_rename: ($autoren == "on"), zoomed: ($zoomed == "1"),
 		  pane: ($pidx | tonumber), cwd: $cwd, active: ($pactive == "1"), title: $title,
+		  agent: (if $agent == "" then null else $agent end), agent_at: (if $agentat == "" then null else $agentat end),
 		  kind: $kind, cmd: (if $cmd == "" then null else $cmd end), detail: $detail,
 		  scrollback: (if $scroll == "" then null else $scroll end)}' >>"$work/panes.jsonl"
 	((count++))
@@ -469,7 +473,7 @@ jq -s --arg at "$(now_iso)" --arg host "$(hostname 2>/dev/null || uname -n)" --a
      windows: (group_by(.window) | map({
        index: .[0].window, name: .[0].window_name, layout: .[0].layout,
        active: .[0].window_active, auto_rename: .[0].auto_rename, zoomed: .[0].zoomed,
-       panes: (sort_by(.pane) | map({index: .pane, cwd, active, title, kind, cmd, detail, scrollback}))
+       panes: (sort_by(.pane) | map({index: .pane, cwd, active, title, agent, agent_at, kind, cmd, detail, scrollback}))
      }))
    }))}' "$work/panes.jsonl" >"$work/state.json"
 

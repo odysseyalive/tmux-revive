@@ -88,9 +88,10 @@ if command -v sqlite3 >/dev/null; then
 	sleep 1.5
 	now=$(date +%s)
 	pidA=$(pgrep -f "^bash $T/bin/codex\$")
-	# A: the log ties its pid to a thread. B: only the state table knows.
+	# A: the log ties its pid to a thread. B: only the state table knows, as a newer Codex writes
+	# it (its TUI's threads are source 'vscode'), beside a newer one-shot `codex exec` thread.
 	sqlite3 "$CODEX_HOME/logs_2.sqlite" "insert into logs(ts, ts_nanos, thread_id, process_uuid) values ($now, 0, '01aaaaaa-1111-7000-8000-000000000001', 'pid:$pidA:x')"
-	sqlite3 "$CODEX_HOME/state_5.sqlite" "insert into threads values ('01aaaaaa-2222-7000-8000-000000000002', '$T/codexB', 'cli', 0, $now), ('01aaaaaa-3333-7000-8000-000000000003', '$T/codexB', 'cli', 0, $((now - 86400)))"
+	sqlite3 "$CODEX_HOME/state_5.sqlite" "insert into threads values ('01aaaaaa-2222-7000-8000-000000000002', '$T/codexB', 'vscode', 0, $now), ('01aaaaaa-3333-7000-8000-000000000003', '$T/codexB', 'cli', 0, $((now - 86400))), ('01aaaaaa-4444-7000-8000-000000000004', '$T/codexB', 'exec', 0, $((now + 5)))"
 fi
 
 # Hostile input, all in one session dropped again after the restore: names
@@ -115,6 +116,10 @@ printf '{"pid":%s,"sessionId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}' "$fb" >"$
 
 # A revive dir older versions left readable by everyone gets closed up.
 mkdir -p "$REVIVE_DIR/snapshots" && chmod 755 "$REVIVE_DIR" && : >"$REVIVE_DIR/revive.log" && chmod 644 "$REVIVE_DIR/revive.log"
+
+# A pane named with agent-say: a pane option, gone with the server unless saved.
+t set-option -p -t work:0.1 @agent scribe
+t set-option -p -t work:0.1 @agent-at 2026-01-02T03:04:05Z
 
 echo "save"
 HOME=$FAKEHOME bash "$ROOT/scripts/save.sh" manual --quiet
@@ -160,6 +165,7 @@ check "work has 2 windows" "[[ \$(t list-windows -t work | wc -l) -eq 2 ]]"
 check "first window has 2 panes" "[[ \$(t list-panes -t work:0 | wc -l) -eq 2 ]]"
 check "layout restored exactly" "[[ \$(t display -p -t work:0 '#{window_layout}' | jq -c '[.L.c[].w]') == '[100,99]' ]]"
 check "claude resumed exactly once, in its project" "[[ \$(wc -l <$T/claude-launches) -eq 1 ]] && grep -q '^$T/proj --resume 11111111-2222-3333-4444-555555555555' $T/claude-launches"
+check "agent-say name and its date restored" "[[ \$(t display -p -t work:0.1 '#{@agent} #{@agent-at}') == 'scribe 2026-01-02T03:04:05Z' && -z \$(t display -p -t work:0.0 '#{@agent}') ]]"
 check "scrollback replayed" "t capture-pane -p -t work:0.1 -S -50 | grep -q marker-from-before-reboot"
 check "pager relaunched" "t list-panes -a -F '#{pane_current_command}' | grep -q less"
 check "panel relaunched" "pgrep -f '$ROOT/scripts/panel.sh' >/dev/null"

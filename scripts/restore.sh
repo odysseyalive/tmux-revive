@@ -153,6 +153,14 @@ while read -r sjson; do
 			[[ $(jq -r '.active' <<<"$pjson") == true ]] && active_pane=$last
 			title=$(jq -r '.title // empty' <<<"$pjson")
 			[[ -n $title ]] && tm select-pane -t "$last" -T "$(lit "$title")"
+			# Its agent-say name, and since when it has had it (the mail its pane may read starts
+			# there): pane options, which a new server would not have otherwise.
+			agent=$(jq -r '.agent // empty' <<<"$pjson")
+			if [[ $agent =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]]; then
+				tm set-option -p -t "$last" @agent "$agent"
+				at=$(jq -r '.agent_at // empty' <<<"$pjson")
+				[[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] && tm set-option -p -t "$last" @agent-at "$at"
+			fi
 			[[ $(jq -r '.kind' <<<"$pjson") =~ ^(claude|codex|cursor|crush|gemini)$ ]] && ((agents++))
 		done
 		tm select-layout -t "$wid" "$layout" >/dev/null 2>&1
