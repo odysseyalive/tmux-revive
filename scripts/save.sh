@@ -437,7 +437,11 @@ nvim_strip_revive() {
 # An nvim waiting at a prompt is not asked (the request would wait for you); this pane's files
 # from the last snapshot stand in, when they are this same nvim's.
 nvim_capture() {
-	local fg=$1 p sock="" listen tag client f
+	local fg=$1 p sock="" listen tag client f uid
+	# Only an nvim this user runs. A pane can hold another user's shell (su), and what runs
+	# there is theirs to choose: never talked to, and its binary never run, from here.
+	uid=$(stat -c %u "/proc/$fg" 2>/dev/null || ps -o uid= -p "$fg" 2>/dev/null | tr -d ' ')
+	[[ -n $uid && $uid == "$(id -u)" ]] || return 0
 	listen=$(argv_value --listen) && [[ -S $listen && -O $listen ]] && sock=$listen
 	if [[ -z $sock ]]; then
 		for p in $(descendants "$fg"); do
@@ -450,9 +454,14 @@ nvim_capture() {
 	p=${sock##*/nvim.} p=${p%.0}
 	[[ $p =~ ^[0-9]+$ ]] || p=0
 	tag=${PANE_TAG}-$p
-	# The client is that nvim's own binary, which the daemon's PATH may not reach.
-	client=$(readlink "/proc/$fg/exe" 2>/dev/null) || client=${ARGV[0]}
-	[[ $client == */* && -x $client ]] || client=nvim
+	# The client is that nvim's own binary, which the daemon's PATH may not reach, when it is
+	# a file only this user or root can change; else the nvim on PATH.
+	client=$(readlink "/proc/$fg/exe" 2>/dev/null) || client=""
+	if [[ -z $client || ! -f $client || ! -x $client ]] ||
+		[[ -n $(find "$client" -maxdepth 0 \( -perm -020 -o -perm -002 \) 2>/dev/null) ]] ||
+		! uid=$(stat -c %u "$client" 2>/dev/null) || [[ $uid != 0 && $uid != "$(id -u)" ]]; then
+		client=nvim
+	fi
 	if ! timeout 3 "$client" -l "$REVIVE_ROOT/scripts/nvim-revive.lua" save "$sock" "$work" "$tag" </dev/null >/dev/null 2>&1; then
 		rm -f "$work/nvim-$tag.vim" "$work/nvim-$tag.json"
 		cp -p "$DIR/last/nvim-$tag.vim" "$DIR/last/nvim-$tag.json" "$work/" 2>/dev/null || return 0
