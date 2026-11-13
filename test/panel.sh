@@ -1060,6 +1060,7 @@ esc=$(printf '%q' $'\e') # as the stand-in logs it
 check "Esc closes the box and sends nothing: still answering, the choice still empty" "wait_q 'closed; nothing was sent' 15 && ! qhas 'Esc closes' && qhas 'ANSWERING asker' && qhas '❯ 5. Type something.' && ! grep -qxF -- \"\$esc\" $T/ans2.keys && ! grep -q 'paste:' $T/ans2.keys && [[ ! -e $T/ans2 ]]"
 tm send-keys -t work:qpanel E
 check "E opens the box too, sending nothing" "wait_q 'Esc closes' 15 && qhas 'ANSWER · asker' && ! grep -qxE 'E|e' $T/ans2.keys"
+check "the box keeps above the question, which shows whole under it" "qscreen | awk '/ANSWER · asker/ {t = NR} /╚═/ && t && !b {b = NR} /QUESTION · asker/ {q = NR} END {exit !(t && b && q && b < q)}' && qhas '1. Yes' && qhas '❯ 5. Type something.'"
 # Lines from Alt-Enter and Ctrl-J; then the cursor goes back up to fix a typo, to the start of
 # a line for Delete, to the end of another, and PgUp to the very start.
 tm send-keys -t work:qpanel -l 'my custom answr'; tm send-keys -t work:qpanel M-Enter
@@ -1078,7 +1079,7 @@ check "Enter puts it in the free-text choice as one paste, line breaks and all, 
 tm send-keys -t work:qpanel E
 check "E again: the box holds the answer it put there" "wait_q '║ Line two' 15 && qhas '║ >my custom answér'"
 tm send-keys -t work:qpanel -l ' more /review @a.md'
-check "the answer's box is framed in magenta, the asking colour, its /skill coloured" "wait_q 'more /review' 15 && [[ \$(qcap | cells 'ANSWER · asker' '╔═░') == \$'95 0 0 0\\n5;90 0 0 0' && \$(qcap | cells 'ANSWER · asker' 'ANSWER') == '97 5;90 1 0' && \$(qcap | cells 'more /review' '/review') == '93 0 1 0' ]]"
+check "the answer's box is framed in magenta, the asking colour, its /skill coloured" "wait_q 'more /review' 15 && [[ \$(qcap | cells 'ANSWER · asker' '╔═░') == \$'95 0 0 0\\n5;90 0 0 0' && \$(qcap | cells 'ANSWER · asker' 'ANSWER') == '97 5;90 1 0' && \$(qcap | cells 'more /review' '/review') == '5;208 0 1 0' ]]"
 tm send-keys -t work:qpanel Enter
 want+=' more /review @a.md'
 check "the changed answer replaces it" "wait_q '         three more' 15 && grep -qxF -- \"paste:\$(printf %q \"\$want\")\" $T/ans2.keys && [[ ! -e $T/ans2 ]]"
@@ -1141,7 +1142,7 @@ tm send-keys -t work:mpanel -l "$tok \`one two three four five six seven eight n
 mcap() { tm capture-pane -e -p -t work:mpanel; }
 check "the box's frame stands out: its border bright, its title on a fixed band, a shade down its right side and under it" "wait_ok 'mscreen | grep -q \"eleven twelve\"' && [[ \$(mcap | cells 'MESSAGE TO' '╔═░') == \$'96 0 0 0\\n5;25 0 0 0' && \$(mcap | cells 'MESSAGE TO' 'MESSAGE TO') == '97 5;25 1 0' && \$(mcap | cells 'MESSAGE TO' '░▒▓ MESSAGE') == \$'5;25 0 0 0\\n97 5;25 1 0' && \$(mcap | cells 'Enter sends' '║▓') == \$'96 0 0 0\\n90 0 0 0' ]] && mscreen | grep -q '╚═*╝▓' && mscreen | grep -q '░▒▓▓▓▓▓▓'"
 check "the text rows have no background of their own, as the panel's text hasn't" "mcap | cells --box 'MESSAGE TO' | grep -q . && ! mcap | cells --box 'MESSAGE TO' | grep -qv '^[^ ]* 0 '"
-check "a /skill is bold yellow, the text by it plain" "[[ \$(mcap | cells '/review' '/review') == '93 0 1 0' && \$(mcap | cells '/review' 'run ') == '0 0 0 0' && \$(mcap | cells '/review' ' on ') == '0 0 0 0' ]]"
+check "a /skill is bold orange, the text by it plain" "[[ \$(mcap | cells '/review' '/review') == '5;208 0 1 0' && \$(mcap | cells '/review' 'run ') == '0 0 0 0' && \$(mcap | cells '/review' ' on ') == '0 0 0 0' ]]"
 check "a path that isn't a /skill isn't coloured" "[[ \$(mcap | cells '/usr/bin' '/usr/bin') == '0 0 0 0' ]]"
 check "an @path is cyan" "[[ \$(mcap | cells '@src/a.md' '@src/a.md') == '96 0 0 0' && \$(mcap | cells '@src/a.md' ', then') == '0 0 0 0' ]]"
 check "\`code\` is green, on both rows when it wraps" "[[ \$(mcap | cells '\`make test\`' '\`make test\`') == '92 0 0 0' && \$(mcap | cells '\`one' '\`one') == '92 0 0 0' && \$(mcap | cells 'twelve\` x' 'twelve\`') == '92 0 0 0' && \$(mcap | cells 'twelve\` x' ' x') == '0 0 0 0' ]] && ! mscreen | grep -q 'one.*twelve'"

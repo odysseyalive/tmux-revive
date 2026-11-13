@@ -1928,6 +1928,7 @@ TIPS=(
 	"[B]ridge a server so that its code sessions are discoverable."
 	"[N]ame a Tmux pane so other code sessions can reference it."
 	"Send a [M]essage to any connected code session."
+	"[O]pen the selected Tmux pane on this computer and work in it."
 	"When a code session asks a question, press [Enter] and answer from the peek window."
 	"[G]rant access when one code session requests to talk to another."
 	"[⇧J] and [⇧K] move between windows. [j] and [k] move inside one."
@@ -2314,7 +2315,7 @@ draw() {
 	cols=$TCOLS lines=$TLINES
 	((ONCE)) && cols=${COLUMNS:-$cols} lines=${LINES:-$lines}
 	W=$((cols < 80 ? 80 : cols)) IW=$((W - 4))
-	OUT=()
+	OUT=() PEEK_ROW=0
 	n=${#P_ID[@]}
 	# PANES takes about half of what the banner, bars and messages leave, so the peek keeps
 	# its room; it scrolls past that.
@@ -2384,6 +2385,7 @@ draw() {
 	if ((show)); then
 		# All the room, title and all.
 		peek_h=$avail avail=0
+		PEEK_ROW=$((${#OUT[@]} + 1))
 		ROWL=${WB[1]} ROWR=${WB[1]}
 		draw_peek $((peek_h - 1))
 		ROWL=$FRAME ROWR=$FRAME
@@ -2794,8 +2796,9 @@ eb_move() { # eb_move KEY: Up, Down, PgUp, PgDn (as their sequences), Home, End
 # (EBC=m edit_box ...): m, magenta for answering a question; otherwise blue-cyan, as a message.
 # The text inside is on the terminal's own background, as the panel's is.
 # Words it colours as they're written (display only; REPLY is the text as typed): a /skill
-# (bold yellow), an @name or @path (cyan), `code` (green), a URL (magenta, underlined).
-EB_SLASH="$B$BYEL" EB_AT=$BCYN EB_CODE=$BGRN EB_URL="$e[4m$BMAG"
+# (bold orange, a fixed colour: a theme's yellow can be its text colour), an @name or @path (cyan),
+# `code` (green), a URL (magenta, underlined).
+EB_SLASH="$B$e[38;5;208m" EB_AT=$BCYN EB_CODE=$BGRN EB_URL="$e[4m$BMAG"
 EB_RE="[[:space:](](/[[:alnum:]_:-]+)|[[:space:](](@[^[:space:]\`]+)|(\`[^\`"$'\n'"]*\`)|(https?://[^[:space:]\`]+)"
 eb_paint() { # -> PS, PE, PC: the words to colour on the rows on show, where each starts and ends in txt, and its colour
 	local n=${#VS[@]} a b j last ls le p q end c0 seg rest m x t tok st col
@@ -2860,7 +2863,7 @@ eb_paint() { # -> PS, PE, PC: the words to colour on the rows on show, where eac
 	done
 }
 eb_draw() { # the box, centred over the panel, as pick draws its own; the cursor where it writes
-	local i j k r s t buf edge row col rs len pos from to fc=$BCYN band=25
+	local i j k r s t buf edge row col rs len pos from to fc=$BCYN band=25 room
 	[[ ${EBC:-} == m ]] && fc=$BMAG band=90
 	local tb="$e[48;5;${band}m" tf="$e[38;5;${band}m"
 	[[ -n $TCOLS ]] || { TCOLS=$(tput cols 2>/dev/null || echo 100) TLINES=$(tput lines 2>/dev/null || echo 40); PREV=(); draw; dirty=1; }
@@ -2872,6 +2875,15 @@ eb_draw() { # the box, centred over the panel, as pick draws its own; the cursor
 	th=$((h - 4)) tw=$((w - 4))
 	((th < 1)) && th=1
 	top=$(((TLINES - h) / 2)) left=$(((TCOLS - w) / 2))
+	# With the peek showing (a question, or the screen you're writing to), the box keeps above
+	# it, over PANES, so all of the peek can still be read: 7 rows at least, its shadow too.
+	if ((${PEEK_ROW:-0} > 1)); then
+		room=$((PEEK_ROW - 2))
+		((h > room)) && h=$room
+		((h < 7)) && h=7
+		th=$((h - 4))
+		top=$(((PEEK_ROW - 1 - h - 1) / 2 + 1))
+	fi
 	((top < 1)) && top=1
 	((left < 1)) && left=1
 	eb_line
