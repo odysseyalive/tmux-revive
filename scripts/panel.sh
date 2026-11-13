@@ -2610,7 +2610,17 @@ pick() {
 				printf '%s' "$e[$((top + 2 + i));${left}H$bg$BWHT║  $BYEL$kf$BWHT$FLD  ║$R$GRY░$R"
 			fi
 		done
-		printf '%s' "$e[$((top + 2 + ${#items[@]}));${left}H$bg$BWHT║$blank║$R$GRY░$R"
+		if [[ -n ${PBAR:-} && ${!PBAR:-} =~ ^([0-9]+)\ ([1-9][0-9]*)$ ]]; then
+			# PBAR: the name of a variable holding "DONE TOTAL", drawn as a bar in the blank row.
+			local pd=${BASH_REMATCH[1]} pt=${BASH_REMATCH[2]} pl pw pf
+			pl=" $pd/$pt"
+			pw=$((w - 6 - ${#pl})) pf=$((pw * pd / pt))
+			rep █ "$pf"; local pon=$REP
+			rep ░ $((pw - pf))
+			printf '%s' "$e[$((top + 2 + ${#items[@]}));${left}H$bg$BWHT║  $BCYN$pon$CYN$REP$BWHT$pl  ║$R$GRY░$R"
+		else
+			printf '%s' "$e[$((top + 2 + ${#items[@]}));${left}H$bg$BWHT║$blank║$R$GRY░$R"
+		fi
 		fld "$hint" $((w - 4))
 		printf '%s' "$e[$((top + 3 + ${#items[@]}));${left}H$bg$BWHT║ $BCYN$FLD$BWHT ║$R$GRY░$R"
 		rep ═ $((w - 2))
@@ -2871,7 +2881,7 @@ unlink_host() {
 # UPD_KIND: job (here, or HOST over ssh), skip (a link waiting for you: not tried), or note
 # (an [I] line); UPD_ARG: the host, or for a note "install|update USER [HOST]".
 UPD_DIR="$RDIR/update"
-UPD_N=0 UPD_NAME=() UPD_KIND=() UPD_ARG=() UPD_TEXT=() UPD_PID=() UPD_SEEN=() PITEMS=() PKROWS=" "
+UPD_N=0 UPD_NAME=() UPD_KIND=() UPD_ARG=() UPD_TEXT=() UPD_PID=() UPD_SEEN=() PITEMS=() PKROWS=" " UPD_BAR=""
 upd_add() { # upd_add KIND NAME ARG [TEXT]
 	UPD_KIND[UPD_N]=$1 UPD_NAME[UPD_N]=$2 UPD_ARG[UPD_N]=$3 UPD_TEXT[UPD_N]=${4:-} UPD_SEEN[UPD_N]=""
 	UPD_N=$((UPD_N + 1))
@@ -2955,21 +2965,29 @@ upd_poll() {
 		fi
 	done
 }
-# upd_lines -> PITEMS: the popup's lines, each as wide as the others; PKROWS: those with [I].
-# Returns 1 when none changed.
+# upd_lines -> PITEMS: the popup's lines, each as wide as the others; PKROWS: those with [I];
+# UPD_BAR: "FINISHED TOTAL" of the updates run, for the progress bar. Returns 1 when none changed.
 upd_lines() {
-	local i s st h mark l was="${PITEMS[*]-}"
+	local i s st h mark l v was="${PITEMS[*]-}" fin=0 tot=0
 	PITEMS=() PKROWS=" "
 	for ((i = 0; i < UPD_N; i++)); do
 		s=${UPD_TEXT[i]} mark="" h=${UPD_ARG[i]}
 		case ${UPD_KIND[i]} in
 		note) mark=1 ;;
 		job)
+			tot=$((tot + 1))
+			[[ -s $UPD_DIR/$i.st ]] && fin=$((fin + 1))
 			if [[ ! -s $UPD_DIR/$i.st ]]; then s="updating…"
 			else
 				read -r st <"$UPD_DIR/$i.st"
 				upd_last "$UPD_DIR/$i.out"
-				if ((st == 0)); then s=${LAST:-updated}
+				# Its result, from the installer's "tmux-revive 1.2.19 -> 1.2.20" line (its last line is
+				# only the end of its help, cut to a stray letter here).
+				if ((st == 0)); then
+					s=updated
+					v=$(grep -oE 'tmux-revive [0-9]+\.[0-9]+\.[0-9]+ -> [0-9]+\.[0-9]+\.[0-9]+' "$UPD_DIR/$i.out" | tail -n 1)
+					[[ $v =~ ([0-9.]+)\ -\>\ ([0-9.]+)$ ]] &&
+						if [[ ${BASH_REMATCH[1]} == "${BASH_REMATCH[2]}" ]]; then s="already ${BASH_REMATCH[2]}"; else s="${BASH_REMATCH[1]} → ${BASH_REMATCH[2]}"; fi
 				elif [[ -n $h ]] && ((st == 124 || st == 255)); then s="unreachable"
 				elif grep -qiE 'permission denied|operation not permitted' "$UPD_DIR/$i.out"; then
 					# Not the link's user's to update: [I], with tmux-revive update for its owner's pane
@@ -2987,6 +3005,7 @@ upd_lines() {
 		if [[ -n $mark ]]; then l+="  [I]" PKROWS+="$i "; else l+="     "; fi
 		PITEMS+=("$l")
 	done
+	UPD_BAR="$fin $tot"
 	[[ ${PITEMS[*]} != "$was" ]]
 }
 upd_tick() { upd_poll; upd_lines; }
@@ -2997,7 +3016,7 @@ upd_show() {
 	((UPD_N)) && upd_running || upd_start
 	while :; do
 		upd_poll; upd_lines
-		PTICK=upd_tick PKEYS=i PSEL=$sel PHINT="↑↓ choose · I: command · Esc closes" pick "UPDATE" "${PITEMS[@]}" || break
+		PTICK=upd_tick PBAR=UPD_BAR PKEYS=i PSEL=$sel PHINT="↑↓ choose · I: command · Esc closes" pick "UPDATE" "${PITEMS[@]}" || break
 		sel=$PICKED
 		[[ $PKROWS == *" $sel "* ]] || break
 		[[ ${UPD_KIND[sel]} == note ]] && a=${UPD_ARG[sel]} || a=${UPD_TEXT[sel]}

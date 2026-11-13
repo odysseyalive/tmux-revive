@@ -19,7 +19,8 @@ mkdir -p "$T/src"
 printf '#!/bin/sh
 echo run >>%q
 [ -e %q ] && { echo "mv: cannot move: Permission denied"; exit 1; }
-echo "tmux-revive 9.9.9 installed here"
+echo "==> tmux-revive 1.0.0 -> 9.9.9, release v9.9.9"
+echo "  agent-say name shop-dev          let agents in panes message each other"
 ' "$T/local-update.log" "$T/local.fail" >"$T/src/install.sh"
 export REVIVE_SOURCE=$T/src
 tm() { tmux -L "revive-panel-test-$$" -f /dev/null "$@"; }
@@ -1069,7 +1070,7 @@ cmd=${!#}
 if [[ $cmd =~ \ panel\ --rows$ ]]; then exec bash "$panel" --rows
 elif [[ $cmd == *' tmux-revive update '* && -e $T/update.perm ]]; then printf "mv: cannot move '/opt/tmux-revive': Permission denied\n"; exit 1
 elif [[ $cmd == *' tmux-revive update '* && -e $T/update.fail ]]; then printf '\e[1;34m==>\e[0m downloading\n\e[1;31mxx\e[0m  download failed: https://github.com/odysseyalive/tmux-revive/releases/download/v9.9.9/%s.tar.gz\n' "$(printf 'x%.0s' {1..150})"; exit 1
-elif [[ $cmd == *' tmux-revive update '* ]]; then printf '%s' "$cmd" >"$T/update.cmd"; printf 'downloading\ntmux-revive 9.9.9 installed\n\n'; exit 0
+elif [[ $cmd == *' tmux-revive update '* ]]; then printf '%s' "$cmd" >"$T/update.cmd"; printf 'downloading\n==> tmux-revive 1.2.0 -> 9.9.9, release v9.9.9\n  agent-say name shop-dev          let agents in panes message each other\n\n'; exit 0
 elif [[ $cmd == AGENT_SAY_PANE=* ]]; then printf '%s' "$cmd" >"$T/name.cmd"; HOME=$T/rhome PATH=$T/rbin:$PATH AGENT_SAY_MAILBOX=$T/rstate/mailbox.md exec bash -c "$cmd"
 elif [[ $cmd =~ \ panel\ --peek\ \'([^\']*)\'\ ([^ ]*)$ ]]; then exec bash "$panel" --peek "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 elif [[ $cmd =~ \ panel\ --show\ \'([^\']*)\'$ ]]; then printf '%s' "$cmd" >"$T/show.cmd"; exec bash "$panel" --show "${BASH_REMATCH[1]}"
@@ -1345,7 +1346,7 @@ oscreen() { tm capture-pane -p -t work:oldpanel; }
 wait_o() { for _ in $(seq 1 ${2:-60}); do oscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
 wait_o 'far-top  *\[U\]' >/dev/null
 tm send-keys -t work:oldpanel u
-check "U updates it over ssh, with no [I]: its users aren't known" "wait_o 'far.example  *tmux-revive 9.9.9 installed' && [[ -e $T/update.cmd ]] && ! oscreen | grep -q '\[I\]'"
+check "U updates it over ssh, with no [I]: its users aren't known" "wait_o 'far.example  *1\.2\.0 → 9\.9\.9' && [[ -e $T/update.cmd ]] && ! oscreen | grep -q '\[I\]'"
 tm send-keys -t work:oldpanel Escape; sleep 0.5
 tm send-keys -t work:oldpanel q
 tm kill-window -t work:oldpanel 2>/dev/null
@@ -1446,8 +1447,12 @@ calls() { grep -c "^$1 " "$T/update.calls" 2>/dev/null; }
 close_fs() { tm send-keys -t work:farpanel Escape; for _ in $(seq 1 25); do farscreen | grep -q '▓ UPDATE ▓' || return 0; sleep 0.2; done; return 1; }
 check "on a linked computer's pane, U is lit" "bar | grep -cF $'\\e[93mU' >/dev/null && farscreen | grep -cF '[U]pdate' >/dev/null"
 tm send-keys -t work:farpanel u
-check "U updates this computer and the linked one at once, asking nothing" "wait_fs '▓ UPDATE ▓' && wait_fs 'this computer  *tmux-revive 9.9.9 installed here' && wait_fs 'far.example  *tmux-revive 9.9.9 installed'"
+check "U updates this computer and the linked one at once, asking nothing" "wait_fs '▓ UPDATE ▓' && wait_fs 'this computer  *1\.0\.0 → 9\.9\.9' && wait_fs 'far.example  *1\.2\.0 → 9\.9\.9'"
 check "each once" "[[ \$(calls far.example) == 1 && \$(wc -l <$T/local-update.log) == 1 ]]"
+# Each finished line says what it went from and to, not the end of the installer's help; the
+# bar under the list counts the updates done.
+check "a finished line shows 1.2.0 → 9.9.9, not the installer's last line" "! farscreen | grep -q 'agent-say name\|let agents'"
+check "and the bar under the list is full: 2/2 done" "wait_fs '║  █*  *2/2  ║'"
 check "over there with the fixed command, nothing else" "[[ \$(cat $T/update.cmd) == 'PATH=\"\$HOME/.local/bin:\$PATH\" tmux-revive update </dev/null 2>&1' ]]"
 close_fs
 check "Esc closes it" "! farscreen | grep -q '▓ UPDATE ▓'"
@@ -1468,7 +1473,7 @@ wait_fs 'far.example  *updating…' >/dev/null
 close_fs
 check "closed while it runs, the bar says so" "wait_fs 'still updating · U shows it'"
 tm send-keys -t work:farpanel u
-check "U again shows that round, and nothing is tried twice" "wait_fs 'far.example  *tmux-revive 9.9.9 installed' 40 && [[ \$(calls far.example) == 1 && \$(wc -l <$T/local-update.log) == 3 ]]"
+check "U again shows that round, and nothing is tried twice" "wait_fs 'far.example  *1\.2\.0 → 9\.9\.9' 40 && [[ \$(calls far.example) == 1 && \$(wc -l <$T/local-update.log) == 3 ]]"
 close_fs
 rm -f "$T/update.slow"
 # A link that can't be reached: said, once. One stopped on a failure: not tried at all.
@@ -1548,7 +1553,7 @@ close_r() { tm send-keys -t work:vpanel Escape; gone_r '▓ UPDATE ▓'; }
 check "a linked computer's pane of a user without tmux-revive shows [U]" "wait_r 'as-deploy *deploy *\[U\]'"
 tm set-buffer -- before
 tm send-keys -t work:vpanel u
-check "U lists that user there with [I], and updates the computer" "wait_r 'deploy@far.example  *not installed  *\[I\]' && wait_r 'far.example  *tmux-revive 9.9.9 installed'"
+check "U lists that user there with [I], and updates the computer" "wait_r 'deploy@far.example  *not installed  *\[I\]' && wait_r 'far.example  *1\.2\.0 → 9\.9\.9'"
 # Its number picks it, as Enter on it does.
 tm send-keys -t work:vpanel "$(rscreen | grep -o '[1-9] *deploy@far' | head -c 1)"
 check "picking it shows the install command for their pane there, copied, no sudo" "wait_r \"Run this in deploy's pane on far.example:\" && rscreen | grep -qF -- '$INSTALL_CMD' && [[ \$(tm show-buffer) == '$INSTALL_CMD' ]]"
@@ -1901,7 +1906,7 @@ wait_u 'l-root'
 rm -f "$T/local-update.log"
 tm set-buffer -- before
 tm send-keys -t work:upanel u
-check "U updates this computer, and lists root and deploy with [I]" "wait_u 'this computer  *tmux-revive 9.9.9 installed here' && wait_u 'root  *not installed  *\[I\]' && wait_u 'deploy  *has 1\.0\.0  *\[I\]'"
+check "U updates this computer, and lists root and deploy with [I]" "wait_u 'this computer  *1\.0\.0 → 9\.9\.9' && wait_u 'root  *not installed  *\[I\]' && wait_u 'deploy  *has 1\.0\.0  *\[I\]'"
 # Highlighted, then I.
 hl_u() { local n i; n=$(uscreen | grep -o "[1-9] *$1" | head -c 1); for ((i = 1; i < n; i++)); do tm send-keys -t work:upanel Down; sleep 0.1; done; }
 hl_u 'root  '; tm send-keys -t work:upanel i
