@@ -216,14 +216,15 @@ hart() {
 	done
 	if ((HW - w - 4 >= 44)); then # the text keeps 44 columns beside it
 		HART=("${rows[@]}") HARTW=$w HART_AT=${#HROWS[@]}
-		((HHEAD_AT == HART_AT - 1)) && HART_AT=$HHEAD_AT # level with the title
+		# Under the title, past the blank row below it: the title and its rule stay clear.
+		((HHEAD_AT == HART_AT - 1)) && HART_AT=$((HART_AT + 1))
 	elif ((w < HW)); then
 		for s in "${rows[@]}"; do HROWS+=(" $s"); done
 		HROWS+=("") HBLANK=1
 	fi
 }
 # hart_close: the picture hart held back, set beside the rows of its section. The text there
-# was wrapped narrower to leave it room, and the title's rule stops short of it. A picture
+# was wrapped narrower to leave it room. A picture
 # taller than its section gets rows of its own, and the blank row that ends the section stays
 # clear of it.
 hart_close() {
@@ -232,11 +233,7 @@ hart_close() {
 	((blank)) && unset 'HROWS[-1]'
 	while ((${#HROWS[@]} < HART_AT + n)); do HROWS+=(""); done
 	for ((i = 0; i < n; i++)); do
-		if ((HART_AT + i == HHEAD_AT)); then
-			vlen "$HHEAD"
-			hrule $((tw - VLEN))
-			PADV=$HHEAD$RULE
-		else padv "${HROWS[HART_AT + i]}" "$tw"; fi
+		padv "${HROWS[HART_AT + i]}" "$tw"
 		HROWS[HART_AT + i]="$PADV  ${HART[i]}"
 	done
 	((blank)) && HROWS+=("")
@@ -250,7 +247,7 @@ help_build() {
 	local ln k t i c tw pad
 	local -a tags=() big sun
 	HW=$1 HROWS=() HBOX=0 HBLANK=1 HPARA="" HBC=$BMAG HB=() HPEND=() HPEND_END=() HBN=0
-	HART=() HARTW=0 HHEAD_AT=-1 HHEAD="" HSPLIT=-1
+	HART=() HARTW=0 HHEAD_AT=-1 HSPLIT=-1
 	HSIDE=$((HW >= 110)) HBW=$HW
 	((HSIDE)) && HBW=$(((HW - 2) / 2))
 	local boxes=0 heads=0 bcol=(5 6) hcol=(4 4 4) # every title on blue: the easiest to read
@@ -306,7 +303,7 @@ help_build() {
 			((HBLANK)) || HROWS+=("")
 			heads=$((heads + 1))
 			tab "$heads ${ln#= }" "${hcol[(heads - 1) % 3]}"
-			t=" $TAB " HHEAD=" $TAB " HHEAD_AT=${#HROWS[@]}
+			t=" $TAB " HHEAD_AT=${#HROWS[@]}
 			vlen "$t"
 			hrule $((HW - VLEN))
 			HROWS+=("$t$RULE")
@@ -371,9 +368,11 @@ help_build() {
 # open. The page fills the rest, with its keys on the bar at the bottom, and is painted. The
 # ads sit at the bottom of it and only the words above them scroll, so the counter counts
 # those; on a page too short to leave HELP_MIN rows of words, everything scrolls together.
+# The words that scroll have a scroll bar at their right, its arrows lit while there's more
+# that way. The page is built two columns narrower to leave it room.
 help_frame() {
 	local view=$(($1 - $2 - 5)) n i k last t foot=0
-	((HELP_W == IW)) || help_build "$IW"
+	((HELP_W == IW - 2)) || help_build $((IW - 2))
 	n=${#HROWS[@]}
 	((view < 1)) && view=1
 	if ((HSPLIT < n && view - (n - HSPLIT) >= HELP_MIN)); then foot=$((n - HSPLIT)) n=$HSPLIT; fi
@@ -382,18 +381,20 @@ help_frame() {
 	((HELP_TOP > n - view)) && HELP_TOP=$((n - view))
 	((HELP_TOP < 0)) && HELP_TOP=0
 	sect "HELP · HOW TO USE REVIVE"
+	sbar "$view" "$n" "$HELP_TOP" $((HELP_TOP > 0)) $((HELP_TOP + view < n)) "$BCYN"
 	for ((i = 0; i < view + foot; i++)); do
 		if ((i < view)); then
-			k=""
+			k="" RBAR=${SB[i]:-}
 			((HELP_TOP + i < n)) && k=${HROWS[HELP_TOP + i]}
-		else k=${HROWS[n + i - view]}; fi
+		else k=${HROWS[n + i - view]} RBAR=""; fi
 		t=${TICK:-0}
 		if ((t % 2)); then k=${k//"$HB1"/"$GRY"}; else k=${k//"$HB2"/"$GRY"}; fi
 		((t % 7 == 0 || t % 7 == 3)) || k=${k//"$HLIT"/"$GRY"}
 		row "$k"
 	done
+	RBAR=""
 	last=$((HELP_TOP + view < n ? HELP_TOP + view : n))
-	kcs ↑↓ " scroll" PgUp/PgDn " page" i/p " install" Esc " close"
+	kcs ↑↓/j/k " scroll" PgUp/PgDn " page" i/p " install" Esc " close"
 	k=$KC
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	vlen "$k"
@@ -426,7 +427,7 @@ help_frame() {
 
 # ------------------------------------------------------------------ keys
 # help_view: the page stays up, redrawn every second (the clock, a resize), until Esc, x, q
-# or ? again. ↑↓ (or k and j) scroll a line, PgUp/PgDn and Space a page, Home and End go to either end.
+# or ? again. ↑↓ (or k and j, as the key bar says) scroll a line, PgUp/PgDn and Space a page, Home and End go to either end.
 # Ctrl-C closes it too.
 help_view() {
 	local k rest seq st INTR=0 hsec=0

@@ -458,10 +458,15 @@ done
 # narrow one, whole either way.
 talk='██▄█▄██       ░░▒▒▓▓██►   ██▄█▄██' sat='█▒█▒█▒█▒█══███████══█▒█▒█▒█▒█'
 out=$(hframe 160)
-check "at 160 columns two agents talk beside the first section" "grep -q '[a-z][.,]* .*$talk' <<<\"\$out\" && grep -q '2 Get your agents talking.*▄  ' <<<\"\$out\""
-check "and a satellite, alone, beside the second" "grep -q 'Got agents on a remote server.*$sat' <<<\"\$out\" && grep -q 'Talk to your servers too.*▪' <<<\"\$out\" && ! grep -q '░▒▓█▓▒░' <<<\"\$out\""
+check "at 160 columns two agents talk beside the first section" "grep -q '[a-z][.,]* .*$talk' <<<\"\$out\""
+check "and a satellite, alone, beside the second" "grep -q '\\(server\\|tmux\\)\\. .*$sat' <<<\"\$out\" && ! grep -q '░▒▓█▓▒░' <<<\"\$out\""
+# The pictures start under their titles: the titles' rules run the whole way, nothing on them.
+check "the pictures stay off their titles' rows" "! grep -qE '(Get your agents talking|Talk to your servers too).*(▄|▪)' <<<\"\$out\" && grep -q 'Talk to your servers too.*┄┄┄ *║\$' <<<\"\$out\""
+# The words that scroll have a scroll bar at their right, and the key bar says j/k scroll too.
+out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=40 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+check "a scroll bar shows there's more, and j/k are on the key bar" "grep -q '▲║\$' <<<\"\$out\" && grep -q '▼║\$' <<<\"\$out\" && grep -q '▓║\$' <<<\"\$out\" && grep -qF '[↑↓/j/k] scroll' <<<\"\$out\""
 out=$(hframe 100)
-check "at 100 they still fit beside the words" "grep -q 'Revive lets any AI.*$talk' <<<\"\$out\" && grep -q 'Got agents on a remote server.*$sat' <<<\"\$out\""
+check "at 100 they still fit beside the words" "grep -q '[a-z][.,]* .*$talk' <<<\"\$out\" && grep -q '\\(server\\|tmux\\)\\. .*$sat' <<<\"\$out\""
 out=$(hframe 80)
 check "at 80 they go above the words instead" "grep -q '^║  $talk  *║\$' <<<\"\$out\" && grep -q '^║   $sat  *║\$' <<<\"\$out\" && ! grep -q 'Got agents.*█▒█' <<<\"\$out\""
 # The satellite's light blinks with the panel's clock: lit one tick in three, dark between.
@@ -472,10 +477,10 @@ check "the two agents' beacons take turns" "[[ \$(beacon 0 226) -ge 1 && \$(beac
 # A few suggestions to get going, not a reference: the keys are on the panel already.
 out=$(hframe 160)
 check "it has no key reference or column list" "! grep -qiE 'key reference|What the columns mean|Remember the old BBS|^║ +\\[[^]]+\\] {2,}[A-Z]' <<<\"\$out\" && grep -q 'shop-dev' <<<\"\$out\" && grep -qF '[B]ridge it' <<<\"\$out\""
-# At 160x64 it all fits on one screen: every word above the ads, the ads whole at the bottom.
-out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=64 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+# At 160x65 it all fits on one screen: every word above the ads, the ads whole at the bottom.
+out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=65 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
 hp=$(grep -o '[0-9]*-[0-9]* of [0-9]*' <<<"$out" | tail -1)
-check "at 160x64 it fits on one screen ($hp), the ads whole at the bottom" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]] && tail -5 <<<\"\$out\" | head -1 | grep -q '╚═*╝░' && grep -q 'C H E A T   S H E E T' <<<\"\$out\""
+check "at 160x65 it fits on one screen ($hp), the ads whole at the bottom" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]] && tail -5 <<<\"\$out\" | head -1 | grep -q '╚═*╝░' && grep -q 'C H E A T   S H E E T' <<<\"\$out\""
 # Its counter counts the words alone: the whole page (as a short one counts it) less the ads,
 # which run from the blank row over their tops to the shadow under them.
 all=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=24 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
