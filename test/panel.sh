@@ -647,13 +647,13 @@ check "MESSAGES shows each waiting one, and the approved ones as a count" "wait_
 check "the bar offers [G]rant access" "wait_a '[G]rant access'"
 before=$(state)
 akey g
-check "G opens ACCESS: WAITING, then APPROVED with the time left" "wait_a 'ACCESS' && wait_a 'WAITING' && wait_a 'APPROVED' && wait_a 'ann@far.invalid → bob@near.invalid · 2' && wait_a 'm left'"
+check "G opens LINK AGENTS TOGETHER: WAITING, then APPROVED with the time left" "wait_a 'LINK AGENTS TOGETHER' && wait_a 'WAITING' && wait_a 'APPROVED' && wait_a 'ann@far.invalid → bob@near.invalid · 2' && wait_a 'm left'"
 check "each waiting one as FROM → TO, and no declined one" "ascreen | grep -qF '1  live-root@far.invalid → dev-root@near.invalid' && ascreen | grep -qF '2  cx@far.invalid' && ! ascreen | grep -qF 'cat@far.invalid'"
 check "the headings aren't choices" "! ascreen | grep -qE '[0-9] (WAITING|APPROVED)'"
 akey Escape
 check "Esc closes it, nothing changed" "gone_a 'APPROVED' && [[ \$(state) == '$before' ]]"
 akey i
-check "I, the key it had before, still opens it" "wait_a 'ACCESS' && wait_a 'WAITING'"
+check "I, the key it had before, still opens it" "wait_a 'LINK AGENTS TOGETHER' && wait_a 'WAITING'"
 akey 1
 check "a waiting one shows its words, and Approve or Deny" "wait_a 'may I ask dev-root about the failing build?' && wait_a '1  Approve' && wait_a '2  Deny' && ! ascreen | grep -cF 'restarted' >/dev/null"
 check "under its title, why each of the two asks, one line each, never a choice" "wait_a 'why (live-root): needs the logs' && wait_a 'why (dev-root): and back' && ! ascreen | grep -qE '[0-9]  why'"
@@ -673,13 +673,13 @@ echo right >"$T/popup.code"; : >"$T/popup.log"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; akey 1
 check "the code typed back approves it" "wait_a 'live-root@far.invalid and dev-root@near.invalid can talk now' && [[ ! -e $T/mail/intros/$ia ]] && grep -q '^allow s:$ia@far.invalid s:to$ia@near.invalid live-root@far.invalid dev-root@near.invalid [0-9]*\$' $T/mail/grants"
 check "the one the other way with it, and only that one" "[[ ! -e $T/mail/intros/$ic && -e $T/mail/intros/$ib && -e $T/mail/intros/$id ]]"
-check "and then just the panel: no box asks again" "sleep 1 && ! ascreen | grep -qE 'ACCESS|[0-9]  (Approve|Deny)' && [[ \$(grep -c '^display-popup ' $T/popup.log) == 1 ]]"
+check "and then just the panel: no box asks again" "sleep 1 && ! ascreen | grep -qE 'LINK AGENTS TOGETHER|[0-9]  (Approve|Deny)' && [[ \$(grep -c '^display-popup ' $T/popup.log) == 1 ]]"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '2  Deny' >/dev/null; akey 2
 check "Deny declines it, both ways" "wait_a \"declined: cx@far.invalid and dev-root@near.invalid can't talk\" && [[ ! -e $T/mail/intros/$ib && ! -e $T/mail/intros/$id ]] && [[ \$(grep -c '^deny s:$ib@far.invalid ' $T/mail/grants) == 1 ]]"
 check "with nothing waiting, MESSAGES has no waiting line" "gone_a 'waiting for [G]rant access' && wait_a '✓ 2 approved'"
 before=$(state)
 akey g; wait_a 'APPROVED' >/dev/null
-check "with nothing waiting, ACCESS lists only APPROVED" "! ascreen | grep -qF 'WAITING' && ascreen | grep -qF '1  ann@far.invalid → bob@near.invalid'"
+check "with nothing waiting, LINK AGENTS TOGETHER lists only APPROVED" "! ascreen | grep -qF 'WAITING' && ascreen | grep -qF '1  ann@far.invalid → bob@near.invalid'"
 akey 1
 check "an approved one offers Refresh or Remove" "wait_a '1  Refresh' && wait_a '2  Remove'"
 akey Escape
@@ -919,17 +919,17 @@ tm new-window -d -t work -n remote "bash -c 'exec -a \"ssh -p 2222 me@devbox.exa
 check "a new ssh connection is announced" "wait_ssh 'new ssh: devbox.example · B bridges it'"
 check "and offered for linking" "wait_ssh 'devbox.example · ssh in'"
 tm send-keys -t work:sshpanel r; sleep 0.7
-check "r does nothing: no popup" "! sshscreen | grep -q 'LINK AGENTS ON' && wait_ssh 'C O N T R O L'"
+check "r does nothing: no popup" "! sshscreen | grep -q 'ATTACH SERVERS' && wait_ssh 'C O N T R O L'"
 tm send-keys -t work:sshpanel B; sleep 0.7
-check "B opens a popup listing the ssh hosts" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q 'devbox.example  · ssh in' && sshscreen | grep -q 'other host'"
+check "B opens a popup listing the ssh hosts" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -q 'devbox.example  · ssh in' && sshscreen | grep -q 'other host'"
 check "the popup says how to close it" "sshscreen | grep -q 'Esc closes'"
 check "with nothing linked, it offers no unlinking" "! sshscreen | grep -q 'U unlinks'"
 tm send-keys -t work:sshpanel u; sleep 0.5
-check "and U there does nothing" "sshscreen | grep -q 'LINK AGENTS ON' && ! sshscreen | grep -q 'unlinking'"
+check "and U there does nothing" "sshscreen | grep -q 'ATTACH SERVERS' && ! sshscreen | grep -q 'unlinking'"
 # Every row of the popup has its right edge in the same column as the top-right corner.
 popup_square() {
 	sshscreen | awk '
-		index($0, "LINK AGENTS ON") && !l { l = index($0, "╔"); r = index($0, "╗"); top = NR; next }
+		index($0, "ATTACH SERVERS") && !l { l = index($0, "╔"); r = index($0, "╗"); top = NR; next }
 		l && NR > top && !done {
 			c = substr($0, r, 1)
 			if (c != "║" && c != "╝") bad = 1
@@ -939,7 +939,7 @@ popup_square() {
 }
 check "the popup's edges line up on every row" "popup_square"
 tm send-keys -t work:sshpanel Escape
-check "Esc closes the popup" "wait_ssh 'link cancelled' && ! sshscreen | grep -q 'LINK AGENTS ON'"
+check "Esc closes the popup" "wait_ssh 'link cancelled' && ! sshscreen | grep -q 'ATTACH SERVERS'"
 # Linking a host ssh has no key for asks you to confirm one first, as ssh would; No (the first
 # choice, so a bare Enter) links nothing.
 ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey"
@@ -965,11 +965,11 @@ check "a linked host is no longer offered" "for _ in \$(seq 1 20); do sshscreen 
 # hl_line TEXT: the popup's line showing that highlighted, by moving down to it.
 hl_line() { local n i; n=$(sshscreen | grep -o "[1-9] *$1" | head -c 1); for ((i = 1; i < n; i++)); do tm send-keys -t work:sshpanel Down; sleep 0.1; done; }
 tm send-keys -t work:sshpanel B; sleep 0.7
-check "B lists the link, and says U unlinks it" "wait_ssh 'LINK AGENTS ON' && wait_ssh 'devbox.example  · linked · link again' && wait_ssh 'U unlinks'"
+check "B lists the link, and says U unlinks it" "wait_ssh 'ATTACH SERVERS' && wait_ssh 'devbox.example  · linked · link again' && wait_ssh 'U unlinks'"
 hl_line 'other host'; tm send-keys -t work:sshpanel u; sleep 0.5
-check "U on a line that isn't a link does nothing" "sshscreen | grep -q 'LINK AGENTS ON' && [[ -e $st/links/devbox.example/on ]]"
+check "U on a line that isn't a link does nothing" "sshscreen | grep -q 'ATTACH SERVERS' && [[ -e $st/links/devbox.example/on ]]"
 tm send-keys -t work:sshpanel Up; sleep 0.2; tm send-keys -t work:sshpanel u
-check "U on the link's line unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $st/links/devbox.example ]] && ! sshscreen | grep -q 'LINK AGENTS ON'"
+check "U on the link's line unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $st/links/devbox.example ]] && ! sshscreen | grep -q 'ATTACH SERVERS'"
 # A link that fails (here: stopped on another key than the one linked). L offers to link it again:
 # it unlinks, then links with the key ssh uses now, after one yes or no. Or unlinks it.
 sk=$st/links/devbox.example
@@ -979,7 +979,7 @@ broken() { mkdir -p "$sk"; touch "$sk/on"; echo "$(ssh-keygen -lf "$T/oldkey.pub
 broken
 check "LINKS says the failing link's error plainly" "wait_ssh 'devbox.example stopped: host key changed'"
 tm send-keys -t work:sshpanel B; sleep 0.7
-check "B offers the failing link, to link again" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q 'devbox.example  · stopped: host key changed.* · link again'"
+check "B offers the failing link, to link again" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -q 'devbox.example  · stopped: host key changed.* · link again'"
 pick_line() { tm send-keys -t work:sshpanel "$(sshscreen | grep -o "[1-9] *$1" | head -c 1)"; } # the popup line showing that
 pick_line "devbox.example  · stopped"
 check "picking it asks: leave it, link it again, or unlink it" "wait_ssh 'LINK devbox.example AGAIN?' && wait_ssh 'No, leave it as it is' && wait_ssh 'Yes, link devbox.example again' && wait_ssh 'Unlink devbox.example'"
@@ -1006,7 +1006,7 @@ mkdir -p "$sk"; touch "$sk/on" "$sk/paused"; echo "$fp (ED25519)" >"$sk/fingerpr
 echo "can't reach (connection timed out) · L to try again" >"$sk/error"
 check "LINKS shows a stopped link's reason" "wait_ssh \"devbox.example can't reach\""
 tm send-keys -t work:sshpanel B; sleep 0.7
-check "B offers it, to try again" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q \"devbox.example  · can't reach (connection timed out) · try again\""
+check "B offers it, to try again" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -q \"devbox.example  · can't reach (connection timed out) · try again\""
 pick_line "devbox.example  · can.t reach"
 check "picking it tries once, with no questions, and says why it failed again" "wait_ssh 'devbox.example: ssh to devbox.example failed' && ! sshscreen | grep -q 'AGAIN?' && [[ -e $sk/paused && -e $sk/on ]] && grep -q 'B to try again' $sk/error"
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh 'try again' >/dev/null; hl_line "devbox.example  ·"; tm send-keys -t work:sshpanel u
@@ -1033,7 +1033,7 @@ tm new-window -d -t work -n liveremote "bash -c 'exec -a \"ssh live.example\" sl
 lvs() { tm capture-pane -p -t work:livepanel; }
 wait_lv() { for _ in $(seq 1 40); do lvs | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 wait_lv 'live.example · ssh in' >/dev/null
-tm send-keys -t work:livepanel B; wait_lv 'LINK AGENTS ON' >/dev/null
+tm send-keys -t work:livepanel B; wait_lv 'ATTACH SERVERS' >/dev/null
 n=$(lvs | grep -o '[1-9] *live.example  · ssh in' | head -c 1)
 tm send-keys -t work:livepanel "$n"
 check "a key read through your open ssh connection: shown, said to be seen for the first time, No first" "wait_lv 'key read through your open ssh connection: $fp (ED25519)' && wait_lv 'First time we see this key' && lvs | grep -q \"1 *No, don't link live.example\""
@@ -1698,7 +1698,7 @@ login_typed() {
 wait_pw 'C O N T R O L' >/dev/null
 wait_pw 'pw.example · ssh in' >/dev/null
 # pw.example is in known_hosts: ssh trusts it, so L asks only yes or no, and the password goes to that key.
-tm send-keys -t work:pwpanel B; wait_pw 'LINK AGENTS ON' >/dev/null; tm send-keys -t work:pwpanel Enter
+tm send-keys -t work:pwpanel B; wait_pw 'ATTACH SERVERS' >/dev/null; tm send-keys -t work:pwpanel Enter
 wait_pw 'key from your known_hosts' >/dev/null; tm send-keys -t work:pwpanel Enter
 check "B on a host that wants a password opens a login, where ssh asks for it" "login_typed hunter2"
 check "and once it's typed, the link is made" "wait_pw 'linked to pw.example' 75 && [[ -e $pwl/on && -e $T/pw.master ]]"
@@ -1731,7 +1731,7 @@ tm new-window -d -t work -n pwpanel "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCA
 login_win() { tm list-windows -t work -F '#{window_id} #{window_name}' | awk '$2 == "login" && $3 == "pw.example" {print $1}'; }
 link_pw() {
 	wait_pw 'pw.example · ssh in' 50 >/dev/null
-	tm send-keys -t work:pwpanel B; wait_pw 'LINK AGENTS ON' >/dev/null; tm send-keys -t work:pwpanel Enter
+	tm send-keys -t work:pwpanel B; wait_pw 'ATTACH SERVERS' >/dev/null; tm send-keys -t work:pwpanel Enter
 	wait_pw 'new host: first key seen' >/dev/null; tm send-keys -t work:pwpanel 2
 }
 link_pw

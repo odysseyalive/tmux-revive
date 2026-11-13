@@ -3159,7 +3159,7 @@ act() {
 		done
 		hosts+=("") labels+=("other host… (type its name)")
 		[[ $kr != " " ]] && hint="↑↓ choose · Enter picks · U unlinks · Esc closes"
-		PKEYS=u PKROWS=$kr PHINT=$hint pick "LINK AGENTS ON" "${labels[@]}" || { flash "link cancelled"; return; }
+		PKEYS=u PKROWS=$kr PHINT=$hint pick "ATTACH SERVERS" "${labels[@]}" || { flash "link cancelled"; return; }
 		h=${hosts[PICKED]}
 		[[ $PKEY == u ]] && { unlink_host "$h"; return; }
 		if [[ -z $h ]]; then
@@ -3307,7 +3307,7 @@ act() {
 			ids+=("g $a $b") labels+=("${f:0:30} → ${t:0:30} · $((w / 3600))h $((w % 3600 / 60))m left")
 		done < <(cat "$ASTATE/grants" 2>/dev/null)
 		((${#ids[@]})) || { flash "nothing waiting or approved"; return; }
-		pick "ACCESS" "${labels[@]}" || return
+		pick "LINK AGENTS TOGETHER" "${labels[@]}" || return
 		read -r g a b <<<"${ids[PICKED]}"
 		if [[ $g == i ]]; then
 			d="$ASTATE/intros/$a"
