@@ -1918,13 +1918,13 @@ kcs() {
 # The tips under the hidden peek's title, one at a time, the next every TIP_SECS (30). A key
 # in [brackets] is drawn as the key bar draws keys. One too wide for the panel is passed over.
 TIPS=(
-	"Turn [P]eek on to preview the selection. Leave it off for speed."
-	"[U]pdate this computer and every attached server at once."
-	"[B]ridge a server so its agents show up here and can message yours."
-	"[N]ame a pane so agents can reach it with agent-say."
-	"[M]essage the selected agent."
-	"When an agent asks a question, [Enter] enables you to answer from here."
-	"[G]rant access when agents ask to talk to each other."
+	"Turn [P]eek on to preview a selected session."
+	"[U]pdate Revive on all open sessions. Some user sessions require a manual update."
+	"[B]ridge a server so that its code sessions are discoverable."
+	"[N]ame a Tmux pane so other code sessions can reference it."
+	"Send a [M]essage to any connected code session."
+	"When a code session asks a question, press [Enter] and answer from the peek window."
+	"[G]rant access when one code session requests to talk to another."
 	"[⇧J] and [⇧K] move between windows. [j] and [k] move inside one."
 	"[0]-[9] jump to a tmux window. [0] is window 10."
 	"Detach and come back anytime. Every session, Claude too, picks up where it left off."

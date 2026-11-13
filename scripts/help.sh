@@ -1,13 +1,17 @@
 # shellcheck shell=bash
 # The control panel's help page: ? opens it in place of everything from the PANES band down,
 # with the banner left above it. The words live in help.txt (its top says how to mark them
-# up); this draws them BBS style, scrolls them, and runs the two buttons in the ads.
+# up); this draws them BBS style, scrolls them, and runs the two buttons in the ads. The ads
+# stay put at the bottom while the words above them scroll, when there's room for both.
 #
 # Sourced by panel.sh, which gives it the colours, row/sect/tab, draw and flash. Run on its
 # own, `help.sh --install workforce|playwright` is what an install button starts in a new tmux window.
 
 HELP_FILE="$(dirname "${BASH_SOURCE[0]}")/help.txt"
-HELP=0 HELP_TOP=0 HELP_VIEW=1 HELP_W=-1 HROWS=()
+HELP=0 HELP_TOP=0 HELP_VIEW=1 HELP_W=-1 HROWS=() HSPLIT=0
+# The fewest rows of words worth scrolling above the pinned ads; with less room than that,
+# the ads scroll along with the words.
+HELP_MIN=8
 # Tests draw the help page with --once: REVIVE_PANEL_HELP=1 panel.sh --once. (Sourced with no
 # arguments of its own, $1 here is panel.sh's.)
 [[ ${REVIVE_PANEL_HELP:-} == 1 && ${1:-} == --once ]] && HELP=1
@@ -239,12 +243,14 @@ hart_close() {
 	HART=() HARTW=0
 }
 
-# help_build WIDTH -> HROWS: help.txt drawn for a page WIDTH characters wide
+# help_build WIDTH -> HROWS, HSPLIT: help.txt drawn for a page WIDTH characters wide. The rows
+# from HSPLIT on are the ads (the first .box to the end, with the blank row above them), which
+# help_frame pins at the bottom; with no .box, HSPLIT is past the last row.
 help_build() {
 	local ln k t i c tw pad
 	local -a tags=() big sun
 	HW=$1 HROWS=() HBOX=0 HBLANK=1 HPARA="" HBC=$BMAG HB=() HPEND=() HPEND_END=() HBN=0
-	HART=() HARTW=0 HHEAD_AT=-1 HHEAD=""
+	HART=() HARTW=0 HHEAD_AT=-1 HHEAD="" HSPLIT=-1
 	HSIDE=$((HW >= 110)) HBW=$HW
 	((HSIDE)) && HBW=$(((HW - 2) / 2))
 	local boxes=0 heads=0 bcol=(5 6) hcol=(4 4 4) # every title on blue: the easiest to read
@@ -281,7 +287,7 @@ help_build() {
 	HBLANK=0
 	if [[ ! -r $HELP_FILE ]]; then
 		HROWS+=("" "  ${BRED}help.txt is missing from $(dirname "$HELP_FILE")$R")
-		HELP_W=$HW
+		HELP_W=$HW HSPLIT=${#HROWS[@]}
 		return
 	fi
 	while IFS= read -r ln || [[ -n $ln ]]; do
@@ -309,6 +315,10 @@ help_build() {
 			hpara
 			hart_close
 			((HBLANK || ${#HPEND[@]})) || HROWS+=("")
+			if ((HSPLIT < 0)); then
+				HSPLIT=${#HROWS[@]}
+				[[ -z ${HROWS[HSPLIT - 1]} ]] && HSPLIT=$((HSPLIT - 1))
+			fi
 			c=${bcol[boxes % 2]} boxes=$((boxes + 1))
 			HBC=$'\e'"[9${c}m"
 			tab "${ln#.box }" 4 # the title on blue; the frame keeps its colour
@@ -353,22 +363,30 @@ help_build() {
 	hart_close
 	((HBOX)) && hbox_close
 	hflush
+	((HSPLIT < 0)) && HSPLIT=${#HROWS[@]}
 	HELP_W=$HW
 }
 
 # help_frame LINES BANNER-ROWS: draw() hands over here after the banner while the help page is
-# open. The page fills the rest, with its keys on the bar at the bottom, and is painted.
+# open. The page fills the rest, with its keys on the bar at the bottom, and is painted. The
+# ads sit at the bottom of it and only the words above them scroll, so the counter counts
+# those; on a page too short to leave HELP_MIN rows of words, everything scrolls together.
 help_frame() {
-	local view=$(($1 - $2 - 5)) n i k last t
+	local view=$(($1 - $2 - 5)) n i k last t foot=0
 	((HELP_W == IW)) || help_build "$IW"
 	n=${#HROWS[@]}
 	((view < 1)) && view=1
+	if ((HSPLIT < n && view - (n - HSPLIT) >= HELP_MIN)); then foot=$((n - HSPLIT)) n=$HSPLIT; fi
+	view=$((view - foot))
 	HELP_VIEW=$view
 	((HELP_TOP > n - view)) && HELP_TOP=$((n - view))
 	((HELP_TOP < 0)) && HELP_TOP=0
 	sect "HELP · HOW TO USE REVIVE"
-	for ((i = 0; i < view; i++)); do
-		k=${HROWS[HELP_TOP + i]:-}
+	for ((i = 0; i < view + foot; i++)); do
+		if ((i < view)); then
+			k=""
+			((HELP_TOP + i < n)) && k=${HROWS[HELP_TOP + i]}
+		else k=${HROWS[n + i - view]}; fi
 		t=${TICK:-0}
 		if ((t % 2)); then k=${k//"$HB1"/"$GRY"}; else k=${k//"$HB2"/"$GRY"}; fi
 		((t % 7 == 0 || t % 7 == 3)) || k=${k//"$HLIT"/"$GRY"}

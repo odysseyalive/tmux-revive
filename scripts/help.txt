@@ -24,18 +24,17 @@
 = Getting around
 
 I'm a vim person, but the arrow keys work everywhere too.
-- `j` and `k` go down and up, same as the up and down arrows.
-- Capital `J` and `K` switch windows.
-- A number goes straight to that tmux window.
+- `j` and `k` go down and up, same as the arrows. Capital `J` and `K` switch windows, and a number goes straight to that tmux window.
 - `o` opens the pane you picked, and `f` folds a linked computer down to one line. Capital `F` folds them all at once; hit it again to open them back up.
+- Turn [P]eek on to preview a selected session. When a code session asks a question, press [Enter] and answer from the peek window.
 
 = Get your agents talking
 .art talk
 
 I like my agents working together. Revive lets any AI session talk to any other, even across different Claude accounts, or different AI interfaces like Claude Code and Codex.
-1. Select a session's pane here and press N to name it, say shop-dev.
-2. In any other session, just mention it by name: "Ask shop-dev to run the tests and tell me what fails."
-3. Then approve the connection in the panel with [G] to grant access.
+1. Select a session's Tmux pane here and [N]ame it, say shop-dev, so other code sessions can reference it.
+2. In any other session, just mention it by name: "Ask shop-dev to run the tests and tell me what fails." Or send it a [M]essage from here.
+3. When one code session requests to talk to another, [G]rant access in the panel.
 
 = Talk to your servers too
 .art satellite
@@ -43,9 +42,9 @@ I like my agents working together. Revive lets any AI session talk to any other,
 Got agents on a remote server? I wanted mine right here with the rest.
 1. Open another terminal and ssh into the server.
 2. Install tmux-revive there too, then start tmux.
-3. Back in this panel, press B to bridge it.
+3. Back in this panel, [B]ridge it so that its code sessions are discoverable.
 
-As long as tmux keeps running there, its windows show up right here in the Revive panel, even after you close that terminal.
+As long as tmux keeps running there, its windows show up right here in the Revive panel, even after you close that terminal. [U]pdate Revive on all open sessions. Some user sessions require a manual update.
 
 .box Tame Your AI
 I built Claude Workforce because I wanted my AI to get more done, and to show its work.

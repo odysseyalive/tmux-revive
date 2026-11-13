@@ -37,15 +37,19 @@ I wanted one screen that shows every pane and every agent. Inside tmux, run:
 tmux-revive panel
 ```
 
-Press `?` any time for the help page. It's a good place to start exploring.
+![The tmux-revive control panel: three agents in three projects, two working and one waiting on you](assets/panel.png)
+
+Press [?] any time for the help page. It's a good place to start exploring. Turn [P]eek on to preview a selected session.
 
 ## Get your agents talking
 
 I like my agents working together. Revive lets any AI session talk to any other, even across different Claude accounts, or different AI interfaces like Claude Code and Codex.
 
-1. Select a session's pane in the panel and press `N` to name it, say shop-dev.
+1. Select a session's Tmux pane in the panel and [N]ame it, say shop-dev, so other code sessions can reference it.
 2. In any other session, just mention it by name: "Ask shop-dev to run the tests and tell me what fails."
-3. Then approve the connection in the panel with `G` to grant access.
+3. When one code session requests to talk to another, [G]rant access in the panel.
+
+You can also send a [M]essage to any connected code session right from the panel. When a code session asks a question, press [Enter] and answer from the peek window.
 
 ## Talk to your servers too
 
@@ -53,13 +57,15 @@ Got agents on a remote server? I wanted mine right here with the rest.
 
 1. Open another terminal and ssh into the server.
 2. Install tmux-revive there too, then start tmux.
-3. Back in the panel, press `B` to bridge it.
+3. Back in the panel, [B]ridge it so that its code sessions are discoverable.
 
 As long as tmux keeps running there, its windows show up right here in the panel, even after you close that terminal.
 
+[U]pdate Revive on all open sessions. Some user sessions require a manual update.
+
 ## Tame Your AI
 
-I built [Claude Workforce](https://github.com/odysseyalive/claude-workforce) because I wanted my AI to get more done, and to show its work. Press `?` in the panel to install it.
+I built [Claude Workforce](https://github.com/odysseyalive/claude-workforce) because I wanted my AI to get more done, and to show its work. Press [?] in the panel to install it.
 
 ## playwright-mcp
 

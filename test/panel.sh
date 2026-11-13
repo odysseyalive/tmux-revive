@@ -190,7 +190,7 @@ check "the peek takes all the space, the artwork none" "grep -q 'PEEK · ' <<<\"
 check "the peek's title offers p to hide it, not x or c" "grep -q 'PEEK · .*\[p\] hide' <<<\"\$peek\" && ! grep -q 'full view\|collapse' <<<\"\$peek\""
 check "the key bar no longer offers P" "! grep -q '\[P\]eek' <<<\"\$peek\""
 hidden=$(tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
-check "hidden, only its title stays, offering [P]eek, its first tip centered under it, then the artwork" "grep -q 'PEEK · .*\[P\]eek' <<<\"\$hidden\" && grep -A2 'PEEK · ' <<<\"\$hidden\" | sed -n 2p | grep -q '^║  *Turn \[P\]eek on to preview the selection\. Leave it off for speed\.  *║\$' && grep -A2 'PEEK · ' <<<\"\$hidden\" | sed -n 3p | grep -q 'ART · '"
+check "hidden, only its title stays, offering [P]eek, its first tip centered under it, then the artwork" "grep -q 'PEEK · .*\[P\]eek' <<<\"\$hidden\" && grep -A2 'PEEK · ' <<<\"\$hidden\" | sed -n 2p | grep -q '^║  *Turn \[P\]eek on to preview a selected session\.  *║\$' && grep -A2 'PEEK · ' <<<\"\$hidden\" | sed -n 3p | grep -q 'ART · '"
 raw=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
 check "with the focus in PANES, only the selected row has the faint background" "[[ \$(grep -cF $'\\e[48;5;236m' <<<\"\$raw\") == 1 ]] && grep -F $'\\e[48;5;236m' <<<\"\$raw\" | grep -q '▶'"
 tm kill-window -t work:numbers
@@ -332,6 +332,8 @@ p2=$(hpos) last=${p2#*-} last=${last%% *}
 check "End shows the bottom: the ads ($p2)" "[[ $last == \${p2##* } ]] && hscreen | grep -q 'Install playwright-mcp'"
 tm send-keys -t work:helpw Home
 check "Home goes back to the top" "hwait ' 1-' && hscreen | grep -q 'C H E A T   S H E E T'"
+# This short, there's no room to pin the ads under a few rows of words: they scroll with them.
+check "too short to pin the ads, they scroll along with the words" "! hscreen | grep -q '╔═░▒▓'"
 tm resize-window -t work:helpw -x 130 -y 40; sleep 1
 tm send-keys -t work:helpw i
 check "i asks before installing, showing what it would run" "hwait 'yes, run it' && hscreen | grep -q 'touch $T/installed'"
@@ -349,6 +351,25 @@ tm send-keys -t work:helpw y
 pwinstalled() { for _ in $(seq 1 30); do [[ -e $T/pw-installed ]] && return 0; sleep 0.2; done; return 1; }
 check "and y runs it in a new tmux window of its own" "pwinstalled && tm list-windows -F '#{window_name}' | grep -qx playwright-mcp"
 tm kill-window -t work:playwright-mcp 2>/dev/null
+# Tall enough, the ads stay put at the bottom and only the words above them scroll.
+tm resize-window -t work:helpw -x 160 -y 50; sleep 1.5
+tm send-keys -t work:helpw Home; sleep 0.5
+hfoot() { hscreen | grep -n '' | sed -n '/╔═░▒▓/,$p' | head -n -3; } # the ads, with their row numbers
+f0=$(hfoot) q0=$(hpos)
+check "a taller page pins the ads at the bottom, just above the bar ($q0)" "[[ -n \$f0 && \$q0 == 1-* ]] && hscreen | tail -5 | head -1 | grep -q '╚═*╝░' && hscreen | grep -q 'C H E A T   S H E E T'"
+check "and its counter counts only the words above them" "(( \${q0##* } < \${p0##* } )) && [[ \$(hscreen | grep -o '[0-9]*-[0-9]* of [0-9]* ▼') ]]"
+tm send-keys -t work:helpw j
+check "j scrolls the words, and the ads stay on the same rows" "hwait '▲ 2-' && [[ \$(hfoot) == \"\$f0\" ]]"
+tm send-keys -t work:helpw NPage; sleep 0.5
+q1=$(hpos)
+check "so does PgDn ($q1)" "(( \${q1%%-*} > 2 )) && [[ \$(hfoot) == \"\$f0\" ]] && hwhole && ! hscreen | grep -q 'C H E A T   S H E E T'"
+tm send-keys -t work:helpw End; sleep 0.5
+q2=$(hpos) last=${q2#*-} last=${last%% *}
+check "End shows the last of the words, the ads still under them ($q2)" "[[ $last == \${q2##* } ]] && [[ \$(hfoot) == \"\$f0\" ]]"
+tm send-keys -t work:helpw i
+check "and their buttons still work there: i asks" "hwait 'yes, run it'"
+tm send-keys -t work:helpw n
+check "n says no" "hwait 'install cancelled' && [[ \$(hfoot) == \"\$f0\" ]]"
 tm resize-window -t work:helpw -x 90 -y 30; sleep 1.5
 check "a resize redraws it to the new size" "hwhole && [[ \$(hscreen | head -1 | awk '{print length}') == 90 && \$(hscreen | wc -l) == 30 ]] && hscreen | grep -q 'HELP · HOW TO USE'"
 tm resize-window -t work:helpw -x 130 -y 40; sleep 0.5
@@ -366,6 +387,10 @@ for c in 60 80 100 160; do
 	check "the help page fits $c columns ($(awk '{w[length]=1} END{for (k in w) printf "%s ", k}' <<<"$out"))" "grep -q 'Claude Workforce' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$w ' ]]"
 	# Fitting by being cut short doesn't count: nothing on the page itself ends in a …
 	check "and none of its lines is cut short at $c" "! sed -n '/HELP · HOW TO USE/,\$p' <<<\"\$out\" | grep -q '…'"
+	# That's with the ads pinned under the words (200 lines leaves room). Too short for that,
+	# everything scrolls together, and fits the same.
+	out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=$c LINES=24 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+	check "and fits $c columns too short to pin the ads" "! grep -q '╔═░▒▓' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$w ' ]]"
 done
 # The pictures .art puts by the sections: beside the words on a wide page, above them on a
 # narrow one, whole either way.
@@ -384,9 +409,16 @@ beacon() { tm run-shell "REVIVE_PANEL_TICK=$1 REVIVE_PANEL_HELP=1 COLUMNS=160 LI
 check "the two agents' beacons take turns" "[[ \$(beacon 0 226) -ge 1 && \$(beacon 0 227) == 0 && \$(beacon 1 226) == 0 && \$(beacon 1 227) -ge 1 ]]"
 # A few suggestions to get going, not a reference: the keys are on the panel already.
 out=$(hframe 160)
-check "it has no key reference or column list" "! grep -qiE 'key reference|What the columns mean|Remember the old BBS|^║ +\\[[^]]+\\] {2,}[A-Z]' <<<\"\$out\" && grep -q 'shop-dev' <<<\"\$out\" && grep -q 'press B' <<<\"\$out\""
-hp=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=64 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
-check "at 160x64 it fits on one screen ($hp)" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]]"
+check "it has no key reference or column list" "! grep -qiE 'key reference|What the columns mean|Remember the old BBS|^║ +\\[[^]]+\\] {2,}[A-Z]' <<<\"\$out\" && grep -q 'shop-dev' <<<\"\$out\" && grep -qF '[B]ridge it' <<<\"\$out\""
+# At 160x64 it all fits on one screen: every word above the ads, the ads whole at the bottom.
+out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=64 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+hp=$(grep -o '[0-9]*-[0-9]* of [0-9]*' <<<"$out" | tail -1)
+check "at 160x64 it fits on one screen ($hp), the ads whole at the bottom" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]] && tail -5 <<<\"\$out\" | head -1 | grep -q '╚═*╝░' && grep -q 'C H E A T   S H E E T' <<<\"\$out\""
+# Its counter counts the words alone: the whole page (as a short one counts it) less the ads,
+# which run from the blank row over their tops to the shadow under them.
+all=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=24 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
+ads=$(($(wc -l <<<"$out") - $(grep -n '╔═░▒▓' <<<"$out" | head -1 | cut -d: -f1) - 1))
+check "and its counter counts only the words ($hp; the whole page is $all, the ads $ads rows)" "(( \${hp##* } + ads == \${all##* } ))"
 
 echo "context left"
 # Stand-in agents (copies of bash named claude and codex) with the records the real ones keep:
@@ -2167,10 +2199,10 @@ check "and P shows it for that one" "wait_tq 'PEEK · .*\[p\] hide'"
 # the key bar's.
 tn new-window -d -t ten:4 -n tr "env -u REVIVE_PANEL_PEEK REVIVE_PANEL_TIP_SECS=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
 # Each look takes one capture, coloured: the [U]pdate tip's line, plain and coloured, from it.
-tip_u() { for _ in $(seq 1 150); do tn capture-pane -e -p -t ten:tr >"$T/tip.cap"; grep -qF 'this computer and every attached server at once.' "$T/tip.cap" && return 0; sleep 0.2; done; return 1; }
+tip_u() { for _ in $(seq 1 150); do tn capture-pane -e -p -t ten:tr >"$T/tip.cap"; grep -qF 'Revive on all open sessions. Some user sessions require a manual update.' "$T/tip.cap" && return 0; sleep 0.2; done; return 1; }
 tip_u
-check "the tip moves on to the next one: [U]pdate" "sed 's/\x1b\[[0-9;]*m//g' $T/tip.cap | grep -q '^║  *\[U\]pdate this computer and every attached server at once\.  *║\$'"
-check "its key in the key bar's colours" "grep -F 'this computer and every attached' $T/tip.cap | grep -qF \$'\\e[93mU'"
+check "the tip moves on to the next one: [U]pdate" "sed 's/\x1b\[[0-9;]*m//g' $T/tip.cap | grep -q '^║  *\[U\]pdate Revive on all open sessions\. Some user sessions require a manual update\.  *║\$'"
+check "its key in the key bar's colours" "grep -F 'Revive on all open sessions' $T/tip.cap | grep -qF \$'\\e[93mU'"
 tn kill-server
 
 
