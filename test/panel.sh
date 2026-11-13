@@ -496,6 +496,37 @@ out=$(cframe 160)
 check "two codex in one folder: each its own rollout (75% and 80%), none twice" "[[ \$(grep -c 'codex .* 75% ║' <<<\"\$out\") == 1 && \$(grep -c 'codex .* 80% ║' <<<\"\$out\") == 1 ]]"
 check "a codex resume: the older rollout it writes (60%)" "[[ \$(grep -c 'codex .* 60% ║' <<<\"\$out\") == 1 ]]"
 tm kill-window -t work:cx2; tm kill-window -t work:cx3; tm kill-window -t work:cx4; tm kill-window -t work:cx5
+# A Codex waiting on agents it started shows "Waiting for ..." over an empty prompt, nothing
+# that reads as working: its rollout's wait_agent call with no output yet is WORKING. Once
+# answered, or the turn interrupted, or the call from before it started: WAITING ON YOU.
+mkdir -p "$T/cxa" "$CX/sessions/2026/01/03"
+tm new-window -d -t work -n cxa -c "$T/cxa" "env CODEX_HOME=$CX $T/bin/codex -c 'sleep 300; :'"
+sleep 1.5
+cxa=$CX/sessions/2026/01/03/rollout-2026-01-03T00-00-00-w.jsonl
+cxnow() { date -u +%Y-%m-%dT%H:%M:%S.123Z; }
+cxwait() { printf '{"timestamp":"%s","type":"response_item","payload":{"type":"function_call","name":"wait_agent","namespace":"multi_agent_v1","arguments":"{\\"targets\\": [\\"01a1d584-4b35-73e1-9fae-fd6021602908\\"]}","call_id":"%s"}}\n' "${2:-$(cxnow)}" "$1" >>"$cxa"; }
+cxout() { printf '{"timestamp":"%s","type":"response_item","payload":{"type":"function_call_output","call_id":"%s","output":"{\\"status\\":{},\\"timed_out\\":true}"}}\n' "$(cxnow)" "$1" >>"$cxa"; }
+{ cxmeta w "$(cd "$T/cxa" && pwd -P)"; cxtok 50000 250000; printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)"; } >"$cxa"
+cxwait c1
+# The agent it waits on writes a rollout of its own, for the same folder and newer: not the pane's.
+sleep 1
+{ printf '{"type":"session_meta","payload":{"id":"k","parent_thread_id":"w","timestamp":"%s","cwd":"%s","originator":"codex-tui","source":{"subagent":{"thread_spawn":{"parent_thread_id":"w","depth":1}}},"thread_source":"subagent"}}\n' "$(cxnow)" "$(cd "$T/cxa" && pwd -P)"; cxtok 200000 250000; } >"$CX/sessions/2026/01/03/rollout-2026-01-03T00-00-01-k.jsonl"
+out=$(cframe 160)
+check "a Codex waiting on its agents (a wait_agent call unanswered) is WORKING" "[[ \$(grep -c 'codex *. WORKING ' <<<\"\$out\") == 1 ]]"
+check "its context left is its own (80%), not that of the agent it waits on (20%)" "grep -q 'codex *. WORKING .* 80% ║' <<<\"\$out\""
+cxout c1
+out=$(cframe 160)
+check "the wait answered: WAITING ON YOU again" "[[ \$(grep -c 'codex *. WORKING ' <<<\"\$out\") == 0 ]] && grep -q 'codex *◆ WAITING ON YOU' <<<\"\$out\""
+cxwait c2
+out=$(cframe 160)
+check "waiting again after a timed-out wait: WORKING" "[[ \$(grep -c 'codex *. WORKING ' <<<\"\$out\") == 1 ]]"
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted"}}\n' "$(cxnow)" >>"$cxa"
+out=$(cframe 160)
+check "the turn interrupted while waiting: not WORKING" "[[ \$(grep -c 'codex *. WORKING ' <<<\"\$out\") == 0 ]]"
+cxwait c3 2026-01-01T00:00:00.000Z
+out=$(cframe 160)
+check "a wait call from before the codex started isn't its own: not WORKING" "[[ \$(grep -c 'codex *. WORKING ' <<<\"\$out\") == 0 ]]"
+tm kill-window -t work:cxa
 # Idle between turns while its agents work in the background (their output under its temp
 # folder written to just now): WORKING, and its peek says it still takes input.
 mkdir -p "$T/ltmp/claude-$UID/-w/s-1/tasks"

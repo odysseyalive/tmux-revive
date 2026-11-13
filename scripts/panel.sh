@@ -759,6 +759,32 @@ codex_ctx_file() { # a rollout file -> percent left
 			| "\(.info.last_token_usage.total_tokens) \(.info.model_context_window)"' 2>/dev/null | tail -n 1)
 	ctx_pct "${u:-}" "${w:-}"
 }
+# A Codex waiting on agents it started (its wait_agent tool, "wait" before 0.115) shows only
+# "• Waiting for ..." over an empty prompt, no "esc to interrupt", for as long as the wait
+# lasts: its turn goes on all the same. Its rollout says so: the call, with no output for it
+# yet and no end of the turn (task_complete, turn_aborted) after it. A call left so from
+# before the process started (one killed while waiting, then resumed) isn't this one's.
+declare -A CXW_STAMP=() CXW_VAL=()
+codex_wait_at() { # a rollout file -> when its unanswered wait call was made (epoch), or nothing
+	tail -c 1000000 "$1" 2>/dev/null | grep -E '"(function_call|function_call_output|task_complete|turn_aborted)"' |
+		jq -Rnr 'reduce (inputs | fromjson? | select(.payload | type == "object")) as $e ({};
+			$e.payload as $p
+			| if $p.type == "function_call" and ($p.name == "wait_agent" or $p.name == "wait") then .[$p.call_id // ""] = ($e.timestamp // "")
+			elif $p.type == "function_call_output" then del(.[$p.call_id // ""])
+			elif $p.type == "task_complete" or $p.type == "turn_aborted" then {}
+			else . end)
+			| [.[]] | last // empty | sub("\\.[0-9]+"; "") | fromdateiso8601? // empty' 2>/dev/null
+}
+codex_waits() { # codex_waits FILE PID: whether the codex PID is waiting on its agents
+	local st t
+	st=$(fstamp "$1")
+	[[ -n $st ]] || return 1
+	if [[ ${CXW_STAMP[$1]:-} != "$st" ]]; then CXW_VAL[$1]=$(codex_wait_at "$1") CXW_STAMP[$1]=$st; fi
+	t=${CXW_VAL[$1]}
+	[[ $t =~ ^[0-9]+$ ]] || return 1
+	proc_start "$2"
+	[[ -z $PSTART ]] || ((t >= PSTART - 2))
+}
 # Claude Code with no session record to be found (an older Claude Code, or one whose config
 # is somewhere this panel's environment doesn't say, as over a link's ssh): its transcript is
 # looked for from the process itself. Its config folder from its own environment; the session
@@ -841,6 +867,8 @@ proc_start() { # proc_start PID -> PSTART: when it started, in seconds since the
 	PSTART=$((${EPOCHSECONDS:-$(date +%s)} - 10#${BASH_REMATCH[2]:-0} * 86400 - 10#${BASH_REMATCH[4]:-0} * 3600 - 10#${BASH_REMATCH[5]} * 60 - 10#${BASH_REMATCH[6]}))
 	CX_START[$1]=$PSTART
 }
+# An agent a codex started (a subagent) has a rollout of its own, for the same folder and
+# written to while its codex waits on it: never a pane's. Its folder is kept as "-".
 codex_meta() { # codex_meta FILE...: CX_META[FILE]=its session's folder TAB its start (epoch), from line 1
 	local f
 	local -a l=() m=()
@@ -848,10 +876,10 @@ codex_meta() { # codex_meta FILE...: CX_META[FILE]=its session's folder TAB its 
 	((${#l[@]})) || return 0
 	# One line in and one out per file, a bad or empty first line too, so they stay paired.
 	mapfile -t m < <(for f in "${l[@]}"; do printf '%s\n' "$(head -n 1 -- "$f" 2>/dev/null)"; done |
-		jq -Rr '(fromjson? // {}) | (.payload // {}) | [(.cwd // "" | tostring),
+		jq -Rr '(fromjson? // {}) | (.payload // {}) | [(if .thread_source == "subagent" or (.source | type == "object" and has("subagent")) then "-" else .cwd // "" | tostring end),
 			((.timestamp // "") | tostring | sub("\\.[0-9]+"; "") | (fromdateiso8601? // ""))] | @tsv' 2>/dev/null)
 	# Kept only once read whole: a first line still being written is read again next time.
-	for f in "${!l[@]}"; do [[ ${m[f]:-} =~ ^/.*$'\t'[0-9]+$ ]] && CX_META[${l[f]}]=${m[f]}; done
+	for f in "${!l[@]}"; do [[ ${m[f]:-} =~ ^(/.*|-)$'\t'[0-9]+$ ]] && CX_META[${l[f]}]=${m[f]}; done
 }
 codex_rollout() { # codex_rollout PID -> ROLLOUT, or nothing
 	local pid=$1 e d="" cwd p c t f mt now best="" bt=0 st resume=0 owner os
@@ -928,10 +956,10 @@ ctx_reported() {
 	((${EPOCHSECONDS:-$(date +%s)} - at <= ${REVIVE_CTX_TTL:-600})) && CTX=$pct
 	return 0
 }
-ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its context window left, or nothing
+ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its context window left, or nothing; CX_FILE: a Codex's rollout
 	local kind=$1 apid=$2 pane=$3 f sid p
 	shift 3
-	CTX="" # set here, not printed: the files' answers are kept between frames
+	CTX="" CX_FILE="" # set here, not printed: the files' answers are kept between frames
 	case $kind in
 	claude)
 		claude_record "$apid"
@@ -958,10 +986,16 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 	codex)
 		for p in "$@"; do
 			while IFS= read -r f; do
-				[[ $f == */sessions/*/rollout-*.jsonl && -f $f ]] && { ctx_cached "$f" codex_ctx_file; return 0; }
+				[[ $f == */sessions/*/rollout-*.jsonl && -f $f ]] || continue
+				codex_meta "$f"
+				[[ ${CX_META[$f]:-} == -$'\t'* ]] && continue
+				CX_FILE=$f
+				ctx_cached "$f" codex_ctx_file
+				return 0
 			done < <(open_files "$p")
 		done
 		codex_rollout "$apid"
+		CX_FILE=$ROLLOUT
 		[[ -n $ROLLOUT ]] && ctx_cached "$ROLLOUT" codex_ctx_file ;;
 	esac
 }
@@ -1147,6 +1181,7 @@ agents_look() {
 		fi
 		# shellcheck disable=SC2086
 		ctx_left "$kind" "$apid" "${P_ID[i]}" ${A_TREE[j]}
+		[[ $kind == codex && $st == waiting && -n $CX_FILE ]] && codex_waits "$CX_FILE" "$apid" && st=working
 		P_STATE[i]=$st P_CTX[i]=$CTX
 	done
 	JQ_ST=() JQ_SID=()
