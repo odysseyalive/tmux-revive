@@ -2664,7 +2664,7 @@ EB_MAX=10000
 edit_box() {
 	local title=$1 hint=$2 txt=${3:-} cur k rest seq p c n ok=0 otty dirty=1 vtop=0 more fd cpid
 	local w h th tw top left
-	local -a VS VN
+	local -a VS VN PS PE PC
 	text_clean txt
 	txt=${txt:0:EB_MAX} cur=${#txt}
 	# Enter (CR) told apart from Ctrl-J (LF), and Ctrl-C a key: the terminal turns neither into
@@ -2789,15 +2789,87 @@ eb_move() { # eb_move KEY: Up, Down, PgUp, PgDn (as their sequences), Home, End
 	((col > EM)) && col=$EM
 	cur=$((VS[t] + col))
 }
+# The box's frame: its border in a bright colour of the terminal's own, and its title on a
+# fixed band, as QBAND is (a palette background hid the text on some). EBC, set for one call
+# (EBC=m edit_box ...): m, magenta for answering a question; otherwise blue-cyan, as a message.
+# The text inside is on the terminal's own background, as the panel's is.
+# Words it colours as they're written (display only; REPLY is the text as typed): a /skill
+# (bold yellow), an @name or @path (cyan), `code` (green), a URL (magenta, underlined).
+EB_SLASH="$B$BYEL" EB_AT=$BCYN EB_CODE=$BGRN EB_URL="$e[4m$BMAG"
+EB_RE="[[:space:](](/[[:alnum:]_:-]+)|[[:space:](](@[^[:space:]\`]+)|(\`[^\`"$'\n'"]*\`)|(https?://[^[:space:]\`]+)"
+eb_paint() { # -> PS, PE, PC: the words to colour on the rows on show, where each starts and ends in txt, and its colour
+	local n=${#VS[@]} a b j last ls le p q end c0 seg rest m x t tok st col
+	PS=() PE=() PC=()
+	((n)) || return 0
+	last=$((vtop + th - 1))
+	((last >= n)) && last=$((n - 1))
+	a=${VS[vtop]} b=$((VS[last] + VN[last]))
+	# Only the text near the rows on show is looked at: back to the start of the line the first
+	# is part of, on to the end of the last's (a line wraps onto many rows).
+	for ((j = vtop; j > 0 && VS[j] == VS[j - 1] + VN[j - 1]; j--)); do :; done
+	ls=${VS[j]}
+	for ((j = last; j + 1 < n && VS[j + 1] == VS[j] + VN[j]; j++)); do :; done
+	le=$((VS[j] + VN[j]))
+	p=$a c0=" "
+	if ((a > ls)); then
+		# Inside `code` that started on a row above: an odd number of backticks before it.
+		t=${txt:ls:a-ls} x=${t//\`/} c0=x
+		if (((${#t} - ${#x}) % 2)); then
+			t=${txt:a:le-a} x=${t%%\`*}
+			((${#x} < ${#t})) && PS+=("$a") PE+=($((a + ${#x} + 1))) PC+=("$EB_CODE") p=$((a + ${#x} + 1))
+		fi
+		if ((p == a)); then
+			# Otherwise from the start of the word the first row starts in (a URL runs on).
+			j=$((a - ls))
+			((j > 1000)) && j=1000
+			t=${txt:a-j:j} x=${t##*[[:space:]\`]}
+			p=$((a - ${#x}))
+			[[ $p == "$ls" || ${txt:p-1:1} == [[:space:]\(] ]] && c0=" "
+		fi
+	fi
+	end=$((b + 2000))
+	((end > le)) && end=$le
+	seg=${txt:p:end-p} q=0
+	while ((p + q < b)); do
+		# rest[0] stands for the character before seg[q]: a space if a word may start after it.
+		# Looked for in the next 256 characters, as matching costs by the length; in all the
+		# rest when that might cut a word, or `code`, short.
+		rest=$c0${seg:q:256} m="" x=""
+		[[ $rest =~ $EB_RE ]] && m=${BASH_REMATCH[0]} x=${rest%%"$m"*}
+		if ((${#rest} > 256)) && [[ -z $m || $x == *\`* || $((${#x} + ${#m})) -ge ${#rest} ]]; then
+			rest=$c0${seg:q}
+			[[ $rest =~ $EB_RE ]] || break
+			m=${BASH_REMATCH[0]} x=${rest%%"$m"*}
+		fi
+		[[ -n $m ]] || break
+		st=$((p + q + ${#x} - 1))
+		q=$((q + ${#x} - 1 + ${#m})) c0=x
+		if [[ -n ${BASH_REMATCH[1]} ]]; then
+			# A /skill ends the word: not /usr/bin, nor /notes.txt.
+			tok=${BASH_REMATCH[1]} st=$((st + 1)) t=${seg:q:2}
+			[[ -z $t || $t == [[:space:],\;!?\)\"\']* || $t == . || $t == .[[:space:]] ]] || continue
+			while [[ $tok == *: ]]; do tok=${tok%:}; done
+			col=$EB_SLASH
+		elif [[ -n ${BASH_REMATCH[3]} ]]; then tok=$m col=$EB_CODE
+		else
+			if [[ -n ${BASH_REMATCH[2]} ]]; then tok=${BASH_REMATCH[2]} st=$((st + 1)) col=$EB_AT; else tok=$m col=$EB_URL; fi
+			while [[ $tok == *[.,\;:!?\)\"\'] ]]; do tok=${tok%?}; done
+		fi
+		((${#tok} > 1)) || continue
+		PS+=("$st") PE+=($((st + ${#tok}))) PC+=("$col")
+	done
+}
 eb_draw() { # the box, centred over the panel, as pick draws its own; the cursor where it writes
-	local i j r s buf edge bg="$e[44m" row col
+	local i j k r s t buf edge row col rs len pos from to fc=$BCYN band=25
+	[[ ${EBC:-} == m ]] && fc=$BMAG band=90
+	local tb="$e[48;5;${band}m" tf="$e[38;5;${band}m"
 	[[ -n $TCOLS ]] || { TCOLS=$(tput cols 2>/dev/null || echo 100) TLINES=$(tput lines 2>/dev/null || echo 40); PREV=(); draw; dirty=1; }
 	w=$((TCOLS - 8)) h=$((TLINES - 6))
 	((w > 100)) && w=100
 	((w < 30)) && w=$((TCOLS - 2))
 	((h > 24)) && h=24
-	((h < 6)) && h=$((TLINES - 1))
-	th=$((h - 3)) tw=$((w - 4))
+	((h < 7)) && h=$((TLINES - 1))
+	th=$((h - 4)) tw=$((w - 4))
 	((th < 1)) && th=1
 	top=$(((TLINES - h) / 2)) left=$(((TCOLS - w) / 2))
 	((top < 1)) && top=1
@@ -2805,25 +2877,46 @@ eb_draw() { # the box, centred over the panel, as pick draws its own; the cursor
 	eb_line
 	((EL < vtop)) && vtop=$EL
 	((EL >= vtop + th)) && vtop=$((EL - th + 1))
+	eb_paint
+	# The title on its band, faded in and out with shade blocks, as a section's is.
 	fld "$title" $((w - 14))
 	s=${FLD%"${FLD##*[! ]}"}
 	rep ═ $((w - ${#s} - 11))
-	buf="$e[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $s $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
+	buf="$e[$top;${left}H$fc╔═$R$tf░▒▓$tb$B$BWHT $s $R$tf▓▒░$R$fc$REP╗$R"
+	k=0
 	for ((r = 0; r < th; r++)); do
-		j=$((vtop + r)) s=""
-		((j < ${#VS[@]})) && { s=${txt:VS[j]:VN[j]}; s=${s//$'\t'/ }; }
-		fld "$s" "$tw"
-		edge="║"
-		((r == 0 && vtop > 0)) && edge="$BYEL▲$BWHT"
-		((r == th - 1 && vtop + th < ${#VS[@]})) && edge="$BYEL▼$BWHT"
-		buf+="$e[$((top + 1 + r));${left}H$bg$BWHT║ $FLD $edge$R$GRY░$R"
+		j=$((vtop + r)) s="" len=0
+		if ((j < ${#VS[@]})); then
+			rs=${VS[j]} len=${VN[j]}
+			t=${txt:rs:len}
+			t=${t//$'\t'/ }
+			# The coloured words on this row, or the part of one that's on it.
+			while ((k < ${#PS[@]} && PE[k] <= rs)); do ((k++)); done
+			pos=0
+			for ((i = k; i < ${#PS[@]} && PS[i] < rs + len; i++)); do
+				from=$((PS[i] - rs)) to=$((PE[i] - rs))
+				((from < 0)) && from=0
+				((to > len)) && to=$len
+				s+=${t:pos:from-pos}${PC[i]}${t:from:to-from}$R
+				pos=$to
+			done
+			s+=${t:pos}
+		fi
+		printf -v t '%*s' $((tw - len)) ''
+		edge="$fc║"
+		((r == 0 && vtop > 0)) && edge="$BYEL▲"
+		((r == th - 1 && vtop + th < ${#VS[@]})) && edge="$BYEL▼"
+		buf+="$e[$((top + 1 + r));${left}H$fc║$R $s$t $edge$R$GRY▓$R"
 	done
+	rep ─ $((w - 2))
+	buf+="$e[$((top + 1 + th));${left}H$fc╟$tf$REP$fc╢$R$GRY▓$R"
 	fld "$hint" $((w - 4))
-	buf+="$e[$((top + 1 + th));${left}H$bg$BWHT║ $BCYN$FLD$BWHT ║$R$GRY░$R"
+	buf+="$e[$((top + 2 + th));${left}H$fc║$R $BCYN$FLD$R $fc║$R$GRY▓$R"
 	rep ═ $((w - 2))
-	buf+="$e[$((top + 2 + th));${left}H$bg$BWHT╚$REP╝$R$GRY░$R"
-	rep ░ "$w"
-	buf+="$e[$((top + 3 + th));$((left + 1))H$GRY$REP$R"
+	buf+="$e[$((top + 3 + th));${left}H$fc╚$REP╝$R$GRY▓$R"
+	# A shadow that darkens from the left, under the box and down its right side.
+	rep ▓ $((w - 2))
+	buf+="$e[$((top + 4 + th));$((left + 1))H$GRY░▒$REP$R"
 	row=$((top + 1 + EL - vtop)) col=$((left + 2 + cur - VS[EL]))
 	printf '%s' "$e[?2026h$buf$e[$row;${col}H$e[?25h$e[?2026l"
 }
@@ -3119,7 +3212,7 @@ free_answer() {
 	f=${QLAST//[$'\n\t']/} n=${#QFTXT}
 	((n > 20)) && n=20
 	((!QEMPTY && n)) && [[ -n $QLAST && ${f:0:n} == "${QFTXT:0:n}" ]] && t=$QLAST
-	if ! edit_box "ANSWER · $name" "Enter done · Alt-Enter new line · Esc closes" "$t"; then
+	if ! EBC=m edit_box "ANSWER · $name" "Enter done · Alt-Enter new line · Esc closes" "$t"; then
 		PREV=(); flash "closed; nothing was sent"; draw; return
 	fi
 	PREV=() t=$REPLY

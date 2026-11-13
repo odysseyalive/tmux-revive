@@ -82,6 +82,55 @@ for line in sys.stdin.read().split("\n"):
 print("\n".join(sorted(set(rows))))
 PY
 wcols() { python3 "$T/wcols.py" "$1"; }
+cat >"$T/cells.py" <<'PY'
+import re, sys
+# cells.py TEXT [WORD] < CAPTURE (capture-pane -e): on the first row holding TEXT, the looks of
+# WORD's characters, one "FG BG BOLD UNDERLINE" for each different look. FG and BG: an SGR
+# number, or 5;N for a 256-colour one; 0 the terminal's own. cells.py --box TITLE: the looks
+# of the text rows inside the box titled TITLE, from its top border down to its ╟ divider,
+# between its ║ edges.
+def parse(line, st):
+    cells = []
+    for m in re.finditer(r"\x1b\[([0-9;:]*)m|(.)", line):
+        if m.group(2) is not None:
+            cells.append((m.group(2),) + tuple(st)); continue
+        ps = (m.group(1) or "0").replace(":", ";").split(";"); i = 0
+        while i < len(ps):
+            p = int(ps[i] or 0)
+            if p == 0: st[:] = ["0", "0", 0, 0]
+            elif p == 1: st[2] = 1
+            elif p == 22: st[2] = 0
+            elif p == 4: st[3] = 1
+            elif p == 24: st[3] = 0
+            elif p == 39: st[0] = "0"
+            elif p == 49: st[1] = "0"
+            elif p in (38, 48):
+                n = 2 if ps[i + 1] == "5" else 4
+                st[0 if p == 38 else 1] = ";".join(ps[i + 1:i + 1 + n]); i += n
+            elif 30 <= p <= 37 or 90 <= p <= 97: st[0] = str(p)
+            elif 40 <= p <= 47 or 100 <= p <= 107: st[1] = str(p)
+            i += 1
+    return cells
+st = ["0", "0", 0, 0]
+rows = [parse(l, st) for l in sys.stdin.read().split("\n")]
+texts = ["".join(c[0] for c in r) for r in rows]
+sel = []
+if sys.argv[1] == "--box":
+    top = next(i for i, t in enumerate(texts) if sys.argv[2] in t)
+    a = texts[top].rindex("╔", 0, texts[top].index(sys.argv[2])); b = texts[top].index("╗", a)
+    for i in range(top + 1, len(rows)):
+        if texts[i][a] == "╟": break
+        sel += rows[i][a + 1:b]
+else:
+    r = next(i for i, t in enumerate(texts) if sys.argv[1] in t)
+    a = texts[r].index(sys.argv[2]); sel = rows[r][a:a + len(sys.argv[2])]
+seen = []
+for c in sel:
+    k = "%s %s %d %d" % c[1:]
+    if k not in seen: seen.append(k)
+print("\n".join(seen))
+PY
+cells() { python3 "$T/cells.py" "$@"; }
 
 tm new-session -d -s work -x 130 -y 40 "bash --norc --noprofile"
 # Every panel here has the stand-in installer, or U would run the real one: stop if not.
@@ -1028,11 +1077,14 @@ check "Enter puts it in the free-text choice as one paste, line breaks and all, 
 # first (Ctrl-U), then the new answer pasted.
 tm send-keys -t work:qpanel E
 check "E again: the box holds the answer it put there" "wait_q '║ Line two' 15 && qhas '║ >my custom answér'"
-tm send-keys -t work:qpanel -l ' more'; tm send-keys -t work:qpanel Enter
-want+=' more'
+tm send-keys -t work:qpanel -l ' more /review @a.md'
+check "the answer's box is framed in magenta, the asking colour, its /skill coloured" "wait_q 'more /review' 15 && [[ \$(qcap | cells 'ANSWER · asker' '╔═░') == \$'95 0 0 0\\n5;90 0 0 0' && \$(qcap | cells 'ANSWER · asker' 'ANSWER') == '97 5;90 1 0' && \$(qcap | cells 'more /review' '/review') == '93 0 1 0' ]]"
+tm send-keys -t work:qpanel Enter
+want+=' more /review @a.md'
 check "the changed answer replaces it" "wait_q '         three more' 15 && grep -qxF -- \"paste:\$(printf %q \"\$want\")\" $T/ans2.keys && [[ ! -e $T/ans2 ]]"
 tm send-keys -t work:qpanel Enter
 check "your own Enter then picks it: the answer arrives exactly, line breaks included" "for _ in \$(seq 1 25); do [[ -s $T/ans2 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans2 2>/dev/null) == \"custom:\$want\" ]]"
+check "and nothing the box coloured carries a colour code" "! grep -q \$'\\e' $T/ans2 && ! grep -q '\\[[0-9;]*m' $T/ans2 && grep -q '^paste:' $T/ans2.keys && ! grep '^paste:' $T/ans2.keys | grep -qE '\\\\E|\\[[0-9;]*m'"
 # A dialog with no free-text choice: letters go to it as they always have.
 wait_q 'PEEK · asker' 30 >/dev/null # done answering the last one
 tm respawn-pane -k -t work:asker "$T/bin/codex $T/ask.sh $T/ans8 nofree"
@@ -1081,9 +1133,22 @@ mscreen() { tm capture-pane -p -t work:mpanel; }
 for _ in $(seq 1 30); do mscreen | grep -q '▶ mrecv' && break; tm send-keys -t work:mpanel Down; sleep 0.3; done
 tm send-keys -t work:mpanel m; sleep 0.5
 tm send-keys -t work:mpanel -l 'a note in'; tm send-keys -t work:mpanel C-j
-tm send-keys -t work:mpanel -l 'two lines'; sleep 0.3
+tm send-keys -t work:mpanel -l 'two lines'; tm send-keys -t work:mpanel C-j
+# Words the box colours as they're written, and only on the screen: a /skill, an @path, `code`
+# and a URL, the `code` running on from one row onto the next.
+tok='run /review on @src/a.md, then `make test` per https://example.com/docs. or /usr/bin'
+tm send-keys -t work:mpanel -l "$tok \`one two three four five six seven eight nine ten eleven twelve\` x"; sleep 0.8
+mcap() { tm capture-pane -e -p -t work:mpanel; }
+check "the box's frame stands out: its border bright, its title on a fixed band, a shade down its right side and under it" "wait_ok 'mscreen | grep -q \"eleven twelve\"' && [[ \$(mcap | cells 'MESSAGE TO' '╔═░') == \$'96 0 0 0\\n5;25 0 0 0' && \$(mcap | cells 'MESSAGE TO' 'MESSAGE TO') == '97 5;25 1 0' && \$(mcap | cells 'MESSAGE TO' '░▒▓ MESSAGE') == \$'5;25 0 0 0\\n97 5;25 1 0' && \$(mcap | cells 'Enter sends' '║▓') == \$'96 0 0 0\\n90 0 0 0' ]] && mscreen | grep -q '╚═*╝▓' && mscreen | grep -q '░▒▓▓▓▓▓▓'"
+check "the text rows have no background of their own, as the panel's text hasn't" "mcap | cells --box 'MESSAGE TO' | grep -q . && ! mcap | cells --box 'MESSAGE TO' | grep -qv '^[^ ]* 0 '"
+check "a /skill is bold yellow, the text by it plain" "[[ \$(mcap | cells '/review' '/review') == '93 0 1 0' && \$(mcap | cells '/review' 'run ') == '0 0 0 0' && \$(mcap | cells '/review' ' on ') == '0 0 0 0' ]]"
+check "a path that isn't a /skill isn't coloured" "[[ \$(mcap | cells '/usr/bin' '/usr/bin') == '0 0 0 0' ]]"
+check "an @path is cyan" "[[ \$(mcap | cells '@src/a.md' '@src/a.md') == '96 0 0 0' && \$(mcap | cells '@src/a.md' ', then') == '0 0 0 0' ]]"
+check "\`code\` is green, on both rows when it wraps" "[[ \$(mcap | cells '\`make test\`' '\`make test\`') == '92 0 0 0' && \$(mcap | cells '\`one' '\`one') == '92 0 0 0' && \$(mcap | cells 'twelve\` x' 'twelve\`') == '92 0 0 0' && \$(mcap | cells 'twelve\` x' ' x') == '0 0 0 0' ]] && ! mscreen | grep -q 'one.*twelve'"
+check "a URL is magenta and underlined, without the full stop after it" "[[ \$(mcap | cells 'https://' 'https://example.com/docs') == '95 0 0 1' && \$(mcap | cells 'https://' 'docs. ') == \$'95 0 0 1\\n0 0 0 0' ]]"
 tm send-keys -t work:mpanel Enter
 check "M sends a message of several lines, whole" "for _ in \$(seq 1 30); do grep -q '^two lines\$' $AGENT_SAY_MAILBOX 2>/dev/null && break; sleep 0.2; done; grep -A2 -- '^## \\[panel -> ' $AGENT_SAY_MAILBOX | grep -qx 'a note in' && grep -A2 -- '^## \\[panel -> ' $AGENT_SAY_MAILBOX | grep -qx 'two lines'"
+check "the coloured words go as typed: no colour codes in the message" "grep -qF -- \"\$tok \\\`one two\" $AGENT_SAY_MAILBOX && grep -qF -- 'eleven twelve\` x' $AGENT_SAY_MAILBOX && ! grep -q \$'\\e' $AGENT_SAY_MAILBOX && ! grep -q '\\[[0-9;]*m' $AGENT_SAY_MAILBOX"
 tm send-keys -t work:mpanel q
 tm kill-window -t work:mrecv
 

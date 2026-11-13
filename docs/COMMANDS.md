@@ -205,8 +205,9 @@ in its pane, typed answers included, until it has its answer or you press
 anything you ticked, until you come back and submit it. On a free-form choice
 ("Type something"), **j** and **k** still move. Press **E** to write your answer
 in a box: **Enter** puts it in the choice without sending it, **Alt-Enter** starts
-a new line, and **Esc** closes the box. Then move on as usual. For a real chat with
-the agent, **O** takes you to its pane.
+a new line, and **Esc** closes the box. The box colours `/skill` commands,
+`@` names, backtick code and links as you write; only the plain text is sent.
+Then move on as usual. For a real chat with the agent, **O** takes you to its pane.
 
 You don't need the panel open to hear about questions. When any agent starts
 asking one, tmux shows a message naming the pane and rings the bell, once per
