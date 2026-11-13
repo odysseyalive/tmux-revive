@@ -1566,6 +1566,7 @@ outside_ssh() {
 
 # ------------------------------------------------------------------ sections
 SEL=0 SEL_ID="" PEEK=${REVIVE_PANEL_PEEK:-0} PEEK_SEL="" PEEK_ALL=${REVIVE_PANEL_PEEK:-0} ANSWERING=0 FLASH="" FLASH_T=0 TICK=0
+QFREE=0 QFREEN="" QEDIT=0 QON=0 QSEEN=0 # answering a free-text choice: see question_free
 # nav: this frame only moves the selection. Then the messages, links and saves (MSG, SIDE) are
 # kept from the last frame, unless MSG_OLD says they're due a look (new panes were gathered,
 # or they were hidden). TCOLS and TLINES: the terminal's size, asked again with the panes.
@@ -1594,8 +1595,8 @@ tab_next() { # tab_next [STEP] -> NEXTW: the window J (STEP 1) or K (3) moves th
 # cyan, as its title band, or bright magenta on a question, the asking colour; the others are
 # FRAME. "[⇧J] focus" (Shift-J, not j) goes on the window J moves to next and "[⇧K] focus" on the
 # one K moves to, both going round; with two windows they're the same one, "[⇧J/⇧K] focus". None
-# with one window, nor while answering, where every key but Ctrl-] goes to the agent and the
-# question says so.
+# with one window, nor while answering, where keys go to the agent and the question says
+# how to leave.
 wstyle() {
 	WF=$FOCUS WB=("$FRAME" "$FRAME" "$FRAME" "$FRAME") WK=("" "" "" "")
 	((ANSWERING)) && WF=1
@@ -1997,7 +1998,10 @@ peek_rows() {
 draw_question() { # draw_question LINES
 	local id=${P_ID[SEL]:-} i keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} ft=""
 	if ((ANSWERING)); then
-		kcs "Esc" " or" "Ctrl-]" " leaves"
+		# On a free-text choice, [E]nter goes into its box; in it, Esc only leaves the box.
+		if ((QEDIT)); then kcs "Esc" " leaves the edit box" "Ctrl-]" " leaves"
+		elif ((QON)); then kcs "E" "nter" "Esc" " or" "Ctrl-]" " leaves"
+		else kcs "Esc" " or" "Ctrl-]" " leaves"; fi
 		keys="$B${BMAG}keys go to $name$R  $KC"
 	else
 		if [[ -n ${P_HOST[SEL]:-} ]]; then kcs Enter " answer"; else kcs Enter " answer" O " open the chat"; fi
@@ -2484,8 +2488,14 @@ draw() {
 		elif ((VLEN + 9 <= IW)); then k+="$GRY↑↓ scroll$R"; fi
 	elif ((VLEN + 15 <= IW)); then k+="$GRY↑↓ 0-9 select$R"; fi
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
-	# While answering every key goes to the agent, so the bar says that and how to stop.
-	((ANSWERING)) && k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG every key goes to its question ·$R $B${BYEL}Esc$R$BMAG or $B${BYEL}Ctrl-]$R$BMAG leaves$R"
+	# While answering keys go to the agent, so the bar says that and how to stop.
+	if ((ANSWERING)); then
+		k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG keys go to its question ·$R "
+		if ((QEDIT)); then k+="$B${BYEL}Esc$R$BMAG leaves the edit box · $B${BYEL}Ctrl-]$R$BMAG leaves$R"
+		else k+="$B${BYEL}Esc$R$BMAG or $B${BYEL}Ctrl-]$R$BMAG leaves$R"; fi
+		# A key the panel kept from the question (a letter before [E]nter) says why.
+		[[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)) && k="$BGBLU$B$BWHT $FLASH $R  $k"
+	fi
 	rep ═ $((W - 2))
 	line "$FRAME╠$REP╣$R"
 	row "$k"
@@ -2802,8 +2812,30 @@ question_look() {
 	fi
 	printf -v QSHOT '%s\n' "${QL[@]}"
 }
+# question_free -> QFREE, QFREEN, QON; QEDIT off: Claude Code's last choice is often a free-text
+# box ("5. Type something.", "3. [ ] Type something"), where any letter is typed, j and k too.
+# Once seen, j and k move and letters wait for E, whatever row the panel last saw lit: that
+# view lags the keys still queued. Its number is kept, since typing replaces the label. QON
+# (the cursor on it, as last seen) only picks the hint. The box is left when a look since E
+# saw the cursor on it and this one sees it on another row.
+question_free() {
+	local i cur=""
+	for ((i = ${#QL[@]} - 1; i >= 0; i--)); do
+		[[ ${QL[i]} =~ ^[[:space:]│]*(❯[[:space:]]*)?([0-9]+)\.[[:space:]]*(\[.\][[:space:]]*)?Type\ something\.?[[:space:]]*$ ]] && QFREE=1 QFREEN=${BASH_REMATCH[2]}
+		if [[ -z $cur && ${QL[i]} =~ ^[[:space:]│]*❯ ]]; then
+			cur=x
+			[[ ${QL[i]} =~ ^[[:space:]│]*❯[[:space:]]*([0-9]+)\. ]] && cur=${BASH_REMATCH[1]}
+		fi
+		[[ ${QL[i]} =~ ^[[:space:]│]*(❯[[:space:]]*)?1\.[[:space:]] ]] && break
+	done
+	QON=0
+	[[ -n $QFREEN && $cur == "$QFREEN" ]] && QON=1
+	if ((QEDIT && QON)); then QSEEN=1
+	elif ((QEDIT && QSEEN)) && [[ -n $cur ]]; then QEDIT=0 QSEEN=0; fi
+}
 
-# answer: every key goes to the selected pane's question, as if typed in its own console.
+# answer: keys go to the selected pane's question, as if typed in its own console (but for
+# a free-text choice's letters, which wait for E: see question_free).
 # The question is drawn again when the agent's screen changes: looked at every 40 ms for half
 # a second after a key is sent, to show it react, and every 0.3 s otherwise. Esc, Ctrl-] (or
 # Ctrl-C) leave without sending anything; it ends by itself once the pane stops asking.
@@ -2816,6 +2848,7 @@ answer() {
 	[[ -n $h ]] && id=${P_RID[SEL]:-}
 	[[ $id =~ ^%[0-9]+$ ]] || return 0
 	ANSWERING=1 PEEK_EVERY=0 PREV=() ATOP=() QL=() QRAW=() QSHOT="" PB=0 # the dialog, at the bottom
+	QFREE=0 QFREEN="" QEDIT=0 QON=0 QSEEN=0 FLASH="" # the bar shows only this question's flash
 	trap 'INTR=1' INT
 	while :; do
 		# Keys already waiting behind the ones just sent go first, so they reach the agent together
@@ -2827,7 +2860,8 @@ answer() {
 			tl=${EPOCHREALTIME//[.,]/} # in µs: when this look began
 			question_look
 			# Drawn only when there's something new to show (a resize empties PREV).
-			if [[ $QSHOT != "$shot" || ${#PREV[@]} == 0 ]]; then draw; shot=$QSHOT; fi
+			if [[ $QSHOT != "$shot" || ${#PREV[@]} == 0 ]]; then question_free; draw; shot=$QSHOT
+			elif [[ -n $FLASH ]] && ((SECONDS - FLASH_T >= 5)); then FLASH=""; draw; fi # its time is up
 			if ((idle)); then
 				# Still asking? Twice not, in a row, means answered (one look can catch a redraw).
 				if [[ -n $h ]]; then
@@ -2860,9 +2894,21 @@ answer() {
 			fi
 		fi
 		TOKS=()
-		case $k in
+		# A dialog with a free-text choice, not in its box: j and k move, E goes into the box,
+		# other letters and BSpace stay here. A digit picks a choice and Space may tick one, but
+		# not on the box itself, where they would be typed. Each key alone, so "jj" isn't sent as text.
+		if ((QFREE && !QEDIT)) && [[ -n $k && ($k != [[:cntrl:]] || $k == $'\x7f' || $k == $'\b') ]]; then
+			case $k in
+			j) TOKS=(Down) ;;
+			k) TOKS=(Up) ;;
+			[eE]) QEDIT=1 QSEEN=$QON FLASH=""; draw; continue ;;
+			[0-9]) ((QON)) || lit_tokens "$k" ;;
+			' ') ((QON)) || TOKS=(Space) ;; # it may tick a choice; on the box it would be typed
+			*) flash "[E]nter to type"; draw; continue ;;
+			esac
+		else case $k in
 		$'\x1d') break ;;                    # Ctrl-]
-		"" | $'\r' | $'\n') TOKS=(Enter) ;;
+		"" | $'\r' | $'\n') ((QEDIT)) && QEDIT=0 QSEEN=0; TOKS=(Enter) ;;
 		$'\t') TOKS=(Tab) ;;
 		$'\x7f' | $'\b') TOKS=(BSpace) ;;
 		$'\e')
@@ -2874,7 +2920,11 @@ answer() {
 			# would be told you declined. What you ticked stays there, sent only by its Submit.
 			# A sequence that came in too slowly to tell from Esc is let go of, not left
 			# for the panel to read as keys of its own.
-			"") while IFS= read -rsn1 -t 0.05 rest; do :; done; break ;;
+			# In a free-text box, Esc only leaves the box.
+			"")
+				while IFS= read -rsn1 -t 0.05 rest; do :; done
+				((QEDIT)) && { QEDIT=0 QSEEN=0; draw; continue; }
+				break ;;
 			'[') while IFS= read -rsn1 -t 0.03 rest; do seq+=$rest; [[ $rest == [@-~] || ${#seq} -gt 8 ]] && break; done ;;
 			O) IFS= read -rsn1 -t 0.03 seq ;;
 			esac
@@ -2900,13 +2950,13 @@ answer() {
 			done
 			clean txt
 			lit_tokens "$txt" ;;
-		esac
+		esac; fi
 		((${#TOKS[@]})) || continue
 		send_answer "${TOKS[@]}" || { why=failed; break; }
 		[[ -n $h ]] && peek_drop "$h" "$id"
 		sent=1 poll=12
 	done
-	ANSWERING=0 PEEK_EVERY=$REFRESH PREV=() ATOP=()
+	ANSWERING=0 PEEK_EVERY=$REFRESH PREV=() ATOP=() QFREE=0 QFREEN="" QEDIT=0 QON=0 QSEEN=0
 	trap 'exit 0' INT
 	case $why in
 	left) flash "left the question; nothing more was sent" ;;

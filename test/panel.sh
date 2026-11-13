@@ -780,9 +780,11 @@ band() { [[ $1 == *'48;5;31m'* ]]; }
 mkdir -p "$T/bin" && cp "$(command -v bash)" "$T/bin/codex"
 cat >"$T/ask.sh" <<'ASK'
 # A stand-in agent asking a question, as Claude Code draws one: history above, a rule, the
-# question and its choices. Every key it reads goes to OUT.keys; the answer to OUT.
+# question and its choices. Every key it reads goes to OUT.keys; the answer to OUT. With
+# nofree, choice 5 is a plain one (as in Codex's), not a free-text box.
 out=$1 sel=1 n=6 typed=""
 opts=("Yes" "No" "Maybe" "Later" "Type something." "Chat about this")
+[[ ${2:-} == nofree ]] && opts[4]="Not now"
 stty -icanon -echo
 show() {
 	clear
@@ -890,14 +892,44 @@ check "answered, the view goes back to the peek" "wait_q 'PEEK · asker' 30 && !
 tm respawn-pane -k -t work:asker "$T/bin/codex $T/ask.sh $T/ans2"
 wait_q 'QUESTION · asker' 30 >/dev/null
 tm send-keys -t work:qpanel Enter; wait_q 'ANSWERING asker' >/dev/null
-for _ in 1 2 3 4; do tm send-keys -t work:qpanel Down; sleep 0.4; done
-wait_q '❯ 5. Type something.' 15 >/dev/null
+check "off the free-text choice, no [E]nter" "qhas '❯ 1. Yes' && ! qhas '[E]nter'"
+# On a dialog with a free-text choice, j and k move, even when they come faster than the view:
+# one at a time, as Down and Up, never typed into the box.
+tm send-keys -t work:qpanel -l 'jjjj'
+check "j moves down, the keys queued or not, and none is typed" "wait_q '❯ 5. Type something.' 15 && ! grep -qxE '[jk]' $T/ans2.keys"
+check "on the free-text choice, the question offers [E]nter" "wait_q '[E]nter' 15 && ! qhas 'leaves the edit box'"
+tm send-keys -t work:qpanel -l 'kkj'
+check "k and j across the free-text choice move too, none typed" "wait_q '❯ 4. Later' 15 && ! grep -qxE '[jk]' $T/ans2.keys && ! qhas '[E]nter'"
+tm send-keys -t work:qpanel -l 'j'; wait_q '❯ 5. Type something.' 15 >/dev/null
+tm send-keys -t work:qpanel -l 'x 3'; sleep 0.6
+check "before E, letters, Space and a digit on the free-text choice stay in the panel, which says why" "qhas '[E]nter to type' && qhas '❯ 5. Type something.' && ! grep -qxE \"x|3|[\\\\][ ]\" $T/ans2.keys && qhas 'ANSWERING asker'"
+tm send-keys -t work:qpanel E
+check "E enters it: Esc now leaves the edit box, and nothing is sent" "wait_q 'Esc leaves the edit box' 15 && qhas 'ANSWERING asker' && ! grep -qxE 'E|e' $T/ans2.keys"
+tm send-keys -t work:qpanel -l 'ab'
+check "in the edit box letters are typed" "wait_q '❯ 5. ab' 15"
+tm send-keys -t work:qpanel Escape
+esc=$(printf '%q' $'\e') # as the stand-in logs it
+check "Esc in the edit box leaves only the box: still answering, no Escape sent" "wait_q 'Esc or Ctrl-] leaves' 15 && qhas 'ANSWERING asker' && ! qhas 'left the question' && ! grep -qxF -- \"\$esc\" $T/ans2.keys"
+tm send-keys -t work:qpanel -l 'z'; sleep 0.6
+check "and letters stay in the panel again" "qhas '❯ 5. ab' && ! grep -qx z $T/ans2.keys"
+tm send-keys -t work:qpanel E; wait_q 'Esc leaves the edit box' 15 >/dev/null
+tm send-keys -t work:qpanel BSpace BSpace; sleep 0.3
 tm send-keys -t work:qpanel -l 'my custom answér'; sleep 0.3
 tm send-keys -t work:qpanel -l 'X'; sleep 0.3
 check "typed text shows in the question as it's typed" "wait_q 'my custom answérX' 15"
 tm send-keys -t work:qpanel BSpace; sleep 0.3
 tm send-keys -t work:qpanel Enter
 check "a custom answer arrives exactly as typed" "for _ in \$(seq 1 25); do [[ -s $T/ans2 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans2 2>/dev/null) == 'custom:my custom answér' ]]"
+# A dialog with no free-text choice: letters go to it as they always have.
+wait_q 'PEEK · asker' 30 >/dev/null # done answering the last one
+tm respawn-pane -k -t work:asker "$T/bin/codex $T/ask.sh $T/ans8 nofree"
+wait_q 'QUESTION · asker' 30 >/dev/null
+tm send-keys -t work:qpanel Enter; wait_q 'ANSWERING asker' >/dev/null
+for _ in 1 2 3 4; do tm send-keys -t work:qpanel Down; sleep 0.4; done
+wait_q '❯ 5. Not now' 15 >/dev/null
+tm send-keys -t work:qpanel -l 'jk'
+check "with no free-text choice, letters still go to the question, j and k too" "for _ in \$(seq 1 25); do grep -qx k $T/ans8.keys 2>/dev/null && break; sleep 0.2; done; grep -qx j $T/ans8.keys && grep -qx k $T/ans8.keys && ! qhas '[E]nter'"
+tm send-keys -t work:qpanel C-]; wait_q 'left the question' >/dev/null
 tm send-keys -t work:qpanel q
 tm kill-window -t work:asker
 # Answering looks at the agent's screen again right after a key is sent, not 0.3 s later; and a
@@ -913,7 +945,8 @@ for _ in $(seq 1 20); do sscreen | grep -q '▶ asker2' && break; tm send-keys -
 wait_s 'QUESTION · asker2' >/dev/null
 tm send-keys -t work:qshim Enter; wait_s 'ANSWERING asker2' >/dev/null
 for _ in 1 2 3 4; do tm send-keys -t work:qshim Down; sleep 0.4; done
-wait_s '❯ 5. Type something.' 15 >/dev/null; sleep 0.5
+wait_s '❯ 5. Type something.' 15 >/dev/null
+tm send-keys -t work:qshim E; wait_s 'Esc leaves the edit box' 15 >/dev/null; sleep 0.5
 caps() { grep -c "capture-pane -p -t $(tm display -p -t work:asker2 '#{pane_id}')\$" "$T/shim.log"; }
 c0=$(caps)
 tm send-keys -t work:qshim -l 'x'; sleep 0.45
@@ -940,6 +973,12 @@ msq() { bash -c 'e=$'"'"'\e'"'"' B=B BYEL=Y GRY=g DIM=d MAG=m BWHT=W BCYN=C BGRN
 	for i in "${!L[@]}"; do printf "%s|%s\n" "${QSTYLE[i]}" "${L[i]}"; done' _ "$ROOT/scripts/panel.sh" "$T/msq.txt"; }
 check "a multi-select with its cursor on Submit is still asking (Enter there answers it)" "[[ \$(msq | head -1) == asking ]]"
 check "a ticked choice stands out from the unticked ones" "msq | grep -qxF 'BG|  1. [✔] Apple' && msq | grep -qxF 'W|  2. [ ] Banana'"
+# Its free-text choice, unticked ("[ ]"), is found, and the cursor on Submit isn't on it.
+qfree() { bash -c 'source <(sed -n "/^question_free() {/,/^}/p" "$1"); QFREE=0 QFREEN="" QEDIT=0 QSEEN=0
+	mapfile -t QL <"$2"; question_free; echo "$QFREE $QFREEN $QON"' _ "$ROOT/scripts/panel.sh" "$T/msq.txt"; }
+check "a multi-select's free-text choice is found, the cursor on Submit off it" "[[ \$(qfree) == '1 3 0' ]]"
+sed -i 's/^  3\. \[ \] Type something$/❯ 3. [ ] Type something/; s/^❯    Submit$/     Submit/' "$T/msq.txt"
+check "and with the cursor on it, it's on it" "[[ \$(qfree) == '1 3 1' ]]"
 printf '%s\n' 'chat' "$(printf '─%.0s' {1..50})" '❯ do you want to see it' "$(printf '─%.0s' {1..50})" >"$T/msq.txt"
 check "the agent's own prompt, typed into, is still not a question" "[[ \$(msq | head -1) == waiting ]]"
 # The step after Submit (captured): no footer, only its own question.
