@@ -3418,12 +3418,17 @@ act() {
 	'?') help_view ;; # quoted: a bare ? would match every key
 	# A digit N goes to window N, as the # column and tmux's status bar number it: the first pane
 	# on this computer, top of the list down, whose window is N (with several sessions, the
-	# first session listed that has one). None there: the selection stays. Windows 10 and up,
+	# first session listed that has one). None there: the selection stays. 0 is window 10 when
+	# there's no window 0 (windows numbered from 1, as on a keyboard's row). Windows 11 and up,
 	# and linked computers' panes, are reached with the arrows (or j and k).
 	[0-9])
-		local w
+		local w n=$1
+		if [[ $n == 0 ]]; then
+			n=10
+			for w in "${!P_ID[@]}"; do [[ -z ${P_HOST[w]} && ${P_WP[w]%%.*} == 0 ]] && { n=0; break; }; done
+		fi
 		for w in "${!P_ID[@]}"; do
-			[[ -z ${P_HOST[w]} && ${P_WP[w]%%.*} == "$1" ]] && { SEL=$w HSEL=""; break; }
+			[[ -z ${P_HOST[w]} && ${P_WP[w]%%.*} == "$n" ]] && { SEL=$w HSEL=""; break; }
 		done ;;
 	up | down | pgup | pgdn | home | end) scroll "$1" ;;
 	# J: the focus to the next window drawn, round to the first (K: the one before).

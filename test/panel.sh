@@ -40,6 +40,7 @@ cleanup() {
 	tmux -L "revive-alert-$$" -f /dev/null kill-server 2>/dev/null
 	tmux -L "revive-panel-remote-$$" -f /dev/null kill-server 2>/dev/null
 	tmux -L "revive-panel-scroll-$$" -f /dev/null kill-server 2>/dev/null
+	tmux -L "revive-panel-ten-$$" -f /dev/null kill-server 2>/dev/null
 	[[ -n ${dpid:-} ]] && kill "$dpid" 2>/dev/null
 	rm -rf "$T"
 }
@@ -2104,6 +2105,25 @@ check "on this computer's pane the bar offers no fold" "! sscr | grep -qF '[F]' 
 tm_s F; wait_sp 'later-a' >/dev/null
 tm_s q
 sm kill-server
+
+# Windows numbered from 1 (base-index 1), as on the keyboard's row: 0 is window 10, since
+# there's no window 0. (The suite's own tmux has a window 0, where 0 picks it.)
+tn() { tmux -L "revive-panel-ten-$$" -f /dev/null "$@"; }
+tn new-session -d -s ten -x 160 -y 40 "sleep 300" \; set -g base-index 1 \; move-window -s ten:0 -t ten:1
+tn new-window -d -t ten:10 -n tenth "sleep 300"
+tn new-window -d -t ten:2 -n tp "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tscr() { tn capture-pane -p -t ten:tp; }
+wait_t() { for _ in $(seq 1 30); do tscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_t '[10.0]' >/dev/null
+tn send-keys -t ten:tp 0
+check "with no window 0, 0 selects window 10" "wait_t '[10.0] ▶'"
+tn send-keys -t ten:tp 1
+check "and 1 still window 1" "for _ in \$(seq 1 30); do tscr | grep -q '\[1\.0\] *▶' && break; sleep 0.2; done; tscr | grep -q '\[1\.0\] *▶'"
+# Left to itself, a panel starts with the peek hidden: its title only, offering [P]eek.
+tn send-keys -t ten:tp q; sleep 0.5
+tn new-window -d -t ten:3 -n tq "env -u REVIVE_PANEL_PEEK REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+check "by default the peek starts hidden, its title offering [P]eek" "for _ in \$(seq 1 30); do tn capture-pane -p -t ten:tq | grep -q 'PEEK · .*\[P\]eek' && break; sleep 0.2; done; tn capture-pane -p -t ten:tq | grep -q 'PEEK · .*\[P\]eek' && ! tn capture-pane -p -t ten:tq | grep -qF '[p] hide'"
+tn kill-server
 
 
 echo "$pass passed, $fail failed"

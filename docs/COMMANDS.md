@@ -162,7 +162,7 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 | Up / Down (`k` / `j`) | pick a pane (the list wraps around), or scroll the window you moved to |
 | PgUp / PgDn, Home / End | a page at a time, or to the top or bottom |
 | `J` / `K` | next window, or back: PANES, PEEK, MESSAGES, LINKS · SAVES |
-| `0`-`9` | go to that window's first pane |
+| `0`-`9` | go to that window's first pane (`0` is window 10 when there's no window 0) |
 | `O` | open the pane on this computer (a popup panel closes) |
 | `M` | message the pane's agent |
 | `N` | name the pane |
