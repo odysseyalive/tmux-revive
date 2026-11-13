@@ -42,6 +42,7 @@ cleanup() {
 	tmux -L "revive-panel-scroll-$$" -f /dev/null kill-server 2>/dev/null
 	tmux -L "revive-panel-ten-$$" -f /dev/null kill-server 2>/dev/null
 	tmux -L "revive-panel-detach-$$" -f /dev/null kill-server 2>/dev/null
+	tmux -L "revive-panel-grant-$$" -f /dev/null kill-server 2>/dev/null
 	[[ -n ${dpid:-} ]] && kill "$dpid" 2>/dev/null
 	rm -rf "$T"
 }
@@ -781,6 +782,75 @@ check "and G says there's nothing" "wait_a 'nothing waiting or approved'"
 akey q
 tm kill-window -t work:acc 2>/dev/null
 rm -rf "$T/mail/intros" "$T/mail/grants"* "$T/popup.log"
+# The real popup, on a client attached to a tmux of its own (work:gclient is its terminal):
+# once the code is typed, the popup stays open while the approval runs, so it's never an
+# empty box meanwhile. popbox < CAPTURE (capture-pane -e) [BG]: the popup on it, as "ROWS
+# BLANK BG", BLANK its rows that are nothing but its background BG; with none open, "none",
+# or "painted" when a row still has 20 blank cells in BG.
+cat >"$T/popbox.py" <<'PY'
+import re, sys
+bg, grid = "", []
+for line in sys.stdin.read().split("\n"):
+    cells = []
+    for m in re.finditer(r"\x1b\[([0-9;]*)m|(.)", line):
+        if m.group(2) is not None:
+            cells.append((m.group(2), bg))
+            continue
+        ps = (m.group(1) or "0").split(";")
+        i = 0
+        while i < len(ps):
+            p = int(ps[i] or 0)
+            if p in (0, 49): bg = ""
+            elif p in (38, 48):
+                n = 3 if ps[i + 1:i + 2] == ["5"] else 5
+                if p == 48: bg = ";".join(ps[i:i + n])
+                i += n - 1
+            elif 40 <= p <= 47 or 100 <= p <= 107: bg = str(p)
+            i += 1
+    grid.append(cells)
+text = ["".join(c for c, _ in r) for r in grid]
+top = next((y for y, t in enumerate(text) if re.search(r"┌─{60,}┐", t)), None)
+if top is None:
+    want = sys.argv[1] if len(sys.argv) > 1 else ""
+    painted = want and any(re.search(r"(?:\x00 ){20}", "".join(("\x00" if b == want else "\x01") + c for c, b in r)) for r in grid)
+    print("painted" if painted else "none")
+    sys.exit()
+m = re.search(r"┌─{60,}┐", text[top])
+x0, x1 = m.start(), m.end() - 1
+rows = blank = 0
+pbg = ""
+for y in range(top + 1, len(grid)):
+    if text[y][x0:x0 + 1] == "└": break
+    inner = grid[y][x0 + 1:x1]
+    rows += 1
+    if inner and all(c == " " and b for c, b in inner): blank += 1
+    pbg = pbg or (inner[0][1] if inner else "")
+print(rows, blank, pbg)
+PY
+G=$T/gmail gi=5555555555555555eeeeeeeeeeeeeeee
+mkdir -p "$G/intros/$gi/held" "$G/links/far.invalid" "$G/links/near.invalid"
+echo "s:$gi@far.invalid" >"$G/intros/$gi/from-session"; echo "s:to$gi@near.invalid" >"$G/intros/$gi/to-session"
+echo live-root@far.invalid >"$G/intros/$gi/from"; echo dev-root@near.invalid >"$G/intros/$gi/to"
+printf 'may I ask?' >"$G/intros/$gi/intro"; date +%s >"$G/intros/$gi/created"; echo hello >"$G/intros/$gi/held/1"
+printf 'live-root %s\n' $gi >"$G/links/far.invalid/sessions"; printf 'dev-root to%s\n' $gi >"$G/links/near.invalid/sessions"
+tg() { tmux -L "revive-panel-grant-$$" -f /dev/null "$@"; }
+tg new-session -d -s gt -x 120 -y 40 "env AGENT_SAY_SSH=false REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$G/mailbox.md REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n gclient "env -u TMUX TERM=tmux-256color tmux -L revive-panel-grant-$$ -f /dev/null attach -t gt"
+gscr() { tm capture-pane -p -t work:gclient "$@"; }
+wait_g() { for _ in $(seq 1 30); do gscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_g 'C O N T R O L' >/dev/null
+tg send-keys -t gt:0 g; wait_g 'WAITING' >/dev/null; tg send-keys -t gt:0 1; wait_g '1  Approve' >/dev/null; tg send-keys -t gt:0 1
+wait_g 'and press Enter' >/dev/null
+gcode=$(gscr | grep -oE 'Type [0-9]{4}' | grep -oE '[0-9]{4}')
+# agent-say's lock held a while (by a live "agent-say"), so the approval takes its time.
+(exec -a agent-say-hold sleep 30) & ghold=$!
+mkdir -p "$G/index.lock" && echo $ghold >"$G/index.lock/pid"
+tm send-keys -t work:gclient -l "$gcode"; tm send-keys -t work:gclient Enter; sleep 1.5 # the popup takes keys from the client
+read -r grows gblank gbg <<<"$(gscr -e | python3 -I "$T/popbox.py")"
+check "once the code is typed, the popup isn't left an empty box while it approves" "(( \${grows:-0} > 0 && \${gblank:-0} < grows )) && gscr | grep -qF 'Allowing'"
+kill $ghold 2>/dev/null; wait $ghold 2>/dev/null
+check "and once approved, nothing of the popup is left on the panel" "wait_g 'can talk now' && sleep 0.5 && [[ \$(gscr -e | python3 -I \"$T/popbox.py\" \"\$gbg\") == none ]]"
+tg kill-server; tm kill-window -t work:gclient 2>/dev/null
 echo "questions"
 # rv LINE: a coloured capture's line has reverse video on (the highlighted choice's mark).
 rv() { [[ $1 =~ $'\e'\[([0-9]+\;)*7(\;[0-9]+)*m ]]; }
