@@ -12,6 +12,9 @@ export AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false
 # announced on the key bar, taking rows and room the checks count on. The checks of that look
 # turn it back on.
 export REVIVE_PANEL_OUTSIDE_SSH=0
+# The peek starts hidden (P shows it); most checks look at it, so here it starts shown. The
+# check of the default unsets this.
+export REVIVE_PANEL_PEEK=1
 # U updates this computer's tmux-revive: here through a stand-in installer (tmux-revive update
 # runs REVIVE_SOURCE's), never the real one, which would install over yours. It logs each run,
 # and with $T/local.fail says what a mv into a root-owned folder says.
@@ -186,7 +189,7 @@ check "the peek takes all the space, the artwork none" "grep -q 'PEEK · ' <<<\"
 check "the peek's title offers p to hide it, not x or c" "grep -q 'PEEK · .*\[p\] hide' <<<\"\$peek\" && ! grep -q 'full view\|collapse' <<<\"\$peek\""
 check "the key bar no longer offers P" "! grep -q '\[P\]eek' <<<\"\$peek\""
 hidden=$(tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
-check "hidden, only its title stays, offering p, with the artwork below" "grep -q 'PEEK · .*\[p\] show' <<<\"\$hidden\" && grep -A1 'PEEK · ' <<<\"\$hidden\" | tail -1 | grep -q 'ART · '"
+check "hidden, only its title stays, offering [P]eek, the notice centered under it, then the artwork" "grep -q 'PEEK · .*\[P\]eek' <<<\"\$hidden\" && grep -A2 'PEEK · ' <<<\"\$hidden\" | sed -n 2p | grep -q '^║  *Turn peek on (P) to preview the selection\. Leave it off for speed\.  *║\$' && grep -A2 'PEEK · ' <<<\"\$hidden\" | sed -n 3p | grep -q 'ART · '"
 raw=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
 check "with the focus in PANES, only the selected row has the faint background" "[[ \$(grep -cF $'\\e[48;5;236m' <<<\"\$raw\") == 1 ]] && grep -F $'\\e[48;5;236m' <<<\"\$raw\" | grep -q '▶'"
 tm kill-window -t work:numbers
@@ -229,10 +232,10 @@ check "the peek box shows the selected pane" "screen | grep -q 'PEEK · top-watc
 whole() { local s; s=$(screen); [[ ${s%%$'\n'*} == ╔* && ${s##*$'\n'} == *╝ ]] && seen 'PEEK · ' && seen 'MESSAGES'; }
 check "the peek fills the space, the artwork gone" "seen '[p] hide' && seen 'ART · ' 0 && whole"
 tm send-keys -t work:panel p
-check "p hides the peek to its title, the artwork back" "wait_screen '[p] show' && wait_screen 'ART · ' && seen '[p] hide' 0 && whole"
+check "p hides the peek to its title, the artwork back" "wait_screen '[P]eek' && wait_screen 'ART · ' && seen '[p] hide' 0 && whole"
 tm send-keys -t work:panel p
 check "p shows it again" "wait_screen '[p] hide' && seen 'ART · ' 0 && whole"
-tm send-keys -t work:panel p; wait_screen '[p] show' >/dev/null
+tm send-keys -t work:panel p; wait_screen '[P]eek' >/dev/null
 tm send-keys -t work:panel Down
 check "the arrow keys move the selection" "wait_screen '[1.0] ▶'"
 # The list goes round: Down past the last pane comes back to the first, Up past the first to the last.

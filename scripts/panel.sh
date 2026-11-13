@@ -1530,7 +1530,7 @@ outside_ssh() {
 }
 
 # ------------------------------------------------------------------ sections
-SEL=0 SEL_ID="" PEEK=${REVIVE_PANEL_PEEK:-1} ANSWERING=0 FLASH="" FLASH_T=0 TICK=0
+SEL=0 SEL_ID="" PEEK=${REVIVE_PANEL_PEEK:-0} ANSWERING=0 FLASH="" FLASH_T=0 TICK=0
 # nav: this frame only moves the selection. Then the messages, links and saves (MSG, SIDE) are
 # kept from the last frame, unless MSG_OLD says they're due a look (new panes were gathered,
 # or they were hidden). TCOLS and TLINES: the terminal's size, asked again with the panes.
@@ -2310,9 +2310,17 @@ draw() {
 		draw_peek $((peek_h - 1))
 		ROWL=$FRAME ROWR=$FRAME
 	elif ((bar)); then
-		kc p " show"
+		kc P "eek"
 		sectk "PEEK · ${P_NAME[SEL]:-${P_LOC[SEL]:-}}" "$KC" 4
 		avail=$((avail - 1))
+		# Under its title, centered: what P is for.
+		if ((avail >= 1)); then
+			local pn="Turn peek on (P) to preview the selection. Leave it off for speed."
+			((${#pn} > IW - 2)) && pn="P: preview the selection"
+			rep ' ' $(((IW - ${#pn}) / 2))
+			row "$REP$CYN$pn$R"
+			avail=$((avail - 1))
+		fi
 	fi
 	if ((avail >= 3)); then
 		sect "ART · ${TITLES[SCENE]}"
