@@ -8,6 +8,7 @@
 #   panel.sh --rows     this computer's panes as rows for another computer's panel (over a link)
 #   panel.sh --peek %ID N   the last N lines of that pane's screen, for another computer's peek
 #   panel.sh --keys %ID KEY...   keys for a question on that pane, sent from another computer's panel
+#   panel.sh --paste %ID HEX     a written answer for that question, pasted unsent (the same)
 #   panel.sh --show %ID  retired: changes nothing, and fails (an older computer's J asked for it)
 #   panel.sh --asking   the panes whose agent is asking a question now: id, place, name (daemon.sh)
 #
@@ -23,7 +24,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/help.sh" # the ? page
 # this too; it's said again here because the cache holds what's on other computers' screens.
 umask 077
 
-ONCE=0 ROWS=0 PEEKMODE=0 KEYSMODE=0 SHOWMODE=0 ASKMODE=0
+ONCE=0 ROWS=0 PEEKMODE=0 KEYSMODE=0 PASTEMODE=0 SHOWMODE=0 ASKMODE=0
 [[ ${1:-} == --once ]] && ONCE=1
 [[ ${1:-} == --rows ]] && ROWS=1
 [[ ${1:-} == --asking ]] && ASKMODE=1
@@ -35,6 +36,7 @@ if [[ ${1:-} == --peek ]]; then
 fi
 # --keys is checked key by key once key_ok is defined, before anything is sent.
 [[ ${1:-} == --keys ]] && KEYSMODE=1
+[[ ${1:-} == --paste ]] && PASTEMODE=1
 [[ ${1:-} == --show ]] && SHOWMODE=1
 
 # Widths below are counted in characters, which needs a UTF-8 locale.
@@ -1319,6 +1321,8 @@ RDIR="$ASTATE/panel"
 REMOTE_ROWS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --rows'
 REMOTE_PEEK_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --peek'
 REMOTE_KEYS_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --keys'
+REMOTE_PASTE_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive panel --paste'
+PASTE_SINCE=1.2.26 # the first tmux-revive with --paste: an older one would start a panel instead
 # A fixed command line: nothing from this panel or that computer goes into it.
 REMOTE_UPDATE_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive update </dev/null 2>&1'
 # agent-say name there, for the pane AGENT_SAY_PANE gives. The pane id and the name are
@@ -1566,7 +1570,7 @@ outside_ssh() {
 
 # ------------------------------------------------------------------ sections
 SEL=0 SEL_ID="" PEEK=${REVIVE_PANEL_PEEK:-0} PEEK_SEL="" PEEK_ALL=${REVIVE_PANEL_PEEK:-0} ANSWERING=0 FLASH="" FLASH_T=0 TICK=0
-QFREE=0 QFREEN="" QEDIT=0 QON=0 QSEEN=0 # answering a free-text choice: see question_free
+QFREE=0 QFREEN="" QON=0 QEMPTY=0 QHAS=0 QFTXT="" QCUR="" QASK=0 QLAST="" # answering a free-text choice: see question_free
 # nav: this frame only moves the selection. Then the messages, links and saves (MSG, SIDE) are
 # kept from the last frame, unless MSG_OLD says they're due a look (new panes were gathered,
 # or they were hidden). TCOLS and TLINES: the terminal's size, asked again with the panes.
@@ -1998,9 +2002,8 @@ peek_rows() {
 draw_question() { # draw_question LINES
 	local id=${P_ID[SEL]:-} i keys name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} ft=""
 	if ((ANSWERING)); then
-		# On a free-text choice, [E]nter goes into its box; in it, Esc only leaves the box.
-		if ((QEDIT)); then kcs "Esc" " leaves the edit box" "Ctrl-]" " leaves"
-		elif ((QON)); then kcs "E" "nter" "Esc" " or" "Ctrl-]" " leaves"
+		# On a free-text choice, [E]nter opens the box to write its answer in.
+		if ((QON)); then kcs "E" "nter" "Esc" " or" "Ctrl-]" " leaves"
 		else kcs "Esc" " or" "Ctrl-]" " leaves"; fi
 		keys="$B${BMAG}keys go to $name$R  $KC"
 	else
@@ -2491,8 +2494,7 @@ draw() {
 	# While answering keys go to the agent, so the bar says that and how to stop.
 	if ((ANSWERING)); then
 		k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG keys go to its question ·$R "
-		if ((QEDIT)); then k+="$B${BYEL}Esc$R$BMAG leaves the edit box · $B${BYEL}Ctrl-]$R$BMAG leaves$R"
-		else k+="$B${BYEL}Esc$R$BMAG or $B${BYEL}Ctrl-]$R$BMAG leaves$R"; fi
+		k+="$B${BYEL}Esc$R$BMAG or $B${BYEL}Ctrl-]$R$BMAG leaves$R"
 		# A key the panel kept from the question (a letter before [E]nter) says why.
 		[[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)) && k="$BGBLU$B$BWHT $FLASH $R  $k"
 	fi
@@ -2639,6 +2641,191 @@ ask() { # ask PROMPT -> REPLY on the bottom line. Enter accepts; Esc, Ctrl-C or 
 	return 1
 }
 
+# text_clean VAR...: written text (typed or pasted) as the panel keeps it: line breaks as LF
+# (CR LF and CR become one), and no control characters but LF and tab; no C1 controls, bidi
+# overrides or zero-width characters either (as clean).
+text_clean() {
+	local -n _t
+	for _t; do
+		_t=${_t//$'\r\n'/$'\n'} _t=${_t//$'\r'/$'\n'}
+		_t=${_t//[$'\x01'-$'\x08\x0b'-$'\x1f\x7f']/} _t=${_t//[$C1]/} _t=${_t//[$ZW]/}
+	done
+}
+# edit_box TITLE HINT [TEXT] -> REPLY: a box over the panel to write in, as much as you like:
+# paragraphs, wrapped at its width, with a cursor that Left, Right, Up, Down, Home, End, PgUp
+# and PgDn move. Backspace and Delete delete. Enter finishes (returns 0); Alt-Enter or Ctrl-J
+# starts a new line; Esc or Ctrl-C closes it (returns 1, REPLY empty). The terminal marks
+# pasted text while it's open (bracketed paste), so a paste comes in as text, line breaks and
+# all, never as Enter. EB_MAX characters at most, as text_clean leaves them. The panel under it
+# is drawn whole again after (PREV is emptied).
+EB_MAX=10000
+edit_box() {
+	local title=$1 hint=$2 txt=${3:-} cur k rest seq p c n ok=0 otty dirty=1 vtop=0 more fd cpid
+	local w h th tw top left
+	local -a VS VN
+	text_clean txt
+	txt=${txt:0:EB_MAX} cur=${#txt}
+	# Enter (CR) told apart from Ctrl-J (LF), and Ctrl-C a key: the terminal turns neither into
+	# anything else. Bash's read puts CR-to-LF back on for a terminal, so the keys are read
+	# through cat, from a pipe.
+	otty=$(stty -g 2>/dev/null)
+	stty -icrnl -isig 2>/dev/null
+	exec {fd}< <(exec cat)
+	cpid=$!
+	printf '%s' "$e[?2004h"
+	while :; do
+		eb_draw
+		more=0
+		while :; do
+			k=""
+			if ((more)); then IFS= read -rn1 -d '' -u "$fd" k || break
+			else
+				until IFS= read -rn1 -d '' -t 0.2 -u "$fd" k; do
+					(($? <= 128)) && { k=$'\x03'; break; } # the input closed
+					k=""
+					[[ -z $TCOLS ]] && eb_draw # the terminal was resized
+				done
+			fi
+			case $k in
+			$'\x03') break 2 ;;    # Ctrl-C
+			$'\r') ok=1; break 2 ;; # Enter
+			$'\n') eb_ins $'\n' ;;  # Ctrl-J
+			$'\t') eb_ins $'\t' ;;
+			$'\x7f' | $'\b') ((cur > 0)) && { txt=${txt:0:cur-1}${txt:cur} cur=$((cur - 1)) dirty=1; } ;;
+			$'\e')
+				rest="" seq=""
+				IFS= read -rn1 -d '' -t 0.05 -u "$fd" rest
+				case $rest in
+				"") break 2 ;; # a lone Esc closes it
+				$'\r' | $'\n') eb_ins $'\n' ;; # Alt-Enter
+				'[') while IFS= read -rn1 -d '' -t 0.05 -u "$fd" rest; do seq+=$rest; [[ $rest == [@-~] || ${#seq} -gt 8 ]] && break; done ;;
+				O) IFS= read -rn1 -d '' -t 0.05 -u "$fd" seq ;;
+				esac
+				case $seq in
+				200~)
+					# A paste, to its end mark: text, whatever it holds.
+					p="" n=0
+					while IFS= read -rn1 -d '' -t 1 -u "$fd" c; do
+						p+=$c
+						[[ $c == '~' && ${p: -6} == $'\e[201~' ]] && break
+						((++n > 4 * EB_MAX)) && p="" n=0 # far too much: kept only from here on
+					done
+					p=${p%$'\e[201~'}
+					text_clean p
+					eb_ins "$p" ;;
+				C) ((cur < ${#txt})) && ((cur++)) ;;
+				D) ((cur > 0)) && ((cur--)) ;;
+				3~) ((cur < ${#txt})) && { txt=${txt:0:cur}${txt:cur+1} dirty=1; } ;;
+				A | B | 5~ | 6~ | H | 1~ | 7~ | F | 4~ | 8~) eb_move "$seq" ;;
+				esac ;;
+			[[:cntrl:]]) ;;
+			*) eb_ins "$k" ;;
+			esac
+			# Keys already waiting (typing fast, a paste the terminal didn't mark) before drawing.
+			read -t 0 -u "$fd" || break
+			more=1
+		done
+	done
+	printf '%s' "$e[?2004l$e[?25l"
+	kill "$cpid" 2>/dev/null
+	exec {fd}<&-
+	[[ -n $otty ]] && stty "$otty" 2>/dev/null
+	PREV=()
+	REPLY=""
+	((ok)) || return 1
+	REPLY=$txt
+}
+eb_ins() { # eb_ins TEXT: at the cursor, as much as EB_MAX leaves room for
+	local s=$1 room=$((EB_MAX - ${#txt}))
+	((room > 0)) || return 0
+	s=${s:0:room}
+	txt=${txt:0:cur}$s${txt:cur} cur=$((cur + ${#s})) dirty=1
+}
+eb_wrap() { # -> VS, VN: where each line on screen starts in txt, and its length, wrapped at tw
+	local l s=0 len cut q
+	local -a LN
+	VS=() VN=()
+	mapfile -t LN <<<"$txt"
+	for l in "${LN[@]}"; do
+		len=${#l}
+		# At the last space that fits (it stays at the line's end), or where it must.
+		while ((len > tw)); do
+			q=${l:0:tw}
+			q=${q% *}
+			if ((${#q} < tw)) && ((${#q} > 0)); then cut=$((${#q} + 1)); else cut=$tw; fi
+			VS+=("$s") VN+=("$cut")
+			s=$((s + cut)) l=${l:cut} len=$((len - cut))
+		done
+		VS+=("$s") VN+=("$len")
+		s=$((s + len + 1))
+	done
+	dirty=0
+}
+eb_line() { # -> EL: the line on screen the cursor is on; EM: the last column it may have there
+	local j
+	((dirty)) && eb_wrap
+	for ((j = ${#VS[@]} - 1; j > 0; j--)); do ((VS[j] <= cur)) && break; done
+	EL=$j
+	eb_max "$j"
+}
+eb_max() { # eb_max LINE -> EM: a wrapped line's last column is its last character; a line's end, past it
+	EM=${VN[$1]}
+	(($1 + 1 < ${#VS[@]} && VS[$1 + 1] == VS[$1] + VN[$1])) && EM=$((EM - 1))
+}
+eb_move() { # eb_move KEY: Up, Down, PgUp, PgDn (as their sequences), Home, End
+	local t col
+	eb_line
+	col=$((cur - VS[EL])) t=$EL
+	case $1 in
+	A) t=$((EL - 1)) ;; B) t=$((EL + 1)) ;; 5~) t=$((EL - th)) ;; 6~) t=$((EL + th)) ;;
+	H | 1~ | 7~) cur=${VS[EL]}; return ;;
+	F | 4~ | 8~) cur=$((VS[EL] + EM)); return ;;
+	esac
+	((t < 0)) && { cur=0; return; }
+	((t >= ${#VS[@]})) && { cur=${#txt}; return; }
+	eb_max "$t"
+	((col > EM)) && col=$EM
+	cur=$((VS[t] + col))
+}
+eb_draw() { # the box, centred over the panel, as pick draws its own; the cursor where it writes
+	local i j r s buf edge bg="$e[44m" row col
+	[[ -n $TCOLS ]] || { TCOLS=$(tput cols 2>/dev/null || echo 100) TLINES=$(tput lines 2>/dev/null || echo 40); PREV=(); draw; dirty=1; }
+	w=$((TCOLS - 8)) h=$((TLINES - 6))
+	((w > 100)) && w=100
+	((w < 30)) && w=$((TCOLS - 2))
+	((h > 24)) && h=24
+	((h < 6)) && h=$((TLINES - 1))
+	th=$((h - 3)) tw=$((w - 4))
+	((th < 1)) && th=1
+	top=$(((TLINES - h) / 2)) left=$(((TCOLS - w) / 2))
+	((top < 1)) && top=1
+	((left < 1)) && left=1
+	eb_line
+	((EL < vtop)) && vtop=$EL
+	((EL >= vtop + th)) && vtop=$((EL - th + 1))
+	fld "$title" $((w - 14))
+	s=${FLD%"${FLD##*[! ]}"}
+	rep ═ $((w - ${#s} - 11))
+	buf="$e[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $s $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
+	for ((r = 0; r < th; r++)); do
+		j=$((vtop + r)) s=""
+		((j < ${#VS[@]})) && { s=${txt:VS[j]:VN[j]}; s=${s//$'\t'/ }; }
+		fld "$s" "$tw"
+		edge="║"
+		((r == 0 && vtop > 0)) && edge="$BYEL▲$BWHT"
+		((r == th - 1 && vtop + th < ${#VS[@]})) && edge="$BYEL▼$BWHT"
+		buf+="$e[$((top + 1 + r));${left}H$bg$BWHT║ $FLD $edge$R$GRY░$R"
+	done
+	fld "$hint" $((w - 4))
+	buf+="$e[$((top + 1 + th));${left}H$bg$BWHT║ $BCYN$FLD$BWHT ║$R$GRY░$R"
+	rep ═ $((w - 2))
+	buf+="$e[$((top + 2 + th));${left}H$bg$BWHT╚$REP╝$R$GRY░$R"
+	rep ░ "$w"
+	buf+="$e[$((top + 3 + th));$((left + 1))H$GRY$REP$R"
+	row=$((top + 1 + EL - vtop)) col=$((left + 2 + cur - VS[EL]))
+	printf '%s' "$e[?2026h$buf$e[$row;${col}H$e[?25h$e[?2026l"
+}
+
 # pick TITLE ITEM...: a BBS-style popup over the panel, a blue double-line box with a shaded
 # shadow, listing ITEMs. ↑↓ (j k) or 1-9 choose, Enter picks (-> PICKED, the index), Esc or q closes
 # it (returns 1). Ctrl-C closes it too, read in slices as in ask. An ITEM starting with $NOTE
@@ -2781,6 +2968,50 @@ keys_send() { # keys_send %ID TOKEN...: to a pane on this computer, every token 
 		else tm send-keys -t "$id" "$k" || return 1; fi
 	done
 }
+# A written answer (free_answer) goes as one paste, hex like a lit: token, and is checked the
+# same way here and where it's pasted: text with line breaks and tabs, no other control
+# characters, PASTE_MAX bytes at most.
+PASTE_MAX=40000
+paste_ok() { # paste_ok HEX: may it be pasted? Its text -> PASTE
+	local h=$1 esc t
+	PASTE=""
+	((${#h} >= 2 && ${#h} % 2 == 0 && ${#h} <= 2 * PASTE_MAX)) && [[ $h =~ ^[0-9a-f]+$ ]] || return 1
+	paste_hex "$h" || return 1
+	printf -v PASTE '%b' "$ESC"
+	# No C1 controls, bidi overrides or zero-width characters (clean), and something to paste.
+	t=${PASTE//[$'\t\n']/} esc=$t
+	clean t
+	[[ $t == "$esc" && -n ${PASTE//[[:space:]]/} ]]
+}
+paste_hex() { # paste_hex HEX -> ESC: as \xHH escapes; fails on a control character but LF and tab, or DEL
+	ESC=""
+	[[ $1 =~ ^(..)*(0[0-8]|0[b-f]|1.|7f) ]] && return 1
+	ESC=$(sed 's/../\\x&/g' <<<"$1")
+}
+paste_send() { # paste_send %ID HEX: to a pane on this computer, as a bracketed paste, not submitted
+	local b="revive-answer-$$"
+	paste_ok "$2" || return 2
+	printf '%s' "$PASTE" | tm load-buffer -b "$b" - || return 1
+	# -p: marked as a paste (the agent asked for that), so a line break isn't Enter; -r: as
+	# LF, which tmux would otherwise turn into CR; -d: the buffer goes with it.
+	tm paste-buffer -p -r -d -b "$b" -t "$1"
+}
+paste_answer() { # paste_answer TEXT: into the selected pane's question, here or over the link
+	local h=${P_HOST[SEL]:-} id=${P_RID[SEL]:-} x out st
+	x=$(printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n')
+	if [[ -z $h ]]; then paste_send "${P_ID[SEL]}" "$x" && return; flash "the answer didn't reach that pane"; return 1; fi
+	[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $id =~ ^%[0-9]+$ ]] || return 1
+	paste_ok "$x" || { flash "that answer can't be sent"; return 1; }
+	if [[ -z ${RVER[$h]:-} ]] || ver_lt "${RVER[$h]}" "$PASTE_SINCE"; then
+		flash "on $h: can't take a written answer (update tmux-revive there)"; return 1
+	fi
+	out=$(remote_run "$h" "$REMOTE_PASTE_CMD '$id' $x")
+	st=$?
+	[[ $out == sent ]] && return 0
+	if ((st == 124 || st == 255)); then flash "on $h: can't be reached to answer"
+	else flash "on $h: the answer didn't get through"; fi
+	return 1
+}
 pane_here() { grep -qxF -- "$1" <<<"$(tm list-panes -a -F '#{pane_id}' 2>/dev/null)"; }
 send_answer() { # send_answer TOKEN...: to the selected pane, here or over the link
 	local h=${P_HOST[SEL]:-} id=${P_RID[SEL]:-} out st k
@@ -2812,30 +3043,107 @@ question_look() {
 	fi
 	printf -v QSHOT '%s\n' "${QL[@]}"
 }
-# question_free -> QFREE, QFREEN, QON; QEDIT off: Claude Code's last choice is often a free-text
-# box ("5. Type something.", "3. [ ] Type something"), where any letter is typed, j and k too.
-# Once seen, j and k move and letters wait for E, whatever row the panel last saw lit: that
-# view lags the keys still queued. Its number is kept, since typing replaces the label. QON
-# (the cursor on it, as last seen) only picks the hint. The box is left when a look since E
-# saw the cursor on it and this one sees it on another row.
+# question_free -> QFREE, QFREEN, QON, QEMPTY, QHAS: Claude Code's last choice is often a
+# free-text box ("5. Type something.", "3. [ ] Type something"), where any letter is typed, j
+# and k too. Once seen, j and k move and letters wait for E, whatever row the panel last saw
+# lit: that view lags the keys still queued. An answer in it replaces the label, so its number
+# is kept, or known as the one before "Chat about this" (another tab of the question has its
+# own). As this look sees it: QCUR, the cursor's choice (x: a row with no number); QON, on it; QEMPTY, it still says "Type something"
+# (Enter there declines the whole question: see answer); QHAS, its row is there at all.
 question_free() {
-	local i cur=""
+	local i cur="" ph="" chat="" nums=" "
 	for ((i = ${#QL[@]} - 1; i >= 0; i--)); do
-		[[ ${QL[i]} =~ ^[[:space:]│]*(❯[[:space:]]*)?([0-9]+)\.[[:space:]]*(\[.\][[:space:]]*)?Type\ something\.?[[:space:]]*$ ]] && QFREE=1 QFREEN=${BASH_REMATCH[2]}
+		if [[ ${QL[i]} =~ ^[[:space:]│]*(❯[[:space:]]*)?([0-9]+)\.[[:space:]]*(\[.\][[:space:]]*)?Type\ something\.?[[:space:]]*$ ]]; then
+			ph=${BASH_REMATCH[2]}
+		elif [[ ${QL[i]} =~ ^[[:space:]│]*(❯[[:space:]]*)?([0-9]+)\.[[:space:]]*Chat\ about\ this ]]; then
+			chat=${BASH_REMATCH[2]}
+		fi
+		[[ ${QL[i]} =~ ^[[:space:]│]*(❯[[:space:]]*)?([0-9]+)\. ]] && nums+="${BASH_REMATCH[2]} "
 		if [[ -z $cur && ${QL[i]} =~ ^[[:space:]│]*❯ ]]; then
 			cur=x
 			[[ ${QL[i]} =~ ^[[:space:]│]*❯[[:space:]]*([0-9]+)\. ]] && cur=${BASH_REMATCH[1]}
 		fi
 		[[ ${QL[i]} =~ ^[[:space:]│]*(❯[[:space:]]*)?1\.[[:space:]] ]] && break
 	done
-	QON=0
+	if [[ -n $ph ]]; then QFREE=1 QFREEN=$ph
+	elif ((QFREE)) && [[ -n $chat ]] && ((chat > 1)); then QFREEN=$((chat - 1)); fi
+	QON=0 QEMPTY=0 QHAS=0 QCUR=$cur
 	[[ -n $QFREEN && $cur == "$QFREEN" ]] && QON=1
-	if ((QEDIT && QON)); then QSEEN=1
-	elif ((QEDIT && QSEEN)) && [[ -n $cur ]]; then QEDIT=0 QSEEN=0; fi
+	[[ -n $ph && $ph == "$QFREEN" ]] && QEMPTY=1
+	[[ -n $QFREEN && $nums == *" $QFREEN "* ]] && QHAS=1
+	# QFTXT: what its row says (an answer in it, or the label).
+	QFTXT=""
+	((QHAS)) || return 0
+	for ((i = ${#QL[@]} - 1; i >= 0; i--)); do
+		[[ ${QL[i]} =~ ^[[:space:]│]*(❯[[:space:]]*)?([0-9]+)\.[[:space:]]*(\[.\][[:space:]]*)?(.*[^[:space:]])[[:space:]]*$ && ${BASH_REMATCH[2]} == "$QFREEN" ]] && { QFTXT=${BASH_REMATCH[4]}; break; }
+	done
+}
+# q_fresh -> QL... as question_look and question_free, and QASK: the question as it is now,
+# looked at until it holds still (the keys just sent have landed), before keys that can't be
+# taken back. A linked computer's screen is asked for there and then.
+q_fresh() {
+	local i n=0 last="" h=${P_HOST[SEL]:-} id=${P_RID[SEL]:-} f
+	local -a AL
+	if [[ -n $h ]]; then
+		peek_drop "$h" "$id"
+		f="$RDIR/$h.peek-${id#%}"
+		peek_fetch "$h" "$id" 60 "$f" now
+		QSHOT="" # the look reads what just came (and asks again, as answering does after a key)
+		question_look
+		[[ -f $f ]] && mapfile -t AL < <(tail -n 60 "$f")
+		lines_state AL
+	else
+		for ((i = 0; i < 25; i++)); do
+			sleep 0.04
+			question_look
+			if [[ $QSHOT == "$last" ]]; then ((++n >= 2)) && break; else n=0 last=$QSHOT; fi
+		done
+		lines_state QRAW
+	fi
+	QASK=0
+	[[ $LSTATE == asking ]] && QASK=1
+	question_free
+}
+# free_answer: E on a dialog with a free-text choice, or Enter on its empty row. The answer is
+# written in a box over the panel (edit_box), as long as it needs to be, then put in the
+# choice's own box as a paste, newlines and all, and not sent: the question shows it, and you
+# move on (Enter picks it, then the next tab or Submit). What the panel put there before is in
+# the box again to change; anything else there is cleared first.
+free_answer() {
+	local t="" n f name=${P_NAME[SEL]:-${P_LOC[SEL]:-}}
+	q_fresh
+	((QASK && QHAS)) || { flash "no Type something here"; draw; return; }
+	# Its row shows the answer's lines run together, or only the first of them.
+	f=${QLAST//[$'\n\t']/} n=${#QFTXT}
+	((n > 20)) && n=20
+	((!QEMPTY && n)) && [[ -n $QLAST && ${f:0:n} == "${QFTXT:0:n}" ]] && t=$QLAST
+	if ! edit_box "ANSWER · $name" "Enter done · Alt-Enter new line · Esc closes" "$t"; then
+		PREV=(); flash "closed; nothing was sent"; draw; return
+	fi
+	PREV=() t=$REPLY
+	[[ -n ${t//[[:space:]]/} ]] || { flash "nothing written; nothing was sent"; draw; return; }
+	draw
+	# Onto its row, a row at a time (its number would tick it in a multi-select), then empty
+	# it: Ctrl-K and Ctrl-U take the line after and before the cursor, or the break they're at.
+	q_fresh
+	((QASK && QHAS)) || { flash "the question has gone; nothing was sent"; draw; return; }
+	for ((n = 0; n < 12 && QASK && QHAS && !QON; n++)); do
+		if [[ $QCUR =~ ^[0-9]+$ ]] && ((QCUR < QFREEN)); then send_answer Down || return; else send_answer Up || return; fi
+		q_fresh
+	done
+	for ((n = 0; n < 10 && QON && !QEMPTY; n++)); do
+		send_answer C-k C-u C-k C-u C-k C-u C-k C-u C-k C-u C-k C-u C-k C-u C-k C-u || return
+		q_fresh
+	done
+	((QASK && QON && QEMPTY)) || { flash "couldn't get into Type something; nothing more was sent"; draw; return; }
+	paste_answer "$t" || { draw; return; }
+	QLAST=$t
+	flash "written in; not sent yet"
+	draw
 }
 
 # answer: keys go to the selected pane's question, as if typed in its own console (but for
-# a free-text choice's letters, which wait for E: see question_free).
+# a free-text choice's letters, which wait for E and are written in a box: see free_answer).
 # The question is drawn again when the agent's screen changes: looked at every 40 ms for half
 # a second after a key is sent, to show it react, and every 0.3 s otherwise. Esc, Ctrl-] (or
 # Ctrl-C) leave without sending anything; it ends by itself once the pane stops asking.
@@ -2848,7 +3156,7 @@ answer() {
 	[[ -n $h ]] && id=${P_RID[SEL]:-}
 	[[ $id =~ ^%[0-9]+$ ]] || return 0
 	ANSWERING=1 PEEK_EVERY=0 PREV=() ATOP=() QL=() QRAW=() QSHOT="" PB=0 # the dialog, at the bottom
-	QFREE=0 QFREEN="" QEDIT=0 QON=0 QSEEN=0 FLASH="" # the bar shows only this question's flash
+	QFREE=0 QFREEN="" QON=0 QEMPTY=0 QHAS=0 QLAST="" FLASH="" # the bar shows only this question's flash
 	trap 'INTR=1' INT
 	while :; do
 		# Keys already waiting behind the ones just sent go first, so they reach the agent together
@@ -2894,21 +3202,31 @@ answer() {
 			fi
 		fi
 		TOKS=()
-		# A dialog with a free-text choice, not in its box: j and k move, E goes into the box,
+		# A dialog with a free-text choice: j and k move, E opens a box to write its answer in,
 		# other letters and BSpace stay here. A digit picks a choice and Space may tick one, but
 		# not on the box itself, where they would be typed. Each key alone, so "jj" isn't sent as text.
-		if ((QFREE && !QEDIT)) && [[ -n $k && ($k != [[:cntrl:]] || $k == $'\x7f' || $k == $'\b') ]]; then
+		if ((QFREE)) && [[ -n $k && ($k != [[:cntrl:]] || $k == $'\x7f' || $k == $'\b') ]]; then
 			case $k in
 			j) TOKS=(Down) ;;
 			k) TOKS=(Up) ;;
-			[eE]) QEDIT=1 QSEEN=$QON FLASH=""; draw; continue ;;
+			[eE]) FLASH=""; free_answer; continue ;;
 			[0-9]) ((QON)) || lit_tokens "$k" ;;
 			' ') ((QON)) || TOKS=(Space) ;; # it may tick a choice; on the box it would be typed
 			*) flash "[E]nter to type"; draw; continue ;;
 			esac
 		else case $k in
 		$'\x1d') break ;;                    # Ctrl-]
-		"" | $'\r' | $'\n') ((QEDIT)) && QEDIT=0 QSEEN=0; TOKS=(Enter) ;;
+		"" | $'\r' | $'\n')
+			# On the free-text choice with nothing in it, Claude Code takes Enter as declining the
+			# whole question (the agent is told you declined): there it opens the box instead.
+			# Looked at afresh, as the keys just sent may have moved the cursor there.
+			# No question in that look (a linked computer's screen didn't come): nothing is sent.
+			if ((QFREE)); then
+				q_fresh
+				((QASK)) || { flash "can't see the question just now; Enter not sent"; draw; continue; }
+				((QON && QEMPTY)) && { FLASH=""; free_answer; continue; }
+			fi
+			TOKS=(Enter) ;;
 		$'\t') TOKS=(Tab) ;;
 		$'\x7f' | $'\b') TOKS=(BSpace) ;;
 		$'\e')
@@ -2920,11 +3238,7 @@ answer() {
 			# would be told you declined. What you ticked stays there, sent only by its Submit.
 			# A sequence that came in too slowly to tell from Esc is let go of, not left
 			# for the panel to read as keys of its own.
-			# In a free-text box, Esc only leaves the box.
-			"")
-				while IFS= read -rsn1 -t 0.05 rest; do :; done
-				((QEDIT)) && { QEDIT=0 QSEEN=0; draw; continue; }
-				break ;;
+			"") while IFS= read -rsn1 -t 0.05 rest; do :; done; break ;;
 			'[') while IFS= read -rsn1 -t 0.03 rest; do seq+=$rest; [[ $rest == [@-~] || ${#seq} -gt 8 ]] && break; done ;;
 			O) IFS= read -rsn1 -t 0.03 seq ;;
 			esac
@@ -2956,7 +3270,7 @@ answer() {
 		[[ -n $h ]] && peek_drop "$h" "$id"
 		sent=1 poll=12
 	done
-	ANSWERING=0 PEEK_EVERY=$REFRESH PREV=() ATOP=() QFREE=0 QFREEN="" QEDIT=0 QON=0 QSEEN=0
+	ANSWERING=0 PEEK_EVERY=$REFRESH PREV=() ATOP=() QFREE=0 QFREEN="" QON=0 QEMPTY=0 QHAS=0 QLAST=""
 	trap 'exit 0' INT
 	case $why in
 	left) flash "left the question; nothing more was sent" ;;
@@ -3216,7 +3530,10 @@ act() {
 		fi ;;
 	m | M)
 		[[ -n $id ]] || { [[ -n ${P_HOST[SEL]:-} ]] && flash "that pane has no name; name it on ${P_HOST[SEL]} to message it"; return; }
-		ask "Message to $name:" || { flash "message cancelled"; return; }
+		# Written in a box, as long as it needs to be: several lines go as one message.
+		edit_box "MESSAGE TO $name" "Enter sends · Alt-Enter new line · Esc closes" &&
+			[[ -n ${REPLY//[[:space:]]/} ]] || { flash "message cancelled"; draw; return; }
+		draw # the box goes at once: sending can take a while
 		out=$("$ASAY" --from panel "$id" "$REPLY" 2>&1 | tail -n 1)
 		flash "${out#agent-say: }" ;;
 	n | N)
@@ -3642,6 +3959,15 @@ if ((KEYSMODE)); then
 	for k in "${@:2}"; do key_ok "$k" || { echo "panel.sh --keys: not a key it sends" >&2; exit 2; }; done
 	pane_here "$1" || exit 1
 	keys_send "$@" && echo sent
+	exit
+fi
+if ((PASTEMODE)); then
+	# The same, for a written answer: a pane id, then its text as hex, checked by paste_ok.
+	shift
+	[[ ${1:-} =~ ^%[0-9]+$ ]] && (($# == 2)) || { echo "usage: panel.sh --paste %PANE HEX" >&2; exit 2; }
+	paste_ok "$2" || { echo "panel.sh --paste: not text it pastes" >&2; exit 2; }
+	pane_here "$1" || exit 1
+	paste_send "$1" "$2" && echo sent
 	exit
 fi
 if ((SHOWMODE)); then

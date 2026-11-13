@@ -164,7 +164,7 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 | `J` / `K` | next window, or back: PANES, PEEK, MESSAGES, LINKS · SAVES |
 | `0`-`9` | go to that window's first pane (`0` is window 10 when there's no window 0) |
 | `O` | open the pane on this computer (a popup panel closes) |
-| `M` | message the pane's agent |
+| `M` | message the pane's agent, written in a box (Alt-Enter for a new line) |
 | `N` | name the pane |
 | `P` | show or hide a peek at its screen (offered on the peek's title) |
 | Enter | answer the question the selected agent is asking, or open a folded computer |
@@ -203,9 +203,10 @@ Press **Enter** to answer it right there. Your keys go to the agent as if you we
 in its pane, typed answers included, until it has its answer or you press
 **Esc** or **Ctrl-]**. Leaving sends the agent nothing: the question waits, with
 anything you ticked, until you come back and submit it. On a free-form choice
-("Type something"), **j** and **k** still move: press **E** to enter it and type,
-and **Esc** to leave the edit box. For a real chat with the agent, **O** takes you
-to its pane.
+("Type something"), **j** and **k** still move. Press **E** to write your answer
+in a box: **Enter** puts it in the choice without sending it, **Alt-Enter** starts
+a new line, and **Esc** closes the box. Then move on as usual. For a real chat with
+the agent, **O** takes you to its pane.
 
 You don't need the panel open to hear about questions. When any agent starts
 asking one, tmux shows a message naming the pane and rings the bell, once per

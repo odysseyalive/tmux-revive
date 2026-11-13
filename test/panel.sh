@@ -260,15 +260,26 @@ for _ in 1 2 3 4 5 6; do tm send-keys -t work:panel Down Up; done; sleep 1.5
 check "held arrows echo nothing onto the screen" "! screen | grep -qF '^['"
 check "and the frame never scrolls" "screen | head -1 | grep -q '^╔'"
 tm send-keys -t work:panel m; sleep 0.5
-check "M opens the message prompt, saying how to back out" "wait_screen 'Esc cancels'"
+check "M opens a box to write the message in, saying how to finish and back out" "wait_screen 'MESSAGE TO' && wait_screen 'Enter sends · Alt-Enter new line · Esc closes'"
 tm send-keys -t work:panel -l 'never sent'; sleep 0.3
 tm send-keys -t work:panel Escape
-check "Esc backs out of a message" "wait_screen 'message cancelled' && ! screen | grep -q 'Esc cancels'"
+check "Esc backs out of a message" "wait_screen 'message cancelled' && ! screen | grep -q 'Esc closes'"
 tm send-keys -t work:panel m; sleep 0.5
 tm send-keys -t work:panel -l 'never sent either'; sleep 0.3
 tm send-keys -t work:panel C-c; sleep 1
-check "Ctrl-C backs out too, and the panel stays open" "tm list-windows -F '#{window_name}' | grep -qx panel && wait_screen 'C O N T R O L' && ! screen | grep -q 'Esc cancels'"
+check "Ctrl-C backs out too, and the panel stays open" "tm list-windows -F '#{window_name}' | grep -qx panel && wait_screen 'message cancelled' && wait_screen 'C O N T R O L' && ! screen | grep -q 'Esc closes'"
 check "nothing was sent" "! grep -qs 'never sent' $AGENT_SAY_MAILBOX"
+# A paste into the box is text, its line breaks (CR, as a terminal sends them) included, never
+# Enter: the box stays open. Long text scrolls, a long line wraps, PgUp goes back up.
+{ for i in $(seq -w 1 40); do printf 'line %s\n' "$i"; done; for i in $(seq -f %04g 1 30); do printf 'w%s ' "$i"; done; } >"$T/paste.txt"
+tm send-keys -t work:panel m; wait_screen 'Esc closes' >/dev/null
+tm load-buffer -b ptest "$T/paste.txt"; tm paste-buffer -p -d -b ptest -t work:panel
+check "a paste of many lines stays in the box, which scrolls to its end and wraps a long line" "wait_screen 'w0001' && screen | grep -q 'Esc closes' && screen | grep -qF '║ line 40' && ! screen | grep -qF '║ line 01' && ! screen | grep -q 'w0001.*w0030'"
+tm send-keys -t work:panel PPage PPage PPage
+check "PgUp goes back up to its first line" "wait_screen '║ line 01'"
+tm send-keys -t work:panel Escape
+check "and Esc still sends none of it, the box gone" "wait_ok '! screen | grep -q \"Esc closes\"' && wait_screen 'message cancelled' && ! screen | grep -qF '║ line' && ! grep -qs 'line 40' $AGENT_SAY_MAILBOX"
+wait_screen 'C O N T R O L' >/dev/null
 before=$(screen | grep -o 'ART · [a-z ]*' | head -1)
 tm send-keys -t work:panel a
 check "A switches the artwork ($before)" "for _ in \$(seq 1 20); do after=\$(screen | grep -o 'ART · [a-z ]*' | head -1); [[ -n \$after && \$after != '$before' ]] && break; sleep 0.2; done; [[ \$after != '$before' ]]"
@@ -781,11 +792,15 @@ mkdir -p "$T/bin" && cp "$(command -v bash)" "$T/bin/codex"
 cat >"$T/ask.sh" <<'ASK'
 # A stand-in agent asking a question, as Claude Code draws one: history above, a rule, the
 # question and its choices. Every key it reads goes to OUT.keys; the answer to OUT. With
-# nofree, choice 5 is a plain one (as in Codex's), not a free-text box.
-out=$1 sel=1 n=6 typed=""
+# nofree, choice 5 is a plain one (as in Codex's), not a free-text box. As in Claude Code, it
+# asks for bracketed paste, takes a paste on the free-text choice as text (line breaks and
+# all), Ctrl-U there takes the line before the cursor (or the break before it), and Enter on
+# it with nothing in it declines the whole question.
+out=$1 sel=1 n=6 typed="" free=1
 opts=("Yes" "No" "Maybe" "Later" "Type something." "Chat about this")
-[[ ${2:-} == nofree ]] && opts[4]="Not now"
+[[ ${2:-} == nofree ]] && opts[4]="Not now" free=0
 stty -icanon -echo
+printf '\e[?2004h'
 show() {
 	clear
 	for i in $(seq 1 30); do echo "history line $i"; done
@@ -796,7 +811,7 @@ show() {
 	for i in 1 2 3 4 5 6; do
 		((i == 6)) && { printf '─%.0s' {1..50}; echo; }
 		label=${opts[i-1]}
-		((i == 5)) && [[ -n $typed ]] && label=$typed # typing on the free-text choice fills it in
+		((i == 5)) && [[ -n $typed ]] && label=${typed//$'\n'/$'\n         '} # typing on the free-text choice fills it in
 		if ((i == sel)); then echo " ❯ $i. $label"; else echo "   $i. $label"; fi
 		((i < 5)) && echo "      what choosing ${opts[i-1]} does"
 	done
@@ -806,12 +821,23 @@ while :; do
 	show
 	IFS= read -rsn1 k
 	if [[ $k == $'\e' ]]; then IFS= read -rsn2 -t 0.2 r; k+=$r; fi
+	if [[ $k == $'\e[2' ]]; then IFS= read -rsn3 -t 0.2 r; k+=$r; fi
+	if [[ $k == $'\e[200~' ]]; then
+		p=""
+		while IFS= read -rsn1 -d '' c; do p+=$c; [[ $p == *$'\e[201~' ]] && break; done
+		p=${p%$'\e[201~'}
+		printf 'paste:%q\n' "$p" >>"$out.keys"
+		((sel == 5)) && typed+=$p
+		continue
+	fi
 	printf '%q\n' "$k" >>"$out.keys"
 	case $k in
 	$'\e[A') ((sel > 1)) && ((sel--)) ;;
 	$'\e[B') ((sel < n)) && ((sel++)) ;;
-	"") break ;;
+	"") ((free && sel == 5)) && [[ -z $typed ]] && { echo declined >"$out"; clear; echo "User declined to answer questions"; sleep 300; }; break ;;
 	$'\x7f' | $'\b') ((sel == 5)) && typed=${typed%?} ;;
+	$'\x15') ((sel == 5)) && if [[ $typed == *$'\n' ]]; then typed=${typed%$'\n'}; elif [[ $typed == *$'\n'* ]]; then typed=${typed%$'\n'*}$'\n'; else typed=""; fi ;;
+	$'\x0b') ;; # Ctrl-K: the cursor is always at the end
 	*) ((sel == 5)) && [[ $k != $'\e'* ]] && typed+=$k ;; # as in Claude Code: type right in the dialog
 	esac
 done
@@ -897,29 +923,46 @@ check "off the free-text choice, no [E]nter" "qhas '❯ 1. Yes' && ! qhas '[E]nt
 # one at a time, as Down and Up, never typed into the box.
 tm send-keys -t work:qpanel -l 'jjjj'
 check "j moves down, the keys queued or not, and none is typed" "wait_q '❯ 5. Type something.' 15 && ! grep -qxE '[jk]' $T/ans2.keys"
-check "on the free-text choice, the question offers [E]nter" "wait_q '[E]nter' 15 && ! qhas 'leaves the edit box'"
+check "on the free-text choice, the question offers [E]nter" "wait_q '[E]nter' 15 && ! qhas 'Esc closes'"
 tm send-keys -t work:qpanel -l 'kkj'
 check "k and j across the free-text choice move too, none typed" "wait_q '❯ 4. Later' 15 && ! grep -qxE '[jk]' $T/ans2.keys && ! qhas '[E]nter'"
 tm send-keys -t work:qpanel -l 'j'; wait_q '❯ 5. Type something.' 15 >/dev/null
 tm send-keys -t work:qpanel -l 'x 3'; sleep 0.6
 check "before E, letters, Space and a digit on the free-text choice stay in the panel, which says why" "qhas '[E]nter to type' && qhas '❯ 5. Type something.' && ! grep -qxE \"x|3|[\\\\][ ]\" $T/ans2.keys && qhas 'ANSWERING asker'"
-tm send-keys -t work:qpanel E
-check "E enters it: Esc now leaves the edit box, and nothing is sent" "wait_q 'Esc leaves the edit box' 15 && qhas 'ANSWERING asker' && ! grep -qxE 'E|e' $T/ans2.keys"
-tm send-keys -t work:qpanel -l 'ab'
-check "in the edit box letters are typed" "wait_q '❯ 5. ab' 15"
+# Enter on the empty free-text choice declines the whole question in Claude Code (the agent is
+# told you declined): the panel opens the box to write in instead, even straight after a j its
+# view hasn't caught up with.
+tm send-keys -t work:qpanel -l 'k'; wait_q '❯ 4. Later' 15 >/dev/null
+tm send-keys -t work:qpanel -l 'j'; tm send-keys -t work:qpanel Enter
+check "Enter on the empty free-text choice opens the box to write in, and sends no Enter (it would decline)" "wait_q 'Enter done · Alt-Enter new line · Esc closes' 15 && qhas 'ANSWER · asker' && ! grep -qxF \"''\" $T/ans2.keys && [[ ! -e $T/ans2 ]]"
+tm send-keys -t work:qpanel -l 'never sent'; sleep 0.3
 tm send-keys -t work:qpanel Escape
 esc=$(printf '%q' $'\e') # as the stand-in logs it
-check "Esc in the edit box leaves only the box: still answering, no Escape sent" "wait_q 'Esc or Ctrl-] leaves' 15 && qhas 'ANSWERING asker' && ! qhas 'left the question' && ! grep -qxF -- \"\$esc\" $T/ans2.keys"
-tm send-keys -t work:qpanel -l 'z'; sleep 0.6
-check "and letters stay in the panel again" "qhas '❯ 5. ab' && ! grep -qx z $T/ans2.keys"
-tm send-keys -t work:qpanel E; wait_q 'Esc leaves the edit box' 15 >/dev/null
-tm send-keys -t work:qpanel BSpace BSpace; sleep 0.3
-tm send-keys -t work:qpanel -l 'my custom answér'; sleep 0.3
-tm send-keys -t work:qpanel -l 'X'; sleep 0.3
-check "typed text shows in the question as it's typed" "wait_q 'my custom answérX' 15"
-tm send-keys -t work:qpanel BSpace; sleep 0.3
+check "Esc closes the box and sends nothing: still answering, the choice still empty" "wait_q 'closed; nothing was sent' 15 && ! qhas 'Esc closes' && qhas 'ANSWERING asker' && qhas '❯ 5. Type something.' && ! grep -qxF -- \"\$esc\" $T/ans2.keys && ! grep -q 'paste:' $T/ans2.keys && [[ ! -e $T/ans2 ]]"
+tm send-keys -t work:qpanel E
+check "E opens the box too, sending nothing" "wait_q 'Esc closes' 15 && qhas 'ANSWER · asker' && ! grep -qxE 'E|e' $T/ans2.keys"
+# Lines from Alt-Enter and Ctrl-J; then the cursor goes back up to fix a typo, to the start of
+# a line for Delete, to the end of another, and PgUp to the very start.
+tm send-keys -t work:qpanel -l 'my custom answr'; tm send-keys -t work:qpanel M-Enter
+tm send-keys -t work:qpanel -l 'line two'; tm send-keys -t work:qpanel C-j
+tm send-keys -t work:qpanel -l 'thre'
+tm send-keys -t work:qpanel Up Up End Left; tm send-keys -t work:qpanel -l 'é'
+tm send-keys -t work:qpanel Down Home DC; tm send-keys -t work:qpanel -l 'L'
+tm send-keys -t work:qpanel Down End; tm send-keys -t work:qpanel -l 'e'
+tm send-keys -t work:qpanel PPage; tm send-keys -t work:qpanel -l '>'
+want=$'>my custom answér\nLine two\nthree'
+check "the box takes lines, and the cursor moves to edit them, nothing sent yet" "wait_q '║ >my custom answér' 15 && qhas '║ Line two' && qhas '║ three' && ! grep -q 'paste:' $T/ans2.keys"
 tm send-keys -t work:qpanel Enter
-check "a custom answer arrives exactly as typed" "for _ in \$(seq 1 25); do [[ -s $T/ans2 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans2 2>/dev/null) == 'custom:my custom answér' ]]"
+check "Enter puts it in the free-text choice as one paste, line breaks and all, and doesn't submit it" "wait_q '❯ 5. >my custom answér' 15 && ! qhas 'Esc closes' && qhas 'ANSWERING asker' && grep -qxF -- \"paste:\$(printf %q \"\$want\")\" $T/ans2.keys && ! grep -qxF \"''\" $T/ans2.keys && [[ ! -e $T/ans2 ]]"
+# E again: what the panel put there is in the box to change. On Enter the choice is emptied
+# first (Ctrl-U), then the new answer pasted.
+tm send-keys -t work:qpanel E
+check "E again: the box holds the answer it put there" "wait_q '║ Line two' 15 && qhas '║ >my custom answér'"
+tm send-keys -t work:qpanel -l ' more'; tm send-keys -t work:qpanel Enter
+want+=' more'
+check "the changed answer replaces it" "wait_q '         three more' 15 && grep -qxF -- \"paste:\$(printf %q \"\$want\")\" $T/ans2.keys && [[ ! -e $T/ans2 ]]"
+tm send-keys -t work:qpanel Enter
+check "your own Enter then picks it: the answer arrives exactly, line breaks included" "for _ in \$(seq 1 25); do [[ -s $T/ans2 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans2 2>/dev/null) == \"custom:\$want\" ]]"
 # A dialog with no free-text choice: letters go to it as they always have.
 wait_q 'PEEK · asker' 30 >/dev/null # done answering the last one
 tm respawn-pane -k -t work:asker "$T/bin/codex $T/ask.sh $T/ans8 nofree"
@@ -935,7 +978,7 @@ tm kill-window -t work:asker
 # Answering looks at the agent's screen again right after a key is sent, not 0.3 s later; and a
 # digit that starts typed text is sent on its own (in a menu it picks a choice). Seen by the
 # tmux that logs what it's asked.
-tm new-window -d -t work -n asker2 "$T/bin/codex $T/ask.sh $T/ans4"
+tm new-window -d -t work -n asker2 "$T/bin/codex $T/ask.sh $T/ans4 nofree"
 tm set-option -p -t work:asker2 @agent asker2
 tm new-window -d -t work -n qshim "env PATH=$T/shim:$PATH REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
 sscreen() { tm capture-pane -p -t work:qshim; }
@@ -945,8 +988,7 @@ for _ in $(seq 1 20); do sscreen | grep -q '▶ asker2' && break; tm send-keys -
 wait_s 'QUESTION · asker2' >/dev/null
 tm send-keys -t work:qshim Enter; wait_s 'ANSWERING asker2' >/dev/null
 for _ in 1 2 3 4; do tm send-keys -t work:qshim Down; sleep 0.4; done
-wait_s '❯ 5. Type something.' 15 >/dev/null
-tm send-keys -t work:qshim E; wait_s 'Esc leaves the edit box' 15 >/dev/null; sleep 0.5
+wait_s '❯ 5. Not now' 15 >/dev/null; sleep 0.5
 caps() { grep -c "capture-pane -p -t $(tm display -p -t work:asker2 '#{pane_id}')\$" "$T/shim.log"; }
 c0=$(caps)
 tm send-keys -t work:qshim -l 'x'; sleep 0.45
@@ -960,6 +1002,20 @@ tm send-keys -t work:qshim Enter
 check "and the answer arrives whole" "for _ in \$(seq 1 25); do [[ -s $T/ans4 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans4 2>/dev/null) == 'custom:x2xyz' ]]"
 tm send-keys -t work:qshim q
 tm kill-window -t work:asker2
+# M writes a message of several lines in its box, and agent-say carries it whole. The agent
+# shows an empty prompt, so agent-say doesn't wait for someone to finish typing there.
+tm new-window -d -t work -n mrecv "$T/bin/claude -c 'printf \"❯ \"; sleep 300; :'"
+tm set-option -p -t work:mrecv @agent mrecv
+tm new-window -d -t work -n mpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+mscreen() { tm capture-pane -p -t work:mpanel; }
+for _ in $(seq 1 30); do mscreen | grep -q '▶ mrecv' && break; tm send-keys -t work:mpanel Down; sleep 0.3; done
+tm send-keys -t work:mpanel m; sleep 0.5
+tm send-keys -t work:mpanel -l 'a note in'; tm send-keys -t work:mpanel C-j
+tm send-keys -t work:mpanel -l 'two lines'; sleep 0.3
+tm send-keys -t work:mpanel Enter
+check "M sends a message of several lines, whole" "for _ in \$(seq 1 30); do grep -q '^two lines\$' $AGENT_SAY_MAILBOX 2>/dev/null && break; sleep 0.2; done; grep -A2 -- '^## \\[panel -> ' $AGENT_SAY_MAILBOX | grep -qx 'a note in' && grep -A2 -- '^## \\[panel -> ' $AGENT_SAY_MAILBOX | grep -qx 'two lines'"
+tm send-keys -t work:mpanel q
+tm kill-window -t work:mrecv
 
 # A multi-select question, as Claude Code 2.1 draws one (captured): Apple ticked, the cursor
 # on Submit, which has no number and sits apart from its ❯.
@@ -974,7 +1030,7 @@ msq() { bash -c 'e=$'"'"'\e'"'"' B=B BYEL=Y GRY=g DIM=d MAG=m BWHT=W BCYN=C BGRN
 check "a multi-select with its cursor on Submit is still asking (Enter there answers it)" "[[ \$(msq | head -1) == asking ]]"
 check "a ticked choice stands out from the unticked ones" "msq | grep -qxF 'BG|  1. [✔] Apple' && msq | grep -qxF 'W|  2. [ ] Banana'"
 # Its free-text choice, unticked ("[ ]"), is found, and the cursor on Submit isn't on it.
-qfree() { bash -c 'source <(sed -n "/^question_free() {/,/^}/p" "$1"); QFREE=0 QFREEN="" QEDIT=0 QSEEN=0
+qfree() { bash -c 'source <(sed -n "/^question_free() {/,/^}/p" "$1"); QFREE=0 QFREEN=""
 	mapfile -t QL <"$2"; question_free; echo "$QFREE $QFREEN $QON"' _ "$ROOT/scripts/panel.sh" "$T/msq.txt"; }
 check "a multi-select's free-text choice is found, the cursor on Submit off it" "[[ \$(qfree) == '1 3 0' ]]"
 sed -i 's/^  3\. \[ \] Type something$/❯ 3. [ ] Type something/; s/^❯    Submit$/     Submit/' "$T/msq.txt"
@@ -1182,6 +1238,7 @@ elif [[ $cmd == AGENT_SAY_PANE=* ]]; then printf '%s' "$cmd" >"$T/name.cmd"; HOM
 elif [[ $cmd =~ \ panel\ --peek\ \'([^\']*)\'\ ([^ ]*)$ ]]; then exec bash "$panel" --peek "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 elif [[ $cmd =~ \ panel\ --show\ \'([^\']*)\'$ ]]; then printf '%s' "$cmd" >"$T/show.cmd"; exec bash "$panel" --show "${BASH_REMATCH[1]}"
 elif [[ $cmd =~ \ panel\ --keys\ \'([^\']*)\'((\ [^ ]+)+)$ ]]; then read -ra k <<<"${BASH_REMATCH[2]}"; exec bash "$panel" --keys "${BASH_REMATCH[1]}" "${k[@]}"
+elif [[ $cmd =~ \ panel\ --paste\ \'([^\']*)\'\ ([^ ]*)$ ]]; then exec bash "$panel" --paste "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 fi
 exit 127
 EOF
@@ -1702,6 +1759,15 @@ far_tm kill-window -t far:w2
 check "--keys turns away a bad pane id" "! rpanel --keys 'far:0.0' Enter && ! rpanel --keys '%0;touch $T/pwn' Enter && ! rpanel --keys %999 Enter && ! rpanel --keys $farid && [[ ! -e $T/pwn ]]"
 check "--keys turns away keys not on its list, Escape too (it would cancel a question)" "! rpanel --keys $farid Escape && ! rpanel --keys $farid 'Enter;touch $T/pwn' && ! rpanel --keys $farid F1 && ! rpanel --keys $farid 'send-keys' && ! rpanel --keys $farid '\$(touch $T/pwn)' && [[ ! -e $T/pwn ]]"
 check "--keys text: no control characters, bidi overrides or endless text" "! rpanel --keys $farid lit:0a && ! rpanel --keys $farid lit:\$(hex \$'a\\e[2J') && ! rpanel --keys $farid lit:c29b && ! rpanel --keys $farid lit:\$(hex \$'\\u202e') && ! rpanel --keys $farid lit:00 && ! rpanel --keys $farid lit:\$(hex \$(printf 'a%.0s' {1..65})) && ! rpanel --keys $farid lit:4"
+# --paste: a pane id, then a written answer's text as hex: line breaks and tabs, nothing else
+# that controls the terminal, 40000 bytes at most. Text it turns away exits 2, before the pane
+# is looked for (%999 isn't there: 1).
+check "--paste pastes text into a pane over there" "[[ \$(rpanel --paste $farid \$(hex 'echo paste-$((6 * 7))')) == sent ]] && rpanel --keys $farid Enter >/dev/null && for _ in \$(seq 1 20); do tmux -L revive-panel-remote-$$ -f /dev/null capture-pane -p -t $farid | grep -q '^paste-42' && break; sleep 0.2; done && tmux -L revive-panel-remote-$$ -f /dev/null capture-pane -p -t $farid | grep -q '^paste-42'"
+pst() { rpanel --paste "$@" >/dev/null; echo $?; }
+check "--paste takes line breaks and tabs, and up to 40000 bytes" "[[ \$(pst %999 \$(hex \$'two\\nlines\\tand a tab')) == 1 && \$(pst %999 \$(hex \"\$(printf 'é%.0s' {1..20000})\")) == 1 ]]"
+check "--paste turns away CR, escapes, C1, bidi and zero-width characters, NUL and DEL" "[[ \$(pst %999 \$(hex \$'a\\rb')) == 2 && \$(pst %999 \$(hex \$'a\\e[2J')) == 2 && \$(pst %999 c29b) == 2 && \$(pst %999 \$(hex \$'a\\u202eb')) == 2 && \$(pst %999 \$(hex \$'a\\u200bb')) == 2 && \$(pst %999 6100) == 2 && \$(pst %999 617f) == 2 ]]"
+check "--paste turns away what isn't hex text, too much of it, or nothing to paste" "[[ \$(pst %999 4) == 2 && \$(pst %999 4A) == 2 && \$(pst %999 'zz') == 2 && \$(pst %999 '') == 2 && \$(pst %999 \$(hex '  ')) == 2 && \$(pst %999 \$(printf '61%.0s' {1..40001})) == 2 ]]"
+check "--paste turns away a bad pane id, or more or less than its two arguments" "[[ \$(pst 'far:0.0' 61) == 2 && \$(pst '%0;touch $T/pwn' 61) == 2 && \$(pst \$(hex x)) == 2 && \$(pst $farid 61 62) == 2 ]] && [[ ! -e $T/pwn ]]"
 
 # A question on the linked computer, answered from here over the link. Over there you're busy
 # in a pane of your own (far-sh): an agent there starting to ask must not move you off it (what
@@ -1738,6 +1804,29 @@ check "then its peek comes back" "wait_fq 'PEEK · far-ask' 100 && ! fq | grep -
 check "answering it moved no client's focus either" "[[ \$(fclient) == '$fwas' && \$(tm display -p -t work '#{window_name}') == '$hwas' ]]"
 tm send-keys -t work:farq q; sleep 0.5
 check "the panel takes the screens it fetched with it" "! ls $st/panel/ 2>/dev/null | grep -c 'peek-' >/dev/null"
+# A written answer for a linked computer's question: E's box, then over the link as one paste
+# (--paste), not submitted; Enter there picks it. Its tmux-revive is new enough to take it.
+rv=$(cat "$T/remote-version" 2>/dev/null); echo 9.9.9 >"$T/remote-version"
+tmux -L "revive-panel-remote-$$" -f /dev/null respawn-pane -k -t far:ask "$T/bin/codex $T/ask.sh $T/ans9"
+sleep 0.5
+rm -f "$st/panel/far.example.rows" "$st/panel/"*.peek-*
+tm new-window -d -t work -n farq "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+wait_fq 'far-ask' 60 >/dev/null
+for _ in $(seq 1 25); do fq | grep -q '▶ far-ask' && break; tm send-keys -t work:farq Down; sleep 0.4; done
+wait_fq 'QUESTION · far-ask' 100 >/dev/null
+tm send-keys -t work:farq Enter; wait_fq 'ANSWERING far-ask' >/dev/null
+for _ in 1 2 3 4; do tm send-keys -t work:farq j; sleep 0.6; done
+wait_fq '❯ 5. Type something.' >/dev/null
+tm send-keys -t work:farq E; wait_fq 'Esc closes' >/dev/null
+tm send-keys -t work:farq -l 'from far'; tm send-keys -t work:farq C-j; tm send-keys -t work:farq -l 'away'
+tm send-keys -t work:farq Enter
+check "a written answer reaches a linked computer's question as one paste, not submitted" "wait_fq '❯ 5. from far' 100 && grep -qxF -- \"paste:\$(printf %q \$'from far\\naway')\" $T/ans9.keys && [[ ! -e $T/ans9 ]]"
+tm send-keys -t work:farq Enter
+check "and Enter picks it there" "for _ in \$(seq 1 40); do [[ -s $T/ans9 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans9 2>/dev/null) == \$'custom:from far\\naway' ]]"
+wait_fq 'PEEK · far-ask' 100 >/dev/null # done answering, so q goes to the panel
+tm send-keys -t work:farq q; sleep 0.5
+tm kill-window -t work:farq 2>/dev/null
+if [[ -n $rv ]]; then echo "$rv" >"$T/remote-version"; else rm -f "$T/remote-version"; fi
 
 echo "a server that takes a password"
 # pw.example is the same far computer behind a fake ssh that refuses BatchMode until a login
