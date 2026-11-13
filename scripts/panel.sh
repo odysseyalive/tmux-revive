@@ -1927,8 +1927,8 @@ TIPS=(
 	"[G]rant access when one code session requests to talk to another."
 	"[⇧J] and [⇧K] move between windows. [j] and [k] move inside one."
 	"[0]-[9] jump to a tmux window. [0] is window 10."
-	"Detach and come back anytime. Every session, Claude too, picks up where it left off."
-	"[S]ave a snapshot now. It also saves on its own when you detach."
+	"[D]etach and come back anytime. Every session, Claude too, picks up where it left off."
+	"[S]ave a snapshot now. It also saves on its own when you [D]etach."
 	"[A]rt changes the artwork. [?] opens help."
 )
 TIP_SECS=${REVIVE_PANEL_TIP_SECS:-30}
@@ -2468,7 +2468,7 @@ draw() {
 		if [[ -n ${FOLD[$fh]:-} ]]; then cs+=("F: unfold"); else cs+=("F:old"); fi
 	fi
 	((${INTRO_ON:-0})) && cs+=("G:rant access")
-	cs+=("A:rt" "S:ave" "Q:uit" "?: help")
+	cs+=("A:rt" "S:ave" "D:etach" "Q:uit" "?: help")
 	for c in "${cs[@]}"; do
 		if [[ $off == *" ${c%%:*} "* ]]; then
 			k+="$GRY[${c%%:*}]${c#*:}$R  "
@@ -3483,6 +3483,14 @@ act() {
 		flash "art: ${TITLES[SCENE]}" ;;
 	s | S)
 		if "$BASH" "$REVIVE_ROOT/scripts/save.sh" manual >/dev/null 2>&1; then flash "saved"; else flash "save failed (see: tmux-revive log)"; fi ;;
+	# D: detach this tmux (the client looking at the panel), once you've said yes. Everything
+	# keeps running, and a snapshot is taken on detach, so it comes back after a reboot too.
+	d | D)
+		PREV=(); draw
+		pick "DETACH TMUX?" "${NOTE}This session will restore even after reboot." "No, stay" "Yes, detach" &&
+			((PICKED == 2)) || { PREV=(); flash "detach cancelled"; return; }
+		PREV=()
+		tm detach-client 2>/dev/null || flash "couldn't detach" ;;
 	q | Q) exit 0 ;;
 	'?') help_view ;; # quoted: a bare ? would match every key
 	# A digit N goes to window N, as the # column and tmux's status bar number it: the first pane

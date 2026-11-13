@@ -41,6 +41,7 @@ cleanup() {
 	tmux -L "revive-panel-remote-$$" -f /dev/null kill-server 2>/dev/null
 	tmux -L "revive-panel-scroll-$$" -f /dev/null kill-server 2>/dev/null
 	tmux -L "revive-panel-ten-$$" -f /dev/null kill-server 2>/dev/null
+	tmux -L "revive-panel-detach-$$" -f /dev/null kill-server 2>/dev/null
 	[[ -n ${dpid:-} ]] && kill "$dpid" 2>/dev/null
 	rm -rf "$T"
 }
@@ -168,7 +169,7 @@ check "and nothing shows through the sun" "artband grid 1 | python3 $T/sun.py"
 out=$(frame 130)
 check "a shell pane shows as a shell" "grep -q 'bash *· shell' <<<\"\$out\""
 check "a program shows as running" "grep -q 'top *▸ running' <<<\"\$out\""
-check "the command keys are listed" "grep -qF '[O]pen  [M]essage  [N]ame  [B]ridge  [U]pdate  [A]rt  [S]ave  [Q]uit' <<<\"\$out\" && ! grep -qF '[V]' <<<\"\$out\""
+check "the command keys are listed" "grep -qF '[O]pen  [M]essage  [N]ame  [B]ridge  [U]pdate  [A]rt  [S]ave  [D]etach  [Q]uit' <<<\"\$out\" && ! grep -qF '[V]' <<<\"\$out\""
 check "with no computer linked, no fold keys" "! grep -qF '[F]' <<<\"\$out\" && ! grep -qF '[f]' <<<\"\$out\""
 # Under heavy load one frame can come back short, so allow three looks; a real regression
 # misses every time, and then the frame is printed to show what was seen.
@@ -2168,6 +2169,26 @@ check "on this computer's pane the bar offers no fold" "! sscr | grep -qF '[F]' 
 tm_s F; wait_sp 'later-a' >/dev/null
 tm_s q
 sm kill-server
+
+# D detaches tmux, the client looking at the panel, but asks first and says it all comes back.
+td() { tmux -L "revive-panel-detach-$$" -f /dev/null "$@"; }
+td new-session -d -s dt -x 120 -y 40 "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n dclient "env -u TMUX tmux -L revive-panel-detach-$$ -f /dev/null attach -t dt"
+dscr() { td capture-pane -p -t dt:0; }
+wait_d() { for _ in $(seq 1 30); do dscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+gone_d() { for _ in $(seq 1 30); do dscr | grep -qF -- "$1" || return 0; sleep 0.2; done; return 1; }
+dclients() { td list-clients 2>/dev/null | wc -l; }
+wait_d 'C O N T R O L' >/dev/null
+check "the key bar offers [D]etach" "wait_d '[D]etach' && (( \$(dclients) == 1 ))"
+td send-keys -t dt:0 d
+check "D asks first, and says it all comes back" "wait_d 'DETACH TMUX?' && wait_d 'This session will restore even after reboot.' && wait_d 'No, stay' && wait_d 'Yes, detach'"
+td send-keys -t dt:0 Escape
+check "Esc keeps you here" "gone_d 'DETACH TMUX?' && wait_d 'detach cancelled' && (( \$(dclients) == 1 ))"
+sleep 0.3; td send-keys -t dt:0 D; wait_d 'DETACH TMUX?' >/dev/null; td send-keys -t dt:0 1
+check "and so does No" "gone_d 'DETACH TMUX?' && (( \$(dclients) == 1 ))"
+sleep 0.3; td send-keys -t dt:0 D; wait_d 'DETACH TMUX?' >/dev/null; td send-keys -t dt:0 2
+check "Yes detaches: the client is gone, the session and the panel still run" "for _ in \$(seq 1 30); do (( \$(dclients) == 0 )) && break; sleep 0.2; done; (( \$(dclients) == 0 )) && td has-session -t dt && wait_d 'C O N T R O L'"
+td kill-server; tm kill-window -t work:dclient 2>/dev/null
 
 # Windows numbered from 1 (base-index 1), as on the keyboard's row: 0 is window 10, since
 # there's no window 0. (The suite's own tmux has a window 0, where 0 picks it.)

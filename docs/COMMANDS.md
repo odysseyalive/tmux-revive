@@ -174,6 +174,7 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 | `G` | grant access: agents on linked computers waiting to talk, and the ones you approved |
 | `A` | swap the artwork |
 | `S` | save right now |
+| `D` | detach tmux, after you say yes. Everything keeps running and comes back even after a reboot |
 | `?` | the help page |
 | `Q` | quit |
 
