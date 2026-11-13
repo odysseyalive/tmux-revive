@@ -187,7 +187,8 @@ follows. If something that needs you is scrolled out of view, like a question or
 an access request, the arrow on that side blinks yellow.
 
 PANES takes about half the screen at most, and the peek takes the rest. It starts
-hidden: only its title shows, with **[P]eek** to bring it up.
+hidden: only its title shows, with **[P]eek** to bring it up, for the selected pane
+only. Select another and it hides again.
 
 On a linked computer's pane, **f** folds that computer's panes into its heading
 line, which still says how many need you. The arrows skip an open computer's

@@ -1530,7 +1530,7 @@ outside_ssh() {
 }
 
 # ------------------------------------------------------------------ sections
-SEL=0 SEL_ID="" PEEK=${REVIVE_PANEL_PEEK:-0} ANSWERING=0 FLASH="" FLASH_T=0 TICK=0
+SEL=0 SEL_ID="" PEEK=${REVIVE_PANEL_PEEK:-0} PEEK_SEL="" PEEK_ALL=${REVIVE_PANEL_PEEK:-0} ANSWERING=0 FLASH="" FLASH_T=0 TICK=0
 # nav: this frame only moves the selection. Then the messages, links and saves (MSG, SIDE) are
 # kept from the last frame, unless MSG_OLD says they're due a look (new panes were gathered,
 # or they were hidden). TCOLS and TLINES: the terminal's size, asked again with the panes.
@@ -1879,6 +1879,35 @@ kcs() {
 	local k=""
 	while (($# >= 2)); do kc "$1" "$2"; k+="${k:+  }$KC"; shift 2; done
 	KC=$k
+}
+# The tips under the hidden peek's title, one at a time, the next every TIP_SECS (30). A key
+# in [brackets] is drawn as the key bar draws keys. One too wide for the panel is passed over.
+TIPS=(
+	"Turn [P]eek on to preview the selection. Leave it off for speed."
+	"[U]pdate this computer and every attached server at once."
+	"[B]ridge a server so its agents show up here and can message yours."
+	"[N]ame a pane so agents can reach it with agent-say."
+	"[M]essage the selected agent."
+	"When an agent asks a question, [Enter] enables you to answer from here."
+	"[G]rant access when agents ask to talk to each other."
+	"[⇧J] and [⇧K] move between windows. [j] and [k] move inside one."
+	"[0]-[9] jump to a tmux window. [0] is window 10."
+	"Detach and come back anytime. Every session, Claude too, picks up where it left off."
+	"[S]ave a snapshot now. It also saves on its own when you detach."
+	"[A]rt changes the artwork. [?] opens help."
+)
+TIP_SECS=${REVIVE_PANEL_TIP_SECS:-30}
+[[ $TIP_SECS =~ ^[1-9][0-9]{0,4}$ ]] || TIP_SECS=30
+tip_line() { # -> TIPL: this moment's tip, centered in the panel's width and coloured
+	local n=${#TIPS[@]} i j t c=""
+	i=$((SECONDS / TIP_SECS % n))
+	for ((j = 0; j < n; j++)); do t=${TIPS[(i + j) % n]}; ((${#t} <= IW - 2)) && break; done
+	((${#t} > IW - 2)) && t="[P]eek"
+	rep ' ' $(((IW - ${#t}) / 2))
+	while [[ $t =~ ^([^[]*)\[([^]]+)\](.*)$ ]]; do
+		c+="$CYN${BASH_REMATCH[1]}$BBLU[$B$BYEL${BASH_REMATCH[2]}$R$BBLU]$R" t=${BASH_REMATCH[3]}
+	done
+	TIPL="$REP$c$CYN$t$R"
 }
 draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or the question it's asking
 	local -a L=()
@@ -2295,6 +2324,13 @@ draw() {
 	# hidden: it's waiting on you.
 	avail=$((lines - BH - 8 - PH - bottom))
 	# No peek at the panel's own pane: it would only show itself. Nor at a heading.
+	# P shows it for the pane selected then (PEEK_SEL), only: another pane selected, or a
+	# heading, hides it again, so a screen is read only while you're looking at it.
+	# REVIVE_PANEL_PEEK=1: shown from the start, for whichever pane is selected.
+	if ((PEEK && !PEEK_ALL)); then
+		[[ -z $PEEK_SEL ]] && PEEK_SEL=${P_ID[SEL]:-}
+		[[ -z $HSEL && ${P_ID[SEL]:-} == "$PEEK_SEL" ]] || PEEK=0 PEEK_SEL=""
+	fi
 	local show=0 bar=0
 	if ((n && avail >= 4)) && [[ -n $sst && $sst != self ]]; then
 		if ((PEEK)) || [[ $sst == asking ]]; then show=1; else bar=1; fi
@@ -2313,12 +2349,10 @@ draw() {
 		kc P "eek"
 		sectk "PEEK · ${P_NAME[SEL]:-${P_LOC[SEL]:-}}" "$KC" 4
 		avail=$((avail - 1))
-		# Under its title, centered: what P is for.
+		# Under its title, centered: a tip, the next one every TIP_SECS.
 		if ((avail >= 1)); then
-			local pn="Turn peek on (P) to preview the selection. Leave it off for speed."
-			((${#pn} > IW - 2)) && pn="P: preview the selection"
-			rep ' ' $(((IW - ${#pn}) / 2))
-			row "$REP$CYN$pn$R"
+			tip_line
+			row "$TIPL"
 			avail=$((avail - 1))
 		fi
 	fi
@@ -3386,7 +3420,7 @@ act() {
 		PREV=() # the boxes drawn over, all of it again
 		clean out
 		flash "${out#agent-say: }" ;;
-	p | P) PEEK=$((!PEEK)) ;;
+	p | P) PEEK=$((!PEEK)) PEEK_SEL=${P_ID[SEL]:-} PEEK_ALL=0 ;;
 	# Enter: on a linked computer's heading, fold it to that line (or open it again); on a pane
 	# asking a question, answer it.
 	enter)
