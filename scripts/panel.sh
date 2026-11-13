@@ -1704,26 +1704,26 @@ draw_panes() {
 		((${#folder} > FW)) && FW=${#folder}
 		if [[ -n ${P_WP[i]:-} ]]; then lab[i]=${P_WP[i]}; elif ((i < 9)); then lab[i]=$((i + 1)); else lab[i]=""; fi
 		((${#lab[i]} + 2 > KW)) && KW=$((${#lab[i]} + 2))
-		# VER: the row's user's tmux-revive, or [V] when that user has none (V installs it). A
-		# linked computer whose rows say nothing of whose tmux it is has a tmux-revive from before
-		# users: [V] there too, as V updates it.
+		# VER: the row's user's tmux-revive, or [U] when that user has none (U has the command
+		# to install it). A linked computer whose rows say nothing of whose tmux it is has a
+		# tmux-revive from before users: [U] there too, as U updates it.
 		v=${P_INST[i]:-}
 		if [[ $v == owner ]]; then
 			v=$VERSION
 			[[ -n ${P_HOST[i]} ]] && { v=${RVER[${P_HOST[i]}]:-}; [[ $v =~ $VER_RE ]] || v=""; }
-		elif [[ -z $v && -n ${P_USER[i]:-} ]]; then v="[V]"
-		elif [[ -n ${P_HOST[i]} && -n ${P_RID[i]:-} && -z ${ROWNER[${P_HOST[i]}]:-} ]]; then v="[V]"; fi
+		elif [[ -z $v && -n ${P_USER[i]:-} ]]; then v="[U]"
+		elif [[ -n ${P_HOST[i]} && -n ${P_RID[i]:-} && -z ${ROWNER[${P_HOST[i]}]:-} ]]; then v="[U]"; fi
 		ver[i]=$v
 		((${#v} > VW)) && VW=${#v}
 		((${#P_USER[i]} > UW)) && UW=${#P_USER[i]}
 		# Its agent waiting for access through here: said in its STATE, unless it asks a question.
 		st=${P_STATE[i]}
 		[[ $st != asking && -n ${P_NAME[i]} && $gw == *" ${P_NAME[i]}@${P_HOST[i]:-${AGENT_SAY_HOST:-$HOST}} "* ]] && st=grant
-		# Whether the row needs you (a question, access waiting, [V]), and how many on each
+		# Whether the row needs you (a question, access waiting, [U]), and how many on each
 		# computer do, for its heading.
 		stc[i]=$st need[i]=0 key=${P_HOST[i]:-.}
 		cnt[$key]=$((${cnt[$key]:-0} + 1))
-		[[ $st == asking || $st == grant || $v == "[V]" ]] && need[i]=1 needc[$key]=$((${needc[$key]:-0} + 1))
+		[[ $st == asking || $st == grant || $v == "[U]" ]] && need[i]=1 needc[$key]=$((${needc[$key]:-0} + 1))
 	done
 	((NW > 29)) && NW=29
 	((FW > 35)) && FW=35
@@ -1803,7 +1803,7 @@ draw_panes() {
 			fld "${P_USER[i]:-}" "$UW"
 			cells+="$CYN$FLD$R "
 			fld "${ver[i]}" "$VW"
-			if [[ ${ver[i]} == "[V]" ]]; then cells+="$BYEL$FLD$R "
+			if [[ ${ver[i]} == "[U]" ]]; then cells+="$BYEL$FLD$R "
 			elif [[ -n ${ver[i]} && -n $VERSION ]] && ver_lt "${ver[i]}" "$VERSION"; then cells+="$BYEL$FLD$R "
 			else cells+="$GRY$FLD$R "; fi
 		fi
@@ -2377,21 +2377,19 @@ draw() {
 	# of the pane's own keys.
 	local off=" " rh=${P_HOST[SEL]:-}
 	if [[ -n $HSEL ]]; then
-		off+="O M N V "
+		off+="O M N "
 	elif [[ -n $rh ]]; then
 		[[ -n ${P_RID[SEL]:-} ]] || off+="N "
 		[[ -n ${P_NAME[SEL]:-} ]] || off+="M "
 		off+="O "
 	fi
-	local cs=("O:pen" "M:essage" "N:ame" "B:ridge" "U:nlink")
+	local cs=("O:pen" "M:essage" "N:ame" "B:ridge" "U:pdate")
 	# f on a linked computer's pane or heading: fold that computer to its heading, or open it.
 	# (F, every one at once, is the help page's.)
 	local fh=${HSEL:-${P_HOST[SEL]:-}}
 	if [[ -n $fh ]]; then
 		if [[ -n ${FOLD[$fh]:-} ]]; then cs+=("F: unfold"); else cs+=("F:old"); fi
 	fi
-	v_mode # tmux-revive for that row's user, or on that computer
-	case $VMODE in host | update) cs+=("V: update") ;; install) cs+=("V: install") ;; esac
 	((${INTRO_ON:-0})) && cs+=("G:rant access")
 	cs+=("A:rt" "S:ave" "Q:uit" "?: help")
 	for c in "${cs[@]}"; do
@@ -2558,17 +2556,23 @@ ask() { # ask PROMPT -> REPLY on the bottom line. Enter accepts; Esc, Ctrl-C or 
 # shadow, listing ITEMs. ↑↓ (j k) or 1-9 choose, Enter picks (-> PICKED, the index), Esc or q closes
 # it (returns 1). Ctrl-C closes it too, read in slices as in ask. An ITEM starting with $NOTE
 # is a line to read (a heading, some words), not a choice: unnumbered, and never picked.
+# Set for one call (PKEYS=u pick ...): PKEYS, letters that also pick the highlighted item
+# (-> PKEY, the letter; Enter leaves it empty), on the items PKROWS lists (" 0 3 ");
+# PHINT, the hint line instead of the usual one; PSEL, the item highlighted first; PTICK, a function run every 0.2 s that returns 0 when PITEMS holds the items anew
+# (as many, and no wider).
 NOTE=$'\x1f' # clean takes control characters out of anything shown, so none can start with it
 pick() {
-	local title=$1 rows cols w h top left i k rest sel=-1 line hint="↑↓ choose · Enter picks · Esc closes" INTR=0
+	local title=$1 rows cols w h top left i k rest sel=-1 line hint=${PHINT:-"↑↓ choose · Enter picks · Esc closes"} INTR=0
 	shift
 	local -a items=("$@") ch=() num=()
+	PKEY=""
 	for i in "${!items[@]}"; do
 		[[ ${items[i]} == "$NOTE"* ]] && continue
 		num[i]=${#ch[@]} ch+=("$i")
 		((sel < 0)) && sel=$i
 	done
 	((${#ch[@]})) || return 1
+	[[ -n ${PSEL:-} && -n ${num[PSEL]:-} ]] && sel=$PSEL
 	rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80)
 	w=$((${#hint} + 6))
 	for i in "${items[@]}"; do ((${#i} + 10 > w)) && w=$((${#i} + 10)); done
@@ -2617,8 +2621,10 @@ pick() {
 		until IFS= read -rsn1 -t 0.2 k; do
 			(($? <= 128 || INTR)) && { k=CLOSE; break; }
 			k=""
+			[[ -n ${PTICK:-} ]] && "$PTICK" && { k=TICK; break; }
 		done
 		case $k in
+		TICK) items=("${PITEMS[@]}") ;;
 		CLOSE | q | Q) trap 'exit 0' INT; return 1 ;;
 		$'\e')
 			rest=""
@@ -2632,6 +2638,11 @@ pick() {
 		j) ((num[sel] < ${#ch[@]} - 1)) && sel=${ch[num[sel] + 1]} ;;
 		[1-9]) ((k - 1 < ${#ch[@]})) && sel=${ch[k - 1]} && { PICKED=$sel; trap 'exit 0' INT; return 0; } ;;
 		"") PICKED=$sel; trap 'exit 0' INT; return 0 ;; # Enter
+		*)
+			[[ ${#k} == 1 && -n ${PKEYS:-} && $PKEYS == *"${k,,}"* ]] || continue
+			[[ ${PKROWS:-} == *" $sel "* ]] || continue
+			PICKED=$sel PKEY=${k,,}
+			trap 'exit 0' INT; return 0 ;;
 		esac
 	done
 }
@@ -2820,26 +2831,14 @@ answer() {
 }
 
 PREV=()
-# v_mode -> VMODE: what V does for the selected row. Another user's pane (not the tmux owner's,
-# here or on its linked computer): install when that user has no tmux-revive, update when theirs
-# is older than the owner's, current otherwise. host: update tmux-revive on its linked computer,
-# for the user the link logs in as. Nothing for this tmux's owner here.
-v_mode() {
-	local u=${P_USER[SEL]:-} h=${P_HOST[SEL]:-} own=$ME v=${P_INST[SEL]:-} ref=$VERSION
-	VMODE=""
-	[[ -n $h ]] && own=${ROWNER[$h]:-} ref=${RVER[$h]:-}
-	if [[ -n $u && $u != "$own" ]]; then
-		if [[ -z $v ]]; then VMODE=install
-		elif [[ $v =~ $VER_RE && $ref =~ $VER_RE ]] && ver_lt "$v" "$ref"; then VMODE=update
-		else VMODE=current; fi
-	elif [[ -n $h ]]; then VMODE=host; fi
-}
-# user_note install|update: the command that installs or updates tmux-revive for the selected
-# row's user, to run in that user's own pane: shown in a box over the panel, and put in tmux's
-# paste buffer. Nothing is run for them from here. The install command is README.md's.
+# user_note install|update USER [HOST]: the command that installs or updates tmux-revive for
+# USER, to run in their own pane (on HOST, a linked computer): shown in a box over the panel,
+# and put in tmux's paste buffer. Nothing is run for them from here. The install command is
+# README.md's.
 user_note() {
-	local u=${P_USER[SEL]:-} cmd="tmux-revive update" f l
+	local u=$2 cmd="tmux-revive update" who="$2's pane" f l
 	[[ $u =~ $USER_RE ]] || return
+	[[ -n ${3:-} ]] && who+=" on $3"
 	if [[ $1 == install ]]; then
 		cmd=""
 		for f in "$REVIVE_ROOT/README.md" "$REVIVE_ROOT/install.sh"; do
@@ -2852,7 +2851,162 @@ user_note() {
 	fi
 	# Into tmux's paste buffer, and the system clipboard too where the terminal allows (-w).
 	tm set-buffer -w -- "$cmd" 2>/dev/null || tm set-buffer -- "$cmd" 2>/dev/null
-	note "$1 for $u" "Run this in $u's pane:" "" "$cmd" "" "Copied. Paste it there, or press prefix ]."
+	note "$1 for $u" "Run this in $who:" "" "$cmd" "" "Copied. Paste it there, or press prefix ]."
+}
+# unlink_host HOST: agent-say unlink, and what it said on the bar.
+unlink_host() {
+	local out
+	flash "unlinking $1…"; draw
+	out=$(timeout 30 "$ASAY" unlink "$1" 2>&1 | tail -n 1)
+	clean out
+	[[ -d $ASTATE/links/$1 ]] || rm -f "$RDIR/$1.rows" # what it kept of that computer
+	flash "${out#agent-say: }"
+}
+
+# U: tmux-revive updated everywhere it can be, all at once, in a popup that shows each line
+# as it goes: this computer's (yours), and each linked computer's over its link. Each is tried
+# once; one that fails says so and is never tried again until you press U again (a server's
+# fail2ban counts every try). Another user's install, here or there, is theirs to update:
+# nothing runs as them. Its line has [I], and I shows the command to run in their pane.
+# UPD_KIND: job (here, or HOST over ssh), skip (a link waiting for you: not tried), or note
+# (an [I] line); UPD_ARG: the host, or for a note "install|update USER [HOST]".
+UPD_DIR="$RDIR/update"
+UPD_N=0 UPD_NAME=() UPD_KIND=() UPD_ARG=() UPD_TEXT=() UPD_PID=() UPD_SEEN=() PITEMS=() PKROWS=" "
+upd_add() { # upd_add KIND NAME ARG [TEXT]
+	UPD_KIND[UPD_N]=$1 UPD_NAME[UPD_N]=$2 UPD_ARG[UPD_N]=$3 UPD_TEXT[UPD_N]=${4:-} UPD_SEEN[UPD_N]=""
+	UPD_N=$((UPD_N + 1))
+}
+upd_job() { # upd_job N COMMAND...: in the background, its output to UPD_DIR/N.out, how it ended to N.st
+	local n=$1 f="$UPD_DIR/$1"
+	shift
+	# HUP ignored: a popup panel closed mid-install mustn't cut the installer short.
+	(
+		trap '' HUP
+		"$@" </dev/null >"$f.out" 2>&1
+		echo $? >"$f.tmp" && mv -f "$f.tmp" "$f.st"
+	) &
+	UPD_PID[n]=$!
+}
+upd_running() {
+	local p
+	for p in "${UPD_PID[@]}"; do kill -0 "$p" 2>/dev/null && return 0; done
+	return 1
+}
+# upd_last FILE -> LAST: its last line, as text: the installer's colour codes (and any other
+# escape sequence) go whole, not just their ESC, and so does its "xx" or "!!" in front.
+upd_last() {
+	LAST=$(tail -c 4096 "$1" 2>/dev/null | LC_ALL=C sed -E $'s#\e\\[[0-9:;<=>?]*[ -/]*[@-~]##g; s#\e\\][^\a\e]*(\a|\e\\\\)?##g; s#\e.##g' |
+		grep -v '^[[:space:]]*$' | tail -n 1)
+	clean LAST
+	[[ $LAST =~ ^[[:space:]]*(xx|!!|==\>)[[:space:]]+(.*)$ ]] && LAST=${BASH_REMATCH[2]}
+}
+# upd_users HOST (this computer: ""): an [I] line for each other user there whose tmux-revive
+# isn't current (none, or older than the owner's). A computer whose rows don't say whose its
+# tmux is (from before users) has none.
+upd_users() {
+	local i u v own=$ME ref=$VERSION
+	[[ -n $1 ]] && own=${ROWNER[$1]:-} ref=${RVER[$1]:-}
+	[[ -n $own ]] || return
+	for i in "${!P_ID[@]}"; do
+		[[ ${P_HOST[i]} == "$1" ]] || continue
+		u=${P_USER[i]:-} v=${P_INST[i]:-}
+		[[ $u =~ $USER_RE && $u != "$own" && $v != owner && $seen != *" $u@$1 "* ]] || continue
+		seen+="$u@$1 "
+		if [[ -z $v ]]; then upd_add note "$u${1:+@$1}" "install $u $1" "not installed"
+		elif [[ $v =~ $VER_RE && $ref =~ $VER_RE ]] && ver_lt "$v" "$ref"; then upd_add note "$u${1:+@$1}" "update $u $1" "has $v"; fi
+	done
+}
+upd_start() {
+	local h d seen=" "
+	cache_dir
+	rm -rf "$UPD_DIR"; mkdir -p "$UPD_DIR"
+	UPD_N=0 UPD_NAME=() UPD_KIND=() UPD_ARG=() UPD_TEXT=() UPD_PID=() UPD_SEEN=()
+	upd_add job "this computer" ""
+	upd_job 0 timeout 600 "$REVIVE_ROOT/bin/tmux-revive" update
+	upd_users ""
+	# Each linked computer, once; one waiting for a login or stopped on a failure isn't tried
+	# (remote_run wouldn't either): B is where you try it again.
+	for d in "$ASTATE"/links/*/; do
+		h=$(basename "$d")
+		[[ -f $d/on && $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
+		if [[ -f $d/login ]]; then upd_add skip "$h" "" "skipped: needs login · B"
+		elif [[ -f $d/paused ]]; then upd_add skip "$h" "" "skipped: link stopped · B"
+		else
+			upd_add job "$h" "$h"
+			RTIMEOUT=300 upd_job $((UPD_N - 1)) remote_run "$h" "$REMOTE_UPDATE_CMD"
+		fi
+		upd_users "$h"
+	done
+}
+# upd_poll: what finished since last looked at: this computer's tmux-revive read again, a
+# linked computer asked for its rows (and so its version) again.
+upd_poll() {
+	local i st
+	for ((i = 0; i < UPD_N; i++)); do
+		[[ ${UPD_KIND[i]} == job && -z ${UPD_SEEN[i]} && -s $UPD_DIR/$i.st ]] || continue
+		UPD_SEEN[i]=1
+		read -r st <"$UPD_DIR/$i.st"
+		[[ $st == 0 ]] || continue
+		if [[ -z ${UPD_ARG[i]} ]]; then
+			VERSION=$(head -n 1 "${REVIVE_VERSION_FILE:-$REVIVE_ROOT/VERSION}" 2>/dev/null | head -c 32)
+			[[ $VERSION =~ $VER_RE ]] || VERSION=""
+		else
+			RFETCH_T[${UPD_ARG[i]}]=0
+		fi
+	done
+}
+# upd_lines -> PITEMS: the popup's lines, each as wide as the others; PKROWS: those with [I].
+# Returns 1 when none changed.
+upd_lines() {
+	local i s st h mark l was="${PITEMS[*]-}"
+	PITEMS=() PKROWS=" "
+	for ((i = 0; i < UPD_N; i++)); do
+		s=${UPD_TEXT[i]} mark="" h=${UPD_ARG[i]}
+		case ${UPD_KIND[i]} in
+		note) mark=1 ;;
+		job)
+			if [[ ! -s $UPD_DIR/$i.st ]]; then s="updating…"
+			else
+				read -r st <"$UPD_DIR/$i.st"
+				upd_last "$UPD_DIR/$i.out"
+				if ((st == 0)); then s=${LAST:-updated}
+				elif [[ -n $h ]] && ((st == 124 || st == 255)); then s="unreachable"
+				elif grep -qiE 'permission denied|operation not permitted' "$UPD_DIR/$i.out"; then
+					# Not the link's user's to update: [I], with tmux-revive update for its owner's pane
+					# (UPD_TEXT holds what user_note is given, as UPD_ARG does for a note).
+					s="no permission"
+					if [[ -z $h ]]; then UPD_TEXT[i]="update $ME" mark=1
+					elif [[ -n ${ROWNER[$h]:-} ]]; then UPD_TEXT[i]="update ${ROWNER[$h]} $h" mark=1; fi
+				else s="failed${LAST:+: $LAST}"; fi
+			fi ;;
+		esac
+		fld "${UPD_NAME[i]}" 22
+		l="$FLD  "
+		fld "$s" 36
+		l+=$FLD
+		if [[ -n $mark ]]; then l+="  [I]" PKROWS+="$i "; else l+="     "; fi
+		PITEMS+=("$l")
+	done
+	[[ ${PITEMS[*]} != "$was" ]]
+}
+upd_tick() { upd_poll; upd_lines; }
+# U: a new round, or, while the last one still runs, that one shown again (never a second try
+# at any of it). Enter or I on an [I] line: its command, copied; Enter elsewhere, or Esc, closes.
+upd_show() {
+	local sel=0 a
+	((UPD_N)) && upd_running || upd_start
+	while :; do
+		upd_poll; upd_lines
+		PTICK=upd_tick PKEYS=i PSEL=$sel PHINT="↑↓ choose · I: command · Esc closes" pick "UPDATE" "${PITEMS[@]}" || break
+		sel=$PICKED
+		[[ $PKROWS == *" $sel "* ]] || break
+		[[ ${UPD_KIND[sel]} == note ]] && a=${UPD_ARG[sel]} || a=${UPD_TEXT[sel]}
+		PREV=(); draw # the list away first, so the two boxes never overlap
+		# shellcheck disable=SC2086 # mode, user and host: checked words
+		user_note $a
+		PREV=(); draw
+	done
+	upd_running && flash "still updating · U shows it"
 }
 # note TITLE LINE...: a box over the panel, drawn as pick's, until a key is pressed.
 note() {
@@ -2894,7 +3048,7 @@ act() {
 	local id=${P_ID[SEL]:-} name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} out
 	# A heading selected: the keys for a pane wait for one.
 	if [[ -n $HSEL ]]; then
-		case $1 in o | O | m | M | n | N | v | V) flash "select one of ${HSEL}'s panes for that"; return ;; esac
+		case $1 in o | O | m | M | n | N) flash "select one of ${HSEL}'s panes for that"; return ;; esac
 	fi
 	case $1 in
 	o | O)
@@ -2950,12 +3104,13 @@ act() {
 		export AGENT_SAY_SCAN_ID="b$$$RANDOM$SECONDS"
 		# Links waiting for their login first, then every ssh host not linked yet (the selected
 		# pane's first), then the links there are to link again (one that fails first), then
-		# "other host...".
-		local hosts=() labels=() seen=" " h i j d why pass
+		# "other host...". U on a link's line unlinks it (kr: those lines).
+		local hosts=() labels=() seen=" " h i j d why pass l kr=" " hint=""
 		for d in "$ASTATE"/links/*/; do
 			[[ -f $d/on && -f $d/login ]] || continue
 			h=$(basename "$d")
 			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
+			kr+="${#hosts[@]} "
 			seen+="$h " hosts+=("$h") labels+=("$h  · needs login: type its password")
 		done
 		for j in -1 "${!P_SSH[@]}"; do
@@ -2976,18 +3131,18 @@ act() {
 				why=$(head -n 1 "$d/error" 2>/dev/null)
 				why=${why% · [LB] to try again} # L: what agent-say wrote before B
 				clean why
-				if [[ $pass == error && -f $d/paused ]]; then
-					seen+="$h " hosts+=("$h") labels+=("$h  · ${why:0:40} · try again")
-				elif [[ $pass == error && -n $why ]]; then
-					seen+="$h " hosts+=("$h") labels+=("$h  · ${why:0:40} · link again")
-				elif [[ $pass == ok && -z $why ]]; then
-					seen+="$h " hosts+=("$h") labels+=("$h  · linked · link again")
-				fi
+				l=""
+				if [[ $pass == error && -f $d/paused ]]; then l="$h  · ${why:0:40} · try again"
+				elif [[ $pass == error && -n $why ]]; then l="$h  · ${why:0:40} · link again"
+				elif [[ $pass == ok && -z $why ]]; then l="$h  · linked · link again"; fi
+				[[ -n $l ]] && kr+="${#hosts[@]} " seen+="$h " hosts+=("$h") labels+=("$l")
 			done
 		done
 		hosts+=("") labels+=("other host… (type its name)")
-		pick "LINK AGENTS ON" "${labels[@]}" || { flash "link cancelled"; return; }
+		[[ $kr != " " ]] && hint="↑↓ choose · Enter picks · U unlinks · Esc closes"
+		PKEYS=u PKROWS=$kr PHINT=$hint pick "LINK AGENTS ON" "${labels[@]}" || { flash "link cancelled"; return; }
 		h=${hosts[PICKED]}
+		[[ $PKEY == u ]] && { unlink_host "$h"; return; }
 		if [[ -z $h ]]; then
 			ask "Host to link (as you'd type after ssh):" || { flash "link cancelled"; return; }
 			h=$REPLY
@@ -3010,14 +3165,7 @@ act() {
 		elif linked "$h"; then
 			pick "LINK $h AGAIN?" "${NOTE}It unlinks, then links again with the key ssh uses now." \
 				"No, leave it as it is" "Yes, link $h again" "Unlink $h" && ((PICKED > 1)) || { flash "link cancelled"; return; }
-			if ((PICKED == 3)); then
-				flash "unlinking $h…"; draw
-				out=$(timeout 30 "$ASAY" unlink "$h" 2>&1 | tail -n 1)
-				clean out
-				[[ -d $ASTATE/links/$h ]] || rm -f "$RDIR/$h.rows"
-				flash "${out#agent-say: }"
-				return
-			fi
+			((PICKED == 3)) && { unlink_host "$h"; return; }
 			again=1 was=$(cat "$ASTATE/links/$h/fingerprint" 2>/dev/null)
 		fi
 		# Its host key, found the way ssh itself has it: the one in your known_hosts, else the one
@@ -3114,50 +3262,7 @@ act() {
 			out="$h: $out"
 		fi
 		flash "${out#agent-say: }" ;;
-	u | U | d | D)
-		local hosts=() labels=() d h
-		for d in "$ASTATE"/links/*/; do
-			[[ -f $d/on ]] || continue
-			h=$(basename "$d")
-			clean h
-			hosts+=("$h") labels+=("$h  · $(grep -c . "$d/names" 2>/dev/null || echo 0) names")
-		done
-		((${#hosts[@]})) || { flash "nothing is linked"; return; }
-		pick "UNLINK" "${labels[@]}" || { flash "unlink cancelled"; return; }
-		h=${hosts[PICKED]}
-		flash "unlinking $h…"; draw
-		out=$(timeout 30 "$ASAY" unlink "$h" 2>&1 | tail -n 1)
-		clean out
-		[[ -d $ASTATE/links/$h ]] || rm -f "$RDIR/$h.rows" # what it kept of that computer
-		flash "${out#agent-say: }" ;;
-	v | V)
-		# For another user's pane, here or on a linked computer: tmux-revive for that user.
-		v_mode
-		[[ $VMODE == install || $VMODE == update ]] && { user_note "$VMODE"; return; }
-		[[ $VMODE == current ]] && { flash "${P_USER[SEL]} already has tmux-revive ${P_INST[SEL]}"; return; }
-		# Otherwise update tmux-revive on the selected pane's linked computer, over the link's ssh.
-		local h=${P_HOST[SEL]:-} last st msg w
-		[[ -n $h ]] || { flash "V works on a linked computer's pane, or on another user's pane"; return; }
-		[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return
-		pick "Update tmux-revive on $h?" "Yes, update it over ssh" "No" && ((PICKED == 0)) || { flash "update cancelled"; return; }
-		flash "updating tmux-revive on $h…"; draw
-		out=$(RTIMEOUT=300 remote_run "$h" "$REMOTE_UPDATE_CMD" | tail -c 4096)
-		st=$?
-		# Its last line, as text: the installer's colour codes (and any other escape sequence)
-		# go whole, not just their ESC, and so does its "xx" or "!!" in front of the message.
-		last=$(LC_ALL=C sed -E $'s#\e\\[[0-9:;<=>?]*[ -/]*[@-~]##g; s#\e\\][^\a\e]*(\a|\e\\\\)?##g; s#\e.##g' <<<"$out" |
-			grep -v '^[[:space:]]*$' | tail -n 1)
-		clean last
-		[[ $last =~ ^[[:space:]]*(xx|!!|==\>)[[:space:]]+(.*)$ ]] && last=${BASH_REMATCH[2]}
-		if ((st == 0)); then msg="on $h: " last=${last:-updated}
-		elif ((st == 124 || st == 255)); then msg="on $h: couldn't be reached to update" last=""
-		else msg="on $h: update failed${last:+: }"; fi
-		# Cut to what the bar has room for, next to its keys.
-		w=$((IW - ${#msg} - 4)); ((w < 20)) && w=20
-		((${#last} > w)) && last="${last:0:w-1}…"
-		flash "$msg$last"
-		RFETCH_T[$h]=0 # and ask it for its rows, and so its version, again
-		;;
+	u | U) upd_show ;;
 	g | G | i | I) # I: the key it had before, kept so it still works
 		# Access: agents on two linked computers asking to talk through this one (waiting), and
 		# those you let (approved). Only here, by a key you press, can two of them be let talk.
@@ -3541,6 +3646,7 @@ while :; do
 			fi
 		done
 		TCOLS="" MSG_OLD=1 # looked at again along with the panes
+		((UPD_N)) && upd_poll # what U started, finished since
 	fi
 	# Keep the same pane selected when panes come and go.
 	if [[ -n $SEL_ID ]]; then

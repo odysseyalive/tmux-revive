@@ -12,6 +12,16 @@ export AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false
 # announced on the key bar, taking rows and room the checks count on. The checks of that look
 # turn it back on.
 export REVIVE_PANEL_OUTSIDE_SSH=0
+# U updates this computer's tmux-revive: here through a stand-in installer (tmux-revive update
+# runs REVIVE_SOURCE's), never the real one, which would install over yours. It logs each run,
+# and with $T/local.fail says what a mv into a root-owned folder says.
+mkdir -p "$T/src"
+printf '#!/bin/sh
+echo run >>%q
+[ -e %q ] && { echo "mv: cannot move: Permission denied"; exit 1; }
+echo "tmux-revive 9.9.9 installed here"
+' "$T/local-update.log" "$T/local.fail" >"$T/src/install.sh"
+export REVIVE_SOURCE=$T/src
 tm() { tmux -L "revive-panel-test-$$" -f /dev/null "$@"; }
 pass=0 fail=0
 check() {
@@ -67,6 +77,8 @@ PY
 wcols() { python3 "$T/wcols.py" "$1"; }
 
 tm new-session -d -s work -x 130 -y 40 "bash --norc --noprofile"
+# Every panel here has the stand-in installer, or U would run the real one: stop if not.
+[[ $(tm show-environment -g REVIVE_SOURCE 2>/dev/null) == "REVIVE_SOURCE=$T/src" ]] || { echo "the private tmux has no stand-in installer; stopping" >&2; exit 1; }
 tm split-window -d -t work "top -d 5"
 sleep 0.5
 
@@ -151,7 +163,7 @@ check "and nothing shows through the sun" "artband grid 1 | python3 $T/sun.py"
 out=$(frame 130)
 check "a shell pane shows as a shell" "grep -q 'bash *· shell' <<<\"\$out\""
 check "a program shows as running" "grep -q 'top *▸ running' <<<\"\$out\""
-check "the command keys are listed" "grep -qF '[O]pen  [M]essage  [N]ame  [B]ridge  [U]nlink  [A]rt  [S]ave  [Q]uit' <<<\"\$out\""
+check "the command keys are listed" "grep -qF '[O]pen  [M]essage  [N]ame  [B]ridge  [U]pdate  [A]rt  [S]ave  [Q]uit' <<<\"\$out\" && ! grep -qF '[V]' <<<\"\$out\""
 check "with no computer linked, no fold keys" "! grep -qF '[F]' <<<\"\$out\" && ! grep -qF '[f]' <<<\"\$out\""
 # Under heavy load one frame can come back short, so allow three looks; a real regression
 # misses every time, and then the frame is printed to show what was seen.
@@ -905,13 +917,14 @@ wait_ssh 'C O N T R O L'
 tm new-window -d -t work -n remote "bash -c 'exec -a \"ssh -p 2222 me@devbox.example\" sleep 300'"
 check "a new ssh connection is announced" "wait_ssh 'new ssh: devbox.example · B bridges it'"
 check "and offered for linking" "wait_ssh 'devbox.example · ssh in'"
-tm send-keys -t work:sshpanel u
-check "U with nothing linked says so" "wait_ssh 'nothing is linked'"
 tm send-keys -t work:sshpanel r; sleep 0.7
 check "r does nothing: no popup" "! sshscreen | grep -q 'LINK AGENTS ON' && wait_ssh 'C O N T R O L'"
 tm send-keys -t work:sshpanel B; sleep 0.7
 check "B opens a popup listing the ssh hosts" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q 'devbox.example  · ssh in' && sshscreen | grep -q 'other host'"
 check "the popup says how to close it" "sshscreen | grep -q 'Esc closes'"
+check "with nothing linked, it offers no unlinking" "! sshscreen | grep -q 'U unlinks'"
+tm send-keys -t work:sshpanel u; sleep 0.5
+check "and U there does nothing" "sshscreen | grep -q 'LINK AGENTS ON' && ! sshscreen | grep -q 'unlinking'"
 # Every row of the popup has its right edge in the same column as the top-right corner.
 popup_square() {
 	sshscreen | awk '
@@ -947,10 +960,15 @@ st=$(dirname "$AGENT_SAY_MAILBOX"); mkdir -p "$st/links/devbox.example"; touch "
 touch "$st/links/devbox.example/read-only"; printf 'me\nyou\n' >"$st/links/devbox.example/allow"
 check "LINKS marks a read-only link and its allowlist" "wait_ssh 'devbox.example · read-only · only me,you'"
 check "a linked host is no longer offered" "for _ in \$(seq 1 20); do sshscreen | grep -q 'devbox.example · ssh in' || break; sleep 0.2; done; ! sshscreen | grep -q 'devbox.example · ssh in'"
-tm send-keys -t work:sshpanel u; sleep 0.7
-check "U opens a popup listing the links" "wait_ssh 'UNLINK' && sshscreen | grep -q 'devbox.example  ·'"
-tm send-keys -t work:sshpanel 1
-check "a number picks from the list and unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $st/links/devbox.example ]]"
+# Unlinking is in B's popup: U on a link's line there.
+# hl_line TEXT: the popup's line showing that highlighted, by moving down to it.
+hl_line() { local n i; n=$(sshscreen | grep -o "[1-9] *$1" | head -c 1); for ((i = 1; i < n; i++)); do tm send-keys -t work:sshpanel Down; sleep 0.1; done; }
+tm send-keys -t work:sshpanel B; sleep 0.7
+check "B lists the link, and says U unlinks it" "wait_ssh 'LINK AGENTS ON' && wait_ssh 'devbox.example  · linked · link again' && wait_ssh 'U unlinks'"
+hl_line 'other host'; tm send-keys -t work:sshpanel u; sleep 0.5
+check "U on a line that isn't a link does nothing" "sshscreen | grep -q 'LINK AGENTS ON' && [[ -e $st/links/devbox.example/on ]]"
+tm send-keys -t work:sshpanel Up; sleep 0.2; tm send-keys -t work:sshpanel u
+check "U on the link's line unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $st/links/devbox.example ]] && ! sshscreen | grep -q 'LINK AGENTS ON'"
 # A link that fails (here: stopped on another key than the one linked). L offers to link it again:
 # it unlinks, then links with the key ssh uses now, after one yes or no. Or unlinks it.
 sk=$st/links/devbox.example
@@ -979,8 +997,8 @@ wait_ssh 'LINK devbox.example AGAIN?' >/dev/null; tm send-keys -t work:sshpanel 
 gone_sk() { for _ in $(seq 1 50); do [[ -e $sk ]] || break; sleep 0.2; done; [[ ! -e $sk ]] && wait_ssh 'unlinked devbox.example'; }
 check "Unlink there unlinks the failing link" "gone_sk"
 broken
-tm send-keys -t work:sshpanel u; sleep 0.7; wait_ssh 'UNLINK' >/dev/null; tm send-keys -t work:sshpanel 1
-check "and so does U" "gone_sk"
+tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh "link again" >/dev/null; hl_line "devbox.example  · stopped"; tm send-keys -t work:sshpanel U
+check "and so does U on its line in B" "gone_sk"
 # A link stopped on a failure (paused): LINKS says why, and B tries it once more, with its key.
 mkdir -p "$sk"; touch "$sk/on" "$sk/paused"; echo "$fp (ED25519)" >"$sk/fingerprint"
 # Written as an older agent-say wrote it, with L: the popup drops that too.
@@ -990,8 +1008,8 @@ tm send-keys -t work:sshpanel B; sleep 0.7
 check "B offers it, to try again" "wait_ssh 'LINK AGENTS ON' && sshscreen | grep -q \"devbox.example  · can't reach (connection timed out) · try again\""
 pick_line "devbox.example  · can.t reach"
 check "picking it tries once, with no questions, and says why it failed again" "wait_ssh 'devbox.example: ssh to devbox.example failed' && ! sshscreen | grep -q 'AGAIN?' && [[ -e $sk/paused && -e $sk/on ]] && grep -q 'B to try again' $sk/error"
-tm send-keys -t work:sshpanel u; sleep 0.7; wait_ssh 'UNLINK' >/dev/null; tm send-keys -t work:sshpanel 1
-check "U unlinks it" "gone_sk"
+tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh 'try again' >/dev/null; hl_line "devbox.example  ·"; tm send-keys -t work:sshpanel u
+check "U in B unlinks it" "gone_sk"
 tm send-keys -t work:sshpanel q
 tm kill-window -t work:remote 2>/dev/null
 # live.example: ssh keeps no key for it (known_hosts /dev/null, keys not checked), but an ssh
@@ -1044,7 +1062,12 @@ chmod +x "$T/rbin/tmux"
 	printf '#!/bin/bash\nunset TMUX TMUX_PANE\nexport HOME=%q REVIVE_SOCKET=%q REVIVE_DIR=%q REVIVE_VERSION_FILE=%q CLAUDE_CODE_TMPDIR=%q\npanel=%q T=%q\n' "$T/rhome" "$rsock" "$T/remote-data" "$T/remote-version" "$T/rtmp" "$ROOT/scripts/panel.sh" "$T"
 	cat <<'EOF'
 cmd=${!#}
+# Each update asked for, logged by host; with $T/update.slow it takes a while. dead.example
+# can't be reached.
+[[ $cmd == *' tmux-revive update '* ]] && { echo "${*: -2:1} $cmd" >>"$T/update.calls"; [[ -e $T/update.slow ]] && sleep 3; }
+[[ ${*: -2:1} == dead.example ]] && exit 255
 if [[ $cmd =~ \ panel\ --rows$ ]]; then exec bash "$panel" --rows
+elif [[ $cmd == *' tmux-revive update '* && -e $T/update.perm ]]; then printf "mv: cannot move '/opt/tmux-revive': Permission denied\n"; exit 1
 elif [[ $cmd == *' tmux-revive update '* && -e $T/update.fail ]]; then printf '\e[1;34m==>\e[0m downloading\n\e[1;31mxx\e[0m  download failed: https://github.com/odysseyalive/tmux-revive/releases/download/v9.9.9/%s.tar.gz\n' "$(printf 'x%.0s' {1..150})"; exit 1
 elif [[ $cmd == *' tmux-revive update '* ]]; then printf '%s' "$cmd" >"$T/update.cmd"; printf 'downloading\ntmux-revive 9.9.9 installed\n\n'; exit 0
 elif [[ $cmd == AGENT_SAY_PANE=* ]]; then printf '%s' "$cmd" >"$T/name.cmd"; HOME=$T/rhome PATH=$T/rbin:$PATH AGENT_SAY_MAILBOX=$T/rstate/mailbox.md exec bash -c "$cmd"
@@ -1307,25 +1330,23 @@ check "the same version isn't in the warn colour" "grep -cF $'\\e[90m1.2.0' <<<\
 echo 1.1.0 >"$T/remote-version"
 raw=$(farv "$T/fakessh" no-such-file)
 check "with this computer's version unknown, none is in the warn colour" "grep -cF $'\\e[90m1.1.0' <<<\"\$raw\" >/dev/null && ! grep -cF $'\\e[93m1.1.0' <<<\"\$raw\" >/dev/null"
-# One from before users (1.2.4): rows with no #owner or #user lines. Its rows show [V] in VER, in
-# the warn colour, with no user, and V on them updates it over ssh, asked first, as before.
+# One from before users (1.2.4): rows with no #owner or #user lines. Its rows show [U] in VER, in
+# the warn colour, with no user, and U updates it over ssh, as it does every linked computer.
 printf '#!/bin/bash\nif [[ ${!#} == *--rows ]]; then %q "$@" | grep -v "^#owner \\|^#user "; else exec %q "$@"; fi\n' "$T/fakessh" "$T/fakessh" >"$T/preuserssh"
 chmod +x "$T/preuserssh"
 rm -f "$st/panel/far.example.rows"*
 raw=$(tm run-shell "AGENT_SAY_SSH=$T/preuserssh REVIVE_PANEL_SEL=far-top@far.example REVIVE_VERSION_FILE=$T/local-version COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once") out=$(plain <<<"$raw")
-check "a linked computer from before users: its rows show [V] in VER, in the warn colour, no user" "grep -c '▶ far-top  *\[V\] *top' <<<\"\$out\" >/dev/null && grep -c 'far-sh  *\[V\] *bash' <<<\"\$out\" >/dev/null && grep -cF $'\\e[93m[V]' <<<\"\$raw\" >/dev/null"
-check "and the bar offers V: update" "grep -F 'nlink' <<<\"\$out\" | grep -cF '[V] update' >/dev/null"
-check "this computer's own panes don't show [V]" "grep -c ' $me *1\.2\.0 *bash' <<<\"\$out\" >/dev/null"
+check "a linked computer from before users: its rows show [U] in VER, in the warn colour, no user" "grep -c '▶ far-top  *\[U\] *top' <<<\"\$out\" >/dev/null && grep -c 'far-sh  *\[U\] *bash' <<<\"\$out\" >/dev/null && grep -cF $'\\e[93m[U]' <<<\"\$raw\" >/dev/null"
+check "and the bar offers U: update" "grep -F '[B]ridge' <<<\"\$out\" | grep -cF '[U]pdate' >/dev/null"
+check "this computer's own panes don't show [U]" "grep -c ' $me *1\.2\.0 *bash' <<<\"\$out\" >/dev/null"
 rm -f "$st/panel/far.example.rows"* "$T/update.cmd"
 tm new-window -d -t work -n oldpanel "env AGENT_SAY_SSH=$T/preuserssh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
 oscreen() { tm capture-pane -p -t work:oldpanel; }
 wait_o() { for _ in $(seq 1 ${2:-60}); do oscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
-wait_o 'far-top  *\[V\]' >/dev/null
-for _ in $(seq 1 20); do oscreen | grep -q '▶ far-top' && break; tm send-keys -t work:oldpanel Down; sleep 0.4; done
-tm send-keys -t work:oldpanel v
-check "V there asks to update that computer over ssh" "wait_o 'Update tmux-revive on far.example?' && oscreen | grep -qF 'Yes, update it over ssh'"
-tm send-keys -t work:oldpanel Escape
-check "and Esc updates nothing" "wait_o 'update cancelled' && [[ ! -e $T/update.cmd ]]"
+wait_o 'far-top  *\[U\]' >/dev/null
+tm send-keys -t work:oldpanel u
+check "U updates it over ssh, with no [I]: its users aren't known" "wait_o 'far.example  *tmux-revive 9.9.9 installed' && [[ -e $T/update.cmd ]] && ! oscreen | grep -q '\[I\]'"
+tm send-keys -t work:oldpanel Escape; sleep 0.5
 tm send-keys -t work:oldpanel q
 tm kill-window -t work:oldpanel 2>/dev/null
 rm -f "$st/panel/far.example.rows"*
@@ -1392,7 +1413,7 @@ touch -d '-2 minutes' "$st/panel/far.example.peek-77"
 farsel "$T/fakessh" far-sh@far.example >/dev/null
 check "the cache is private (700, files 600)" "[[ \$(stat -c %a $st/panel) == 700 && \$(stat -c %a $st/panel/far.example.rows) == 600 ]] && ! find $st/panel -type f -perm /077 | grep -c . >/dev/null"
 check "a peek over a minute old is deleted" "[[ ! -e $st/panel/far.example.peek-77 ]]"
-check "and no temporary files are left" "! ls $st/panel | grep -cvE '^(ticks|panel\\.err|far\\.example\\.(rows(\\.old)?|peek-[0-9]+(\\.fail)?))$' >/dev/null"
+check "and no temporary files are left" "! ls $st/panel | grep -cvE '^(ticks|panel\\.err|update|far\\.example\\.(rows(\\.old)?|peek-[0-9]+(\\.fail)?))$' >/dev/null"
 # Bidi overrides and zero-width characters from over there are stripped like controls.
 printf '%%9\x1fbidi\xe2\x80\xae0:0\x1fzw\xe2\x80\x8bname\x1fapp\x1fwaiting\x1ffo\xe2\x81\xa6ld\x1fmain\x1f1\x1f1\x1f1\n' >"$T/bidirows"
 printf '#!/bin/sh\ncat %s\n' "$T/bidirows" >"$T/bidissh"; chmod +x "$T/bidissh"
@@ -1405,7 +1426,7 @@ tm new-window -d -t work -n farpanel "env AGENT_SAY_SSH=$T/fakessh REVIVE_VERSIO
 farscreen() { tm capture-pane -p -t work:farpanel; }
 for _ in $(seq 1 60); do farscreen | grep -q 'far-top' && break; sleep 0.25; done
 for _ in $(seq 1 20); do farscreen | grep -q '▶ far-top' && break; tm send-keys -t work:farpanel Down; sleep 0.4; done
-bar() { tm capture-pane -e -p -t work:farpanel | grep -F 'nlink' | tail -1; }
+bar() { tm capture-pane -e -p -t work:farpanel | grep -F 'pdate' | tail -1; }
 grey=$'\e[90m[O]pen' lit=$'\e[93mS'
 check "its peek tracks that pane's screen live" "for _ in \$(seq 1 30); do farscreen | sed -n '/PEEK · far-top/,\$p' | grep -c 'Mem' >/dev/null && break; sleep 0.3; done; farscreen | sed -n '/PEEK · far-top/,\$p' | grep -c 'Mem' >/dev/null"
 # A linked computer's agent waiting for access: its row there says so, by NAME@HOST.
@@ -1416,24 +1437,62 @@ rm -rf "$st/intros/$gid"
 check "and goes back once the request is gone" "for _ in \$(seq 1 30); do farscreen | grep -cF 'RANT ACCESS' >/dev/null || break; sleep 0.2; done; ! farscreen | grep -cF 'RANT ACCESS' >/dev/null"
 check "on a linked computer's pane, O fades and N doesn't" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\" && bar | grep -qF $'\\e[93mN' && ! bar | grep -qF $'\\e[90m[N]ame'"
 check "while keys that still work stay lit" "bar | grep -qF \"\$lit\""
-# V: update tmux-revive over there, once confirmed, with a fixed command.
-check "on a linked computer's pane, V offers an update" "bar | grep -cF $'\\e[93mV' >/dev/null && farscreen | grep -cF '[V] update' >/dev/null"
-tm send-keys -t work:farpanel v
-check "V asks first" "for _ in \$(seq 1 20); do farscreen | grep -c 'Update tmux-revive on far.example?' >/dev/null && break; sleep 0.2; done; farscreen | grep -c 'Yes, update it over ssh' >/dev/null"
-tm send-keys -t work:farpanel Escape
-check "and Esc updates nothing" "for _ in \$(seq 1 20); do farscreen | grep -c 'update cancelled' >/dev/null && break; sleep 0.2; done; farscreen | grep -c 'update cancelled' >/dev/null && [[ ! -e $T/update.cmd ]]"
-tm send-keys -t work:farpanel v; sleep 0.5; tm send-keys -t work:farpanel Enter
-check "yes runs tmux-revive update there and shows how it went" "for _ in \$(seq 1 30); do farscreen | grep -c 'on far.example: tmux-revive 9.9.9 installed' >/dev/null && break; sleep 0.2; done; farscreen | grep -c 'on far.example: tmux-revive 9.9.9 installed' >/dev/null"
-check "with the fixed command, nothing else" "[[ \$(cat $T/update.cmd) == 'PATH=\"\$HOME/.local/bin:\$PATH\" tmux-revive update </dev/null 2>&1' ]]"
+# U: tmux-revive updated here and on the linked computer at once, asking nothing, each once,
+# over there with a fixed command, in a popup showing how each went.
+rm -f "$T/update.cmd" "$T/update.calls" "$T/local-update.log"
+wait_fs() { for _ in $(seq 1 ${2:-30}); do farscreen | grep -q -- "$1" && return 0; sleep 0.2; done; return 1; }
+calls() { grep -c "^$1 " "$T/update.calls" 2>/dev/null; }
+# Esc, then the popup gone before the next key (a key right behind Esc reads as one sequence).
+close_fs() { tm send-keys -t work:farpanel Escape; for _ in $(seq 1 25); do farscreen | grep -q '▓ UPDATE ▓' || return 0; sleep 0.2; done; return 1; }
+check "on a linked computer's pane, U is lit" "bar | grep -cF $'\\e[93mU' >/dev/null && farscreen | grep -cF '[U]pdate' >/dev/null"
+tm send-keys -t work:farpanel u
+check "U updates this computer and the linked one at once, asking nothing" "wait_fs '▓ UPDATE ▓' && wait_fs 'this computer  *tmux-revive 9.9.9 installed here' && wait_fs 'far.example  *tmux-revive 9.9.9 installed'"
+check "each once" "[[ \$(calls far.example) == 1 && \$(wc -l <$T/local-update.log) == 1 ]]"
+check "over there with the fixed command, nothing else" "[[ \$(cat $T/update.cmd) == 'PATH=\"\$HOME/.local/bin:\$PATH\" tmux-revive update </dev/null 2>&1' ]]"
+close_fs
+check "Esc closes it" "! farscreen | grep -q '▓ UPDATE ▓'"
 # An update that fails there in colour: the message shows as text, without its escape codes
-# or its "xx", cut to fit the bar.
-touch "$T/update.fail"
-tm send-keys -t work:farpanel v; sleep 0.5; tm send-keys -t work:farpanel Enter
-wait_fail() { for _ in $(seq 1 30); do farscreen | grep -cF 'on far.example: update failed: download failed: https://' >/dev/null && return 0; sleep 0.2; done; return 1; }
+# or its "xx". Tried once: nothing tries it again.
+touch "$T/update.fail"; rm -f "$T/update.calls"
+tm send-keys -t work:farpanel u
 check "a failed update there shows its message, without escape codes or its xx" \
-	"wait_fail && ! tm capture-pane -e -p -t work:farpanel | grep -F 'update failed' | grep -cE $'\\e\\\\[1;31m|\\\\[1;31m|\\\\[0mxx|xx  download' >/dev/null"
-check "cut to fit the bar" "farscreen | grep -F 'update failed: download failed:' | grep -cF 'xxx…' >/dev/null"
+	"wait_fs 'far.example  *failed: download failed: https' && ! tm capture-pane -e -p -t work:farpanel | grep -F 'failed: download' | grep -cE $'\\e\\\\[1;31m|\\\\[1;31m|\\\\[0mxx|xx  download' >/dev/null"
+sleep 2
+check "and isn't tried again" "[[ \$(calls far.example) == 1 ]]"
+close_fs
 rm -f "$T/update.fail"
+# Closed while it still runs, it carries on; U then shows that round again, trying nothing twice.
+touch "$T/update.slow"; rm -f "$T/update.calls"
+tm send-keys -t work:farpanel u
+wait_fs 'far.example  *updating…' >/dev/null
+close_fs
+check "closed while it runs, the bar says so" "wait_fs 'still updating · U shows it'"
+tm send-keys -t work:farpanel u
+check "U again shows that round, and nothing is tried twice" "wait_fs 'far.example  *tmux-revive 9.9.9 installed' 40 && [[ \$(calls far.example) == 1 && \$(wc -l <$T/local-update.log) == 3 ]]"
+close_fs
+rm -f "$T/update.slow"
+# A link that can't be reached: said, once. One stopped on a failure: not tried at all.
+mkdir -p "$st/links/dead.example" "$st/links/stop.example"; touch "$st/links/dead.example/on" "$st/links/stop.example/on" "$st/links/stop.example/paused"
+rm -f "$T/update.calls"
+tm send-keys -t work:farpanel u
+check "one that can't be reached says so" "wait_fs \"dead.example  *unreachable\""
+check "one stopped on a failure isn't tried" "wait_fs 'stop.example  *skipped: link stopped · B' && [[ \$(calls stop.example) == 0 ]]"
+sleep 2
+check "each tried once at most" "[[ \$(calls dead.example) == 1 && \$(calls far.example) == 1 ]]"
+close_fs
+rm -rf "$st/links/dead.example" "$st/links/stop.example" "$st/panel/dead.example."* "$st/panel/stop.example."*
+# Not the link's user's to update there (a permission error): [I] on its line, and I shows the
+# command to run in its owner's pane there, copied. Never sudo.
+touch "$T/update.perm"
+tm set-buffer -- before
+tm send-keys -t work:farpanel u
+check "one without the permission shows [I]" "wait_fs 'far.example  *no permission  *\[I\]'"
+tm send-keys -t work:farpanel Down; sleep 0.3; tm send-keys -t work:farpanel i
+check "I on its line shows tmux-revive update for its owner's pane there, copied" "wait_fs \"Run this in $me's pane on far.example:\" && [[ \$(tm show-buffer) == 'tmux-revive update' ]]"
+tm send-keys -t work:farpanel x
+check "a key closes it, back to the list" "wait_fs '▓ UPDATE ▓' && ! farscreen | grep -q 'Run this in'"
+close_fs
+rm -f "$T/update.perm"
 # N: agent-say name runs over there, for that pane, by its id.
 rtop=$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.1 '#{pane_id}')
 wait_far() { for _ in $(seq 1 ${2:-30}); do farscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
@@ -1468,9 +1527,10 @@ tm send-keys -t work:farpanel 0
 check "back on a pane here, O lights up again" "for _ in \$(seq 1 25); do farscreen | grep -q '\[0\.0\] ▶' && ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; farscreen | grep -q '\[0\.0\] ▶' && ! bar | grep -qF \"\$grey\""
 tm send-keys -t work:farpanel q
 tm kill-window -t work:farpanel 2>/dev/null
-# Another user's pane on a linked computer (deploy, a stand-in as above): V runs nothing over
-# ssh for them. It shows the command to run in their pane there, and copies it. The owner's pane
-# there keeps V's update over ssh. A sudo here that logs anything asked of it.
+# Another user's pane on a linked computer (deploy, a stand-in as above): U runs nothing over
+# ssh for them. Their line in its popup has [I]: I shows the command to run in their pane
+# there, and copies it. The link's own user's tmux-revive there is updated as before. A sudo
+# here that logs anything asked of it.
 INSTALL_CMD=$(grep -m1 -x 'curl -fsSL https://raw.githubusercontent.com/.*/install.sh | sh' "$ROOT/README.md")
 mkdir -p "$T/usudo"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>%q\nexit 1\n' "$T/usudo.log" >"$T/usudo/sudo"
@@ -1478,32 +1538,34 @@ chmod +x "$T/usudo/sudo"
 far_tm new-window -d -t far -n as-deploy "sleep 300"
 far_tm set-option -p -t far:as-deploy @agent as-deploy
 printf '%s %s\n' "$(far_tm display -p -t far:as-deploy '#{pane_pid}')" "$DEPLOY_UID" >>"$T/uidmap"
-rm -f "$st/panel/far.example.rows"* "$st/users/deploy" "$T/far.calls"
+rm -f "$st/panel/far.example.rows"* "$st/users/deploy" "$T/far.calls" "$T/update.calls"
 echo 1.1.0 >"$T/remote-version"
 tm new-window -d -t work -n vpanel "env PATH=$T/uidps:$T/usudo:\$PATH AGENT_SAY_SSH=$T/logssh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
 rscreen() { tm capture-pane -p -t work:vpanel; }
 wait_r() { for _ in $(seq 1 ${2:-60}); do rscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
 gone_r() { for _ in $(seq 1 20); do rscreen | grep -q -- "$1" || return 0; sleep 0.25; done; return 1; }
-rsel() { for _ in $(seq 1 40); do rscreen | grep -q "▶ $1 " && return 0; tm send-keys -t work:vpanel Down; sleep 0.3; done; return 1; }
-check "a linked computer's pane of a user without tmux-revive shows [V]" "wait_r 'as-deploy *deploy *\[V\]'"
-rsel as-deploy
-check "and the bar offers V: install" "rscreen | grep -qF '[V] install'"
-tm send-keys -t work:vpanel v
-check "V there shows the install command for that user's pane, copied" "wait_r \"Run this in deploy's pane:\" && rscreen | grep -qF -- '$INSTALL_CMD' && [[ \$(tm show-buffer) == '$INSTALL_CMD' ]]"
+close_r() { tm send-keys -t work:vpanel Escape; gone_r '▓ UPDATE ▓'; }
+check "a linked computer's pane of a user without tmux-revive shows [U]" "wait_r 'as-deploy *deploy *\[U\]'"
+tm set-buffer -- before
+tm send-keys -t work:vpanel u
+check "U lists that user there with [I], and updates the computer" "wait_r 'deploy@far.example  *not installed  *\[I\]' && wait_r 'far.example  *tmux-revive 9.9.9 installed'"
+# Its number picks it, as Enter on it does.
+tm send-keys -t work:vpanel "$(rscreen | grep -o '[1-9] *deploy@far' | head -c 1)"
+check "picking it shows the install command for their pane there, copied, no sudo" "wait_r \"Run this in deploy's pane on far.example:\" && rscreen | grep -qF -- '$INSTALL_CMD' && [[ \$(tm show-buffer) == '$INSTALL_CMD' ]]"
 tm send-keys -t work:vpanel x
-gone_r "Run this in deploy's pane:" >/dev/null
+gone_r "Run this in deploy's pane" >/dev/null
+close_r
 mkdir -p "$st/users" && echo 1.0.0 >"$st/users/deploy"
 rm -f "$st/panel/far.example.rows"*
 check "one with an older version there shows it (once its rows are asked for again)" "wait_r 'as-deploy *deploy *1\.0\.0' 160"
-rsel as-deploy
-tm send-keys -t work:vpanel v
-check "and V shows tmux-revive update" "wait_r \"Run this in deploy's pane:\" && [[ \$(tm show-buffer) == 'tmux-revive update' ]]"
+tm send-keys -t work:vpanel u
+wait_r 'deploy@far.example  *has 1\.0\.0  *\[I\]' >/dev/null
+tm send-keys -t work:vpanel "$(rscreen | grep -o '[1-9] *deploy@far' | head -c 1)"
+check "and its [I] gives tmux-revive update" "wait_r \"Run this in deploy's pane on far.example:\" && [[ \$(tm show-buffer) == 'tmux-revive update' ]]"
 tm send-keys -t work:vpanel x
-gone_r "Run this in deploy's pane:" >/dev/null
-check "nothing went over ssh for that user: no ssh -t, no sudo there or here" "[[ -s $T/far.calls ]] && ! grep -qE -- ' -t |sudo|tmux-revive update' $T/far.calls && [[ ! -e $T/usudo.log ]]"
-rsel far-top
-check "on the linked computer's owner's pane, V still updates that computer as before" "rscreen | grep -qF '[V] update' && { tm send-keys -t work:vpanel v; wait_r 'Update tmux-revive on far.example?'; }"
-tm send-keys -t work:vpanel Escape
+gone_r "Run this in deploy's pane" >/dev/null
+close_r
+check "nothing went over ssh for that user: no ssh -t, no sudo there or here, one update per U" "[[ -s $T/far.calls ]] && ! grep -qE -- ' -t |sudo' $T/far.calls && [[ ! -e $T/usudo.log && \$(grep -c 'tmux-revive update' $T/far.calls) == 2 && \$(calls far.example) == 2 ]]"
 tm kill-window -t work:vpanel
 rm -f "$st/users/deploy"
 far_tm kill-window -t far:as-deploy
@@ -1804,8 +1866,8 @@ at kill-server 2>/dev/null
 
 echo "other users in this tmux"
 # Panes where another user works (sudo -i or su in one of your panes): USER says whose each is,
-# VER which tmux-revive that user has, or [V] when they have none. V there runs nothing: it shows
-# the command to run in their pane, and copies it. Stand-ins as above: the ps giving those
+# VER which tmux-revive that user has, or [U] when they have none. U runs nothing for them: their
+# line in its popup has [I], which shows the command to run in their pane, and copies it. Stand-ins as above: the ps giving those
 # panes' processes uid 0 and deploy's uid; a sudo and an ssh that log anything asked of them.
 me=$(id -un)
 mkdir -p "$T/umail/users"
@@ -1817,45 +1879,57 @@ echo 1.2.0 >"$T/local-version"
 uframe() { tm run-shell "PATH=$T/uidps:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_PANEL_PEEK=0 COLUMNS=${2:-140} LINES=50 REVIVE_PANEL_SEL=${1:-none} REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md bash $ROOT/scripts/panel.sh --once"; }
 raw=$(uframe) out=$(plain <<<"$raw")
 check "USER and VER come right after NAME" "grep -q ' NAME *USER *VER *APP ' <<<\"\$out\""
-check "a pane where root works with no tmux-revive: root, and [V] in the warn colour" "grep -q 'l-root *root *\[V\] *sleep' <<<\"\$out\" && grep -qF $'\\e[93m[V]' <<<\"\$raw\""
+check "a pane where root works with no tmux-revive: root, and [U] in the warn colour" "grep -q 'l-root *root *\[U\] *sleep' <<<\"\$out\" && grep -qF $'\\e[93m[U]' <<<\"\$raw\""
 check "one whose user has an older tmux-revive: that version, in the warn colour" "grep -q 'l-deploy *deploy *1\.0\.0 *sleep' <<<\"\$out\" && grep -qF $'\\e[93m1.0.0' <<<\"\$raw\""
 check "your own panes: you, and this panel's version" "grep -q \" $me *1\.2\.0 *bash\" <<<\"\$out\""
-lbar() { plain | grep -F 'nlink' | tail -1; }
-check "on root's pane the command bar offers V: install" "uframe \$(tm display -p -t work:lroot '#{pane_id}') | lbar | grep -qF '[V] install'"
-check "on deploy's pane, V: update" "uframe \$(tm display -p -t work:ldeploy '#{pane_id}') | lbar | grep -qF '[V] update'"
-check "on your own pane, no V" "! uframe \$(tm display -p -t work:0.0 '#{pane_id}') | lbar | grep -qF '[V]'"
+lbar() { plain | grep -F '[B]ridge' | tail -1; }
+check "on root's pane the command bar offers U: update, and no V" "uframe \$(tm display -p -t work:lroot '#{pane_id}') | lbar | grep -F '[U]pdate' | grep -qvF '[V]'"
+check "and on your own pane too" "uframe \$(tm display -p -t work:0.0 '#{pane_id}') | lbar | grep -qF '[U]pdate'"
 for c in 80 120 160 200; do
 	out=$(uframe none "$c" | plain)
 	check "at $c columns every row is still exactly $c wide" "[[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
 done
 out=$(uframe none 120 | plain)
-check "at 120 columns USER and VER still show" "grep -q 'l-root *root *\[V\]' <<<\"\$out\""
+check "at 120 columns USER and VER still show" "grep -q 'l-root *root *\[U\]' <<<\"\$out\""
 
 tm new-window -d -t work -n upanel "env PATH=$T/uidps:$T/usudo:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
 uscreen() { tm capture-pane -p -t work:upanel; }
 wait_u() { for _ in $(seq 1 40); do uscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
-usel() { for _ in $(seq 1 30); do uscreen | grep -q "▶ $1 " && return 0; tm send-keys -t work:upanel Down; sleep 0.3; done; return 1; }
 gone_u() { for _ in $(seq 1 20); do uscreen | grep -q -- "$1" || return 0; sleep 0.25; done; return 1; }
+close_u() { tm send-keys -t work:upanel Escape; gone_u '▓ UPDATE ▓'; }
 wait_u 'l-root'
-usel l-root
+rm -f "$T/local-update.log"
 tm set-buffer -- before
-tm send-keys -t work:upanel v
-check "V on root's pane shows the install command to run in root's pane" "wait_u \"Run this in root's pane:\" && uscreen | grep -qF -- '$INSTALL_CMD'"
-check "and copies it" "[[ \$(tm show-buffer) == '$INSTALL_CMD' ]] && wait_u 'Copied'"
+tm send-keys -t work:upanel u
+check "U updates this computer, and lists root and deploy with [I]" "wait_u 'this computer  *tmux-revive 9.9.9 installed here' && wait_u 'root  *not installed  *\[I\]' && wait_u 'deploy  *has 1\.0\.0  *\[I\]'"
+# Highlighted, then I.
+hl_u() { local n i; n=$(uscreen | grep -o "[1-9] *$1" | head -c 1); for ((i = 1; i < n; i++)); do tm send-keys -t work:upanel Down; sleep 0.1; done; }
+hl_u 'root  '; tm send-keys -t work:upanel i
+check "I on root's line shows the install command to run in root's pane" "wait_u \"Run this in root's pane:\" && uscreen | grep -qF -- '$INSTALL_CMD'"
+check "and copies it, with no sudo" "[[ \$(tm show-buffer) == '$INSTALL_CMD' ]] && wait_u 'Copied'"
 tm send-keys -t work:upanel x
-check "a key closes it" "gone_u \"Run this in root's pane:\""
-usel l-deploy
-tm send-keys -t work:upanel v
-check "V on deploy's pane, with an older version: tmux-revive update, copied" "wait_u \"Run this in deploy's pane:\" && uscreen | grep -q '│* *tmux-revive update *║' && [[ \$(tm show-buffer) == 'tmux-revive update' ]]"
+check "a key closes it, back to the list" "gone_u \"Run this in root's pane:\" && wait_u '▓ UPDATE ▓'"
+tm send-keys -t work:upanel Down; sleep 0.2; tm send-keys -t work:upanel I
+check "I on deploy's, with an older version: tmux-revive update, copied" "wait_u \"Run this in deploy's pane:\" && uscreen | grep -q '│* *tmux-revive update *║' && [[ \$(tm show-buffer) == 'tmux-revive update' ]]"
 tm send-keys -t work:upanel x
 gone_u "Run this in deploy's pane:" >/dev/null
-check "nothing is run as another user: no sudo" "[[ ! -e $T/usudo.log ]]"
+close_u
+check "nothing is run as another user: no sudo, and this computer updated once" "[[ ! -e $T/usudo.log && \$(wc -l <$T/local-update.log) == 1 ]]"
+# This computer's own update turned away (a folder it can't write): [I] with tmux-revive update.
+touch "$T/local.fail"
+tm send-keys -t work:upanel u
+check "this computer's update without the permission shows [I]" "wait_u 'this computer  *no permission  *\[I\]'"
+close_u
+rm -f "$T/local.fail"
 # Each user's own install or update keeps their version (agent-say _user-installed, run as the
 # owner): two users in one tmux, each with their own.
 echo 1.1.0 >"$T/umail/users/root"
 check "two users in one tmux show their own versions" "wait_u 'l-root *root *1\.1\.0' && uscreen | grep -q 'l-deploy *deploy *1\.0\.0'"
 echo 1.2.0 >"$T/umail/users/deploy"
-check "one that's up to date gets no V" "wait_u 'l-deploy *deploy *1\.2\.0' && usel l-deploy && sleep 0.5 && ! uscreen | grep -F 'nlink' | grep -qF '[V]'"
+wait_u 'l-deploy *deploy *1\.2\.0' >/dev/null
+tm send-keys -t work:upanel u
+check "one that's up to date gets no line" "wait_u 'root  *has 1\.1\.0  *\[I\]' && ! uscreen | grep -q 'deploy  *has'"
+close_u
 tm kill-window -t work:upanel; tm kill-window -t work:lroot; tm kill-window -t work:ldeploy
 
 echo "scrolling windows"

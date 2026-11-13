@@ -139,9 +139,9 @@ Each pane is numbered the way tmux's status bar numbers it, window then pane:
 `[3.1]` is pane 1 in window 3.
 
 **USER** is the user working in the pane, and **VER** the tmux-revive that user
-has, in yellow when it's older than yours. `[V]` means they don't have it yet.
+has, in yellow when it's older than yours. `[U]` means they don't have it yet.
 A linked computer on tmux-revive 1.2.4 or older can't say who's working in its
-panes, so all its rows show `[V]`. Press **V** there to update it over ssh.
+panes, so all its rows show `[U]`. **U** updates it over ssh.
 
 **CTX LEFT** shows how much of each agent's context window is still free. It goes
 green, then yellow at 40%, then red at 15%. It reads Claude Code's and Codex's own
@@ -169,9 +169,8 @@ as root. A report older than 10 minutes is ignored (`REVIVE_CTX_TTL`, in seconds
 | `P` | show or hide a peek at its screen (offered on the peek's title) |
 | Enter | answer the question the selected agent is asking, or open a folded computer |
 | `f` | fold the selected pane's linked computer into one line |
-| `B` | bridge a computer you ssh into |
-| `U` (or `D`) | unlink a computer |
-| `V` | update tmux-revive on a linked computer, or copy the install or update command for another user's pane |
+| `B` | bridge a computer you ssh into, or (`U` on a linked one) unlink it |
+| `U` | update tmux-revive here and on every linked computer at once. `I` on a line marked `[I]` copies the command to run there |
 | `G` | grant access: agents on linked computers waiting to talk, and the ones you approved |
 | `A` | swap the artwork |
 | `S` | save right now |
@@ -212,7 +211,7 @@ off.
 ### Linked computers in the panel
 
 When a pane ssh's into another computer, the panel spots it and offers to link the
-agents there. **B** links it and **U** unlinks it. Linking is one yes or no. The
+agents there. **B** links it, and **U** on its line there unlinks it. Linking is one yes or no. The
 panel finds the key ssh uses for that computer (your known_hosts, or the ssh
 connection you have open to it) and shows it, and pops up a box for the password
 if the server takes one. If the key isn't in your known_hosts, you haven't
@@ -221,9 +220,9 @@ and **B** on it tries it once more. **B** on a working link links it again or
 unlinks it.
 
 Once linked, that computer's panes show up in the list too, grouped under its
-name, with their USER and VER. Select one of your panes there and press **V** to
-update tmux-revive over ssh, once you say yes. On another user's pane there, **V**
-gives you the command to run in it (see Several users in one tmux). **N** names one of its panes over ssh.
+name, with their USER and VER. **U** updates tmux-revive there over ssh, along
+with this computer's, one try each. Another user's install there gets an `[I]`
+with the command to run in their pane (see Several users in one tmux). **N** names one of its panes over ssh.
 
 **O** is faded on its panes. Nothing there moves your focus, here or in tmux over
 there, so a question on that computer can't pull you away from what you're doing.
@@ -313,13 +312,13 @@ other and anyone on its links.
   sees that user's tmux.
 - Every other user working in your tmux can have tmux-revive too, so their
   agents get the agent-say note and report their context left. Until they do,
-  their VER in the panel shows `[V]`. Select one of their panes and press **V**
-  for the command to run in that pane. It's copied, ready to paste. If they
-  have an older version, **V** gives you `tmux-revive update` instead.
+  their VER in the panel shows `[U]`. Press **U**, then **I** on their line,
+  for the command to run in their pane. It's copied, ready to paste. If they
+  have an older version, it's `tmux-revive update` instead.
 - Their install tells your tmux which version they have. In root's tmux, root's
   panel reads it straight from their install. Anywhere else, a user other than
   root needs the same `sudo` setup as `agent-say` below, or VER keeps showing
-  `[V]`.
+  `[U]`.
 - Without their own, their agents can still message: the messages they get show
   the full path to run.
 - In root's tmux, a user who ran `su - name` needs nothing more: their
