@@ -1498,7 +1498,7 @@ raw=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=140 LINES=50 REVIVE_DIR=$RE
 out=$(plain <<<"$raw")
 check "here: a turn you typed, waiting since just now, is bold vivid lime" "grep 'cl-typed' <<<\"\$raw\" | grep -qF $'\e[1m\e[38;5;118m◆ WAITING ON YOU'"
 check "here: one an agent-say message started is WAITING ON AGENT in the usual green" "grep 'cl-msg' <<<\"\$raw\" | grep -qF $'\e[92m◆ WAITING ON AGENT'"
-check "here: one waiting over 90 minutes shows IDLE" "grep -q 'cl-old .*claude *◇ IDLE  ' <<<\"\$out\" && ! grep -q 'cl-old .*WAITING' <<<\"\$out\""
+check "here: one waiting over 90 minutes shows IDLE, in the usual WAITING ON YOU colour" "grep cl-old <<<\"\$raw\" | grep -qF $'\e[92m◇ IDLE' && grep -q 'cl-old .*claude *◇ IDLE  ' <<<\"\$out\" && ! grep -q 'cl-old .*WAITING' <<<\"\$out\""
 check "here: one not known keeps WAITING ON YOU in the usual green" "grep 'cl-idle' <<<\"\$raw\" | grep -qF $'\e[92m◆ WAITING ON YOU'"
 check "here: WAITING ON AGENT leaves a gap before the folder, and the frame is still 140 wide" "grep -q 'WAITING ON AGENT  ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
 for w in cl-typed cl-msg cl-old; do far_tm kill-window -t far:$w; done

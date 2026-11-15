@@ -1885,7 +1885,7 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 	working) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
 	waiting)
 		wait_colour "${2:-}"
-		if ((WIDLE)); then CELL="$e[38;5;65m◇ IDLE            $R"
+		if ((WIDLE)); then CELL="$BGRN◇ IDLE            $R"
 		elif ((WAGENT)); then CELL="$WCOL◆ WAITING ON AGENT$R"
 		else CELL="$WCOL◆ WAITING ON YOU  $R"; fi ;;
 	# Idle at its prompt while its work goes on in the background: working all the same (its
