@@ -2157,7 +2157,7 @@ TIPS=(
 	"[D]etach and come back anytime. Every session, Claude too, picks up where it left off."
 	"[S]ave a snapshot now. It also saves on its own when you [D]etach."
 	"[A]rt changes the artwork. [?] opens help."
-	"Shut down mid-task or mid-question? Revive asks each session to pick up where it stopped."
+	"Shut down mid-task? Revive asks each session to pick up where it left off."
 )
 TIP_SECS=${REVIVE_PANEL_TIP_SECS:-30}
 [[ $TIP_SECS =~ ^[1-9][0-9]{0,4}$ ]] || TIP_SECS=30

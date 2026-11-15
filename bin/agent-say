@@ -2599,8 +2599,8 @@ case "$cmd" in
 		internal_caller || die "agent-say _revive is tmux-revive's own; not run"
 		[[ "${2:-}" =~ ^%[0-9]+$ ]] || die "usage: agent-say _revive <%pane-id> declined|interrupted"
 		case "${3:-}" in
-		declined) text="The computer shut down while your question was waiting, so it was marked declined. Nobody declined it. Please ask it again." ;;
-		interrupted) text="Sorry about the interruption. The computer shut down while you were working. Please continue where you left off." ;;
+		declined) text="The computer shut down while your question was waiting, and it got marked declined. Your user didn't decline it, so please ask again." ;;
+		interrupted) text="Sorry about the interruption. The computer shut down while you were working, so please pick up where you left off." ;;
 		*) die "usage: agent-say _revive <%pane-id> declined|interrupted" ;;
 		esac
 		# Up: an agent running in the pane and its screen the same for 3 s, after 5 s at least

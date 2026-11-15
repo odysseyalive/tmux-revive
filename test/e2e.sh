@@ -735,7 +735,7 @@ tmux -S "$T/sock5" -f /dev/null new-session -d -s r -x 120 -y 30 "$T/bin/fakecla
 rp=$(tmux -S "$T/sock5" display -p -t r '#{pane_id}')
 (PATH=${PATH//"$T/bin:"/}; source "$ROOT/scripts/common.sh"; REVIVE_SAY=$ROOT/bin/agent-say; source <(sed -n '/^revive_say() {/,/^}/p' "$ROOT/scripts/restore.sh"); revive_say "$rp" declined)
 for _ in $(seq 60); do [[ -s $T/typed ]] && break; sleep 0.5; done
-check "a session whose question was declined by the shutdown is asked, once up, to ask it again" "grep -q '^\\[agent-say notice from tmux-revive [0-9:]*Z\\] The computer shut down while your question was waiting, so it was marked declined. Nobody declined it. Please ask it again.\$' $T/typed && grep -q '^## \[tmux-revive -> $rp ' $AGENT_SAY_MAILBOX"
+check "a session whose question was declined by the shutdown is asked, once up, to ask it again" "grep -q '^\\[agent-say notice from tmux-revive [0-9:]*Z\\] The computer shut down while your question was waiting, and it got marked declined. Your user didn.t decline it, so please ask again.\$' $T/typed && grep -q '^## \[tmux-revive -> $rp ' $AGENT_SAY_MAILBOX"
 tmux -S "$T/sock5" kill-server
 check "only agent-say's own may send it: an agent running it is refused" "! $ROOT/bin/agent-say --from x _revive %1 declined 2>/dev/null && ! AGENT_SAY_INTERNAL=0123456789abcdef0123456789abcdef $ROOT/bin/agent-say --from x _revive %1 declined 2>/dev/null"
 unset REVIVE_SOCKET
