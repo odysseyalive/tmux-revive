@@ -887,12 +887,12 @@ wait_watch() {
 # 90 minutes, cooling as it ages: under 10 minutes bold vivid lime, under 45 vivid lime, then a
 # paler lime. WIDLE=1: waiting over 90 minutes, whoever started it, shown as IDLE. WAGENT=1:
 # under 90 minutes, a turn a message from another session started, shown as WAITING ON AGENT
-# in the usual green. When it began isn't known, WAITING ON YOU in the usual green.
+# in the usual green. WUNK=1: when it began isn't known (yet), shown as --- .
 wait_colour() {
 	local s="" a
-	WCOL=$BGRN WIDLE=0 WAGENT=0
+	WCOL=$BGRN WIDLE=0 WAGENT=0 WUNK=0
 	[[ ${1:-} =~ ^[0-9]+$ ]] && s=${W_SINCE[$1]:-}
-	[[ -n $s ]] || return 0
+	[[ -n $s ]] || { WUNK=1; return 0; }
 	a=$((${EPOCHSECONDS:-$(date +%s)} - s))
 	((a >= 5400)) && { WIDLE=1; return 0; }
 	[[ ${W_FROM[$1]:-} == a ]] && { WAGENT=1; return 0; }
@@ -1904,7 +1904,8 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 	working) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
 	waiting)
 		wait_colour "${2:-}"
-		if ((WIDLE)); then CELL="$BGRN◇ IDLE            $R"
+		if ((WUNK)); then CELL="$GRY  ---             $R"
+		elif ((WIDLE)); then CELL="$BGRN◇ IDLE            $R"
 		elif ((WAGENT)); then CELL="$WCOL◆ WAITING ON AGENT$R"
 		else CELL="$WCOL◆ WAITING ON YOU  $R"; fi ;;
 	# Idle at its prompt while its work goes on in the background: working all the same (its
@@ -4265,6 +4266,19 @@ splash() {
 	printf '%s' "$e[2J"
 }
 
+# Until the first look at every pane is in (a while on a busy machine, or with links to
+# servers): the logo and a word that it is loading, not a blank screen.
+loading() {
+	local rows cols top left i
+	rows=$(tput lines 2>/dev/null || echo 30) cols=$(tput cols 2>/dev/null || echo 80)
+	top=$(((rows - 8) / 2)) left=$(((cols - 44) / 2))
+	((top < 1)) && top=1
+	((left < 1)) && left=1
+	printf '%s' "$e[2J"
+	for i in 0 1 2 3 4 5; do printf '%s' "$e[$((top + i));${left}H${BIG_ROWS[i]}"; done
+	printf '%s' "$e[$((top + 8));$((left + 18))H$GRY""Loading…$R"
+}
+
 # ------------------------------------------------------------------ main
 if ((PEEKMODE)); then
 	# The pane's bottom rows exactly, blank ones included (a $( ) would drop those).
@@ -4401,6 +4415,7 @@ case ${REVIVE_PANEL_SPLASH:-} in
 0) ;;
 *) [[ $(opt @revive-panel-splashed '') == 1 ]] || { splash; tm set-option -g @revive-panel-splashed 1 2>/dev/null; } ;;
 esac
+loading
 PREV=() # after the splash: paint the whole panel
 
 declare -A SSH_SEEN=() LOGIN_SEEN=()

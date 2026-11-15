@@ -684,9 +684,9 @@ other_inst "" --uninstall
 check "and its uninstall takes the record away" "[[ -d $T/ownerstate/agent-say/users && ! -e $T/ownerstate/agent-say/users/$me ]]"
 "$T/tmux-ok" kill-server
 
-# What a shutdown cut short, told from a session's record after the snapshot and its status in
-# it: a question open is declined, work under way interrupted; what you declined or stopped
-# yourself before it, or a turn that ended, is neither.
+# What a restored session was left on: its question declined, whenever (asked again), or its
+# work cut short by the shutdown, told from its record after the snapshot and its status in
+# it; work you stopped yourself before it, or a turn that ended, is neither.
 echo "cut short by a shutdown"
 CH=$T/cuthome
 mkdir -p "$CH/.claude/projects/-p" "$CH/.codex/sessions/2026/01/05"
@@ -710,7 +710,9 @@ check "idle at the snapshot with nothing after it: nothing" "[[ \$(cuts claude i
 cl "$ask" "$(printf "$no" "$(ts now)")" "$(printf "$stop" "$(ts now)" ' for tool use')"
 check "the question declined as it shut down, after the snapshot: declined" "[[ \$(cuts claude idle) == declined ]]"
 cl "$ask" "$(printf "$no" "$(ts '-1 hour')")" "$(printf "$stop" "$(ts '-1 hour')" ' for tool use')"
-check "a question you declined an hour before: nothing" "[[ \$(cuts claude busy) == - ]]"
+check "a question declined an hour before, still its last word: declined, asked again" "[[ \$(cuts claude idle) == declined ]]"
+cl "$run" "$(printf "$stop" "$(ts '-1 hour')" '')"
+check "work you stopped an hour before: nothing" "[[ \$(cuts claude idle) == - ]]"
 cl "$run" "$(printf "$stop" "$(ts now)" '')"
 check "work stopped as it shut down: interrupted" "[[ \$(cuts claude busy) == interrupted ]]"
 cl "$run" '{"type":"assistant","timestamp":"'$(ts now)'","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}'
@@ -723,19 +725,26 @@ check "codex: its turn complete: nothing" "[[ \$(cuts codex -) == - ]]"
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(ts '-3 hours')" >"$cxr"
 check "codex: a turn left open hours before the snapshot: nothing" "[[ \$(cuts codex -) == - ]]"
 
-# What the restore then sends, as agent-say types it: into a session that is up (an agent in
-# its pane, its screen settled), as tmux-revive, needing no approval; never before it is up.
+# What the restore then sends, as agent-say types it: into a session that has loaded (an agent
+# in its pane, its screen settled, a Claude Code's record saying idle), as tmux-revive, needing
+# no approval; never before. Run as a restore runs it, under a bash with no job control (its
+# pane-init.sh): tmux then sees bash in front, with the agent in the same foreground group.
 # Plain tmux by now is a wrapper for another server (above): the real one, as installed.
-mkdir -p "$T/abin"
+mkdir -p "$T/abin" "$HOME/.claude/sessions"
 cp "$(command -v bash)" "$T/abin/claude"
 printf '#!%s\nsleep 2; while printf "> " && IFS= read -r line; do echo "$line" >>%s; done\n' "$T/abin/claude" "$T/typed" >"$T/bin/fakeclaude"
 chmod +x "$T/bin/fakeclaude"
 export REVIVE_SOCKET=$T/sock5
-tmux -S "$T/sock5" -f /dev/null new-session -d -s r -x 120 -y 30 "$T/bin/fakeclaude"
+tmux -S "$T/sock5" -f /dev/null new-session -d -s r -x 120 -y 30 "exec bash -c '$T/bin/fakeclaude; :'"
 rp=$(tmux -S "$T/sock5" display -p -t r '#{pane_id}')
+for _ in $(seq 20); do fp=$(pgrep -f "^$T/abin/claude $T/bin/fakeclaude\$") && break; sleep 0.2; done
+printf '{"pid":%s,"sessionId":"s-r","status":"busy"}\n' "$fp" >"$HOME/.claude/sessions/$fp.json"
 (PATH=${PATH//"$T/bin:"/}; source "$ROOT/scripts/common.sh"; REVIVE_SAY=$ROOT/bin/agent-say; source <(sed -n '/^revive_say() {/,/^}/p' "$ROOT/scripts/restore.sh"); revive_say "$rp" declined)
-for _ in $(seq 60); do [[ -s $T/typed ]] && break; sleep 0.5; done
-check "a session whose question was declined by the shutdown is asked, once up, to ask it again" "grep -q '^\\[agent-say notice from tmux-revive [0-9:]*Z\\] The computer shut down while your question was waiting, and it got marked declined. Your user didn.t decline it, so please ask again.\$' $T/typed && grep -q '^## \[tmux-revive -> $rp ' $AGENT_SAY_MAILBOX"
+sleep 10
+check "while its record says it is still busy loading, nothing is typed in (tmux sees $(tmux -S "$T/sock5" display -p -t r '#{pane_current_command}') in front)" "[[ ! -s $T/typed && \$(tmux -S $T/sock5 display -p -t r '#{pane_current_command}') == bash ]]"
+printf '{"pid":%s,"sessionId":"s-r","status":"idle"}\n' "$fp" >"$HOME/.claude/sessions/$fp.json"
+for _ in $(seq 30); do [[ -s $T/typed ]] && break; sleep 0.5; done
+check "a session whose question was declined is asked, once loaded, to ask it again" "grep -q '^\\[agent-say notice from tmux-revive [0-9:]*Z\\] The computer shut down while your question was waiting, and it got marked declined. Your user didn.t decline it, so please ask again.\$' $T/typed && grep -q '^## \[tmux-revive -> $rp ' $AGENT_SAY_MAILBOX"
 tmux -S "$T/sock5" kill-server
 check "only agent-say's own may send it: an agent running it is refused" "! $ROOT/bin/agent-say --from x _revive %1 declined 2>/dev/null && ! AGENT_SAY_INTERNAL=0123456789abcdef0123456789abcdef $ROOT/bin/agent-say --from x _revive %1 declined 2>/dev/null"
 unset REVIVE_SOCKET

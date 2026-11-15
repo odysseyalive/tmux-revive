@@ -541,7 +541,7 @@ check "an unnamed pane's NAME is ---, not its place again" "grep -q '\[12\.0\]  
 tm new-session -d -s other -x 80 -y 24 "sleep 300"; sleep 0.5
 for c in 80 120 160 200; do
 	out=$(cframe "$c")
-	check "at $c columns with two sessions, an unnamed pane's NAME is its session, every row exactly $c wide" "grep -q '\[12\.0\]   work ' <<<\"\$out\" && grep -q '\[0\.0\] .. other ' <<<\"\$out\" && ! grep -q -- ' --- ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
+	check "at $c columns with two sessions, an unnamed pane's NAME is its session, every row exactly $c wide" "grep -q '\[12\.0\]   work ' <<<\"\$out\" && grep -q '\[0\.0\] .. other ' <<<\"\$out\" && ! grep -q -- '\] *--- ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
 done
 tm kill-session -t other
 tm kill-window -t work:twelve
@@ -657,11 +657,11 @@ for c in 80 200; do
 	check "at $c columns every row is exactly $c wide" "grep -q 'claude *. WORKING ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
 done
 # A record saying waiting (a dialog of its own open) needs you, agents or not.
-printf '{"pid":%s,"sessionId":"s-1","status":"waiting","waitingFor":"dialog open"}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
+printf '{"pid":%s,"sessionId":"s-1","status":"waiting","statusUpdatedAt":'"$(date +%s)000"',"waitingFor":"dialog open"}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
 touch "$T/ltmp/claude-$UID/-w/s-1/tasks/b1.output"
 out=$(bgframe)
 check "a record saying waiting is WAITING ON YOU, agents or not" "grep -q 'claude *◆ WAITING ON YOU' <<<\"\$out\""
-printf '{"pid":%s,"sessionId":"s-1","status":"idle"}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
+printf '{"pid":%s,"sessionId":"s-1","status":"idle","statusUpdatedAt":'"$(date +%s)000"'}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
 touch -d '-1 minute' "$T/ltmp/claude-$UID/-w/s-1/tasks/b1.output"
 out=$(bgframe)
 check "with that output a minute old, WAITING ON YOU again" "grep -q 'claude *◆ WAITING ON YOU' <<<\"\$out\""
@@ -675,7 +675,7 @@ tm kill-window -t work:cl
 tm new-window -d -t work -n cl "$T/bin/claude -c '$T/bin/mcp/mcp-server 300 & bash -c \"source $T/shell-snapshots/snapshot-x.sh; sleep 300; :\" & wait'"
 sleep 0.5
 clpid=$(tm display -p -t work:cl '#{pane_pid}') clid=$(tm display -p -t work:cl '#{pane_id}')
-printf '{"pid":%s,"sessionId":"s-1","status":"idle"}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
+printf '{"pid":%s,"sessionId":"s-1","status":"idle","statusUpdatedAt":'"$(date +%s)000"'}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
 out=$(bgframe)
 check "idle with a command still running under it shows WORKING, its output stale" "grep -q 'claude *. WORKING ' <<<\"\$out\""
 check "and its peek says it still takes input" "grep -q 'PEEK · .*agents busy, takes input' <<<\"\$out\""
@@ -686,7 +686,7 @@ check "a record saying busy is WORKING, without the takes-input peek" "grep -q '
 printf '{"pid":%s,"sessionId":"s-1","status":"shell"}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
 out=$(bgframe)
 check "a record saying shell (a background shell still running) is WORKING, and takes input" "grep -q 'claude *. WORKING ' <<<\"\$out\" && grep -q 'takes input' <<<\"\$out\""
-printf '{"pid":%s,"sessionId":"s-1","status":"idle"}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
+printf '{"pid":%s,"sessionId":"s-1","status":"idle","statusUpdatedAt":'"$(date +%s)000"'}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
 snap=$(pgrep -P "$clpid" -f 'source .*snapshot-x')
 pkill -P "$snap"; kill "$snap"; sleep 0.3
 out=$(bgframe)
@@ -1490,11 +1490,11 @@ check "--rows there: busy, or asking, with fresh output: no such line" "[[ \$(gr
 out=$(far "$T/fakessh")
 check "here: a linked agent working with no record shows WORKING" "grep -q 'cl-none .*claude *. WORKING' <<<\"\$out\""
 check "here: one whose record says busy shows WORKING" "grep -q 'cl-busy .*claude *. WORKING' <<<\"\$out\""
-check "here: one whose record says idle shows WAITING ON YOU" "grep -q 'cl-idle .*claude *◆ WAITING ON YOU' <<<\"\$out\""
+check "here: one whose record says idle, and not since when, shows --- " "grep -q 'cl-idle .*claude *--- ' <<<\"\$out\""
 check "here: one asking a question shows NEEDS ANSWER" "grep -q 'cl-ask .*claude *? NEEDS ANSWER' <<<\"\$out\""
 check "here: idle with agents working in the background shows WORKING" "grep -q 'cl-bg .*claude *. WORKING ' <<<\"\$out\""
 check "here: idle with a command still running under it shows WORKING" "grep -q 'cl-snap .*claude *. WORKING ' <<<\"\$out\""
-check "here: idle with only stale output shows WAITING ON YOU" "grep -q 'cl-stale .*claude *◆ WAITING ON YOU' <<<\"\$out\""
+check "here: idle with only stale output, and not since when, shows --- " "grep -q 'cl-stale .*claude *--- ' <<<\"\$out\""
 check "here: a question still wins over agents in the background" "grep -q 'cl-bgask .*claude *? NEEDS ANSWER' <<<\"\$out\""
 check "and the frame is still exactly 140 wide" "[[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
 # How long each has waited on you, once those are gone: three since just now, the last
@@ -1533,7 +1533,7 @@ check "here: one an agent-say message started is WAITING ON AGENT in the usual g
 check "here: one waiting over 90 minutes shows IDLE, in the usual WAITING ON YOU colour" "grep cl-old <<<\"\$raw\" | grep -qF $'\e[92m◇ IDLE' && grep -q 'cl-old .*claude *◇ IDLE  ' <<<\"\$out\" && ! grep -q 'cl-old .*WAITING' <<<\"\$out\""
 check "here: resumed just now, its last turn two hours ago, shows IDLE" "grep -q 'cl-back .*claude *◇ IDLE  ' <<<\"\$out\""
 check "here: resumed just now, its last turn five minutes ago, shows WAITING ON YOU" "grep -q 'cl-back5 .*claude *◆ WAITING ON YOU' <<<\"\$out\""
-check "here: one not known keeps WAITING ON YOU in the usual green" "grep 'cl-idle' <<<\"\$raw\" | grep -qF $'\e[92m◆ WAITING ON YOU'"
+check "here: one waiting since a time not known shows --- in grey, not WAITING ON YOU" "grep 'cl-idle' <<<\"\$raw\" | grep -qF $'\e[90m  --- ' && ! grep 'cl-idle' <<<\"\$raw\" | grep -q WAITING"
 check "here: WAITING ON AGENT leaves a gap before the folder, and the frame is still 140 wide" "grep -q 'WAITING ON AGENT  ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
 for w in cl-typed cl-msg cl-old cl-back cl-back5; do far_tm kill-window -t far:$w; done
 # Their CPU and context left, drawn as this computer's own are. A busy pane there; a Claude

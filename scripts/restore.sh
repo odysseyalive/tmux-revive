@@ -124,10 +124,10 @@ pane_cmd() { # pane_cmd PANE_JSON -> shell command line for the new pane
 	printf '%q %q %q' "$init" "$scroll" "$cmdf"
 }
 
-# What a shutdown cut short, for a session it restores: its question open (declined, as the
-# agent's record calls it once the process is gone) or its turn under way (interrupted). Told
-# from what the session wrote at or after the snapshot, and from its status in it, so a question
-# you declined yourself, or a turn you stopped, before the shutdown is left as it is.
+# What a session it restores was left waiting on: its question declined (as the agent's record
+# calls it once the process is gone, at a shutdown or before), asked again whenever it was; or
+# its turn under way when the computer shut down (interrupted), told from what it wrote at or
+# after the snapshot and its status in it, so work you stopped yourself before is left alone.
 # cut_short PANE_JSON -> CUT: declined, interrupted, or nothing
 saved_s=$(date -d "$(jq -r '.saved_at // empty' "$state")" +%s 2>/dev/null) || saved_s=""
 cut_short() {
@@ -157,7 +157,7 @@ cut_short() {
 			| (($u.name // "") == "AskUserQuestion" and (($r.tool_use_id // "") != $u.id or (($r.content | tostring) | test("doesn.t want to proceed")))) as $asked
 			| if $l == null then empty
 			elif $l.type == "user" and (($l | text) | startswith("[Request interrupted by user")) then
-				if ($l | t) >= $saved - 5 then (if $asked then "declined" else "interrupted" end) else empty end
+				if $asked then "declined" elif ($l | t) >= $saved - 5 then "interrupted" else empty end
 			elif $l.type == "assistant" and $l.message.stop_reason == "end_turn" then empty
 			elif $st == "busy" or $st == "waiting" then (if $asked then "declined" else "interrupted" end)
 			else empty end' 2>/dev/null) ;;
