@@ -1442,8 +1442,6 @@ far_turn() { # far_turn NAME PROMPT
 	mkdir -p "$T/rhome/.claude/projects/-w"
 	printf '{"type":"user","message":{"role":"user","content":"%s"}}\n{"type":"assistant","message":{"content":[]}}\n' "$2" >"$T/rhome/.claude/projects/-w/s-$1.jsonl"
 }
-far_turn cl-typed "fix the panel please"
-far_turn cl-msg "[agent-msg from=oa-work 02:46Z] hello"
 # Agents a Claude Code started work on in the background: their output files, under its temp
 # folder's claude-UID/<folder>/<sessionId>/tasks/, written to just now (an agent's is a link to
 # its transcript) or minutes ago. Idle with one fresh is working (and takes input); with only
@@ -1472,9 +1470,6 @@ check "--rows there: a question on screen is asking" "grep -q $'\x1fcl-ask\x1fcl
 check "--rows there: idle with agents working in the background is a line before a row saying working (as an older panel shows it)" "grep -B1 $'\x1fcl-bg\x1fclaude\x1fworking\x1f' <<<\"\$rows\" | grep -q '^#agents %[0-9]*\$'"
 check "--rows there: idle with a command still running under it, its output stale, likewise" "grep -B1 $'\x1fcl-snap\x1fclaude\x1fworking\x1f' <<<\"\$rows\" | grep -q '^#agents %[0-9]*\$'"
 check "--rows there: with only stale output, no such line" "! grep -B1 $'\x1fcl-stale\x1f' <<<\"\$rows\" | grep -q '^#agents' && grep -q $'\x1fcl-stale\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
-check "--rows there: waiting since just now, a turn you typed, is a #wait line saying u" "grep -B3 $'\x1fcl-typed\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Eq '^#wait %[0-9]+ [0-9] u\$'"
-check "--rows there: and one an agent-say message started, a" "grep -B3 $'\x1fcl-msg\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Eq '^#wait %[0-9]+ [0-9] a\$'"
-check "--rows there: one whose record says nothing of when, no #wait line" "! grep -B3 $'\x1fcl-idle\x1f' <<<\"\$rows\" | grep -q '^#wait'"
 check "--rows there: busy, or asking, with fresh output: no such line" "[[ \$(grep -c '^#agents' <<<\"\$rows\") == 2 ]] && grep -q $'\x1fcl-bgask\x1fclaude\x1fasking\x1f' <<<\"\$rows\""
 out=$(far "$T/fakessh")
 check "here: a linked agent working with no record shows WORKING" "grep -q 'cl-none .*claude *. WORKING' <<<\"\$out\""
@@ -1484,13 +1479,29 @@ check "here: one asking a question shows NEEDS ANSWER" "grep -q 'cl-ask .*claude
 check "here: idle with agents working in the background shows WORKING" "grep -q 'cl-bg .*claude *. WORKING ' <<<\"\$out\""
 check "here: idle with a command still running under it shows WORKING" "grep -q 'cl-snap .*claude *. WORKING ' <<<\"\$out\""
 check "here: idle with only stale output shows WAITING ON YOU" "grep -q 'cl-stale .*claude *◆ WAITING ON YOU' <<<\"\$out\""
-raw=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
-check "here: a turn you typed, waiting since just now, is bold vivid lime" "grep 'cl-typed' <<<\"\$raw\" | grep -qF $'\e[1m\e[38;5;118m◆ WAITING ON YOU'"
-check "here: one an agent-say message started keeps the usual green" "grep 'cl-msg' <<<\"\$raw\" | grep -qF $'\e[92m◆ WAITING ON YOU'"
-check "here: one not known keeps the usual green" "grep 'cl-idle' <<<\"\$raw\" | grep -qF $'\e[92m◆ WAITING ON YOU'"
 check "here: a question still wins over agents in the background" "grep -q 'cl-bgask .*claude *? NEEDS ANSWER' <<<\"\$out\""
 check "and the frame is still exactly 140 wide" "[[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
-for w in cl-bg cl-stale cl-snap cl-bgask cl-typed cl-msg; do far_tm kill-window -t far:$w; done # room for the rows below
+# How long each has waited on you, once those are gone: three since just now, the last
+# prompt typed, an agent-say message, or nothing to tell; one waiting an hour and a half.
+for w in cl-bg cl-stale cl-snap cl-bgask; do far_tm kill-window -t far:$w; done
+far_turn cl-typed "fix the panel please"
+far_turn cl-msg "[agent-msg from=oa-work 02:46Z] hello"
+far_turn cl-old "an hour and a half ago"
+sed -i 's/"statusUpdatedAt":[0-9]*/"statusUpdatedAt":'"$(($(date +%s) - 5500))"'000/' "$(grep -l '"s-cl-old"' "$T"/rhome/.claude/sessions/*.json)"
+sleep 0.5
+rows=$(CLAUDE_CODE_TMPDIR=$T/rtmp REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
+check "--rows there: waiting since just now, a turn you typed, is a #wait line saying u" "grep -B3 $'\x1fcl-typed\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Eq '^#wait %[0-9]+ [0-9] u\$'"
+check "--rows there: and one an agent-say message started, a" "grep -B3 $'\x1fcl-msg\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Eq '^#wait %[0-9]+ [0-9] a\$'"
+check "--rows there: one whose record says nothing of when, no #wait line" "! grep -B3 $'\x1fcl-idle\x1f' <<<\"\$rows\" | grep -q '^#wait'"
+rm -f "$st/panel/far.example.rows"*
+raw=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
+out=$(plain <<<"$raw")
+check "here: a turn you typed, waiting since just now, is bold vivid lime" "grep 'cl-typed' <<<\"\$raw\" | grep -qF $'\e[1m\e[38;5;118m◆ WAITING ON YOU'"
+check "here: one an agent-say message started is WAITING ON AGENT in the usual green" "grep 'cl-msg' <<<\"\$raw\" | grep -qF $'\e[92m◆ WAITING ON AGENT'"
+check "here: one waiting over 90 minutes shows IDLE" "grep -q 'cl-old .*claude *◇ IDLE  ' <<<\"\$out\" && ! grep -q 'cl-old .*WAITING' <<<\"\$out\""
+check "here: one not known keeps WAITING ON YOU in the usual green" "grep 'cl-idle' <<<\"\$raw\" | grep -qF $'\e[92m◆ WAITING ON YOU'"
+check "here: WAITING ON AGENT leaves a gap before the folder, and the frame is still 140 wide" "grep -q 'WAITING ON AGENT  ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
+for w in cl-typed cl-msg cl-old; do far_tm kill-window -t far:$w; done
 # Their CPU and context left, drawn as this computer's own are. A busy pane there; a Claude
 # Code whose record names its transcript; and three with no record to be found, as over a
 # link's ssh: one whose config folder is in its own environment and whose session is the

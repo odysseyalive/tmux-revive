@@ -832,16 +832,20 @@ wait_watch() {
 }
 # wait_colour ROW -> WCOL: WAITING ON YOU's colour. A turn you started yourself lights it for
 # 90 minutes, cooling as it ages: under 10 minutes bold vivid lime, under 45 vivid lime, then a
-# paler lime. A turn a message from another session started, or one older, or one not known,
-# keeps the usual green.
+# paler lime. WIDLE=1: waiting over 90 minutes, whoever started it, shown as IDLE. WAGENT=1:
+# under 90 minutes, a turn a message from another session started, shown as WAITING ON AGENT
+# in the usual green. When it began isn't known, WAITING ON YOU in the usual green.
 wait_colour() {
 	local s="" a
-	WCOL=$BGRN
-	[[ ${1:-} =~ ^[0-9]+$ && ${W_FROM[$1]:-} == u ]] && s=${W_SINCE[$1]:-}
+	WCOL=$BGRN WIDLE=0 WAGENT=0
+	[[ ${1:-} =~ ^[0-9]+$ ]] && s=${W_SINCE[$1]:-}
 	[[ -n $s ]] || return 0
 	a=$((${EPOCHSECONDS:-$(date +%s)} - s))
+	((a >= 5400)) && { WIDLE=1; return 0; }
+	[[ ${W_FROM[$1]:-} == a ]] && { WAGENT=1; return 0; }
+	[[ ${W_FROM[$1]:-} == u ]] || return 0
 	if ((a < 600)); then WCOL="$B$e[38;5;118m"; elif ((a < 2700)); then WCOL="$e[38;5;118m"
-	elif ((a < 5400)); then WCOL="$e[38;5;156m"; fi
+	else WCOL="$e[38;5;156m"; fi
 }
 
 # ------------------------------------------------------------------ context left
@@ -1818,12 +1822,16 @@ sel_fix() {
 	SEL_ID=${P_ID[SEL]:-}
 }
 
-state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters wide
+state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters wide (the column 20 on a wide panel)
 	case $1 in
 	asking) CELL="$B$BMAG$BLINK?$R$B$BMAG NEEDS ANSWER    $R" ;;
 	grant) CELL="$B$BMAG$BLINK⚑ [G]RANT ACCESS$R  " ;; # its agent waits for access (G)
 	working) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
-	waiting) wait_colour "${2:-}"; CELL="$WCOL◆ WAITING ON YOU  $R" ;;
+	waiting)
+		wait_colour "${2:-}"
+		if ((WIDLE)); then CELL="$e[38;5;65m◇ IDLE            $R"
+		elif ((WAGENT)); then CELL="$WCOL◆ WAITING ON AGENT$R"
+		else CELL="$WCOL◆ WAITING ON YOU  $R"; fi ;;
 	# Idle at its prompt while its work goes on in the background: working all the same (its
 	# peek says it takes input).
 	agents) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
@@ -1837,7 +1845,7 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 }
 
 draw_panes() {
-	local i n=${#P_ID[@]} name key folder git cells mark wide=1 NW=10 FW=10 GW v KW=3 pad UW=4 VW=3 us=1 extra
+	local i n=${#P_ID[@]} name key folder git cells mark wide=1 sw=2 NW=10 FW=10 GW v KW=3 pad UW=4 VW=3 us=1 extra
 	# Who waits for access (G): each introduction's sender, as NAME@HOST.
 	local gw=" " st d f
 	for d in "$ASTATE"/intros/*/; do [[ -f $d/from ]] && read -r f <"$d/from" && gw+="$f "; done
@@ -1856,7 +1864,7 @@ draw_panes() {
 	# are as wide as their longest (10 to 29 and 10 to 35), USER and VER too (4 to 10, 3 to 11)
 	# with a space after each; GIT has the rest of the row, so
 	# CTX LEFT ends at the panel's right edge. The rest of the row is fixed: the # cell (its
-	# widest label, the mark and two spaces: 6 for [1]), APP 10, STATE 18, CPU and MEM 19,
+	# widest label, the mark and two spaces: 6 for [1]), APP 10, STATE 20 (18 narrow), CPU and MEM 19,
 	# CTX LEFT 12, and a space after the name, folder and GIT.
 	# The # label: the pane's window.pane (3.1), or where that isn't known (a linked computer
 	# that only gave its pane names) the row's count, 1 to 9.
@@ -1900,13 +1908,14 @@ draw_panes() {
 	((tot > PH)) && cw=$((IW - 1))
 	# USER and VER, and a space after each.
 	extra=$((UW + VW + 2))
-	GW=$((cw - 65 - KW - NW - FW - extra))
+	GW=$((cw - 67 - KW - NW - FW - extra))
+	sw=2 # STATE is 20 wide, room for WAITING ON AGENT and a gap; 18 when the panel is narrow
 	# A narrow panel cuts GIT first, down to 13, then the folder and the name, down to 10. Too
 	# narrow for that, the folder and GIT go and the name has their room: the narrowest panel
 	# takes the name down to 10 to keep CTX LEFT.
 	v=$((13 - GW < FW - 10 ? 13 - GW : FW - 10)); ((v > 0)) && FW=$((FW - v)) GW=$((GW + v))
 	v=$((13 - GW < NW - 10 ? 13 - GW : NW - 10)); ((v > 0)) && NW=$((NW - v)) GW=$((GW + v))
-	((GW < 13)) && wide=0 NW=$((cw - 63 - KW - extra))
+	((GW < 13)) && wide=0 sw=0 NW=$((cw - 63 - KW - extra))
 	# Narrower still, USER and VER go too, before the name gets under 10.
 	((NW < 10)) && us=0 NW=$((NW + extra))
 	# Built from the same widths as the rows below, so the columns line up.
@@ -1918,7 +1927,7 @@ draw_panes() {
 		fld VER $((VW + 1)); hdr+=$FLD
 	fi
 	fld APP 10; hdr+=$FLD
-	fld STATE 18; hdr+=$FLD
+	fld STATE $((18 + sw)); hdr+=$FLD
 	if ((wide)); then
 		fld FOLDER $((FW + 1)); hdr+=$FLD
 		fld GIT $((GW + 1)); hdr+=$FLD
@@ -1976,6 +1985,7 @@ draw_panes() {
 		if ((P_AGENT[i])); then cells+="$BCYN$FLD$R "; else cells+="$CYN$FLD$R "; fi
 		state_cell "${stc[i]}" "$i"
 		cells+=$CELL
+		((sw)) && cells+="  "
 		if ((wide)); then
 			fld "$folder" "$FW"
 			cells+="$BBLU$FLD$R "
