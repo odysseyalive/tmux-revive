@@ -28,7 +28,7 @@ check() {
 }
 cleanup() {
 	t kill-server 2>/dev/null
-	for k in sock2 sock3 sock4; do tmux -S "$T/$k" kill-server 2>/dev/null; done
+	for k in sock2 sock3 sock4 sock5; do tmux -S "$T/$k" kill-server 2>/dev/null; done
 	[[ -n ${KEEP:-} ]] || rm -rf "$T"
 }
 trap cleanup EXIT
@@ -465,6 +465,36 @@ check "n there: still there" "has \"\$bidi\""
 keys q
 o kill-server
 tmux kill-server
+
+# A restored program that ends, or is Ctrl-C'd, leaves its window at a shell. Under zsh the
+# shell after it used to start without the terminal, fail its first read, and close the
+# window when zsh was also the default-shell tmux starts the pane with, as it is for most
+# zsh users. zsh -f, so no rc file runs; skipped where there is no zsh.
+if command -v zsh >/dev/null; then
+	echo "a restored program ends"
+	z() { command tmux -S "$T/sock5" -f /dev/null "$@"; }
+	printf '#!/bin/sh\nexec zsh -f "$@"\n' >"$T/sh/zsh"
+	chmod +x "$T/sh/zsh"
+	z new-session -d -s keep "sleep 60"
+	z set-option -g remain-on-exit on
+	z set-option -g default-shell "$T/sh/zsh"
+	echo 'sleep 1' >"$T/pi-ends"
+	echo 'sleep 600' >"$T/pi-int"
+	z new-window -t keep: -n ends "REVIVE_SHELL=$T/sh/zsh $ROOT/scripts/pane-init.sh '' $T/pi-ends"
+	z new-window -t keep: -n int "REVIVE_SHELL=$T/sh/zsh $ROOT/scripts/pane-init.sh '' $T/pi-int"
+	sleep 2
+	z send-keys -t keep:int C-c
+	sleep 2
+	for w in ends int; do z send-keys -t "keep:$w" "echo still-here-$w" Enter; done
+	sleep 1
+	alive() { [[ $(z display -p -t "keep:$1" '#{pane_dead}') == 0 ]] && z capture-pane -p -t "keep:$1" | grep -q "^still-here-$1"; }
+	check "a program that exits leaves a working shell in its window" "alive ends"
+	check "so does one stopped with Ctrl-C" "alive int"
+	z send-keys -t keep:ends 'exit' Enter
+	sleep 1
+	check "and exit there still closes it" "[[ \$(z display -p -t keep:ends '#{pane_dead}') == 1 ]]"
+	z kill-server
+fi
 
 # The installer loads tmux-revive into a running server, and says so loudly
 # when that fails. All in a sandbox home with tmux on a private socket.
