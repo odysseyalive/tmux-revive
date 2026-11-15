@@ -701,17 +701,19 @@ snapshot_cmd() { # snapshot_cmd PID: a command Claude Code started still runs un
 	done
 	return 1
 }
+# CSU: when its status last changed, in seconds (statusUpdatedAt), or nothing.
 claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting) or nothing; CBG=1: background work
 	local sid t m=0 d
 	local -a f=() roots=()
-	CST="" CBG=0
+	CST="" CBG=0 CSU=""
 	claude_record "$1"
 	[[ -n $RECORD ]] || return 0
 	if [[ -n ${JQ_ST[$RECORD]+set} ]]; then
-		CST=${JQ_ST[$RECORD]} sid=${JQ_SID[$RECORD]} # read already, with the other agents' (agents_look)
+		CST=${JQ_ST[$RECORD]} sid=${JQ_SID[$RECORD]} CSU=${JQ_SU[$RECORD]} # read already, with the other agents' (agents_look)
 	else
-		IFS=$'\t' read -r CST sid < <(jq -r '[.status // "", .sessionId // ""] | @tsv' "$RECORD" 2>/dev/null)
+		IFS=$'\t' read -r CST sid CSU < <(jq -r '[.status // "", .sessionId // "", (.statusUpdatedAt // "" | tostring)] | @tsv' "$RECORD" 2>/dev/null)
 	fi
+	[[ $CSU =~ ^[0-9]{10,13}$ ]] && CSU=${CSU:0:10} || CSU=""
 	CL_REC=$RECORD CL_SID=$sid # ctx_left, next, needs the session too: one jq for both
 	# "shell": its turn is over but a background shell it started still runs. That's work in
 	# the background, the same as idle with a command still running under it.
@@ -734,6 +736,112 @@ claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting
 	done < <(stat -L -c %Y "${f[@]}" 2>/dev/null || stat -L -f %m "${f[@]}" 2>/dev/null)
 	((m && ${EPOCHSECONDS:-$(date +%s)} - m <= BG_SECS)) && CBG=1
 	return 0
+}
+
+# ------------------------------------------------------------------ waiting on you
+# How long each pane has waited on you, and who started the turn that ended there: you (u), or
+# a message from another session (a). W_SINCE[row], the time it began to wait, in seconds, and
+# W_FROM[row]: set by agents_look from a Claude Code record, by remote_panes from a linked
+# computer's #wait line, and otherwise by wait_watch from what the panel saw. Neither known,
+# WAITING ON YOU looks as it always has.
+declare -a W_SINCE=() W_FROM=()
+declare -A TF_K=() TF_V=() WW_ST=() WW_T0=() WW_W0=() MAIL_T=()
+MAIL_STAMP=""
+# claude_turn_from PID SINCE -> TFROM: a when the last prompt in its transcript was an
+# agent-say message ([agent-msg from=...]), u when it was typed, nothing when that can't be
+# read. Looked at once each time its status changes (SINCE).
+claude_turn_from() {
+	local f sid=${CL_SID:-} t
+	TFROM=""
+	if [[ ${TF_K[$1]:-} == "$2" ]]; then TFROM=${TF_V[$1]}; return 0; fi
+	TF_K[$1]=$2 TF_V[$1]=""
+	claude_record "$1"
+	[[ -n $RECORD && $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
+	for f in "${RECORD%/sessions/*}"/projects/*/"$sid".jsonl; do
+		[[ -f $f ]] || continue
+		# The last prompt: a user line that isn't a tool's result or one Claude Code added.
+		t=$(tail -c 4000000 "$f" 2>/dev/null | grep -F '"type":"user"' | grep -vF -e '"tool_result"' -e '"isMeta":true' | tail -n 1 |
+			jq -r '.message.content | if type == "string" then . else ([.[]? | select(.type == "text") | .text] | first // "") end | .[0:16]' 2>/dev/null)
+		[[ -n $t ]] || return 0
+		if [[ $t == "[agent-msg from=" ]]; then TFROM=a; else TFROM=u; fi
+		TF_V[$1]=$TFROM
+		return 0
+	done
+}
+iso_epoch() { # iso_epoch 2026-11-15T03:01:54Z -> ISO_S: seconds since 1970, or nothing
+	ISO_S=""
+	[[ $1 =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z$ ]] || return 0
+	local y=$((10#${BASH_REMATCH[1]})) m=$((10#${BASH_REMATCH[2]})) d=$((10#${BASH_REMATCH[3]})) era yoe doy doe
+	((m <= 2)) && y=$((y - 1))
+	era=$((y / 400)) yoe=$((y - era * 400))
+	doy=$(((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1))
+	doe=$((yoe * 365 + yoe / 4 - yoe / 100 + doy))
+	ISO_S=$(((era * 146097 + doe - 719468) * 86400 + 10#${BASH_REMATCH[4]} * 3600 + 10#${BASH_REMATCH[5]} * 60 + 10#${BASH_REMATCH[6]}))
+}
+# mail_times -> MAIL_T[NAME]: when a message was last delivered to each name (name@host for
+# another computer's), read again only when the mailbox changes.
+mail_times() {
+	local st me=${AGENT_SAY_HOST:-$HOST} to when rest
+	st=$(stat -c '%Y %s' "$AMAIL" 2>/dev/null || stat -f '%m %z' "$AMAIL" 2>/dev/null)
+	[[ $st == "$MAIL_STAMP" ]] && return 0
+	MAIL_STAMP=$st MAIL_T=()
+	[[ -n $st ]] || return 0
+	while read -r to when rest; do
+		[[ $rest == *"(held"* || $rest == *"NOT DELIVERED"* ]] && continue
+		to=${to%"@$me"}
+		[[ $to =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=@-]*$ ]] || continue
+		iso_epoch "${when%]}"
+		[[ -n $ISO_S ]] && ((ISO_S > ${MAIL_T[$to]:-0})) && MAIL_T[$to]=$ISO_S
+	done < <(tail -n 600 "$AMAIL" 2>/dev/null | grep '^## \[' | cut -d' ' -f4-)
+}
+# wait_watch: for the panes nothing above said it of, when they began to wait as the panel saw
+# it (not known for one already waiting when it first looked), and from the mailbox whether a
+# message reached it since it last began to work.
+wait_watch() {
+	local i k st now=${EPOCHSECONDS:-$(date +%s)} t w
+	local -A ost=() ot0=() ow0=()
+	for k in "${!WW_ST[@]}"; do ost[$k]=${WW_ST[$k]} ot0[$k]=${WW_T0[$k]:-} ow0[$k]=${WW_W0[$k]:-}; done
+	WW_ST=() WW_T0=() WW_W0=()
+	mail_times
+	for i in "${!P_ID[@]}"; do
+		k=${P_ID[i]:-${P_HOST[i]}:${P_RID[i]}}
+		[[ $k == : ]] && continue
+		st=${P_STATE[i]}
+		WW_ST[$k]=$st WW_W0[$k]=${ow0[$k]:-}
+		case $st in
+		working | agents) [[ ${ost[$k]:-} == working || ${ost[$k]:-} == agents ]] || WW_W0[$k]=$now ;;
+		waiting)
+			if [[ -n ${W_SINCE[i]:-} ]]; then WW_T0[$k]=${W_SINCE[i]}
+			elif [[ -n ${ost[$k]+set} ]]; then
+				if [[ ${ost[$k]} == waiting ]]; then WW_T0[$k]=${ot0[$k]}; else WW_T0[$k]=$now; fi
+				[[ -n ${WW_T0[$k]} ]] && W_SINCE[i]=${WW_T0[$k]}
+			fi
+			if [[ -n ${W_SINCE[i]:-} && -z ${W_FROM[i]:-} ]]; then
+				t=${P_NAME[i]:-.}
+				[[ -n ${P_HOST[i]} ]] && t+=@${P_HOST[i]}
+				t=${MAIL_T[$t]:-}
+				w=${WW_W0[$k]:-}
+				# Delivered after it last began to work (a few seconds' grace: the message starts
+				# it), or, that not seen, in the ten minutes before it began to wait.
+				if [[ -n $t ]] && { [[ -n $w ]] && ((t >= w - 15)) || { [[ -z $w ]] && ((t > W_SINCE[i] - 600 && t <= W_SINCE[i] + 5)); }; }; then
+					W_FROM[i]=a
+				else W_FROM[i]=u; fi
+			fi ;;
+		esac
+	done
+}
+# wait_colour ROW -> WCOL: WAITING ON YOU's colour. A turn you started yourself lights it for
+# 90 minutes, cooling as it ages: under 10 minutes bold vivid lime, under 45 vivid lime, then a
+# paler lime. A turn a message from another session started, or one older, or one not known,
+# keeps the usual green.
+wait_colour() {
+	local s="" a
+	WCOL=$BGRN
+	[[ ${1:-} =~ ^[0-9]+$ && ${W_FROM[$1]:-} == u ]] && s=${W_SINCE[$1]:-}
+	[[ -n $s ]] || return 0
+	a=$((${EPOCHSECONDS:-$(date +%s)} - s))
+	if ((a < 600)); then WCOL="$B$e[38;5;118m"; elif ((a < 2700)); then WCOL="$e[38;5;118m"
+	elif ((a < 5400)); then WCOL="$e[38;5;156m"; fi
 }
 
 # ------------------------------------------------------------------ context left
@@ -1141,11 +1249,11 @@ linked() { [[ -f $ASTATE/links/$1/on ]]; }
 # a marker line after each screen to tell them apart. tmux stops at a pane that has closed
 # meanwhile, and jq at a record caught half written: those after it are looked at one by one,
 # the way they were before.
-declare -A JQ_ST=() JQ_SID=()
+declare -A JQ_ST=() JQ_SID=() JQ_SU=()
 agents_look() {
-	local i j n=0 kind apid st mark f s sid
+	local i j n=0 kind apid st mark f s sid su
 	local -a cmd=() out=() recs=() ast=() SL
-	JQ_ST=() JQ_SID=()
+	JQ_ST=() JQ_SID=() JQ_SU=()
 	((${#A_AT[@]})) || return 0
 	mark="@@revive-$RANDOM$RANDOM$RANDOM@@"
 	for i in "${A_AT[@]}"; do cmd+=(capture-pane -p -t "${P_ID[i]}" \; display-message -p "$mark" \;); done
@@ -1166,13 +1274,13 @@ agents_look() {
 		[[ -n $RECORD ]] && recs+=("$RECORD")
 	done
 	if ((${#recs[@]})); then
-		while IFS=$'\t' read -r f s sid; do
-			[[ -n $f && -z ${JQ_ST[$f]+set} ]] && JQ_ST[$f]=$s JQ_SID[$f]=$sid
-		done < <(jq -r '[input_filename, .status // "", .sessionId // ""] | @tsv' "${recs[@]}" 2>/dev/null)
+		while IFS=$'\t' read -r f s sid su; do
+			[[ -n $f && -z ${JQ_ST[$f]+set} ]] && JQ_ST[$f]=$s JQ_SID[$f]=$sid JQ_SU[$f]=$su
+		done < <(jq -r '[input_filename, .status // "", .sessionId // "", (.statusUpdatedAt // "" | tostring)] | @tsv' "${recs[@]}" 2>/dev/null)
 	fi
 	for j in "${!A_AT[@]}"; do
 		i=${A_AT[j]} kind=${A_KIND[j]} apid=${A_PID[j]} st=${ast[j]}
-		CL_REC="" # what claude_look read is for this pane only
+		CL_REC="" CSU="" # what claude_look read is for this pane only
 		# Claude Code's record says for itself whether it is busy, and outranks the screen.
 		# With nothing in it to go by (no record found for this process, or one with no
 		# status), the screen decides, as it does for the other agents. Idle while work it
@@ -1185,8 +1293,15 @@ agents_look() {
 		ctx_left "$kind" "$apid" "${P_ID[i]}" ${A_TREE[j]}
 		[[ $kind == codex && $st == waiting && -n $CX_FILE ]] && codex_waits "$CX_FILE" "$apid" && st=working
 		P_STATE[i]=$st P_CTX[i]=$CTX
+		# Waiting on you: since when its record says, and whether a message from another
+		# session started the turn that ended there.
+		if [[ $st == waiting && -n $CSU ]]; then
+			W_SINCE[i]=$CSU
+			claude_turn_from "$apid" "$CSU"
+			W_FROM[i]=$TFROM
+		fi
 	done
-	JQ_ST=() JQ_SID=()
+	JQ_ST=() JQ_SID=() JQ_SU=()
 }
 gather() {
 	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh ctx k all
@@ -1201,7 +1316,7 @@ gather() {
 	done <<<"$all"
 	now=${EPOCHREALTIME:-$SECONDS}
 	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=()
-	A_AT=() A_KIND=() A_PID=() A_TREE=()
+	A_AT=() A_KIND=() A_PID=() A_TREE=() W_SINCE=() W_FROM=()
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
 		clean loc cmd path name
 		# The pane's process tree, breadth-first, and the first agent in it.
@@ -1282,6 +1397,7 @@ gather() {
 	T_PREV=$now
 	outside_ssh
 	((ROWS)) || remote_panes
+	wait_watch
 }
 
 # The CPU counts --rows keeps between asks: the time of its look, then a "%pane:pid ticks" line
@@ -1447,7 +1563,7 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 }
 remote_panes() {
 	local d h f id loc name app st folder git cpu mem agent got v wp lg S=$'\x1f'
-	local -A rctx rbg ruser rinst
+	local -A rctx rbg ruser rinst rwait
 	P_GROUPS=0
 	# Other computers' screens are kept no longer than they're shown: a minute at most. So are
 	# the temporary files of an ask cut off by the panel closing.
@@ -1460,7 +1576,7 @@ remote_panes() {
 		lg=0
 		[[ -f $d/login ]] && lg=1
 		if ((lg)); then :; elif ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
-		f="$RDIR/$h.rows" got=0 RVER[$h]="" ROWNER[$h]="" rctx=() rbg=() ruser=() rinst=()
+		f="$RDIR/$h.rows" got=0 RVER[$h]="" ROWNER[$h]="" rctx=() rbg=() ruser=() rinst=() rwait=()
 		# Rows a minute old or newer; older means that computer stopped answering.
 		if ((!lg)) && [[ -s $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
 			while IFS=$S read -r id loc name app st folder git cpu mem agent; do
@@ -1480,6 +1596,12 @@ remote_panes() {
 				# takes input.
 				if [[ ${id:0:40} =~ ^\#agents\ (%[0-9]{1,9})$ && -z $loc ]]; then
 					rbg[${BASH_REMATCH[1]}]=1
+					continue
+				fi
+				# How long it has waited on you, in seconds (the clocks needn't agree), and whether
+				# a message from another session started its turn (a) or you did (u), likewise.
+				if [[ ${id:0:40} =~ ^\#wait\ (%[0-9]{1,9})\ ([0-9]{1,9})\ ([au])$ && -z $loc ]]; then
+					rwait[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
 					continue
 				fi
 				# Whose tmux it is, and whose each pane is, with whether that user has tmux-revive
@@ -1511,6 +1633,9 @@ remote_panes() {
 				P_STATE+=("$st") P_DIR+=("${folder:0:40}") P_GIT+=("${git:0:30}") P_CPU+=("$cpu") P_MEM+=("$mem")
 				P_CTX+=("${rctx[$id]:-}") P_AGENT+=("$agent") P_SSH+=("") P_HOST+=("$h") P_RID+=("$id") P_WP+=("$wp")
 				P_USER+=("${ruser[$id]:-}") P_INST+=("${rinst[$id]:-}")
+				if [[ $st == waiting && -n ${rwait[$id]:-} ]]; then
+					W_SINCE[${#P_ID[@]} - 1]=$((${EPOCHSECONDS:-$(date +%s)} - ${rwait[$id]% *})) W_FROM[${#P_ID[@]} - 1]=${rwait[$id]#* }
+				fi
 				got=1
 			done < <(head -n 200 "$f")
 		fi
@@ -1693,12 +1818,12 @@ sel_fix() {
 	SEL_ID=${P_ID[SEL]:-}
 }
 
-state_cell() { # state_cell STATE -> CELL: coloured status, 18 characters wide
+state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters wide
 	case $1 in
 	asking) CELL="$B$BMAG$BLINK?$R$B$BMAG NEEDS ANSWER    $R" ;;
 	grant) CELL="$B$BMAG$BLINK⚑ [G]RANT ACCESS$R  " ;; # its agent waits for access (G)
 	working) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
-	waiting) CELL="$BGRN◆ WAITING ON YOU  $R" ;;
+	waiting) wait_colour "${2:-}"; CELL="$WCOL◆ WAITING ON YOU  $R" ;;
 	# Idle at its prompt while its work goes on in the background: working all the same (its
 	# peek says it takes input).
 	agents) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
@@ -1849,7 +1974,7 @@ draw_panes() {
 		fi
 		fld "${P_APP[i]}" 9
 		if ((P_AGENT[i])); then cells+="$BCYN$FLD$R "; else cells+="$CYN$FLD$R "; fi
-		state_cell "${stc[i]}"
+		state_cell "${stc[i]}" "$i"
 		cells+=$CELL
 		if ((wide)); then
 			fld "$folder" "$FW"
@@ -4114,6 +4239,7 @@ if ((ROWS)); then
 	[[ -n $T_PREV ]] || { gather; sleep 0.3; }
 	gather
 	rows_ticks_save "$RDIR/ticks"
+	NOW_S=${EPOCHSECONDS:-$(date +%s)}
 	# First, its version on a line of its own: a panel that doesn't know the line skips it,
 	# since a row must start with a pane id.
 	[[ -n $VERSION ]] && printf '#version %s\n' "$VERSION"
@@ -4130,6 +4256,8 @@ if ((ROWS)); then
 		# shows it, and a line before it says it takes input.
 		st=${P_STATE[i]}
 		[[ $st == agents ]] && { printf '#agents %s\n' "${P_ID[i]}"; st=working; }
+		[[ $st == waiting && -n ${W_SINCE[i]:-} && ${W_FROM[i]:-} =~ ^[au]$ ]] &&
+			printf '#wait %s %s %s\n' "${P_ID[i]}" $((W_SINCE[i] > NOW_S ? 0 : NOW_S - W_SINCE[i])) "${W_FROM[i]}"
 		printf '%s\x1f' "${P_ID[i]}" "${P_LOC[i]}" "${P_NAME[i]}" "${P_APP[i]}" "$st" "$folder" "${P_GIT[i]}" "${P_CPU[i]}" "${P_MEM[i]}"
 		printf '%s\n' "${P_AGENT[i]}"
 	done
