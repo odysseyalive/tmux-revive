@@ -2592,6 +2592,39 @@ case "$cmd" in
 			exit 0
 		fi
 		printf '%s' "${4:-}" | ssh_to "$2" "AGENT_SAY_LOCAL_ONLY=1 AGENT_SAY_NOTICE=1 $REMOTE_CMD --from $(printf %q "agent-say@$LABEL") $(printf %q "$3") -" >/dev/null 2>&1 || true ;;
+	_revive)
+		# tmux-revive's restore, for a session a shutdown cut short: its question open, which
+		# its agent then took as declined, or its work under way. Its own words only, typed in
+		# once the session is up: what the restore (with the key) asks, never an agent.
+		internal_caller || die "agent-say _revive is tmux-revive's own; not run"
+		[[ "${2:-}" =~ ^%[0-9]+$ ]] || die "usage: agent-say _revive <%pane-id> declined|interrupted"
+		case "${3:-}" in
+		declined) text="The computer shut down while your question was waiting, so it was marked declined. Nobody declined it. Please ask it again." ;;
+		interrupted) text="Sorry about the interruption. The computer shut down while you were working. Please continue where you left off." ;;
+		*) die "usage: agent-say _revive <%pane-id> declined|interrupted" ;;
+		esac
+		# Up: an agent running in the pane and its screen the same for 3 s, after 5 s at least
+		# (a TUI drawing itself takes a moment); 3 minutes at most.
+		prev="" same=0
+		for ((i = 0; i < 180; i++)); do
+			sleep 1
+			tmux display-message -p -t "$2" '#{pane_id}' >/dev/null 2>&1 || exit 0 # the pane is gone
+			read -r _ apid < <(pane_agent_pid "$(tmux display-message -p -t "$2" '#{pane_pid}' 2>/dev/null)") || apid=""
+			[[ -n "${apid:-}" ]] || { same=0; continue; }
+			cur="$(tmux capture-pane -p -t "$2" 2>/dev/null | md5sum)"
+			if [[ "$cur" == "$prev" ]]; then same=$((same + 1)); else same=0 prev="$cur"; fi
+			((same >= 3 && i >= 5)) && break
+		done
+		# Then as a queued message: tried every 2 seconds while the pane can't take it yet.
+		mkdir -p "$STATE"; err="$STATE/revive.${2#%}.err"
+		while :; do
+			rc=0
+			deliver_here "$from" "$2" "$text" "" notice >/dev/null 2>"$err" || rc=$?
+			((rc == 75 && SECONDS < 600)) && { sleep 2; continue; }
+			((rc != 0)) && mail "[$from -> $2 $(date -u +%FT%TZ)] #$(date -u +%Y%m%d%H%M%S)-$$ (NOT DELIVERED: $(tr '\n' ' ' <"$err"))" "$text"
+			rm -f "$err"
+			exit 0
+		done ;;
 	_grant)
 		# Refreshing is done only in the panel's popup, by grant_refresh once you've typed back
 		# its code, as allowing is: no command does it.

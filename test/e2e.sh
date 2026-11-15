@@ -174,6 +174,11 @@ pkill -f "$T/bin/claude"
 : >"$T/claude-launches"
 t new-session -d -s 0 "$REVIVE_SHELL" # what a bare `tmux` makes
 t set-option -g default-shell "$REVIVE_SHELL"
+# The Claude Code was at work when it shut down: busy in the snapshot, its turn never ended.
+jq '(.sessions[].windows[].panes[] | select(.kind == "claude") | .detail.status) = "busy"' "$state" >"$T/state.json" && cat "$T/state.json" >"$state"
+mkdir -p "$FAKEHOME/.claude/projects/-p"
+printf '{"type":"assistant","timestamp":"%s","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_b","name":"Bash","input":{}}]}}\n' \
+	"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >"$FAKEHOME/.claude/projects/-p/11111111-2222-3333-4444-555555555555.jsonl"
 bash "$ROOT/scripts/restore.sh" --auto
 sleep 2
 
@@ -193,6 +198,17 @@ check "agent-say name and its date restored" "[[ \$(t display -p -t work:0.1 '#{
 check "scrollback replayed" "t capture-pane -p -t work:0.1 -S -50 | grep -q marker-from-before-reboot"
 check "pager relaunched" "t list-panes -a -F '#{pane_current_command}' | grep -q less"
 check "panel relaunched" "pgrep -f '$ROOT/scripts/panel.sh' >/dev/null"
+cpane=$(grep -o 'pane %[0-9]*: interrupted at shutdown' "$REVIVE_DIR/revive.log" | grep -o '%[0-9]*')
+claude_pane() { # the pane the resumed stand-in claude runs in
+	local c p
+	c=$(pgrep -f "$T/bin/claude --resume 11111111" | head -n 1)
+	while [[ -n $c && $c -gt 1 ]]; do
+		p=$(t list-panes -a -F '#{pane_pid} #{pane_id}' | awk -v c="$c" '$1 == c {print $2}')
+		[[ -n $p ]] && { echo "$p"; return; }
+		c=$(ps -o ppid= -p "$c" | tr -d ' ')
+	done
+}
+check "the Claude Code cut short, and only it, is to be asked to go on ($cpane)" "[[ \$(grep -c 'at shutdown, asking it to carry on' $REVIVE_DIR/revive.log) == 1 && -n \$cpane && \$cpane == \$(claude_pane) ]]"
 
 if ((AGENTS)); then
 	check "codex panes relaunched into their threads" "grep -q 'codexA resume 01aaaaaa-1111' $T/codex-launches && grep -q 'codexB resume 01aaaaaa-2222' $T/codex-launches"
@@ -667,6 +683,62 @@ check "an update by that user records the new version" "[[ \$(cat $T/ownerstate/
 other_inst "" --uninstall
 check "and its uninstall takes the record away" "[[ -d $T/ownerstate/agent-say/users && ! -e $T/ownerstate/agent-say/users/$me ]]"
 "$T/tmux-ok" kill-server
+
+# What a shutdown cut short, told from a session's record after the snapshot and its status in
+# it: a question open is declined, work under way interrupted; what you declined or stopped
+# yourself before it, or a turn that ended, is neither.
+echo "cut short by a shutdown"
+CH=$T/cuthome
+mkdir -p "$CH/.claude/projects/-p" "$CH/.codex/sessions/2026/01/05"
+CS=11111111-2222-3333-4444-666666666666 CX=01aaaaaa-3333-7000-8000-000000000003
+cuts() { # cuts KIND STATUS: cut_short's answer for the session's record as written
+	HOME=$CH bash -c 'saved_s=$1; source <(sed -n "/^cut_short() {/,/^}/p" "$2"); cut_short "$3"; echo "${CUT:--}"' _ \
+		"$(date -d '-10 seconds' +%s)" "$ROOT/scripts/restore.sh" \
+		"{\"kind\":\"$1\",\"cmd\":\"codex resume $CX\",\"detail\":{\"sessionId\":\"$([[ $1 == claude ]] && echo $CS || echo $CX)\",\"configDir\":\"$CH/.claude\",\"status\":\"$2\"}}"
+}
+ts() { date -u -d "$1" +%Y-%m-%dT%H:%M:%S.123Z; }
+cl() { printf '%s\n' "$@" >"$CH/.claude/projects/-p/$CS.jsonl"; }
+ask='{"type":"assistant","timestamp":"'$(ts '-1 minute')'","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_q","name":"AskUserQuestion","input":{}}]}}'
+run='{"type":"assistant","timestamp":"'$(ts '-1 minute')'","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_b","name":"Bash","input":{}}]}}'
+no='{"type":"user","timestamp":"%s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_q","content":"The user doesn'"'"'t want to proceed with this tool use. The tool use was rejected."}]}}'
+stop='{"type":"user","timestamp":"%s","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user%s]"}]}}'
+cl "$ask"
+check "a question open at the snapshot, unanswered: declined" "[[ \$(cuts claude waiting) == declined ]]"
+cl "$run"
+check "busy at the snapshot, its turn never ended: interrupted" "[[ \$(cuts claude busy) == interrupted ]]"
+check "idle at the snapshot with nothing after it: nothing" "[[ \$(cuts claude idle) == - ]]"
+cl "$ask" "$(printf "$no" "$(ts now)")" "$(printf "$stop" "$(ts now)" ' for tool use')"
+check "the question declined as it shut down, after the snapshot: declined" "[[ \$(cuts claude idle) == declined ]]"
+cl "$ask" "$(printf "$no" "$(ts '-1 hour')")" "$(printf "$stop" "$(ts '-1 hour')" ' for tool use')"
+check "a question you declined an hour before: nothing" "[[ \$(cuts claude busy) == - ]]"
+cl "$run" "$(printf "$stop" "$(ts now)" '')"
+check "work stopped as it shut down: interrupted" "[[ \$(cuts claude busy) == interrupted ]]"
+cl "$run" '{"type":"assistant","timestamp":"'$(ts now)'","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}'
+check "busy at the snapshot but its turn ended after: nothing" "[[ \$(cuts claude busy) == - ]]"
+cxr=$CH/.codex/sessions/2026/01/05/rollout-2026-01-05T00-00-00-$CX.jsonl
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(ts '-5 minutes')" >"$cxr"
+check "codex: a turn started and never ended: interrupted" "[[ \$(cuts codex -) == interrupted ]]"
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_complete"}}\n' "$(ts '-1 minute')" >>"$cxr"
+check "codex: its turn complete: nothing" "[[ \$(cuts codex -) == - ]]"
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(ts '-3 hours')" >"$cxr"
+check "codex: a turn left open hours before the snapshot: nothing" "[[ \$(cuts codex -) == - ]]"
+
+# What the restore then sends, as agent-say types it: into a session that is up (an agent in
+# its pane, its screen settled), as tmux-revive, needing no approval; never before it is up.
+# Plain tmux by now is a wrapper for another server (above): the real one, as installed.
+mkdir -p "$T/abin"
+cp "$(command -v bash)" "$T/abin/claude"
+printf '#!%s\nsleep 2; while printf "> " && IFS= read -r line; do echo "$line" >>%s; done\n' "$T/abin/claude" "$T/typed" >"$T/bin/fakeclaude"
+chmod +x "$T/bin/fakeclaude"
+export REVIVE_SOCKET=$T/sock5
+tmux -S "$T/sock5" -f /dev/null new-session -d -s r -x 120 -y 30 "$T/bin/fakeclaude"
+rp=$(tmux -S "$T/sock5" display -p -t r '#{pane_id}')
+(PATH=${PATH//"$T/bin:"/}; source "$ROOT/scripts/common.sh"; REVIVE_SAY=$ROOT/bin/agent-say; source <(sed -n '/^revive_say() {/,/^}/p' "$ROOT/scripts/restore.sh"); revive_say "$rp" declined)
+for _ in $(seq 60); do [[ -s $T/typed ]] && break; sleep 0.5; done
+check "a session whose question was declined by the shutdown is asked, once up, to ask it again" "grep -q '^\\[agent-say notice from tmux-revive [0-9:]*Z\\] The computer shut down while your question was waiting, so it was marked declined. Nobody declined it. Please ask it again.\$' $T/typed && grep -q '^## \[tmux-revive -> $rp ' $AGENT_SAY_MAILBOX"
+tmux -S "$T/sock5" kill-server
+check "only agent-say's own may send it: an agent running it is refused" "! $ROOT/bin/agent-say --from x _revive %1 declined 2>/dev/null && ! AGENT_SAY_INTERNAL=0123456789abcdef0123456789abcdef $ROOT/bin/agent-say --from x _revive %1 declined 2>/dev/null"
+unset REVIVE_SOCKET
 
 echo "$pass passed, $fail failed"
 ((fail == 0))

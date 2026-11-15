@@ -124,7 +124,83 @@ pane_cmd() { # pane_cmd PANE_JSON -> shell command line for the new pane
 	printf '%q %q %q' "$init" "$scroll" "$cmdf"
 }
 
+# What a shutdown cut short, for a session it restores: its question open (declined, as the
+# agent's record calls it once the process is gone) or its turn under way (interrupted). Told
+# from what the session wrote at or after the snapshot, and from its status in it, so a question
+# you declined yourself, or a turn you stopped, before the shutdown is left as it is.
+# cut_short PANE_JSON -> CUT: declined, interrupted, or nothing
+saved_s=$(date -d "$(jq -r '.saved_at // empty' "$state")" +%s 2>/dev/null) || saved_s=""
+cut_short() {
+	local kind sid st f home cmd
+	CUT=""
+	[[ -n $saved_s ]] || return 0
+	read -r kind sid st < <(jq -r '[.kind, .detail.sessionId // "-", .detail.status // "-"] | @tsv' <<<"$1")
+	[[ $sid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 0
+	case $kind in
+	claude)
+		home=$(jq -r '.detail.configDir // empty' <<<"$1")
+		[[ $home == /* ]] || home=$HOME/.claude
+		for f in "$home"/projects/*/"$sid".jsonl; do [[ -f $f ]] && break; done
+		[[ -f $f ]] || return 0
+		# Its last prompt, reply, or tool result: an interruption it recorded at or after the
+		# snapshot; else, busy or asking in it, a turn that never ended. Declined when what was
+		# cut short was its question (AskUserQuestion), answered by no one.
+		CUT=$(tail -c 2000000 "$f" 2>/dev/null | grep -E '"type":"(user|assistant)"' | grep -vF '"isMeta":true' |
+			jq -Rnr --argjson saved "$saved_s" --arg st "$st" '
+			def t: (.timestamp // "") | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0;
+			def text: .message.content | if type == "string" then . else ([.[]? | select(.type == "text") | .text] | first // "") end;
+			def uses: [.message.content | arrays | .[] | select(.type == "tool_use")];
+			[inputs | fromjson? | select(.type == "user" or .type == "assistant")] as $e
+			| ($e | last) as $l
+			| ([$e[] | uses[]] | last) as $u
+			| ([$e[] | .message.content | arrays | .[] | select(.type == "tool_result")] | last) as $r
+			| (($u.name // "") == "AskUserQuestion" and (($r.tool_use_id // "") != $u.id or (($r.content | tostring) | test("doesn.t want to proceed")))) as $asked
+			| if $l == null then empty
+			elif $l.type == "user" and (($l | text) | startswith("[Request interrupted by user")) then
+				if ($l | t) >= $saved - 5 then (if $asked then "declined" else "interrupted" end) else empty end
+			elif $l.type == "assistant" and $l.message.stop_reason == "end_turn" then empty
+			elif $st == "busy" or $st == "waiting" then (if $asked then "declined" else "interrupted" end)
+			else empty end' 2>/dev/null) ;;
+	codex)
+		# Its last turn started and never ended (no task_complete or turn_aborted), written to
+		# within the hour before the snapshot; or stopped at or after it.
+		cmd=$(jq -r '.cmd // empty' <<<"$1")
+		home=$HOME/.codex
+		[[ $cmd =~ ^CODEX_HOME=(/[A-Za-z0-9/._-]+)\  ]] && home=${BASH_REMATCH[1]}
+		f=$(find "$home/sessions" -type f -name "rollout-*-$sid.jsonl" 2>/dev/null | head -n 1)
+		[[ -f $f ]] || return 0
+		CUT=$(tail -c 2000000 "$f" 2>/dev/null | grep -E '"(task_started|task_complete|turn_aborted)"' | tail -n 1 |
+			jq -r --argjson saved "$saved_s" '
+			(.timestamp // "" | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0) as $t
+			| if .payload.type == "task_started" and $t >= $saved - 3600 then "interrupted"
+			elif .payload.type == "turn_aborted" and $t >= $saved - 5 then "interrupted"
+			else empty end' 2>/dev/null) ;;
+	esac
+	[[ $CUT == declined || $CUT == interrupted ]] || CUT=""
+}
+
+# revive_say PANE declined|interrupted: agent-say's own, in the background, with the key that
+# marks it so (agent-say _revive takes nothing else): it waits for the session to be up.
+revive_say() {
+	local k
+	k=$(tm show-options -gqv @agent-say-key 2>/dev/null)
+	if [[ ! $k =~ ^[0-9a-f]{32}$ ]]; then
+		tm set-option -gq -o @agent-say-key "$(od -An -N16 -tx1 /dev/urandom | tr -dc 0-9a-f)" 2>/dev/null
+		k=$(tm show-options -gqv @agent-say-key 2>/dev/null)
+	fi
+	[[ $k =~ ^[0-9a-f]{32}$ && -x $REVIVE_SAY ]] || return 0
+	# agent-say reaches tmux by TMUX: the server this restores into.
+	[[ -n ${REVIVE_SOCKET:-} ]] && local -x TMUX="$REVIVE_SOCKET,0,0"
+	# Without restore's lock: it waits minutes for the session, and would hold off a restore.
+	(
+		for fd in ${LOCK_FDS[@]+"${LOCK_FDS[@]}"}; do exec {fd}>&-; done
+		AGENT_SAY_INTERNAL=$k setsid -f "$REVIVE_SAY" --from tmux-revive _revive "$1" "$2" </dev/null >/dev/null 2>&1 ||
+			AGENT_SAY_INTERNAL=$k nohup "$REVIVE_SAY" --from tmux-revive _revive "$1" "$2" </dev/null >/dev/null 2>&1 &
+	)
+}
+
 restored=0 skipped=0 agents=0 first_session=""
+declare -a cut_panes=() cut_kinds=()
 while read -r sjson; do
 	name=$(jq -r '.name' <<<"$sjson")
 	if tm has-session -t "=$name" 2>/dev/null; then
@@ -176,7 +252,11 @@ while read -r sjson; do
 				at=$(jq -r '.agent_at // empty' <<<"$pjson")
 				[[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] && tm set-option -p -t "$last" @agent-at "$at"
 			fi
-			[[ $(jq -r '.kind' <<<"$pjson") =~ ^(claude|codex|cursor|crush|gemini)$ ]] && ((agents++))
+			if [[ $(jq -r '.kind' <<<"$pjson") =~ ^(claude|codex|cursor|crush|gemini)$ ]]; then
+				((agents++))
+				cut_short "$pjson"
+				[[ -n $CUT ]] && cut_panes+=("$last") cut_kinds+=("$CUT")
+			fi
 		done
 		tm select-layout -t "$wid" "$layout" >/dev/null 2>&1
 		if [[ $(jq -r '.auto_rename' <<<"$wjson") == true ]]; then
@@ -204,6 +284,13 @@ for i in "${!placeholders[@]}"; do
 		# Nothing was restored; give the session its name back.
 		tm rename-session -t "=$p" "${originals[i]}" 2>/dev/null
 	fi
+done
+
+# Each session a shutdown cut short is asked, once it is up, to ask its question again or to
+# go on with its work: agent-say types it in, in the background, as tmux-revive.
+for i in "${!cut_panes[@]}"; do
+	log "pane ${cut_panes[i]}: ${cut_kinds[i]} at shutdown, asking it to carry on"
+	REVIVE_SAY=${REVIVE_SAY:-$REVIVE_ROOT/bin/agent-say} revive_say "${cut_panes[i]}" "${cut_kinds[i]}"
 done
 
 msg "restored $restored sessions, resumed $agents agent sessions$( ((skipped)) && echo ", skipped $skipped already open")"
