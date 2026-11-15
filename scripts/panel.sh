@@ -677,6 +677,53 @@ claude_record() { # claude_record PID -> RECORD: Claude Code's session record fo
 own_plain() {
 	[[ -f $1 && $2 =~ ^[0-9]+$ && "$(realpath -e -- "$1" 2>/dev/null)" == "$1" && "$(stat -c %u -- "$1" 2>/dev/null)" == "$2" ]]
 }
+# The Claude account a Claude Code is signed in to, for ACCOUNT: the part of its address before
+# the @, cut to 12. Its config folder holds it (.claude.json, oauthAccount), and the folder is
+# the one its environment names (CLAUDE_CONFIG_DIR), else .claude in its home, read once for
+# each process. The default folder's may be in the home itself, as ~/.claude.json. Claude Code
+# writes that file often, so it is looked at no more than every 30 s, and read again only when
+# its size or time has changed since. Another user's is read only when it is that user's own
+# and reached by no symbolic link, as their records are.
+declare -A CL_CDIR=() CL_ACCT=() CL_ASTAMP=() CL_AT=()
+claude_acct() { # claude_acct PID -> ACCT: its account's name, or nothing
+	local d="" h="" e f st
+	ACCT=""
+	if [[ -z ${CL_CDIR[$1]:-} ]]; then
+		if [[ $1 =~ ^[0-9]+$ && -r /proc/$1/environ ]]; then
+			while IFS= read -r -d '' e; do
+				case $e in
+				CLAUDE_CONFIG_DIR=/*) d=${e#*=} ;;
+				HOME=/*) h=${e#*=} ;;
+				esac
+			done 2>/dev/null <"/proc/$1/environ"
+			[[ -n $d || -z $h ]] || d=$h/.claude
+		else
+			# No environment to read (macOS): the folder its record is in, if one is found.
+			claude_record "$1"
+			[[ -n $RECORD ]] && d=${RECORD%/sessions/*}
+		fi
+		d=${d%/}
+		[[ -n $d ]] || return 0
+		CL_CDIR[$1]=$d
+	fi
+	d=${CL_CDIR[$1]}
+	if [[ -z ${CL_AT[$d]:-} ]] || ((SECONDS - CL_AT[$d] >= 30)); then
+		CL_AT[$d]=$SECONDS
+		f=$d/.claude.json
+		[[ ! -f $f && $d == */.claude ]] && f=${d%/.claude}/.claude.json
+		st=$(fstamp "$f")
+		if [[ $st != "${CL_ASTAMP[$d]:-}" ]]; then
+			CL_ASTAMP[$d]=$st CL_ACCT[$d]=""
+			if [[ -n $st ]] && { [[ ${PUID[$1]:-$UID} == "$UID" ]] || own_plain "$f" "${PUID[$1]}"; }; then
+				e=$(jq -r '.oauthAccount.emailAddress // empty | strings' -- "$f" 2>/dev/null)
+				e=${e%%@*} e=${e:0:12}
+				[[ $e =~ ^[A-Za-z0-9._+-]+$ ]] && CL_ACCT[$d]=$e
+			fi
+		fi
+	fi
+	ACCT=${CL_ACCT[$d]:-}
+	return 0
+}
 # Claude Code's record says idle between turns even while agents it started in the background
 # (the Agent tool's run_in_background, background shells) go on working, and it has no field
 # that says so. Their output files do: each is under its temp folder, as
@@ -1187,7 +1234,8 @@ usecs() {
 # P_WP the pane's window.pane as tmux's status bar numbers it (empty when not known). P_USER is
 # the user its agent (or the program it runs) runs as, empty when not known; P_INST whether that
 # user has tmux-revive: "owner" (it's the tmux owner's own), a version, or empty (none known).
-P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=()
+# P_ACCT is the Claude account its Claude Code is signed in to (claude_acct), empty for others.
+P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=() P_ACCT=()
 ME=$(id -un 2>/dev/null)
 USER_RE='^[A-Za-z_][A-Za-z0-9_.-]{0,31}$'
 declare -A UNAMES=() UHOMES=() UAPPS=()
@@ -1297,6 +1345,7 @@ agents_look() {
 		ctx_left "$kind" "$apid" "${P_ID[i]}" ${A_TREE[j]}
 		[[ $kind == codex && $st == waiting && -n $CX_FILE ]] && codex_waits "$CX_FILE" "$apid" && st=working
 		P_STATE[i]=$st P_CTX[i]=$CTX
+		[[ $kind == claude ]] && claude_acct "$apid" && P_ACCT[i]=$ACCT
 		# Waiting on you: since when its record says, and whether a message from another
 		# session started the turn that ended there.
 		if [[ $st == waiting && -n $CSU ]]; then
@@ -1319,7 +1368,7 @@ gather() {
 		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu PPAR[$pid]=$ppid PUID[$pid]=$uid
 	done <<<"$all"
 	now=${EPOCHREALTIME:-$SECONDS}
-	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=()
+	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=() P_ACCT=()
 	A_AT=() A_KIND=() A_PID=() A_TREE=() W_SINCE=() W_FROM=()
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
 		clean loc cmd path name
@@ -1389,7 +1438,7 @@ gather() {
 		UNAME=""
 		[[ -n ${PUID[$p]:-} ]] && user_of "${PUID[$p]}"
 		user_inst "$UNAME" "${PUID[$p]:-}" "$p"
-		P_SSH+=("$ssh") P_HOST+=("") P_RID+=("") P_WP+=("${loc##*:}") P_USER+=("$UNAME") P_INST+=("$INST")
+		P_SSH+=("$ssh") P_HOST+=("") P_RID+=("") P_WP+=("${loc##*:}") P_USER+=("$UNAME") P_INST+=("$INST") P_ACCT+=("")
 		P_ID+=("$id") P_LOC+=("$loc") P_NAME+=("$name") P_STATE+=("$st")
 		git_info "$path"
 		P_DIR+=("$path") P_GIT+=("$GITI") P_CPU+=("$cpu") P_MEM+=("$mem") P_CTX+=("$ctx")
@@ -1567,7 +1616,7 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 }
 remote_panes() {
 	local d h f id loc name app st folder git cpu mem agent got v wp lg S=$'\x1f'
-	local -A rctx rbg ruser rinst rwait
+	local -A rctx rbg ruser rinst rwait racct
 	P_GROUPS=0
 	# Other computers' screens are kept no longer than they're shown: a minute at most. So are
 	# the temporary files of an ask cut off by the panel closing.
@@ -1580,7 +1629,7 @@ remote_panes() {
 		lg=0
 		[[ -f $d/login ]] && lg=1
 		if ((lg)); then :; elif ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
-		f="$RDIR/$h.rows" got=0 RVER[$h]="" ROWNER[$h]="" rctx=() rbg=() ruser=() rinst=() rwait=()
+		f="$RDIR/$h.rows" got=0 RVER[$h]="" ROWNER[$h]="" rctx=() rbg=() ruser=() rinst=() rwait=() racct=()
 		# Rows a minute old or newer; older means that computer stopped answering.
 		if ((!lg)) && [[ -s $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
 			while IFS=$S read -r id loc name app st folder git cpu mem agent; do
@@ -1606,6 +1655,13 @@ remote_panes() {
 				# a message from another session started its turn (a) or you did (u), likewise.
 				if [[ ${id:0:40} =~ ^\#wait\ (%[0-9]{1,9})\ ([0-9]{1,9})\ ([au])$ && -z $loc ]]; then
 					rwait[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
+					continue
+				fi
+				# The Claude account its Claude Code is signed in to, likewise.
+				if [[ ${id:0:40} =~ ^\#acct\ (%[0-9]{1,9})\ ([A-Za-z0-9._+-]{1,12})$ && -z $loc ]]; then
+					v=${BASH_REMATCH[2]}
+					clean v
+					racct[${BASH_REMATCH[1]}]=$v
 					continue
 				fi
 				# Whose tmux it is, and whose each pane is, with whether that user has tmux-revive
@@ -1636,7 +1692,7 @@ remote_panes() {
 				P_ID+=("${name:+$name@$h}") P_LOC+=("${loc:0:20}") P_NAME+=("$name") P_APP+=("${app:0:12}")
 				P_STATE+=("$st") P_DIR+=("${folder:0:40}") P_GIT+=("${git:0:30}") P_CPU+=("$cpu") P_MEM+=("$mem")
 				P_CTX+=("${rctx[$id]:-}") P_AGENT+=("$agent") P_SSH+=("") P_HOST+=("$h") P_RID+=("$id") P_WP+=("$wp")
-				P_USER+=("${ruser[$id]:-}") P_INST+=("${rinst[$id]:-}")
+				P_USER+=("${ruser[$id]:-}") P_INST+=("${rinst[$id]:-}") P_ACCT+=("${racct[$id]:-}")
 				if [[ $st == waiting && -n ${rwait[$id]:-} ]]; then
 					W_SINCE[${#P_ID[@]} - 1]=$((${EPOCHSECONDS:-$(date +%s)} - ${rwait[$id]% *})) W_FROM[${#P_ID[@]} - 1]=${rwait[$id]#* }
 				fi
@@ -1652,7 +1708,7 @@ remote_panes() {
 				[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || continue
 				P_ID+=("$name@$h") P_LOC+=("") P_NAME+=("$name") P_APP+=("") P_STATE+=("$st") P_DIR+=("")
 				P_GIT+=("") P_CPU+=(0) P_MEM+=(0) P_CTX+=("") P_AGENT+=(0) P_SSH+=("") P_HOST+=("$h") P_RID+=("") P_WP+=("")
-				P_USER+=("") P_INST+=("")
+				P_USER+=("") P_INST+=("") P_ACCT+=("")
 				got=1
 			done < <(head -c 65536 "$d/names" 2>/dev/null | head -n 200)
 		fi
@@ -1845,7 +1901,7 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 }
 
 draw_panes() {
-	local i n=${#P_ID[@]} name key folder git cells mark wide=1 sw=2 NW=10 FW=10 GW v KW=3 pad UW=4 VW=3 us=1 extra
+	local i n=${#P_ID[@]} name key folder git cells mark wide=1 sw=2 NW=10 FW=10 GW v KW=3 pad UW=4 VW=3 AW=7 us=1 as=0 extra
 	# Who waits for access (G): each introduction's sender, as NAME@HOST.
 	local gw=" " st d f
 	for d in "$ASTATE"/intros/*/; do [[ -f $d/from ]] && read -r f <"$d/from" && gw+="$f "; done
@@ -1861,8 +1917,9 @@ draw_panes() {
 		[[ ${ses[$key]} == "$v" ]] || many[$key]=1
 	done
 	# Worked out again on every frame, so a resized terminal gets them too. The name and folder
-	# are as wide as their longest (10 to 29 and 10 to 35), USER and VER too (4 to 10, 3 to 11)
-	# with a space after each; GIT has the rest of the row, so
+	# are as wide as their longest (10 to 29 and 10 to 35), USER, ACCOUNT and VER too (4 to 10,
+	# 7 to 12, 3 to 11) with a space after each; ACCOUNT only when a row has one to show, so a
+	# list with no Claude Code in it keeps that room. GIT has the rest of the row, so
 	# CTX LEFT ends at the panel's right edge. The rest of the row is fixed: the # cell (its
 	# widest label, the mark and two spaces: 6 for [1]), APP 10, STATE 20 (18 narrow), CPU and MEM 19,
 	# CTX LEFT 12, and a space after the name, folder and GIT.
@@ -1889,6 +1946,9 @@ draw_panes() {
 		ver[i]=$v
 		((${#v} > VW)) && VW=${#v}
 		((${#P_USER[i]} > UW)) && UW=${#P_USER[i]}
+		v=${P_ACCT[i]:-}
+		[[ -n $v ]] && as=1
+		((${#v} > AW)) && AW=${#v}
 		# Its agent waiting for access through here: said in its STATE, unless it asks a question.
 		st=${P_STATE[i]}
 		[[ $st != asking && -n ${P_NAME[i]} && $gw == *" ${P_NAME[i]}@${P_HOST[i]:-${AGENT_SAY_HOST:-$HOST}} "* ]] && st=grant
@@ -1901,13 +1961,14 @@ draw_panes() {
 	((NW > 29)) && NW=29
 	((FW > 35)) && FW=35
 	((UW > 10)) && UW=10
+	((AW > 12)) && AW=12
 	((VW > 11)) && VW=11
 	# More rows than the list has room for (PH, from draw): it scrolls, and its rows are one
 	# narrower for the scroll bar.
 	local tot=${#NAV[@]} cw=$IW
 	((tot > PH)) && cw=$((IW - 1))
-	# USER and VER, and a space after each.
-	extra=$((UW + VW + 2))
+	# USER, ACCOUNT and VER, and a space after each.
+	extra=$((UW + VW + 2 + (as ? AW + 1 : 0)))
 	GW=$((cw - 67 - KW - NW - FW - extra))
 	sw=2 # STATE is 20 wide, room for WAITING ON AGENT and a gap; 18 when the panel is narrow
 	# A narrow panel cuts GIT first, down to 13, then the folder and the name, down to 10. Too
@@ -1916,7 +1977,8 @@ draw_panes() {
 	v=$((13 - GW < FW - 10 ? 13 - GW : FW - 10)); ((v > 0)) && FW=$((FW - v)) GW=$((GW + v))
 	v=$((13 - GW < NW - 10 ? 13 - GW : NW - 10)); ((v > 0)) && NW=$((NW - v)) GW=$((GW + v))
 	((GW < 13)) && wide=0 sw=0 NW=$((cw - 63 - KW - extra))
-	# Narrower still, USER and VER go too, before the name gets under 10.
+	# Narrower still, ACCOUNT goes before the name gets under 10, then USER and VER.
+	((NW < 10 && as)) && as=0 NW=$((NW + AW + 1)) extra=$((extra - AW - 1))
 	((NW < 10)) && us=0 NW=$((NW + extra))
 	# Built from the same widths as the rows below, so the columns line up.
 	local hdr num
@@ -1924,6 +1986,7 @@ draw_panes() {
 	fld NAME $((NW + 1)); hdr+=$FLD
 	if ((us)); then
 		fld USER $((UW + 1)); hdr+=$FLD
+		((as)) && fld ACCOUNT $((AW + 1)) && hdr+=$FLD
 		fld VER $((VW + 1)); hdr+=$FLD
 	fi
 	fld APP 10; hdr+=$FLD
@@ -1976,6 +2039,10 @@ draw_panes() {
 		if ((us)); then
 			fld "${P_USER[i]:-}" "$UW"
 			cells+="$CYN$FLD$R "
+			if ((as)); then
+				fld "${P_ACCT[i]:-}" "$AW"
+				cells+="$CYN$FLD$R "
+			fi
 			fld "${ver[i]}" "$VW"
 			if [[ ${ver[i]} == "[U]" ]]; then cells+="$BYEL$FLD$R "
 			elif [[ -n ${ver[i]} && -n $VERSION ]] && ver_lt "${ver[i]}" "$VERSION"; then cells+="$BYEL$FLD$R "
@@ -4257,6 +4324,9 @@ if ((ROWS)); then
 	for i in "${!P_ID[@]}"; do
 		[[ ${P_STATE[i]} == self ]] && continue
 		folder=${P_DIR[i]##*/}
+		# The Claude account its Claude Code is signed in to, on a line of its own as well, and
+		# first, so the lines rows had before keep their places next to the row.
+		[[ ${P_ACCT[i]:-} =~ ^[A-Za-z0-9._+-]{1,12}$ ]] && printf '#acct %s %s\n' "${P_ID[i]}" "${P_ACCT[i]}"
 		# Whose pane it is, and whether that user has tmux-revive here, likewise.
 		[[ ${P_USER[i]} =~ $USER_RE ]] && printf '#user %s %s %s\n' "${P_ID[i]}" "${P_USER[i]}" "${P_INST[i]:--}"
 		# Context left goes on a line of its own: a panel from before it skips the line, where a

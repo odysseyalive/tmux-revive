@@ -1516,6 +1516,9 @@ fsid=0b1e2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d
 mkdir -p "$T/tmpc/claude-1000/-x/$fsid/tasks" "$T/rcfg/projects/-x" "$T/cwd-one" "$T/cwd-two"
 : >"$T/tmpc/claude-1000/-x/$fsid/tasks/t"
 turn 150000 >"$T/rcfg/projects/-x/$fsid.jsonl" # 25% left
+# Its config folder says which Claude account it is signed in to: ACCOUNT shows the address up
+# to the @, cut to 12.
+printf '{"oauthAccount":{"emailAddress":"fixture.account@example.com"}}\n' >"$T/rcfg/.claude.json"
 far_tm new-window -d -t far -n cl-fd -e CLAUDE_CONFIG_DIR="$T/rcfg" "$T/bin/claude -c 'exec 3<$T/tmpc/claude-1000/-x/$fsid/tasks/t; sleep 300; :'"
 far_tm set-option -p -t far:cl-fd @agent cl-fd
 far_tm new-window -d -t far -n cl-cwd -c "$T/cwd-one" "$T/bin/claude -c 'sleep 300; :'"
@@ -1555,6 +1558,7 @@ rctx() { grep -B1 $'\x1f'"$2"$'\x1f' <<<"$1" | sed -n 's/^#ctx %[0-9]* \([0-9]*\
 check "--rows there: a busy pane's CPU, from two looks ($(rcpu "$rows" far-spin)%)" "(( \$(rcpu \"\$rows\" far-spin) >= 10 ))"
 check "--rows there: context left from a record's transcript ($(rctx "$rows" cl-idle))" "[[ \$(rctx \"\$rows\" cl-idle) == 50 ]]"
 check "--rows there: with no record, from its config folder and the session folder it holds open ($(rctx "$rows" cl-fd))" "[[ \$(rctx \"\$rows\" cl-fd) == 25 ]]"
+check "--rows there: the account its config folder names, cut to 12, on a line before its row" "grep -B4 $'\x1fcl-fd\x1f' <<<\"\$rows\" | grep -Eqx '#acct %[0-9]+ fixture.acco' && [[ \$(grep -c '^#acct .* fixture\.acco\$' <<<\"\$rows\") == 1 ]]"
 check "--rows there: one running as another user, from the record in its own home ($(rctx "$rows" cl-env))" "[[ \$(rctx \"\$rows\" cl-env) == 80 ]] && grep -q $'\x1fcl-env\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
 check "--rows there: not through a symbolic link, to its record or its transcript" "[[ -z \$(rctx \"\$rows\" cl-lrec) && -z \$(rctx \"\$rows\" cl-ltr) ]] && grep -q $'\x1fcl-ltr\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
 far_tm kill-window -t far:cl-env; far_tm kill-window -t far:cl-lrec; far_tm kill-window -t far:cl-ltr
@@ -1631,6 +1635,7 @@ check "--rows asked again measures since the last ask, kept there ($(rcpu "$rows
 rm -f "$st/panel/far.example.rows"
 for c in 80 120 160 200; do
 	out=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=$c LINES=90 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+	((c >= 160)) && check "at $c columns a linked Claude Code shows its account under ACCOUNT, after USER" "grep -q ' NAME *USER *ACCOUNT *VER ' <<<\"\$out\" && grep -q 'cl-fd *[^ ]* *fixture\.acco *' <<<\"\$out\""
 	check "at $c columns a linked busy pane shows its CPU, a linked Claude Code its CTX LEFT, rows exactly $c wide" "grep 'far-spin ' <<<\"\$out\" | grep -q '[░▒▓█][░▒▓█·]* *[1-9][0-9]*%' && grep -q 'cl-idle .*M  [█▓▒░·]\{5\}  50% ║\$' <<<\"\$out\" && grep -q 'cl-fd .* 25% ║\$' <<<\"\$out\" && grep -q 'cl-cwd .* 90% ║\$' <<<\"\$out\" && grep -q 'cl-two .*·····    – ║\$' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
 done
 # Rows in the older form (no version, no context lines) still draw their CPU and memory.
@@ -1639,6 +1644,16 @@ printf '#!/bin/sh\ncat %s\n' "$T/oldrows" >"$T/oldrowssh"; chmod +x "$T/oldrowss
 rm -f "$st/panel/far.example.rows"
 out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=120 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
 check "an older row still draws: its CPU meter, percent and memory, a dash for context" "grep -q 'old-cl .*██░··   42%    2.0G  ·····    – ║\$' <<<\"\$out\""
+# An account line from a linked computer is taken only as a name of up to 12 letters, digits
+# and ._+-; any other is skipped, and its row still draws.
+{
+	printf '#acct %%5 ok.name+1\n%%5\x1f0:1.0\x1facct-ok\x1fclaude\x1fwaiting\x1fw\x1fmain\x1f1\x1f1024\x1f1\n'
+	printf '#acct %%6 bad;name\n%%6\x1f0:2.0\x1facct-bad\x1fclaude\x1fwaiting\x1fw\x1fmain\x1f1\x1f1024\x1f1\n'
+	printf '#acct %%7 thirteenchars\n%%7\x1f0:3.0\x1facct-long\x1fclaude\x1fwaiting\x1fw\x1fmain\x1f1\x1f1024\x1f1\n'
+} >"$T/oldrows"
+rm -f "$st/panel/far.example.rows"
+out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=200 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+check "a linked computer's account line shows in ACCOUNT; one with other characters, or too long, does not" "grep -q 'acct-ok .* ok\.name+1 ' <<<\"\$out\" && ! grep -q 'bad;name\|thirteenchar' <<<\"\$out\" && grep -q 'acct-bad ' <<<\"\$out\" && grep -q 'acct-long ' <<<\"\$out\""
 rm -f "$st/panel/far.example.rows"
 for w in cl-none cl-busy cl-idle cl-ask spin cl-fd cl-cwd cl-two cl-two2; do far_tm kill-window -t far:$w; done
 rm -rf "$T/rhome/.claude" "$st/panel/far.example.rows"*
