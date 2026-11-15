@@ -565,7 +565,7 @@ echo '{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_t
 out=$(cframe)
 check "the next turn counts again (500k: 50% left)" "grep -q 'claude .* 50%' <<<\"\$out\""
 rows=$(tm run-shell "HOME=$H REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows")
-check "--rows gives each pane's context left on a line of its own, before its row" "grep -A1 '^#ctx %[0-9]* 20$' <<<\"\$rows\" | grep -q $'\x1fcodex\x1f'"
+check "--rows gives each pane's context left on a line of its own, before its row" "grep -A2 '^#ctx %[0-9]* 20$' <<<\"\$rows\" | grep -q $'\x1fcodex\x1f'"
 # Codex 0.167 on holds no rollout open (a daemon outside the pane writes it): its rollout is the
 # one under its own CODEX_HOME (from its environment, not the panel's) for its folder, started
 # since it did. One for another folder, though newer, is no one else's.
@@ -626,6 +626,22 @@ cxwait c3 2026-01-01T00:00:00.000Z
 out=$(cframe 160)
 check "a wait call from before the codex started isn't its own: not WORKING" "[[ \$(grep -c 'codex *. WORKING ' <<<\"\$out\") == 0 ]]"
 tm kill-window -t work:cxa
+# A `codex resume ID` just started, as a restore after a reboot starts one: its rollout, named
+# for ID, not written since. Waiting since then, the last time it was written: two hours ago
+# is IDLE, though this panel never saw it begin to wait.
+cxid=01a1d703-9920-7f53-b7c1-d8e633177119
+cxb=$CX/sessions/2026/01/03/rollout-2026-01-03T00-00-00-$cxid.jsonl
+mkdir -p "$T/cxb"
+{ cxmeta "$cxid" "$(cd "$T/cxb" && pwd -P)"; cxtok 50000 250000; printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_complete"}}\n' "$(cxnow)"; } >"$cxb"
+touch -d '-2 hours' "$cxb"
+tm new-window -d -t work -n cxb -c "$T/cxb" "env CODEX_HOME=$CX $T/bin/codex -c 'sleep 300; :' resume $cxid"
+sleep 1.5
+out=$(cframe 160)
+check "a codex resume ID, its rollout last written two hours ago: found by ID (80% left), IDLE" "grep -q 'codex *◇ IDLE  *cxb .* 80% ║' <<<\"\$out\""
+touch "$cxb"
+out=$(cframe 160)
+check "written just now: WAITING ON YOU" "grep -q 'codex *◆ WAITING ON YOU *cxb ' <<<\"\$out\""
+tm kill-window -t work:cxb
 # Idle between turns while its agents work in the background (their output under its temp
 # folder written to just now): WORKING, and its peek says it still takes input.
 mkdir -p "$T/ltmp/claude-$UID/-w/s-1/tasks"
@@ -1488,6 +1504,22 @@ far_turn cl-typed "fix the panel please"
 far_turn cl-msg "[agent-msg from=oa-work 02:46Z] hello"
 far_turn cl-old "an hour and a half ago"
 sed -i 's/"statusUpdatedAt":[0-9]*/"statusUpdatedAt":'"$(($(date +%s) - 5500))"'000/' "$(grep -l '"s-cl-old"' "$T"/rhome/.claude/sessions/*.json)"
+# Two resumed just now, as a restore after a reboot starts them, idle since: their record's
+# status as old as the process. Waiting since their last turn, the last time their transcript
+# gives (what a resume adds carries none): two hours ago, IDLE; five minutes ago, not.
+far_back() { # far_back NAME SECONDS-AGO
+	local r
+	far_turn "$1" "before the reboot"
+	r=$(grep -l "\"s-$1\"" "$T"/rhome/.claude/sessions/*.json)
+	sed -i 's/}$/,"startedAt":'"$(($(date +%s) - 3))"'000}/' "$r"
+	{
+		printf '{"type":"user","message":{"role":"user","content":"before the reboot"},"timestamp":"%s"}\n' "$(date -u -d "-$(($2 + 20)) seconds" +%Y-%m-%dT%H:%M:%S.123Z)"
+		printf '{"type":"assistant","message":{"content":[]},"timestamp":"%s"}\n' "$(date -u -d "-$2 seconds" +%Y-%m-%dT%H:%M:%S.456Z)"
+		printf '{"type":"last-prompt"}\n{"type":"cost-state"}\n'
+	} >"$T/rhome/.claude/projects/-w/s-$1.jsonl"
+}
+far_back cl-back 7200
+far_back cl-back5 300
 sleep 0.5
 rows=$(CLAUDE_CODE_TMPDIR=$T/rtmp REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
 check "--rows there: waiting since just now, a turn you typed, is a #wait line saying u" "grep -B3 $'\x1fcl-typed\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Eq '^#wait %[0-9]+ [0-9] u\$'"
@@ -1499,9 +1531,11 @@ out=$(plain <<<"$raw")
 check "here: a turn you typed, waiting since just now, is bold vivid lime" "grep 'cl-typed' <<<\"\$raw\" | grep -qF $'\e[1m\e[38;5;118m◆ WAITING ON YOU'"
 check "here: one an agent-say message started is WAITING ON AGENT in the usual green" "grep 'cl-msg' <<<\"\$raw\" | grep -qF $'\e[92m◆ WAITING ON AGENT'"
 check "here: one waiting over 90 minutes shows IDLE, in the usual WAITING ON YOU colour" "grep cl-old <<<\"\$raw\" | grep -qF $'\e[92m◇ IDLE' && grep -q 'cl-old .*claude *◇ IDLE  ' <<<\"\$out\" && ! grep -q 'cl-old .*WAITING' <<<\"\$out\""
+check "here: resumed just now, its last turn two hours ago, shows IDLE" "grep -q 'cl-back .*claude *◇ IDLE  ' <<<\"\$out\""
+check "here: resumed just now, its last turn five minutes ago, shows WAITING ON YOU" "grep -q 'cl-back5 .*claude *◆ WAITING ON YOU' <<<\"\$out\""
 check "here: one not known keeps WAITING ON YOU in the usual green" "grep 'cl-idle' <<<\"\$raw\" | grep -qF $'\e[92m◆ WAITING ON YOU'"
 check "here: WAITING ON AGENT leaves a gap before the folder, and the frame is still 140 wide" "grep -q 'WAITING ON AGENT  ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
-for w in cl-typed cl-msg cl-old; do far_tm kill-window -t far:$w; done
+for w in cl-typed cl-msg cl-old cl-back cl-back5; do far_tm kill-window -t far:$w; done
 # Their CPU and context left, drawn as this computer's own are. A busy pane there; a Claude
 # Code whose record names its transcript; and three with no record to be found, as over a
 # link's ssh: one whose config folder is in its own environment and whose session is the

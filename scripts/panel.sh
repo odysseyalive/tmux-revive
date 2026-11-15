@@ -749,18 +749,19 @@ snapshot_cmd() { # snapshot_cmd PID: a command Claude Code started still runs un
 	return 1
 }
 # CSU: when its status last changed, in seconds (statusUpdatedAt), or nothing.
-claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting) or nothing; CBG=1: background work
+claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting) or nothing; CBG=1: background work; CSU, CSA: when that status began, when it started
 	local sid t m=0 d
 	local -a f=() roots=()
-	CST="" CBG=0 CSU=""
+	CST="" CBG=0 CSU="" CSA=""
 	claude_record "$1"
 	[[ -n $RECORD ]] || return 0
 	if [[ -n ${JQ_ST[$RECORD]+set} ]]; then
-		CST=${JQ_ST[$RECORD]} sid=${JQ_SID[$RECORD]} CSU=${JQ_SU[$RECORD]} # read already, with the other agents' (agents_look)
+		CST=${JQ_ST[$RECORD]} sid=${JQ_SID[$RECORD]} CSU=${JQ_SU[$RECORD]} CSA=${JQ_SA[$RECORD]} # read already, with the other agents' (agents_look)
 	else
-		IFS=$'\t' read -r CST sid CSU < <(jq -r '[.status // "", .sessionId // "", (.statusUpdatedAt // "" | tostring)] | @tsv' "$RECORD" 2>/dev/null)
+		IFS=$'\t' read -r CST sid CSU CSA < <(jq -r '[.status // "", .sessionId // "", (.statusUpdatedAt // "" | tostring), (.startedAt // "" | tostring)] | @tsv' "$RECORD" 2>/dev/null)
 	fi
 	[[ $CSU =~ ^[0-9]{10,13}$ ]] && CSU=${CSU:0:10} || CSU=""
+	[[ $CSA =~ ^[0-9]{10,13}$ ]] && CSA=${CSA:0:10} || CSA=""
 	CL_REC=$RECORD CL_SID=$sid # ctx_left, next, needs the session too: one jq for both
 	# "shell": its turn is over but a background shell it started still runs. That's work in
 	# the background, the same as idle with a command still running under it.
@@ -792,20 +793,25 @@ claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting
 # computer's #wait line, and otherwise by wait_watch from what the panel saw. Neither known,
 # WAITING ON YOU looks as it always has.
 declare -a W_SINCE=() W_FROM=()
-declare -A TF_K=() TF_V=() WW_ST=() WW_T0=() WW_W0=() MAIL_T=()
+declare -A TF_K=() TF_V=() TF_A=() WW_ST=() WW_T0=() WW_W0=() MAIL_T=()
 MAIL_STAMP=""
 # claude_turn_from PID SINCE -> TFROM: a when the last prompt in its transcript was an
 # agent-say message ([agent-msg from=...]), u when it was typed, nothing when that can't be
-# read. Looked at once each time its status changes (SINCE).
+# read; TAT: the last time its transcript gives (epoch), or nothing. Looked at once each time
+# its status changes (SINCE).
 claude_turn_from() {
 	local f sid=${CL_SID:-} t
-	TFROM=""
-	if [[ ${TF_K[$1]:-} == "$2" ]]; then TFROM=${TF_V[$1]}; return 0; fi
-	TF_K[$1]=$2 TF_V[$1]=""
+	TFROM="" TAT=""
+	if [[ ${TF_K[$1]:-} == "$2" ]]; then TFROM=${TF_V[$1]} TAT=${TF_A[$1]}; return 0; fi
+	TF_K[$1]=$2 TF_V[$1]="" TF_A[$1]=""
 	claude_record "$1"
 	[[ -n $RECORD && $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
 	for f in "${RECORD%/sessions/*}"/projects/*/"$sid".jsonl; do
 		[[ -f $f ]] || continue
+		# What a resume adds to it carries no time: the last one there is its last turn's.
+		t=$(tail -c 1000000 "$f" 2>/dev/null | grep -o '"timestamp":"[0-9T:-]*' | tail -n 1)
+		iso_epoch "${t#*:\"}Z"
+		TAT=$ISO_S TF_A[$1]=$ISO_S
 		# The last prompt: a user line that isn't a tool's result or one Claude Code added.
 		t=$(tail -c 4000000 "$f" 2>/dev/null | grep -F '"type":"user"' | grep -vF -e '"tool_result"' -e '"isMeta":true' | tail -n 1 |
 			jq -r '.message.content | if type == "string" then . else ([.[]? | select(.type == "text") | .text] | first // "") end | .[0:16]' 2>/dev/null)
@@ -1012,7 +1018,9 @@ claude_transcript() { # claude_transcript PID -> TRANSCRIPT, or nothing
 # started (a /new starts another). One started before it only for a `codex resume`, then the
 # newest written since. With another codex in the same folder, a rollout is the one's started
 # last before it, within 120 s (a /new there isn't followed), and one claimed for another pane
-# is never taken. Nothing sure: nothing shown. Looked for again every 30 s.
+# is never taken. None of those for a `codex resume ID` (as a restore after a reboot starts
+# one, its rollout not yet written since): the rollout named for ID. Nothing sure: nothing
+# shown. Looked for again every 30 s.
 declare -A CX_RO=() CX_RO_T=() CX_START=() CX_META=() CX_CLAIM=()
 proc_cwd() { # proc_cwd PID: its working folder
 	if [[ -e /proc/$1/cwd ]]; then readlink "/proc/$1/cwd" 2>/dev/null
@@ -1043,7 +1051,7 @@ codex_meta() { # codex_meta FILE...: CX_META[FILE]=its session's folder TAB its 
 	for f in "${!l[@]}"; do [[ ${m[f]:-} =~ ^(/.*|-)$'\t'[0-9]+$ ]] && CX_META[${l[f]}]=${m[f]}; done
 }
 codex_rollout() { # codex_rollout PID -> ROLLOUT, or nothing
-	local pid=$1 e d="" cwd p c t f mt now best="" bt=0 st resume=0 owner os
+	local pid=$1 e d="" cwd p c t f mt now best="" bt=0 st resume=0 owner os rid=""
 	local -a peers=() files=()
 	local -A pst=()
 	ROLLOUT=""
@@ -1065,6 +1073,7 @@ codex_rollout() { # codex_rollout PID -> ROLLOUT, or nothing
 	[[ -n $d ]] || d=${CODEX_HOME:-$HOME/.codex}
 	[[ -d $d/sessions ]] || return 0
 	[[ " ${PARGS[$pid]:-} " == *" resume "* ]] && resume=1
+	[[ " ${PARGS[$pid]:-} " =~ \ resume\ ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\  ]] && rid=${BASH_REMATCH[1]}
 	# The other codex processes in the same folder (a wrapper's codex under it is the same one).
 	for p in "${!PARGS[@]}"; do
 		[[ $p == "$pid" ]] && continue
@@ -1079,8 +1088,7 @@ codex_rollout() { # codex_rollout PID -> ROLLOUT, or nothing
 	done
 	now=${EPOCHSECONDS:-$(date +%s)}
 	mapfile -t files < <(find "$d/sessions" -type f -name 'rollout-*.jsonl' -mmin -$(((now - st) / 60 + 2)) 2>/dev/null)
-	((${#files[@]})) || return 0
-	codex_meta "${files[@]}"
+	((${#files[@]})) && codex_meta "${files[@]}"
 	for f in "${files[@]}"; do
 		IFS=$'\t' read -r c t <<<"${CX_META[$f]}"
 		[[ $c == "$cwd" && $t =~ ^[0-9]+$ ]] || continue
@@ -1103,6 +1111,10 @@ codex_rollout() { # codex_rollout PID -> ROLLOUT, or nothing
 		fi
 		((mt > bt)) && best=$f bt=$mt
 	done
+	if [[ -z $best && -n $rid ]]; then
+		best=$(find "$d/sessions" -type f -name "rollout-*-$rid.jsonl" 2>/dev/null | head -n 1)
+		[[ -n $best && ${PUID[$pid]:-$UID} != "$UID" ]] && ! own_plain "$best" "${PUID[$pid]}" && best=""
+	fi
 	[[ -n $best ]] || return 0
 	CX_CLAIM[$best]=$pid CX_RO[$pid]=$best ROLLOUT=$best
 }
@@ -1301,11 +1313,11 @@ linked() { [[ -f $ASTATE/links/$1/on ]]; }
 # a marker line after each screen to tell them apart. tmux stops at a pane that has closed
 # meanwhile, and jq at a record caught half written: those after it are looked at one by one,
 # the way they were before.
-declare -A JQ_ST=() JQ_SID=() JQ_SU=()
+declare -A JQ_ST=() JQ_SID=() JQ_SU=() JQ_SA=()
 agents_look() {
 	local i j n=0 kind apid st mark f s sid su
 	local -a cmd=() out=() recs=() ast=() SL
-	JQ_ST=() JQ_SID=() JQ_SU=()
+	JQ_ST=() JQ_SID=() JQ_SU=() JQ_SA=()
 	((${#A_AT[@]})) || return 0
 	mark="@@revive-$RANDOM$RANDOM$RANDOM@@"
 	for i in "${A_AT[@]}"; do cmd+=(capture-pane -p -t "${P_ID[i]}" \; display-message -p "$mark" \;); done
@@ -1326,13 +1338,13 @@ agents_look() {
 		[[ -n $RECORD ]] && recs+=("$RECORD")
 	done
 	if ((${#recs[@]})); then
-		while IFS=$'\t' read -r f s sid su; do
-			[[ -n $f && -z ${JQ_ST[$f]+set} ]] && JQ_ST[$f]=$s JQ_SID[$f]=$sid JQ_SU[$f]=$su
-		done < <(jq -r '[input_filename, .status // "", .sessionId // "", (.statusUpdatedAt // "" | tostring)] | @tsv' "${recs[@]}" 2>/dev/null)
+		while IFS=$'\t' read -r f s sid su sa; do
+			[[ -n $f && -z ${JQ_ST[$f]+set} ]] && JQ_ST[$f]=$s JQ_SID[$f]=$sid JQ_SU[$f]=$su JQ_SA[$f]=$sa
+		done < <(jq -r '[input_filename, .status // "", .sessionId // "", (.statusUpdatedAt // "" | tostring), (.startedAt // "" | tostring)] | @tsv' "${recs[@]}" 2>/dev/null)
 	fi
 	for j in "${!A_AT[@]}"; do
 		i=${A_AT[j]} kind=${A_KIND[j]} apid=${A_PID[j]} st=${ast[j]}
-		CL_REC="" CSU="" # what claude_look read is for this pane only
+		CL_REC="" CSU="" CSA="" # what claude_look read is for this pane only
 		# Claude Code's record says for itself whether it is busy, and outranks the screen.
 		# With nothing in it to go by (no record found for this process, or one with no
 		# status), the screen decides, as it does for the other agents. Idle while work it
@@ -1352,9 +1364,16 @@ agents_look() {
 			W_SINCE[i]=$CSU
 			claude_turn_from "$apid" "$CSU"
 			W_FROM[i]=$TFROM
+			# Idle since it started (a session resumed, as tmux-revive restores them after a
+			# reboot): waiting since its last turn ended, the last moment its transcript tells.
+			[[ -n $CSA && -n $TAT ]] && ((CSU - CSA <= 60 && TAT < CSU)) && W_SINCE[i]=$TAT
+		# A Codex's rollout is written to only while it works: its last write is when it began
+		# to wait, though the panel started long after.
+		elif [[ $kind == codex && $st == waiting && -n $CX_FILE ]]; then
+			W_SINCE[i]=$(stat -L -c %Y "$CX_FILE" 2>/dev/null || stat -L -f %m "$CX_FILE" 2>/dev/null)
 		fi
 	done
-	JQ_ST=() JQ_SID=() JQ_SU=()
+	JQ_ST=() JQ_SID=() JQ_SU=() JQ_SA=()
 }
 gather() {
 	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh ctx k all
