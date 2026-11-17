@@ -293,7 +293,7 @@ from=$ROOT/bin/agent-say to=$T/rsay/agent-say
 cmd=\${*//"\$from"/"\$to"}
 d=\$(mktemp -d "$T/ssh.XXXXXX")
 mkfifo "\$d/i" "\$d/o" "\$d/e"
-setsid -f $T/abin/sshd -c 'bash -c "\$1" <"\$2/i" >"\$2/o" 2>"\$2/e"; echo \$? >"\$2/rc"' _ "\$cmd" "\$d"
+SSH_CONNECTION="203.0.113.9 50022 10.0.0.2 22" setsid -f $T/abin/sshd -c 'bash -c "\$1" <"\$2/i" >"\$2/o" 2>"\$2/e"; echo \$? >"\$2/rc"' _ "\$cmd" "\$d"
 exec 3<&0
 cat <&3 >"\$d/i" & inp=\$!
 cat "\$d/e" >&2 & errp=\$!
@@ -310,7 +310,7 @@ chmod +x "$T/bin/fakessh"
 # bash named sshd, which isn't root's) counts as the ssh server. The real one never does.
 cp "$(command -v bash)" "$T/abin/sshd"
 mkdir -p "$T/rsay"
-sed 's/== 0 \]\] # installed by root$/== "$(id -u)" ]] # the test'"'"'s stand-in/' "$ROOT/bin/agent-say" >"$T/rsay/agent-say"
+sed 's/== 0 \]\] || return 1 # installed by root$/== "$(id -u)" ]] || return 1 # the test'"'"'s stand-in/' "$ROOT/bin/agent-say" >"$T/rsay/agent-say"
 chmod +x "$T/rsay/agent-say"
 grep -q "# the test's stand-in" "$T/rsay/agent-say" || { echo "couldn't make the remote copy of agent-say"; exit 1; }
 export AGENT_SAY_SSH=$T/bin/fakessh AGENT_SAY_REMOTE_CMD=$ROOT/bin/agent-say AGENT_SAY_HOST=laptop AGENT_SAY_LINK_INTERVAL=0.3
@@ -733,10 +733,23 @@ PY
 	out=$(detached "0$LA" "python3 $T/fakesshd.py '$E0 $ROOT/bin/agent-say lb undumpable-sshd; exit \$?'")
 	check "nor by one named sshd-session, not dumpable, that root's sshd didn't start ($out)" "[[ \$out == *\"can't tell which agent session\"* ]] && ! seen $LB 'undumpable-sshd'"
 fi
-# Nor a login from this computer itself (an agent here that can ssh to it): where the login
-# came from is in the environment sshd started its first process with.
-peer() { bash -c 'source <(sed -n "/^ssh_peer_remote() {/,/^}/p" "$1"); env SSH_CONNECTION="$2 50000 10.0.0.2 22" sleep 5 & p=$!; sleep 0.2; ssh_peer_remote $p; r=$?; kill $p; exit $r' _ "$ROOT/bin/agent-say" "$1"; }
-check "a login from another computer counts, one from this computer doesn't" "peer 203.0.113.7 && ! peer 127.0.0.1 && ! peer ::1 && ! peer ::ffff:127.0.0.1"
+# Nor a login from this computer itself (an agent here that can ssh to it): while a connection
+# to an ssh port comes from here (its far end is a near end here, in the kernel's table), no
+# login counts. Over IPv4 and IPv6 (where an IPv4 client shows as ::ffff:a.b.c.d).
+if command -v python3 >/dev/null; then
+	python3 -c '
+import socket, time
+s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen()
+c = socket.create_connection(s.getsockname()); a, _ = s.accept()
+s6 = socket.socket(socket.AF_INET6); s6.bind(("::", 0)); s6.listen()
+c6 = socket.create_connection(("127.0.0.1", s6.getsockname()[1])); b, _ = s6.accept()
+print(s.getsockname()[1], s6.getsockname()[1], flush=True); time.sleep(5)' >"$T/lports" &
+	for _ in $(seq 30); do [[ -s $T/lports ]] && break; sleep 0.1; done
+	read -r lp lp6 <"$T/lports"
+	lconn() { bash -c 'source <(sed -n "/^ssh_local_conn() {/,/^}/p" "$1"); ssh_local_conn " $2 "' _ "$ROOT/bin/agent-say" "$1"; }
+	check "a connection to an ssh port from this computer is seen, over IPv4 and IPv6; none on a port with none" "lconn $lp && lconn $lp6 && ! lconn 1"
+	wait
+fi
 out=$(detached "1$CX" "$E1 $ROOT/bin/agent-say la 'cx detached'")
 check "and one on a linked server sending here is refused there ($out)" "[[ \$out == *\"can't tell which agent session this comes from\"* && -z \$(ls $outbox) ]] && ! seen $LA 'cx detached'"
 # agent-say's own background work (_tell, _queued) is known by the key in the tmux it

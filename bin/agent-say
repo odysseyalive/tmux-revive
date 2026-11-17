@@ -1141,7 +1141,8 @@ ssh_server_pid() { # ssh_server_pid PID [ITS-CHILD]: PID is sshd's side of an ss
 	local exe pp
 	if exe="$(readlink "/proc/$1/exe" 2>/dev/null)" && [[ -n $exe ]]; then
 		[[ ${exe##*/} == sshd || ${exe##*/} == sshd-session ]] || return 1
-		[[ "$(stat -c %u -- "$exe" 2>/dev/null)" == 0 ]] # installed by root
+		[[ "$(stat -c %u -- "$exe" 2>/dev/null)" == 0 ]] || return 1 # installed by root
+		ssh_from_elsewhere "${2:-}"
 		return
 	fi
 	# A login as anyone but root: sshd runs its side of it as that user and marks it
@@ -1151,16 +1152,44 @@ ssh_server_pid() { # ssh_server_pid PID [ITS-CHILD]: PID is sshd's side of an ss
 	pp="$(awk '{print $4}' "/proc/$1/stat" 2>/dev/null)"
 	[[ $pp =~ ^[0-9]+$ ]] && ssh_named "$pp" &&
 		[[ "$(awk '/^Uid:/ {print $2; exit}' "/proc/$pp/status" 2>/dev/null)" == 0 ]] || return 1
-	# And from another computer: an agent here that can ssh to this one as that user mustn't
-	# pass for a link's login. Where it came from is in what sshd started the login with, the
-	# environment its first process began with, which the command run there can't change.
-	[[ -n ${2:-} ]] && ssh_peer_remote "$2"
+	ssh_from_elsewhere "${2:-}"
 }
-ssh_peer_remote() { # ssh_peer_remote PID: the ssh login PID began in came from another computer
-	local c
+# ssh_from_elsewhere CHILD: the login is from another computer. An agent here that can ssh to
+# this computer (to localhost, or any address of its own) mustn't pass for a link's login, and
+# nothing a login's own processes say about where they came from can be trusted: they can
+# change their environment. The kernel's table of TCP connections (/proc/net/tcp, tcp6),
+# which anyone can read and no one can write, can. A connection from this computer shows in it
+# from both ends: one whose far end, on an ssh server port, is this computer's own near end.
+# While there is one, any login may be it, so none counts (it waits until that ssh closes).
+ssh_from_elsewhere() {
+	local c cip sip sport ports=" 22 " p
+	[[ -n ${1:-} ]] || return 1
 	c="$(tr '\0' '\n' <"/proc/$1/environ" 2>/dev/null | sed -n 's/^SSH_CONNECTION=//p' | head -n 1)"
-	c=${c%% *}
-	[[ -n $c && $c != 127.* && $c != ::1 && $c != ::ffff:127.* && $c != localhost ]]
+	read -r cip _ sip sport <<<"$c"
+	[[ -n $cip && $cip != "$sip" ]] || return 1 # no ssh login at all, or plainly from here
+	[[ $sport =~ ^[0-9]{1,5}$ ]] && ports+="$sport "
+	# sshd's own ports, as its config says (more ports only make it stricter).
+	for p in $(cat /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk 'tolower($1) == "port" {print $2}'); do
+		[[ $p =~ ^[0-9]{1,5}$ ]] && ports+="$p "
+	done
+	! ssh_local_conn "$ports"
+}
+# ssh_local_conn " PORT... ": an established TCP connection to one of those ports comes from
+# this computer: its far end is the near end of another connection here.
+ssh_local_conn() {
+	local p hex=" "
+	for p in $1; do hex+="$(printf '%04X' "$p") "; done # as the table writes a port
+	cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk -v ports="$hex" '
+		function v4(a) { # an IPv4-mapped IPv6 address as the IPv4 one, so both tables agree
+			if (length(a) == 37 && substr(a, 1, 24) == "0000000000000000FFFF0000") return substr(a, 25)
+			return a
+		}
+		$4 == "01" {
+			split($2, l, ":"); split($3, r, ":")
+			near[v4($2)] = 1
+			if (index(ports, " " l[2] " ")) far[v4($3)] = 1
+		}
+		END { for (f in far) if (f in near) exit 0; exit 1 }'
 }
 ssh_named() { # ssh_named PID: its name is sshd's (sshd, or sshd-session from OpenSSH 9.8)
 	local c
