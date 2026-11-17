@@ -1569,7 +1569,7 @@ for r in "echo hi; touch $T/pwn" "_link send km@laptop kp \$(touch $T/pwn)" '_li
 	'_link send --from x kp' '_link sync ../x' '_link sync laptop extra' "PATH=/tmp agent-say _sync laptop" '_link name %1 read' \
 	'_link send km@laptop kp > /tmp/x' '_link peek %1 5;id' '_link  sync laptop' '_link update now'; do
 	o=$(withkey "$r") && bad=$((bad + 1))
-	[[ $o == *"_link takes only"* || $o == *"usage: _link"* ]] || { bad=$((bad + 1)); echo "    ($r: $o)"; }
+	[[ $o == *"_link only takes"* || $o == *"usage: _link"* ]] || { bad=$((bad + 1)); echo "    ($r: $o)"; }
 done
 check "_link takes nothing but a link's requests: no shell, ;, \$(, redirect, other command or bad word" "((bad == 0)) && [[ ! -e $T/pwn ]]"
 out=$(withkey "_link name $KP kp2")
@@ -1617,12 +1617,12 @@ pkill -f -- "$ROOT/bin/agent-say _serve" 2>/dev/null
 tmux kill-pane -t "$KW"
 # Its line taken off the server: the poller is turned away once, stops, and tries no more.
 grep -v ' agent-say-link@laptop$' "$ak" >"$ak.new" && mv "$ak.new" "$ak"
-check "the key turned away, the link stops at once and says so" "for _ in \$(seq 40); do [[ -e $lk/paused ]] && break; sleep 0.25; done; [[ -e $lk/paused ]] && grep -q 'link key refused: press B' $lk/error && ! pollers devbox >/dev/null"
+check "the key turned away, the link stops at once and says so" "for _ in \$(seq 40); do [[ -e $lk/paused ]] && break; sleep 0.25; done; [[ -e $lk/paused ]] && grep -q 'link key turned away: press B' $lk/error && ! pollers devbox >/dev/null"
 n=$(grep -c ' devbox ' "$T/ssh.log"); sleep 2
 out=$(AGENT_SAY_PANE=$KM say kp 'while refused' 2>&1)
 check "and nothing goes to it meanwhile, not a check-in, not a send ($out)" "[[ \$out == *'needs you first'* && \$(grep -c ' devbox ' $T/ssh.log) == $n ]]"
 out=$(say link devbox 2>&1 </dev/null)
-check "linking it again tries the key once, and takes the link off it, saying how to put it back ($out)" "[[ \$out == *'refused the link key'*'put the key back'* && ! -e $lk/linkkey && -e $lk/paused ]]"
+check "linking it again tries the key once, and takes the link off it, saying how to put it back ($out)" "[[ \$out == *'turned the link key away'*'put the key back'* && ! -e $lk/linkkey && -e $lk/paused ]]"
 out=$(say link devbox 2>&1 </dev/null)
 check "the next time, it logs in the way it links and puts the key back ($out)" "[[ \$out == *'linked to devbox'*'takes this link over its own key now'* && -e $lk/linkkey && \$(ours) == 1 ]]"
 say unlink devbox >/dev/null 2>&1
@@ -1641,7 +1641,7 @@ AGENT_SAY_PANE=$KM AGENT_SAY_SSH=$T/bin/pwssh say kp@pwbox 'with the password lo
 check "with the password login gone, messages go on over the key" "wait_seenr $KP 'with the password login gone' && grep -q '^pwbox .* <- _link send km@laptop kp\$' $T/forced.log && ! pw _login pwbox --check && [[ ! -e $pwl/login ]]"
 n=$(prompts)
 out=$(pw unlink pwbox 2>&1)
-check "unlinked with no login open, it asks for none, and says which line to take off by hand ($out)" "[[ \$out == *'take the line ending agent-say-link@laptop out of'* && \$(ours) == 1 && \$(prompts) == $n ]]"
+check "unlinked with no login open, it asks for none, and says which line to take off by hand ($out)" "[[ \$out == *'remove the line ending agent-say-link@laptop from'* && \$(ours) == 1 && \$(prompts) == $n ]]"
 grep -v ' agent-say-link@laptop$' "$ak" >"$ak.new" && mv "$ak.new" "$ak"
 grep -v '^pwbox ' "$T/known_hosts" >"$T/known_hosts.new" && mv "$T/known_hosts.new" "$T/known_hosts"
 # An older tmux-revive there: no _keyline, no _link. The link goes on the old way, and says so.

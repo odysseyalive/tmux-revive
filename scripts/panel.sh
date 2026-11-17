@@ -4071,7 +4071,7 @@ act() {
 		if linked "$h" && [[ -f $ASTATE/links/$h/paused ]]; then
 			flash "trying $h again…"; draw
 		elif linked "$h"; then
-			lopts=("No, leave it as it is" "Yes, link $h again" "Unlink $h")
+			lopts=("No, leave it as is" "Yes, link $h again" "Unlink $h")
 			[[ -f $ASTATE/links/$h/linkkey ]] || lopts+=("Use the link key for $h")
 			pick "LINK $h AGAIN?" "${NOTE}It unlinks, then links again with the key ssh uses now." "${lopts[@]}" &&
 				((PICKED > 1)) || { flash "link cancelled"; return; }

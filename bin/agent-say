@@ -972,7 +972,7 @@ key_unset() {
 		else rc=1; fi
 		((rc == 0)) && [[ $out == *"removed: "* ]] && return 0
 	fi
-	echo "agent-say: the link key's line is still on $h: take the line ending agent-say-link@$LABEL out of ~/.ssh/authorized_keys of the user it logs in as there" >&2
+	echo "agent-say: the link key's line is still on $h: remove the line ending agent-say-link@$LABEL from ~/.ssh/authorized_keys of the user it logs in as there" >&2
 }
 
 # --- links -------------------------------------------------------------------------------
@@ -1014,7 +1014,7 @@ link_log() { # link_log STDERR-FILE (in the link's dir)
 link_why() { # link_why HOST STATUS STDERR-FILE
 	local e
 	e="$(cat "$3" 2>/dev/null || true)"
-	link_keyed "$1" && key_refused "$1" "$2" "$3" && { echo "link key refused: press B to log in and put it back"; return; }
+	link_keyed "$1" && key_refused "$1" "$2" "$3" && { echo "link key turned away: press B to log in and put it back"; return; }
 	if (($2 == 127)); then
 		# A restricted shell (rbash) keeps the PATH its login set, and runs no command named by a
 		# path: agent-say has to be on that PATH, which only root there can do (no retry helps).
@@ -1035,7 +1035,7 @@ link_why() { # link_why HOST STATUS STDERR-FILE
 		*"Connection closed"* | *"Connection reset"* | *"kex_exchange_identification"* | *"Broken pipe"*) echo "can't reach (connection closed)" ;;
 		*"Host key verification failed"*) echo "host key doesn't match: press B to bridge again" ;;
 		*"Permission denied"* | *"Too many authentication failures"*)
-			if link_keyed "$1"; then echo "link key refused: press B to log in and put it back"; else echo "login refused (key)"; fi ;;
+			if link_keyed "$1"; then echo "link key turned away: press B to log in and put it back"; else echo "login refused (key)"; fi ;;
 		# An agent-say there from before _link takes it as a send with nothing to send.
 		*"usage: agent-say [--why"*) echo "tmux-revive there is too old for the link key: update tmux-revive there" ;;
 		"agent-say: "*) e="${e#agent-say: }"; echo "${e%%$'\n'*}" ;;
@@ -2185,9 +2185,9 @@ if [[ ${1:-} == _link ]]; then
 	# Letters, digits, . _ : % @ = + - and single spaces: every word a request has, and nothing a
 	# shell would read (a paste is hex; a key, lit: and hex).
 	((${#req} <= 90000)) && [[ $req =~ ^[A-Za-z0-9._:%@=+-]+(\ [A-Za-z0-9._:%@=+-]+)*$ ]] ||
-		die "_link takes only a link's requests; not run"
+		die "_link only takes a link's requests; not run"
 	read -ra w <<<"$req"
-	[[ ${w[0]} == _link ]] || die "_link takes only a link's requests; not run"
+	[[ ${w[0]} == _link ]] || die "_link only takes a link's requests; not run"
 	# tmux-revive beside this agent-say, as the installer puts them, for the panel's requests.
 	revive="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/tmux-revive"
 	case ${w[1]:-} in
@@ -2225,7 +2225,7 @@ if [[ ${1:-} == _link ]]; then
 			exec "$revive" update </dev/null 2>&1 ;;
 		name) ((${#w[@]} == 4)) && [[ ${w[2]} =~ ^%[0-9]+$ ]] && valid_name "${w[3]}" || die "usage: _link name %<pane> <name>"
 			AGENT_SAY_PANE=${w[2]} exec "${BASH_SOURCE[0]}" name "${w[3]}" </dev/null 2>&1 ;;
-		*) die "_link takes only a link's requests (sync, send, rows, peek, keys, paste, update, name); not run" ;;
+		*) die "_link only takes a link's requests (sync, send, rows, peek, keys, paste, update, name); not run" ;;
 	esac
 	LINK_CALL=1
 fi
@@ -2499,9 +2499,9 @@ case "$cmd" in
 		if ((rc)) && [[ -f "$d/linkkey" ]] && key_refused "$host" "$rc" "$d/check.err"; then
 			link_log "$d/check.err"
 			rm -f "$d/linkkey"
-			[[ -f "$d/on" ]] && echo "link key refused: press B to log in and put it back" >"$d/error" && touch "$d/paused"
+			[[ -f "$d/on" ]] && echo "link key turned away: press B to log in and put it back" >"$d/error" && touch "$d/paused"
 			cat "$d/check.err" >&2; rm -f "$d/check.err"
-			die "$host refused the link key, so it isn't linked. Link it again (B in the panel, or agent-say link $host) to log in and put the key back"
+			die "$host turned the link key away, so it isn't linked. Link it again (B in the panel, or agent-say link $host) to log in and put the key back"
 		fi
 		if ((rc)) && needs_login "$host" "$rc" "$d/check.err"; then
 			rm -f "$d/check.err"
@@ -2558,11 +2558,11 @@ case "$cmd" in
 		{ [[ ! -f "$d/paused" ]] && if link_keyed "$2"; then pin_opts "$2" 2>/dev/null && key_opts "$2" && echo B | timeout 15 $SSH -o ConnectTimeout=5 "${KEY_OPTS[@]}" "${PIN_OPTS[@]}" "$2" "$(sync_req "$2")" >/dev/null 2>&1
 		elif riding "$2"; then echo B | timeout 15 $SSH "${MUX_OPTS[@]}" "$2" "$REMOTE_CMD _sync $(printf %q "$LABEL")" >/dev/null 2>&1
 		else pin_opts "$2" 2>/dev/null && echo B | timeout 15 $SSH -o ConnectTimeout=5 "${SSH_OPTS[@]}" "${PIN_OPTS[@]}" "$2" "$REMOTE_CMD _sync $(printf %q "$LABEL")" >/dev/null 2>&1; fi; } ||
-			{ echo "agent-say: couldn't tell $2; messages it holds for here wait until you link again" >&2; told=no; }
+			{ echo "agent-say: couldn't tell $2; messages it's holding for here wait until you link again" >&2; told=no; }
 		# The link key's line comes off it, over the login that put it there (see key_unset). Not
 		# right after a call to it just failed: that would be a second try at once.
 		if [[ ${told:-} == no && -f "$d/linkkey" ]]; then
-			echo "agent-say: the link key's line is still on $2: take the line ending agent-say-link@$LABEL out of ~/.ssh/authorized_keys of the user it logs in as there" >&2
+			echo "agent-say: the link key's line is still on $2: remove the line ending agent-say-link@$LABEL from ~/.ssh/authorized_keys of the user it logs in as there" >&2
 		else
 			key_unset "$2"
 		fi
@@ -2625,7 +2625,7 @@ case "$cmd" in
 		[[ $op == add || $op == remove ]] && valid_host "$lab" || die "usage: agent-say _keyline add|remove <label>"
 		c="agent-say-link@$lab" sd="$HOME/.ssh" ak="$HOME/.ssh/authorized_keys"
 		[[ $HOME == /* && -d $HOME ]] || die "no home directory to keep ~/.ssh in"
-		[[ ! -L $sd && ! -L $ak ]] || die "~/.ssh/authorized_keys here is reached through a symbolic link, so it's left as it is"
+		[[ ! -L $sd && ! -L $ak ]] || die "~/.ssh/authorized_keys here is reached through a symbolic link, so it's left alone"
 		if [[ $op == add ]]; then
 			IFS= read -r pub || [[ -n ${pub:-} ]] || die "no link key given"
 			[[ $pub =~ ^ssh-ed25519\ [A-Za-z0-9+/]{1,100}={0,2}\ (agent-say-link@[A-Za-z0-9][A-Za-z0-9._-]*)$ && ${BASH_REMATCH[1]} == "$c" ]] ||
@@ -2655,14 +2655,14 @@ case "$cmd" in
 		if [[ ! -d $sd ]]; then mkdir -p "$sd" && chmod 700 "$sd" || die "can't make $sd"; fi
 		mode=600
 		if [[ -e $ak ]]; then
-			[[ -e $ak.agent-say.bak ]] || cp -p "$ak" "$ak.agent-say.bak" || die "can't keep a copy of $ak; nothing changed"
+			[[ -e $ak.agent-say.bak ]] || cp -p "$ak" "$ak.agent-say.bak" || die "can't keep a copy of $ak, so nothing changed"
 			mode="$(stat -c %a "$ak" 2>/dev/null)" || mode=600
 		fi
 		t="$(mktemp "$sd/.authorized_keys.XXXXXX")" || die "can't write in $sd"
 		{
 			if [[ -e $ak ]]; then awk -v c="$c" '$NF != c' "$ak"; fi
 			if [[ $op == add ]]; then printf '%s\n' "$line"; fi
-		} >"$t" && chmod "$mode" "$t" && mv -f "$t" "$ak" || { rm -f "$t"; die "can't write $ak; nothing changed"; }
+		} >"$t" && chmod "$mode" "$t" && mv -f "$t" "$ak" || { rm -f "$t"; die "can't write $ak, so nothing changed"; }
 		if [[ $op == add ]]; then echo "added: $line"; else echo "removed: $c"; fi ;;
 	_login)
 		# The panel's B for a host that wants a password, run in a popup over the panel: ssh's

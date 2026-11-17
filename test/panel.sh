@@ -1322,7 +1322,7 @@ tm send-keys -t work:sshpanel B; sleep 0.7
 check "B offers the failing link, to link again" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -q 'devbox.example  · stopped: host key changed.* · link again'"
 pick_line() { tm send-keys -t work:sshpanel "$(sshscreen | grep -o "[1-9] *$1" | head -c 1)"; } # the popup line showing that
 pick_line "devbox.example  · stopped"
-check "picking it asks: leave it, link it again, or unlink it" "wait_ssh 'LINK devbox.example AGAIN?' && wait_ssh 'No, leave it as it is' && wait_ssh 'Yes, link devbox.example again' && wait_ssh 'Unlink devbox.example'"
+check "picking it asks: leave it, link it again, or unlink it" "wait_ssh 'LINK devbox.example AGAIN?' && wait_ssh 'No, leave it as is' && wait_ssh 'Yes, link devbox.example again' && wait_ssh 'Unlink devbox.example'"
 tm send-keys -t work:sshpanel 2
 # It was linked to another key: that is said, with No first, though known_hosts has this one.
 check "linking again shows the key ssh uses now, warns it isn't the one linked before, No first" "wait_ssh \"WARNING: devbox.example's HOST KEY CHANGED\" && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -q \"1 *No, don't link devbox.example\""
