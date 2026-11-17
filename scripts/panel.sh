@@ -735,6 +735,8 @@ claude_acct() { # claude_acct PID -> ACCT: its account's name, or nothing
 # work in the background too, however long it takes. Its other children (MCP servers, the
 # status line, hooks) aren't started that way and don't count.
 BG_SECS=${REVIVE_BG_SECS:-20}
+GATHER_N=0
+declare -a P_SRV=() # by row: an agent waiting on you while a server it started runs
 snapshot_cmd() { # snapshot_cmd PID: a command Claude Code started still runs under PID (from gather's ps)
 	local p
 	local -a q=()
@@ -748,11 +750,55 @@ snapshot_cmd() { # snapshot_cmd PID: a command Claude Code started still runs un
 	done
 	return 1
 }
+# A server it left running (npm run dev, a web server) isn't work going on: it waits for
+# requests, the agent for you. A background command is a server when a process under it listens
+# on a TCP port. Which processes listen, read once a look (ss, else lsof), only when asked.
+declare -A LISTENS=()
+LISTEN_AT=""
+listen_load() {
+	local l
+	[[ $LISTEN_AT == "$GATHER_N" ]] && return 0
+	LISTEN_AT=$GATHER_N LISTENS=()
+	if command -v ss >/dev/null 2>&1; then
+		while read -r l; do
+			while [[ $l =~ pid=([0-9]+)(.*)$ ]]; do LISTENS[${BASH_REMATCH[1]}]=1; l=${BASH_REMATCH[2]}; done
+		done < <(ss -Hltnp 2>/dev/null)
+	elif command -v lsof >/dev/null 2>&1; then
+		while read -r l; do [[ $l =~ ^p([0-9]+)$ ]] && LISTENS[${BASH_REMATCH[1]}]=1; done < <(lsof -nP -iTCP -sTCP:LISTEN -Fp 2>/dev/null)
+	fi
+}
+# bg_serving PID: the commands Claude Code started that still run under PID are all servers
+# (and there is one). -> 0 when so.
+bg_serving() {
+	local p r n=0
+	local -a q=() roots=() t=()
+	# shellcheck disable=SC2206
+	q=(${PCHILD[$1]:-})
+	while ((${#q[@]})); do
+		p=${q[0]} q=("${q[@]:1}")
+		if [[ ${PARGS[$p]:-} == *" source "*/shell-snapshots/snapshot-* ]]; then roots+=("$p"); continue; fi
+		# shellcheck disable=SC2206
+		[[ -n ${PCHILD[$p]:-} ]] && q+=(${PCHILD[$p]})
+	done
+	((${#roots[@]})) || return 1
+	listen_load
+	for r in "${roots[@]}"; do
+		t=("$r") n=0
+		while ((${#t[@]})); do
+			p=${t[0]} t=("${t[@]:1}")
+			[[ -n ${LISTENS[$p]:-} ]] && { n=1; break; }
+			# shellcheck disable=SC2206
+			[[ -n ${PCHILD[$p]:-} ]] && t+=(${PCHILD[$p]})
+		done
+		((n)) || return 1
+	done
+	return 0
+}
 # CSU: when its status last changed, in seconds (statusUpdatedAt), or nothing.
-claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting) or nothing; CBG=1: background work; CSU, CSA: when that status began, when it started
+claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting) or nothing; CBG=1: background work; CSRV=1: only servers run in the background; CSU, CSA: when that status began, when it started
 	local sid t m=0 d
 	local -a f=() roots=()
-	CST="" CBG=0 CSU="" CSA=""
+	CST="" CBG=0 CSRV=0 CSU="" CSA=""
 	claude_record "$1"
 	[[ -n $RECORD ]] || return 0
 	if [[ -n ${JQ_ST[$RECORD]+set} ]]; then
@@ -765,24 +811,27 @@ claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting
 	CL_REC=$RECORD CL_SID=$sid # ctx_left, next, needs the session too: one jq for both
 	# "shell": its turn is over but a background shell it started still runs. That's work in
 	# the background, the same as idle with a command still running under it.
-	[[ $CST == shell ]] && { CST=idle CBG=1; return 0; }
+	# Unless all it runs is servers: then it waits on you, serving.
+	[[ $CST == shell ]] && CST=idle
 	# Only idle: "waiting" is a dialog of its own open, which needs you whatever else runs.
 	[[ $CST == idle ]] || return 0
-	snapshot_cmd "$1" && { CBG=1; return 0; }
+	if bg_serving "$1"; then CSRV=1
+	elif snapshot_cmd "$1"; then CBG=1; return 0; fi
 	[[ $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
 	# Where its temp folder is: CLAUDE_CODE_TMPDIR, else the system's (TMPDIR, else /tmp).
 	for d in ${CLAUDE_CODE_TMPDIR:+"${CLAUDE_CODE_TMPDIR%/}"} ${TMPDIR:+"${TMPDIR%/}"} /tmp; do
 		[[ " ${roots[*]} " == *" $d "* ]] || roots+=("$d")
 	done
 	for d in "${roots[@]}"; do
-		for t in "$d"/claude-"$UID"/*/"$sid"/tasks/*.output; do [[ -e $t ]] && f+=("$t"); done
+		# Serving, a server's output (a file, not an agent's link) grows with its requests.
+		for t in "$d"/claude-"$UID"/*/"$sid"/tasks/*.output; do [[ -e $t ]] && { ((!CSRV)) || [[ -L $t ]]; } && f+=("$t"); done
 	done
 	((${#f[@]})) || return 0
 	# One stat for them all, through the links.
 	while read -r t; do
 		[[ $t =~ ^[0-9]+$ ]] && ((t > m)) && m=$t
 	done < <(stat -L -c %Y "${f[@]}" 2>/dev/null || stat -L -f %m "${f[@]}" 2>/dev/null)
-	((m && ${EPOCHSECONDS:-$(date +%s)} - m <= BG_SECS)) && CBG=1
+	((m && ${EPOCHSECONDS:-$(date +%s)} - m <= BG_SECS)) && CBG=1 CSRV=0
 	return 0
 }
 
@@ -1352,6 +1401,7 @@ agents_look() {
 		if [[ $kind == claude && $st != asking ]]; then
 			claude_look "$apid"
 			case $CST in busy) st=working ;; "") ;; *) st=waiting; ((CBG)) && st=agents ;; esac
+			[[ $st == waiting ]] && ((CSRV)) && P_SRV[i]=1
 		fi
 		# shellcheck disable=SC2086
 		ctx_left "$kind" "$apid" "${P_ID[i]}" ${A_TREE[j]}
@@ -1387,6 +1437,8 @@ gather() {
 		PCHILD[$ppid]+="$pid " PARGS[$pid]=$args PRSS[$pid]=$rss PCPU[$pid]=$pcpu PPAR[$pid]=$ppid PUID[$pid]=$uid
 	done <<<"$all"
 	now=${EPOCHREALTIME:-$SECONDS}
+	((++GATHER_N)) # a look of its own: what was read for the last one is read again
+	P_SRV=()
 	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=() P_ACCT=()
 	A_AT=() A_KIND=() A_PID=() A_TREE=() W_SINCE=() W_FROM=()
 	# The panes listed first, so the loading screen can count them off: steps are the process
@@ -1645,7 +1697,7 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 }
 remote_panes() {
 	local d h f id loc name app st folder git cpu mem agent got v wp lg S=$'\x1f'
-	local -A rctx rbg ruser rinst rwait racct
+	local -A rctx rbg rsrv ruser rinst rwait racct
 	P_GROUPS=0
 	# Other computers' screens are kept no longer than they're shown: a minute at most. So are
 	# the temporary files of an ask cut off by the panel closing.
@@ -1658,7 +1710,7 @@ remote_panes() {
 		lg=0
 		[[ -f $d/login ]] && lg=1
 		if ((lg)); then :; elif ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
-		f="$RDIR/$h.rows" got=0 RVER[$h]="" ROWNER[$h]="" rctx=() rbg=() ruser=() rinst=() rwait=() racct=()
+		f="$RDIR/$h.rows" got=0 RVER[$h]="" ROWNER[$h]="" rctx=() rbg=() rsrv=() ruser=() rinst=() rwait=() racct=()
 		# Rows a minute old or newer; older means that computer stopped answering.
 		if ((!lg)) && [[ -s $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
 			while IFS=$S read -r id loc name app st folder git cpu mem agent; do
@@ -1678,6 +1730,11 @@ remote_panes() {
 				# takes input.
 				if [[ ${id:0:40} =~ ^\#agents\ (%[0-9]{1,9})$ && -z $loc ]]; then
 					rbg[${BASH_REMATCH[1]}]=1
+					continue
+				fi
+				# Waiting on you while a server it started runs, likewise.
+				if [[ ${id:0:40} =~ ^\#serving\ (%[0-9]{1,9})$ && -z $loc ]]; then
+					rsrv[${BASH_REMATCH[1]}]=1
 					continue
 				fi
 				# How long it has waited on you, in seconds (the clocks needn't agree), and whether
@@ -1722,6 +1779,7 @@ remote_panes() {
 				P_STATE+=("$st") P_DIR+=("${folder:0:40}") P_GIT+=("${git:0:30}") P_CPU+=("$cpu") P_MEM+=("$mem")
 				P_CTX+=("${rctx[$id]:-}") P_AGENT+=("$agent") P_SSH+=("") P_HOST+=("$h") P_RID+=("$id") P_WP+=("$wp")
 				P_USER+=("${ruser[$id]:-}") P_INST+=("${rinst[$id]:-}") P_ACCT+=("${racct[$id]:-}")
+				[[ $st == waiting && -n ${rsrv[$id]:-} ]] && P_SRV[${#P_ID[@]} - 1]=1
 				if [[ $st == waiting && -n ${rwait[$id]:-} ]]; then
 					W_SINCE[${#P_ID[@]} - 1]=$((${EPOCHSECONDS:-$(date +%s)} - ${rwait[$id]% *})) W_FROM[${#P_ID[@]} - 1]=${rwait[$id]#* }
 				fi
@@ -1915,6 +1973,9 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 	waiting)
 		wait_colour "${2:-}"
 		if ((WUNK)); then CELL="$GRY  ---             $R"
+		# A server it started still runs: waiting all the same, and said so.
+		elif [[ -n ${2:-} && -n ${P_SRV[$2]:-} ]]; then
+			if ((WIDLE)); then CELL="$BGRN◇ IDLE · server   $R"; else CELL="$WCOL◆ WAITING · server$R"; fi
 		elif ((WIDLE)); then CELL="$BGRN◇ IDLE            $R"
 		elif ((WAGENT)); then CELL="$WCOL◆ WAITING ON AGENT$R"
 		else CELL="$WCOL◆ WAITING ON YOU  $R"; fi ;;
@@ -2193,7 +2254,8 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 	((WF == 1)) && fc=6 ft="▸ "
 	kc p " hide"
 	# Its agents working in the background don't keep it from taking what you type.
-	if [[ ${P_STATE[SEL]:-} == agents ]]; then sectk "${ft}PEEK · $name · agents busy, takes input" "$KC" $fc "${WB[1]}" "${WK[1]}"; else sectk "${ft}PEEK · $name" "$KC" $fc "${WB[1]}" "${WK[1]}"; fi
+	if [[ ${P_STATE[SEL]:-} == agents ]]; then sectk "${ft}PEEK · $name · agents busy, takes input" "$KC" $fc "${WB[1]}" "${WK[1]}"
+	elif [[ -n ${P_SRV[SEL]:-} ]]; then sectk "${ft}PEEK · $name · a server it started runs" "$KC" $fc "${WB[1]}" "${WK[1]}"; else sectk "${ft}PEEK · $name" "$KC" $fc "${WB[1]}" "${WK[1]}"; fi
 	if [[ -n ${P_HOST[SEL]:-} ]]; then
 		remote_peek 60 # all it may ask for, to scroll back through
 	elif [[ -n $id ]]; then
@@ -2203,12 +2265,24 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 	peek_rows "$1" "$GRY" 0 "${WB[1]}"
 }
 # peek_rows LINES COLOUR STYLED BAR-COLOUR: the bottom of its screen (L), row for row: the box's
-# last line is the pane's last line, blank or not, and it reads upward from there, each after
+# last line is the pane's last line of text, and it reads upward from there, each after
 # a │ in COLOUR. STYLED 1: each line in its QSTYLE colour (the question), else dim. A screen
 # shorter than the box is padded above, so the bottoms still line up; a taller one scrolls
 # back PB rows from the bottom, with a scroll bar in BAR-COLOUR.
+blank_tail() { # blank_tail ARRAY: more than 3 blank rows at its end cut to 1
+	local -n bt=$1
+	local k=${#bt[@]}
+	while ((k)) && [[ -z ${bt[k - 1]//[[:space:]]/} ]]; do ((k--)); done
+	((${#bt[@]} - k > 3)) && bt=("${bt[@]:0:k+1}")
+	return 0
+}
 peek_rows() {
-	local h=$1 c=$2 n=${#L[@]} start i w=$((IW - 2)) vw=$IW st a b
+	local h=$1 c=$2 n start i w=$((IW - 2)) vw=$IW st a b
+	# Many blank rows under the last text go but one: an agent just resumed, or a screen just
+	# cleared, has its text at the top and the rest blank, and the bottom alone showed nothing.
+	# A row or two (under a question's footer) stay, so the bottoms still line up.
+	blank_tail L
+	n=${#L[@]}
 	((PB > n - h)) && PB=$((n - h))
 	((PB < 0)) && PB=0
 	start=$((n - h - PB))
@@ -4314,6 +4388,9 @@ if ((PEEKMODE)); then
 	pane_here "$PEEK_ID" || exit 1 # no such pane
 	mapfile -t L < <(tm capture-pane -p -t "$PEEK_ID" 2>/dev/null)
 	end=$((${#L[@]} - 1))
+	# Many blank rows under its last text would fill what was asked for (see peek_rows).
+	blank_tail L
+	end=$((${#L[@]} - 1))
 	start=$((end - PEEK_N + 1))
 	((start < 0)) && start=0
 	for ((i = start; i <= end; i++)); do
@@ -4399,6 +4476,7 @@ if ((ROWS)); then
 		# shows it, and a line before it says it takes input.
 		st=${P_STATE[i]}
 		[[ $st == agents ]] && { printf '#agents %s\n' "${P_ID[i]}"; st=working; }
+		[[ -n ${P_SRV[i]:-} ]] && printf '#serving %s\n' "${P_ID[i]}"
 		[[ $st == waiting && -n ${W_SINCE[i]:-} && ${W_FROM[i]:-} =~ ^[au]$ ]] &&
 			printf '#wait %s %s %s\n' "${P_ID[i]}" $((W_SINCE[i] > NOW_S ? 0 : NOW_S - W_SINCE[i])) "${W_FROM[i]}"
 		printf '%s\x1f' "${P_ID[i]}" "${P_LOC[i]}" "${P_NAME[i]}" "${P_APP[i]}" "$st" "$folder" "${P_GIT[i]}" "${P_CPU[i]}" "${P_MEM[i]}"

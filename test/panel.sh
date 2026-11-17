@@ -691,7 +691,21 @@ snap=$(pgrep -P "$clpid" -f 'source .*snapshot-x')
 pkill -P "$snap"; kill "$snap"; sleep 0.3
 out=$(bgframe)
 check "with that command ended (an MCP server still running under it), WAITING ON YOU" "pgrep -P $clpid -f mcp-server >/dev/null && grep -q 'claude *◆ WAITING ON YOU' <<<\"\$out\""
-tm kill-window -t work:cl; tm kill-window -t work:cx; tm kill-window -t work:cl2
+# A server it left running (a background command listening on a port) isn't work: it waits on
+# you, and says a server runs. Claude Code's record says shell for it, as for any.
+if command -v python3 >/dev/null && { command -v ss || command -v lsof; } >/dev/null; then
+	tm kill-window -t work:cl
+	printf '%s\n' 'import socket, time' 's = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen()' 'time.sleep(300)' >"$T/serve.py"
+	tm new-window -d -t work -n cl "$T/bin/claude -c 'bash -c \"source $T/shell-snapshots/snapshot-x.sh; python3 $T/serve.py; :\" & wait'"
+	sleep 0.8
+	clpid=$(tm display -p -t work:cl '#{pane_pid}') clid=$(tm display -p -t work:cl '#{pane_id}')
+	printf '{"pid":%s,"sessionId":"s-1","status":"shell","statusUpdatedAt":'"$(date +%s)000"'}\n' "$clpid" >"$H/.claude/sessions/$clpid.json"
+	out=$(bgframe 160)
+	check "a background command serving on a port is WAITING · server, not WORKING" "grep -q 'claude *◆ WAITING · server' <<<\"\$out\" && ! grep -q 'claude *. WORKING ' <<<\"\$out\""
+	check "and its peek says a server it started runs" "grep -q 'PEEK · .*a server it started runs' <<<\"\$out\""
+	check "and the rows it gives a linked computer say so" "tm run-shell 'HOME=$H CLAUDE_CODE_TMPDIR=$T/ltmp REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows' | grep -qx '#serving $clid'"
+fi
+tm kill-window -t work:cl;tm kill-window -t work:cx; tm kill-window -t work:cl2
 
 echo "access"
 # The key bar offers G only while there's something for it: access waiting, or approved and
@@ -1761,10 +1775,11 @@ fi
 rm -f "$st/panel/far.example.rows"*
 # --peek itself: only a pane id and a line count get through.
 rpanel() { REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data bash "$ROOT/scripts/panel.sh" "$@" 2>/dev/null; }
-# Counted straight from the pipe: a $( ) would strip the blank bottom rows being checked for.
+# Counted straight from the pipe: a $( ) would strip blank rows, and only those under the last
+# text may go (an agent just resumed has its text at the top, the rest blank).
 farid=$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.0 '#{pane_id}')
 farh=$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.0 '#{pane_height}')
-check "--peek prints the pane's bottom rows, blank ones too ($farh rows)" "(( \$(rpanel --peek $farid 60 | grep -c '^far-marker-42$') == 1 )) && [[ \$(rpanel --peek $farid 60 | wc -l) -eq $farh ]]"
+check "--peek prints the pane's rows down to its last text, and one blank row of the many under it" "(( \$(rpanel --peek $farid 60 | grep -c '^far-marker-42$') == 1 )) && (( \$(rpanel --peek $farid 60 | wc -l) <= $farh )) && rpanel --peek $farid 60 | tail -n 2 | head -1 | grep -q '[^[:space:]]'"
 check "--peek turns away a bad pane id or count" "! rpanel --peek 'far:0.0' 3 && ! rpanel --peek '%0;touch $T/pwn' 3 && ! rpanel --peek %0 0 && ! rpanel --peek %0 61 && ! rpanel --peek %0 && [[ ! -e $T/pwn ]]"
 check "--peek at a pane that isn't there fails" "! rpanel --peek %999 5"
 rm -f "$st/panel/far.example.rows"
