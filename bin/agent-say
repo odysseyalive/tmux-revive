@@ -1166,6 +1166,7 @@ ssh_server_pid() { # ssh_server_pid PID [ITS-CHILD]: PID is sshd's side of an ss
 ssh_from_elsewhere() {
 	local c cip sip sport ports=" 22 " p
 	[[ -n ${1:-} ]] || return 1
+	host_namespaces || return 1
 	c="$(tr '\0' '\n' <"/proc/$1/environ" 2>/dev/null | sed -n 's/^SSH_CONNECTION=//p' | head -n 1)"
 	read -r cip _ sip sport <<<"$c"
 	[[ -n $cip && $cip != "$sip" ]] || return 1 # no ssh login at all, or plainly from here
@@ -1176,6 +1177,13 @@ ssh_from_elsewhere() {
 	done
 	ssh_local_conn "$ports"
 	(($? == 1))
+}
+# host_namespaces: this runs in the computer's own namespaces, the kernel's first user and pid
+# ones (numbered so on every Linux). In one of a process's own making it can make /proc show
+# what it likes, init's table included. (A server that is itself a container fails closed.)
+host_namespaces() {
+	[[ $(readlink /proc/self/ns/user 2>/dev/null) == "user:[4026531837]" &&
+		$(readlink /proc/self/ns/pid 2>/dev/null) == "pid:[4026531836]" ]]
 }
 # ssh_local_conn " PORT... ": 0 when an established TCP connection to one of those ports comes
 # from this computer (its far end is the near end of another connection here); 1 when there are
