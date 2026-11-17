@@ -755,6 +755,9 @@ print(s.getsockname()[1], s6.getsockname()[1], flush=True); time.sleep(5)' >"$T/
 	check "and with no connection on its ports at all, the table says so (taken as from here)" "lconn 1; [[ \$? == 2 ]]"
 	hostns() { "$@" bash -c 'source <(sed -n "/^host_namespaces() {/,/^}/p" "$1"); host_namespaces' _ "$ROOT/bin/agent-say"; }
 	check "the computer's own namespaces count, one of a process's own making doesn't" "hostns env && { ! unshare -r true 2>/dev/null || ! hostns unshare -r; } && { ! unshare -rpf --mount-proc true 2>/dev/null || ! hostns unshare -rpf --mount-proc; }"
+	# Nor a /proc of its own making there, with a symlink that reads like the first user namespace.
+	fakeproc() { unshare -rm bash -c 'source <(sed -n "/^host_namespaces() {/,/^}/p" "$1"); mount -t tmpfs t /proc && mkdir -p "/proc/$BASHPID/ns" && ln -s "user:[4026531837]" "/proc/$BASHPID/ns/user" && ln -s "$BASHPID" /proc/self && host_namespaces' _ "$ROOT/bin/agent-say"; }
+	check "nor a /proc of its own making, whatever its links say" "! unshare -rm true 2>/dev/null || ! fakeproc"
 	check "a process given an empty network of its own still reads init's table" "! command -v unshare >/dev/null || ! unshare -rn true 2>/dev/null || unshare -rn bash -c 'source <(sed -n \"/^ssh_local_conn() {/,/^}/p\" $ROOT/bin/agent-say); ssh_local_conn \" $lp \"'"
 	wait
 fi

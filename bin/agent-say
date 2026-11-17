@@ -1180,10 +1180,14 @@ ssh_from_elsewhere() {
 }
 # host_namespaces: this runs in the computer's own namespaces, the kernel's first user and pid
 # ones (numbered so on every Linux). In one of a process's own making it can make /proc show
-# what it likes, init's table included. (A server that is itself a container fails closed.)
+# what it likes, init's table included. So the /proc read is the kernel's own (procfs, its self
+# this very shell, which -ef checks without another process), and the namespaces the kernel's
+# objects themselves (on nsfs, with those numbers), which a symlink of its making can't be.
+# (A server that is itself a container fails closed.)
 host_namespaces() {
-	[[ $(readlink /proc/self/ns/user 2>/dev/null) == "user:[4026531837]" &&
-		$(readlink /proc/self/ns/pid 2>/dev/null) == "pid:[4026531836]" ]]
+	[[ $(stat -f -c %T /proc 2>/dev/null) == proc && /proc/self -ef /proc/$BASHPID ]] || return 1
+	[[ "$(stat -L -c %i /proc/$BASHPID/ns/user 2>/dev/null) $(stat -L -f -c %T /proc/$BASHPID/ns/user 2>/dev/null)" == "4026531837 nsfs" &&
+		"$(stat -L -c %i /proc/$BASHPID/ns/pid 2>/dev/null) $(stat -L -f -c %T /proc/$BASHPID/ns/pid 2>/dev/null)" == "4026531836 nsfs" ]]
 }
 # ssh_local_conn " PORT... ": 0 when an established TCP connection to one of those ports comes
 # from this computer (its far end is the near end of another connection here); 1 when there are
