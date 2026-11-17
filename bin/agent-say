@@ -1157,10 +1157,12 @@ ssh_server_pid() { # ssh_server_pid PID [ITS-CHILD]: PID is sshd's side of an ss
 # ssh_from_elsewhere CHILD: the login is from another computer. An agent here that can ssh to
 # this computer (to localhost, or any address of its own) mustn't pass for a link's login, and
 # nothing a login's own processes say about where they came from can be trusted: they can
-# change their environment. The kernel's table of TCP connections (/proc/net/tcp, tcp6),
-# which anyone can read and no one can write, can. A connection from this computer shows in it
-# from both ends: one whose far end, on an ssh server port, is this computer's own near end.
-# While there is one, any login may be it, so none counts (it waits until that ssh closes).
+# change their environment. The kernel's table of TCP connections can, which anyone can read
+# and no one can write: init's (/proc/1/net), as a process can be given an empty network of its
+# own (unshare -rn) to read its own from. A connection from this computer shows in it from both
+# ends: one whose far end, on an ssh server port, is this computer's own near end. While there
+# is one, any login may be it, so none counts (it waits until that ssh closes). Nor does one
+# when the table can't be read, or shows no ssh connection at all: a login's own is always there.
 ssh_from_elsewhere() {
 	local c cip sip sport ports=" 22 " p
 	[[ -n ${1:-} ]] || return 1
@@ -1172,14 +1174,16 @@ ssh_from_elsewhere() {
 	for p in $(cat /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk 'tolower($1) == "port" {print $2}'); do
 		[[ $p =~ ^[0-9]{1,5}$ ]] && ports+="$p "
 	done
-	! ssh_local_conn "$ports"
+	ssh_local_conn "$ports"
+	(($? == 1))
 }
-# ssh_local_conn " PORT... ": an established TCP connection to one of those ports comes from
-# this computer: its far end is the near end of another connection here.
+# ssh_local_conn " PORT... ": 0 when an established TCP connection to one of those ports comes
+# from this computer (its far end is the near end of another connection here); 1 when there are
+# such connections and none does; 2 when the table can't be read or has none (taken as 0).
 ssh_local_conn() {
 	local p hex=" "
 	for p in $1; do hex+="$(printf '%04X' "$p") "; done # as the table writes a port
-	cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk -v ports="$hex" '
+	{ cat /proc/1/net/tcp && cat /proc/1/net/tcp6; } 2>/dev/null | awk -v ports="$hex" '
 		function v4(a) { # an IPv4-mapped IPv6 address as the IPv4 one, so both tables agree
 			if (length(a) == 37 && substr(a, 1, 24) == "0000000000000000FFFF0000") return substr(a, 25)
 			return a
@@ -1187,9 +1191,9 @@ ssh_local_conn() {
 		$4 == "01" {
 			split($2, l, ":"); split($3, r, ":")
 			near[v4($2)] = 1
-			if (index(ports, " " l[2] " ")) far[v4($3)] = 1
+			if (index(ports, " " l[2] " ")) { far[v4($3)] = 1; n++ }
 		}
-		END { for (f in far) if (f in near) exit 0; exit 1 }'
+		END { if (!n) exit 2; for (f in far) if (f in near) exit 0; exit 1 }'
 }
 ssh_named() { # ssh_named PID: its name is sshd's (sshd, or sshd-session from OpenSSH 9.8)
 	local c

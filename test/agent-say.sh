@@ -310,9 +310,13 @@ chmod +x "$T/bin/fakessh"
 # bash named sshd, which isn't root's) counts as the ssh server. The real one never does.
 cp "$(command -v bash)" "$T/abin/sshd"
 mkdir -p "$T/rsay"
-sed 's/== 0 \]\] || return 1 # installed by root$/== "$(id -u)" ]] || return 1 # the test'"'"'s stand-in/' "$ROOT/bin/agent-say" >"$T/rsay/agent-say"
+# Nor has it a real TCP connection for the kernel's table to show: where the login came from
+# (ssh_local_conn) is checked on its own, below.
+sed -e 's/== 0 \]\] || return 1 # installed by root$/== "$(id -u)" ]] || return 1 # the test'"'"'s stand-in/' \
+	-e 's/^\tssh_local_conn "\$ports"$/\treturn 0 # the stand-in has no TCP connection/' "$ROOT/bin/agent-say" >"$T/rsay/agent-say"
 chmod +x "$T/rsay/agent-say"
-grep -q "# the test's stand-in" "$T/rsay/agent-say" || { echo "couldn't make the remote copy of agent-say"; exit 1; }
+grep -q "# the test's stand-in" "$T/rsay/agent-say" && grep -q "# the stand-in has no TCP connection" "$T/rsay/agent-say" ||
+	{ echo "couldn't make the remote copy of agent-say"; exit 1; }
 export AGENT_SAY_SSH=$T/bin/fakessh AGENT_SAY_REMOTE_CMD=$ROOT/bin/agent-say AGENT_SAY_HOST=laptop AGENT_SAY_LINK_INTERVAL=0.3
 # The host keys it checks come from a known_hosts file of the test's own, and its ssh-keyscan
 # is a fake one: it shows the key in the file scan.presented names, or gets no answer (none).
@@ -747,7 +751,9 @@ print(s.getsockname()[1], s6.getsockname()[1], flush=True); time.sleep(5)' >"$T/
 	for _ in $(seq 30); do [[ -s $T/lports ]] && break; sleep 0.1; done
 	read -r lp lp6 <"$T/lports"
 	lconn() { bash -c 'source <(sed -n "/^ssh_local_conn() {/,/^}/p" "$1"); ssh_local_conn " $2 "' _ "$ROOT/bin/agent-say" "$1"; }
-	check "a connection to an ssh port from this computer is seen, over IPv4 and IPv6; none on a port with none" "lconn $lp && lconn $lp6 && ! lconn 1"
+	check "a connection to an ssh port from this computer is seen, over IPv4 and IPv6, in init's table" "lconn $lp && lconn $lp6"
+	check "and with no connection on its ports at all, the table says so (taken as from here)" "lconn 1; [[ \$? == 2 ]]"
+	check "a process given an empty network of its own still reads init's table" "! command -v unshare >/dev/null || ! unshare -rn true 2>/dev/null || unshare -rn bash -c 'source <(sed -n \"/^ssh_local_conn() {/,/^}/p\" $ROOT/bin/agent-say); ssh_local_conn \" $lp \"'"
 	wait
 fi
 out=$(detached "1$CX" "$E1 $ROOT/bin/agent-say la 'cx detached'")
