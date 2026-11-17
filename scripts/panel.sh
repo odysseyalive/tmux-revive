@@ -1376,7 +1376,7 @@ agents_look() {
 	JQ_ST=() JQ_SID=() JQ_SU=() JQ_SA=()
 }
 gather() {
-	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh ctx k all
+	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh ctx k all panes np nd
 	local -A tnow=()
 	PCHILD=() PARGS=() PRSS=() PCPU=() PPAR=() PUID=() INPANE=()
 	# Read from a string, not straight from ps: read takes a pipe a byte at a time, and every
@@ -1389,7 +1389,14 @@ gather() {
 	now=${EPOCHREALTIME:-$SECONDS}
 	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=() P_ACCT=()
 	A_AT=() A_KIND=() A_PID=() A_TREE=() W_SINCE=() W_FROM=()
+	# The panes listed first, so the loading screen can count them off: steps are the process
+	# list, each pane, the agents' screens, then the links.
+	panes=$(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
+	k=${panes//[!$'\n']/}
+	np=$((${#k} + 3)) nd=1
+	load_bar $nd $np
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
+		[[ -n $id ]] || continue
 		clean loc cmd path name
 		# The pane's process tree, breadth-first, and the first agent in it.
 		tree=() q=("$ppid0") kind="" apid=""
@@ -1461,8 +1468,10 @@ gather() {
 		P_ID+=("$id") P_LOC+=("$loc") P_NAME+=("$name") P_STATE+=("$st")
 		git_info "$path"
 		P_DIR+=("$path") P_GIT+=("$GITI") P_CPU+=("$cpu") P_MEM+=("$mem") P_CTX+=("$ctx")
-	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
+		load_bar $((++nd)) $np
+	done <<<"$panes"
 	agents_look
+	load_bar $((++nd)) $np
 	# Only the panes there now: a closed pane's count goes with it.
 	TICKS_PREV=()
 	for k in "${!tnow[@]}"; do TICKS_PREV[$k]=${tnow[$k]}; done
@@ -1470,6 +1479,7 @@ gather() {
 	outside_ssh
 	((ROWS)) || remote_panes
 	wait_watch
+	load_bar $np $np
 }
 
 # The CPU counts --rows keeps between asks: the time of its look, then a "%pane:pid ticks" line
@@ -2324,6 +2334,9 @@ question_parts() {
 		elif [[ ${L[i]} =~ ^[[:space:]│]*❯ ]]; then QSTYLE[i]=$QBAND$B$BWHT  # the highlighted choice
 		elif [[ ${L[i]} =~ ^[[:space:]│]*[0-9]+\.[[:space:]]*\[[^[:space:]]\] ]]; then QSTYLE[i]=$B$BGRN # a ticked choice ([✔], as Claude Code greens it)
 		elif [[ ${L[i]} =~ ^[[:space:]│]*(\[.\][[:space:]]*)?[0-9]+\. ]]; then QSTYLE[i]=$BWHT # a choice
+		# A multi-select's Next or Submit, a choice too though it has no number: white like
+		# them, not grey like a description, which read as not to be used.
+		elif [[ ${L[i]} =~ ^[[:space:]│]*(Next|Submit)[[:space:]]*$ ]]; then QSTYLE[i]=$BWHT
 		else QSTYLE[i]=$GRY; fi                                               # a choice's description
 	done
 }
@@ -4277,6 +4290,22 @@ loading() {
 	printf '%s' "$e[2J"
 	for i in 0 1 2 3 4 5; do printf '%s' "$e[$((top + i));${left}H${BIG_ROWS[i]}"; done
 	printf '%s' "$e[$((top + 8));$((left + 18))H$GRY""Loading…$R"
+	LOAD_AT="$((top + 10)) $left"
+	load_bar 0 1
+}
+# load_bar DONE TOTAL: under the loading screen's "Loading…", how far the first look has got,
+# so a slow one shows it moving rather than looking hung. Nothing once the panel is drawn.
+LOAD_AT=""
+load_bar() {
+	[[ -n $LOAD_AT ]] || return 0
+	local w=36 n=$1 t=$2
+	((t > 0)) || t=1
+	((n > t)) && n=$t
+	n=$((n * w / t))
+	rep █ "$n"
+	local on=$REP
+	rep ░ $((w - n))
+	printf '%s' "$e[${LOAD_AT% *};${LOAD_AT#* }H$BCYN$on$GRY$REP $R$GRY$(( $1 * 100 / t ))%$R  "
 }
 
 # ------------------------------------------------------------------ main
@@ -4481,6 +4510,7 @@ while :; do
 			fi
 		done
 		TCOLS="" MSG_OLD=1 # looked at again along with the panes
+		LOAD_AT="" # the first look is in: no more loading bar
 		((UPD_N)) && upd_poll # what U started, finished since
 	fi
 	# Keep the same pane selected when panes come and go.

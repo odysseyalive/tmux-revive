@@ -1186,6 +1186,9 @@ msq() { bash -c 'e=$'"'"'\e'"'"' B=B BYEL=Y GRY=g DIM=d MAG=m BWHT=W BCYN=C BGRN
 	for i in "${!L[@]}"; do printf "%s|%s\n" "${QSTYLE[i]}" "${L[i]}"; done' _ "$ROOT/scripts/panel.sh" "$T/msq.txt"; }
 check "a multi-select with its cursor on Submit is still asking (Enter there answers it)" "[[ \$(msq | head -1) == asking ]]"
 check "a ticked choice stands out from the unticked ones" "msq | grep -qxF 'BG|  1. [✔] Apple' && msq | grep -qxF 'W|  2. [ ] Banana'"
+sed -i 's/^❯    Submit$/     Next/' "$T/msq.txt"
+check "a multi-select's Next, not under the cursor, is white like the choices, not grey" "msq | grep -qxF 'W|     Next'"
+sed -i 's/^     Next$/❯    Submit/' "$T/msq.txt"
 # Its free-text choice, unticked ("[ ]"), is found, and the cursor on Submit isn't on it.
 qfree() { bash -c 'source <(sed -n "/^question_free() {/,/^}/p" "$1"); QFREE=0 QFREEN=""
 	mapfile -t QL <"$2"; question_free; echo "$QFREE $QFREEN $QON"' _ "$ROOT/scripts/panel.sh" "$T/msq.txt"; }
