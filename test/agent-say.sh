@@ -720,6 +720,19 @@ out=$(detached "0$LA" "bash -c 'exec -a \"sshd: la@notty\" bash -c \"$E0 $ROOT/b
 check "nor pass for a login over ssh by a process named sshd ($out)" "[[ \$out == *\"can't tell which agent session\"* ]] && ! seen $LB 'named-sshd'"
 out=$(detached "0$LA" "$T/abin/sshd -c '$E0 $ROOT/bin/agent-say lb copied-sshd; exit \$?'")
 check "nor by a program called sshd that root didn't install ($out)" "[[ \$out == *\"can't tell which agent session\"* ]] && ! seen $LB 'copied-sshd'"
+# sshd's side of a login as a user isn't dumpable, so its exe can't be read: it is taken by its
+# name and root's sshd above it. A process of the agent's own named so, not dumpable, isn't.
+if command -v python3 >/dev/null; then
+	cat >"$T/fakesshd.py" <<'PY'
+import ctypes, subprocess, sys
+libc = ctypes.CDLL(None)
+libc.prctl(15, b"sshd-session", 0, 0, 0)  # PR_SET_NAME
+libc.prctl(4, 0, 0, 0, 0)                 # PR_SET_DUMPABLE 0
+sys.exit(subprocess.call(["bash", "-c", sys.argv[1]]))
+PY
+	out=$(detached "0$LA" "python3 $T/fakesshd.py '$E0 $ROOT/bin/agent-say lb undumpable-sshd; exit \$?'")
+	check "nor by one named sshd-session, not dumpable, that root's sshd didn't start ($out)" "[[ \$out == *\"can't tell which agent session\"* ]] && ! seen $LB 'undumpable-sshd'"
+fi
 out=$(detached "1$CX" "$E1 $ROOT/bin/agent-say la 'cx detached'")
 check "and one on a linked server sending here is refused there ($out)" "[[ \$out == *\"can't tell which agent session this comes from\"* && -z \$(ls $outbox) ]] && ! seen $LA 'cx detached'"
 # agent-say's own background work (_tell, _queued) is known by the key in the tmux it
