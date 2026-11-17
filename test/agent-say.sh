@@ -258,17 +258,31 @@ chmod +x "$T/rbin/tmux"
 # link's connections are bound to the confirmed key): the key the host shows (the file named in
 # presented.HOST, else hostkey1) must be in its UserKnownHostsFile. Otherwise any key is taken,
 # as with StrictHostKeyChecking no.
+# A login with a key named (-i, IdentityFile) goes as sshd takes it: the key must have a line in
+# that machine's ~/.ssh/authorized_keys, and a line with command="..." runs that and nothing
+# else (a forced command), through the login's shell, with what was asked in
+# SSH_ORIGINAL_COMMAND (logged in forced.log). Any other login runs what it's given. A link
+# key's own connection (ControlPath .../linkmux) stays open once it has logged in, as a master
+# does: ssh -O check on it says so, -O exit closes it. The login's shell is bash, or what the
+# file loginshell names (a restricted one: then loginbin is on its PATH).
 cat >"$T/bin/fakessh" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>$T/ssh.log
-strict="" khf=""
+strict="" khf="" idf="" cp=""
 while [[ \$1 == -* ]]; do
 	case \$1 in
-		-O) [[ \$2 == check ]] && exit 255; exit 0 ;;
+		-O) if [[ \$cp == */linkmux ]]; then
+				[[ \$2 == check ]] && { [[ -e \$cp ]]; exit; }
+				rm -f "\$cp"; exit 0
+			fi
+			[[ \$2 == check ]] && exit 255; exit 0 ;;
 		-o) [[ \$2 == StrictHostKeyChecking=yes ]] && strict=1
 			[[ \$2 == UserKnownHostsFile=* ]] && khf=\${2#*=}
+			[[ \$2 == IdentityFile=* ]] && idf=\${2#*=}
+			[[ \$2 == ControlPath=* && -z \$cp ]] && cp=\${2#*=}
 			shift 2 ;;
-		-p | -i) shift 2 ;;
+		-i) idf=\$2; shift 2 ;;
+		-p) shift 2 ;;
 		*) shift ;;
 	esac
 done
@@ -282,18 +296,32 @@ fi
 # Two machines: devbox, and dev.example.com (calls itself dev) for relaying between them.
 r=r label=devbox-1
 [[ \$1 == dev.example.com ]] && r=r2 label=dev
+host=\$1
 shift # the host
-unset AGENT_SAY_PANE AGENT_SAY_LOCAL_ONLY AGENT_SAY_INTERNAL
-export PATH="$T/\${r}bin:\$PATH" XDG_STATE_HOME=$T/\${r}state AGENT_SAY_MAILBOX=$T/\${r}state/agent-say/mailbox.md \\
-	AGENT_SAY_HOST=\$label TMPDIR=$T/\${r}tmp HOME=$T/\${r}home
+forced=""
+if [[ -n \$idf ]]; then
+	k=\$(ssh-keygen -y -f "\$idf" 2>/dev/null </dev/null | cut -d' ' -f2)
+	line=\$(grep -F " \$k " $T/\${r}home/.ssh/authorized_keys 2>/dev/null | head -n 1)
+	[[ -n \$k && -n \$line ]] || { echo "me@\$host: Permission denied (publickey)." >&2; exit 255; }
+	[[ \$line =~ ^[a-z,]*command=\"([^\"]*)\"\  ]] && forced=\${BASH_REMATCH[1]}
+	[[ \$cp == */linkmux ]] && : >"\$cp"
+	echo "\$host \$forced <- \$*" >>$T/forced.log
+fi
+lsh=bash lpath="$T/\${r}bin:\$PATH"
+# A restricted login's PATH is its own: loginbin and the system's, nothing of yours.
+[[ -s $T/loginshell ]] && lsh=\$(cat $T/loginshell) lpath="$T/loginbin:$T/\${r}bin:/usr/bin:/bin"
+unset AGENT_SAY_PANE AGENT_SAY_LOCAL_ONLY AGENT_SAY_INTERNAL SSH_ORIGINAL_COMMAND
+export PATH="\$lpath" XDG_STATE_HOME=$T/\${r}state AGENT_SAY_MAILBOX=$T/\${r}state/agent-say/mailbox.md \\
+	AGENT_SAY_HOST=\$label TMPDIR=$T/\${r}tmp HOME=$T/\${r}home SHELL=\$(command -v "\$lsh")
 # As a command run over ssh is: under the ssh server (a stand-in sshd), in a process tree of
 # its own, not under whatever ran ssh here (an agent, say). Its stdin, stdout and stderr go
 # through fifos; agent-say there is the copy that takes the stand-in for the ssh server.
 from=$ROOT/bin/agent-say to=$T/rsay/agent-say
 cmd=\${*//"\$from"/"\$to"}
+if [[ -n \$forced ]]; then export SSH_ORIGINAL_COMMAND="\$*"; cmd=\$forced; fi
 d=\$(mktemp -d "$T/ssh.XXXXXX")
 mkfifo "\$d/i" "\$d/o" "\$d/e"
-SSH_CONNECTION="203.0.113.9 50022 10.0.0.2 22" setsid -f $T/abin/sshd -c 'bash -c "\$1" <"\$2/i" >"\$2/o" 2>"\$2/e"; echo \$? >"\$2/rc"' _ "\$cmd" "\$d"
+SSH_CONNECTION="203.0.113.9 50022 10.0.0.2 22" setsid -f $T/abin/sshd -c '"\$3" -c "\$1" <"\$2/i" >"\$2/o" 2>"\$2/e"; echo \$? >"\$2/rc"' _ "\$cmd" "\$d" "\$lsh"
 exec 3<&0
 cat <&3 >"\$d/i" & inp=\$!
 cat "\$d/e" >&2 & errp=\$!
@@ -318,6 +346,8 @@ chmod +x "$T/rsay/agent-say"
 grep -q "# the test's stand-in" "$T/rsay/agent-say" && grep -q "# the stand-in has no TCP connection" "$T/rsay/agent-say" ||
 	{ echo "couldn't make the remote copy of agent-say"; exit 1; }
 export AGENT_SAY_SSH=$T/bin/fakessh AGENT_SAY_REMOTE_CMD=$ROOT/bin/agent-say AGENT_SAY_HOST=laptop AGENT_SAY_LINK_INTERVAL=0.3
+# Links as they were before the link key, until "the link key" below moves one to it.
+export AGENT_SAY_TEST_NO_LINK_KEY=1
 # The host keys it checks come from a known_hosts file of the test's own, and its ssh-keyscan
 # is a fake one: it shows the key in the file scan.presented names, or gets no answer (none).
 ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey1" && ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey2"
@@ -990,6 +1020,8 @@ m=$T/pw.master
 fp=\$(ssh-keygen -lf "\$(cat $T/presented.pwbox)" | awk '{print \$2}')
 holds() { [[ -r \$1 ]] && ssh-keygen -lf "\$1" 2>/dev/null | awk '{print \$2}' | grep -qxF "\$fp"; }
 case " \$* " in
+# The link key logs in by itself, on its own connection, whatever the password login does.
+*"/linkmux "* | *" IdentityFile="*) exec $T/bin/fakessh "\$@" ;;
 *" -O check "*) [[ -e \$m ]]; exit ;;
 *" -O exit "*) rm -f \$m; exit 0 ;;
 *" -G "*) exit 0 ;;
@@ -1474,6 +1506,192 @@ out2=$(inj $JV "$ROOT/bin/agent-say show $id") && rc=0 || rc=$?
 check "mail to its name from before it took it isn't shown ($out / $out2)" "[[ -n '$id' && \$out != *'for the old gone1'* && \$out2 != *'for the old gone1'* ]] && ((rc != 0))"
 pkill -f -- "$ROOT/bin/agent-say _serve" 2>/dev/null
 for p in $JV $JP $JT; do tmux kill-pane -t "$p"; done
+
+echo "the link key: sshd vouches for what a link brings"
+# A link on the link key: a key of this computer's own, and one line for it on the server that
+# lets it run agent-say _link and nothing else (sshd's forced command; fakessh stands in for
+# sshd). The links above went the old way (AGENT_SAY_TEST_NO_LINK_KEY); from here they move to
+# the key. On devbox: kx, an agent, and kp; here: km.
+unset AGENT_SAY_TEST_NO_LINK_KEY
+lst=$(dirname "$AGENT_SAY_MAILBOX") lk=$(dirname "$AGENT_SAY_MAILBOX")/links/devbox ak=$T/rhome/.ssh/authorized_keys
+for d in "$lst"/links/*/; do [[ -d $d ]] && say unlink "$(basename "$d")" >/dev/null 2>&1; done
+rm -f "$T/presented.devbox" "$T/scan.presented"
+# The agent-say the key's line runs there is the copy that takes the stand-in for the ssh
+# server: _link, too, needs an ssh login above it while the old way still counts.
+ln -sf "$T/rsay/agent-say" "$T/rhome/.local/bin/agent-say"
+mkfifo "$T/run.kx"
+"$T/rbin/tmux" new-session -d -s rk -x 200 -y 50 "$T/bin/runner $T/run.kx" # devbox's tmux, ended above
+KX=$("$T/rbin/tmux" display -p -t rk '#{pane_id}')
+FIFO[1$KX]=$T/run.kx
+KP=$("$T/rbin/tmux" new-window -d -P -F '#{pane_id}' -t rk "$T/bin/crush")
+"$T/rbin/tmux" set-environment -g XDG_STATE_HOME "$T/rstate"
+KM=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/crush")
+sleep 0.3
+there "AGENT_SAY_PANE=$KX $ROOT/bin/agent-say name kx" >/dev/null
+there "AGENT_SAY_PANE=$KP $ROOT/bin/agent-say name kp" >/dev/null
+AGENT_SAY_PANE=$KM say name km >/dev/null
+seenr() { "$T/rbin/tmux" capture-pane -p -J -t "$1" -S -200 | grep -qF -- "$2"; }
+wait_seenr() { for _ in $(seq 60); do seenr "$1" "$2" && return 0; sleep 0.25; done; return 1; }
+# Its keys file there already holds other keys, one named like ours but not ours.
+mkdir -p "$T/rhome/.ssh" && chmod 700 "$T/rhome/.ssh"
+printf '%s\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOther1 me@desk' '# agent-say-link@laptop: a comment, not a key' \
+	'from="10.0.0.1",no-pty ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCother2 ops@x' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOther3 agent-say-link@laptop2' \
+	'' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOther4   agent-say-link@lap.top' >"$ak"
+chmod 600 "$ak" && cp "$ak" "$T/ak.fixture"
+ours() { grep -c ' agent-say-link@laptop$' "$ak"; }
+out=$(say link devbox 2>&1 </dev/null)
+check "linking puts the link key's line there and moves the link to it ($out)" "[[ \$out == *'linked to devbox'*'link key: devbox takes this link over its own key now'* && \$(cat $lk/linkkey) == key ]]"
+check "the key is this computer's own, yours only, named for it" "[[ \$(stat -c %a $lst/link-key) == 600 && \$(cut -d' ' -f3 $lst/link-key.pub) == agent-say-link@laptop ]]"
+check "its line runs agent-say _link there by its full path, and nothing else" "[[ \$(ours) == 1 ]] && grep -qx 'restrict,command=\"$T/rhome/.local/bin/agent-say _link\" ssh-ed25519 [A-Za-z0-9+/=]* agent-say-link@laptop' $ak"
+check "every other line is as it was, byte for byte; the file as it was is kept once, 600" "cmp -s <(grep -v ' agent-say-link@laptop\$' $ak) $T/ak.fixture && cmp -s $ak.agent-say.bak $T/ak.fixture && [[ \$(stat -c %a $ak) == 600 ]]"
+check "the check that moved it went with the key alone, on the link's own connection" "grep -q '^devbox $T/rhome/.local/bin/agent-say _link <- _link sync laptop\$' $T/forced.log && grep -q 'ControlPath=$lk/linkmux .*IdentitiesOnly=yes -o IdentityFile=$lst/link-key .* devbox _link sync laptop\$' $T/ssh.log"
+out=$(say link devbox 2>&1 </dev/null)
+check "linked again, it stays on the key and adds no second line ($out)" "[[ \$out == *'linked to devbox'* && \$out != *'link key:'* && \$(ours) == 1 ]] && say link | grep -q '^devbox  running  read-write, on the link key  '"
+AGENT_SAY_PANE=$KM say kp "over the link key" >/dev/null
+check "a message goes over the key to _link, and is typed in under its --from" "wait_seenr $KP '[agent-msg from=km@laptop' && seenr $KP 'over the link key' && grep -q '^devbox .* <- _link send km@laptop kp\$' $T/forced.log"
+in1 $KX "$ROOT/bin/agent-say --from kx km 'kx over the key'" >/dev/null
+check "an agent there writing here comes through the poller's check-ins on the key, as an introduction" "wait_intro 'kx@devbox wants to talk with km@laptop' && ! seen $KM 'kx over the key'"
+allow_intro "$(intro_id 'kx@devbox wants to talk with km@laptop')" >/dev/null
+check "allowed, it arrives" "wait_seen $KM 'kx over the key'"
+AGENT_SAY_PANE=$KM say kx 'km answering' >/dev/null
+check "and the answer goes back over the key" "wait_seen1 $KX 'km answering'"
+check "the poller checks in on the key" "[[ \$(grep -c '^devbox .* <- _link sync laptop\$' $T/forced.log) -ge 3 ]]"
+# For the migration, a login without the key still goes the old way (Step 5 of the plan
+# takes that away): a person logged in there over ssh.
+there "$ROOT/bin/agent-say --from ops km@laptop 'a person there, the old way'" >/dev/null
+check "meanwhile a plain login there still goes the old way" "wait_intro 'ops@devbox wants to talk with km@laptop'"
+say _intro deny "$(intro_id 'ops@devbox wants to talk with km@laptop')" >/dev/null
+# What the key may ask for: a link's requests, nothing else. Sent with the key, as anything
+# holding it could.
+withkey() { "$T/bin/fakessh" -o IdentitiesOnly=yes -o "IdentityFile=$lst/link-key" devbox "$1" </dev/null 2>&1; }
+bad=0
+for r in "echo hi; touch $T/pwn" "_link send km@laptop kp \$(touch $T/pwn)" '_link send km@laptop `id`' '_link rm -rf /' \
+	'_link send --from x kp' '_link sync ../x' '_link sync laptop extra' "PATH=/tmp agent-say _sync laptop" '_link name %1 read' \
+	'_link send km@laptop kp > /tmp/x' '_link peek %1 5;id' '_link  sync laptop' '_link update now'; do
+	o=$(withkey "$r") && bad=$((bad + 1))
+	[[ $o == *"_link takes only"* || $o == *"usage: _link"* ]] || { bad=$((bad + 1)); echo "    ($r: $o)"; }
+done
+check "_link takes nothing but a link's requests: no shell, ;, \$(, redirect, other command or bad word" "((bad == 0)) && [[ ! -e $T/pwn ]]"
+out=$(withkey "_link name $KP kp2")
+check "the panel's agent-say name goes over the key too ($out)" "[[ \$out == \"pane $KP is now 'kp2'\"* ]] && [[ \$(\"$T/rbin/tmux\" display -p -t $KP '#{@agent}') == kp2 ]]"
+withkey "_link name $KP kp" >/dev/null
+# _link is only what sshd runs: not from a pane, nor once run again as a tmux's owner, nor for
+# another user's pane through root's agent-say. An agent that leaves its pane runs it as
+# itself: its own state, and no way into anyone else's panes.
+out=$(in1 $KX "SSH_ORIGINAL_COMMAND='_link send kx kp' $ROOT/bin/agent-say _link <<<'from a pane'")
+check "_link run in a pane is refused: a login over ssh is never in one ($out)" "[[ \$out == *\"it doesn't run here\"* ]] && sleep 0.5 && ! seenr $KP 'from a pane'"
+out=$(run 1$KX "$ASROOT SSH_ORIGINAL_COMMAND='_link send kx kp' $ROOT/bin/agent-say _link <<<'as root'" 2>&1)
+check "nor run again as the tmux's owner (root, sudo -i in a pane of it) ($out)" "[[ \$out == *\"it doesn't run here\"* ]] && sleep 0.5 && ! seenr $KP 'as root'"
+out=$(run 1$KX "$AS PATH=$T/rootbin:$T/sudobin:\$PATH SSH_ORIGINAL_COMMAND='_link send kx kp' $ROOT/bin/agent-say _link <<<'by sudo'" 2>&1)
+check "nor by someone who may sudo -n to the owner ($out)" "[[ \$out == *\"it doesn't run here\"* ]] && sleep 0.5 && ! seenr $KP 'by sudo'"
+out=$(detached "1$KX" "$E1 SSH_ORIGINAL_COMMAND='_link send kx kp' $T/rsay/agent-say _link <<<'from a detached child'")
+check "nor by an agent's detached child, with no ssh login above it ($out)" "[[ \$out == *\"it doesn't run here\"* ]] && sleep 0.5 && ! seenr $KP 'from a detached child'"
+out=$(in1 $KX "LINK_CALL=1 $ROOT/bin/agent-say --from kx kp 'LINK_CALL from outside'")
+check "LINK_CALL in the environment counts for nothing: an agent's message waits for you ($out)" "[[ \$out == *'introduction sent to kp'* ]] && sleep 0.5 && ! seenr $KP 'LINK_CALL from outside'"
+mkfifo "$T/run.kj"
+KJ=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/runner $T/run.kj")
+FIFO[0$KJ]=$T/run.kj
+sleep 0.3
+$E0 AGENT_SAY_TEST_ASKER="$T/jhome" "$ROOT/bin/agent-say" _serve "$(id -u)" >"$T/serve2.log" 2>&1 &
+sleep 0.5
+out=$(inj $KJ "SSH_ORIGINAL_COMMAND='_link send kj km' $ROOT/bin/agent-say _link <<<'through root'")
+check "nor for another user's pane in root's tmux, through root's agent-say ($out)" "[[ \$out == *\"doesn't run\"* ]] && sleep 0.5 && ! seen $KM 'through root'"
+out=$(detached "0$KJ" "$JU SSH_ORIGINAL_COMMAND='_link send kj km' $ROOT/bin/agent-say _link <<<'detached as the user'")
+check "and that user's agent leaving its pane gets only its own state, nothing here ($out)" "[[ -n \$out && \$out != *'sent to'* && \$out != *queued* && \$out != *introduction* ]] && sleep 0.5 && ! seen $KM 'detached as the user'"
+pkill -f -- "$ROOT/bin/agent-say _serve" 2>/dev/null
+tmux kill-pane -t "$KJ"
+# Layout 2, a user's tmux with a root tab (sudo -i): root's agent there writes here over the key.
+out=$(run 1$KX "$ASROOT $ROOT/bin/agent-say --from kx km 'root in a sudo -i tab, over the key'" 2>&1)
+check "an agent run as root in the user's tmux there reaches here over the key ($out)" "wait_seen $KM 'root in a sudo -i tab, over the key'"
+# Layout 1 on this side: a user's agent in root's tmux here (su - USER), through root's
+# agent-say, writes to a server linked on the key.
+mkfifo "$T/run.kw"
+KW=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/bin/plainrunner $T/run.kw")
+FIFO[0$KW]=$T/run.kw
+sleep 0.3
+$E0 AGENT_SAY_TEST_ASKER="$T/jhome" "$ROOT/bin/agent-say" _serve "$(id -u)" >"$T/serve3.log" 2>&1 &
+sleep 0.5
+out=$(inj $KW "$ROOT/bin/agent-say --from kw kp@devbox 'from a su - pane here'")
+check "a person in a user's pane of root's tmux here reaches a server on the key ($out)" "wait_seenr $KP 'from a su - pane here'"
+pkill -f -- "$ROOT/bin/agent-say _serve" 2>/dev/null
+tmux kill-pane -t "$KW"
+# Its line taken off the server: the poller is turned away once, stops, and tries no more.
+grep -v ' agent-say-link@laptop$' "$ak" >"$ak.new" && mv "$ak.new" "$ak"
+check "the key turned away, the link stops at once and says so" "for _ in \$(seq 40); do [[ -e $lk/paused ]] && break; sleep 0.25; done; [[ -e $lk/paused ]] && grep -q 'link key refused: press B' $lk/error && ! pollers devbox >/dev/null"
+n=$(grep -c ' devbox ' "$T/ssh.log"); sleep 2
+out=$(AGENT_SAY_PANE=$KM say kp 'while refused' 2>&1)
+check "and nothing goes to it meanwhile, not a check-in, not a send ($out)" "[[ \$out == *'needs you first'* && \$(grep -c ' devbox ' $T/ssh.log) == $n ]]"
+out=$(say link devbox 2>&1 </dev/null)
+check "linking it again tries the key once, and takes the link off it, saying how to put it back ($out)" "[[ \$out == *'refused the link key'*'put the key back'* && ! -e $lk/linkkey && -e $lk/paused ]]"
+out=$(say link devbox 2>&1 </dev/null)
+check "the next time, it logs in the way it links and puts the key back ($out)" "[[ \$out == *'linked to devbox'*'takes this link over its own key now'* && -e $lk/linkkey && \$(ours) == 1 ]]"
+say unlink devbox >/dev/null 2>&1
+check "unlink takes its line off by its name, and leaves every other line as it was" "cmp -s $ak $T/ak.fixture && cmp -s $ak.agent-say.bak $T/ak.fixture && [[ ! -e $lk ]]"
+# A server that takes a password: the key goes on over the login, and the link then goes on
+# the key, on its own connection, whether or not the password login is open.
+pwl=$lst/links/pwbox
+echo "$T/hostkey2.pub" >"$T/presented.pwbox"
+printf 'pwbox %s\n' "$(cut -d' ' -f1,2 "$T/hostkey2.pub")" >>"$T/known_hosts"
+pw _login pwbox "$fp2 (ED25519)" <<<hunter2 >/dev/null 2>&1
+out=$(pw link pwbox --yes 2>&1 </dev/null)
+check "a server linked by password moves to the key over that login ($out)" "[[ \$out == *'linked to pwbox'*'takes this link over its own key now'* && \$(cat $pwl/linkkey) == password && \$(ours) == 1 ]]"
+check "its key traffic has a connection of its own (linkmux), apart from the password login's" "pw _login pwbox --check && $T/bin/pwssh -o ControlPath=$pwl/linkmux -O check pwbox && grep -q 'ControlPath=$pwl/linkmux .*IdentityFile=$lst/link-key .* pwbox _link sync laptop\$' $T/pwssh.log"
+rm -f "$T/pw.master" # the password login drops
+AGENT_SAY_PANE=$KM AGENT_SAY_SSH=$T/bin/pwssh say kp@pwbox 'with the password login gone' >/dev/null 2>&1
+check "with the password login gone, messages go on over the key" "wait_seenr $KP 'with the password login gone' && grep -q '^pwbox .* <- _link send km@laptop kp\$' $T/forced.log && ! pw _login pwbox --check && [[ ! -e $pwl/login ]]"
+n=$(prompts)
+out=$(pw unlink pwbox 2>&1)
+check "unlinked with no login open, it asks for none, and says which line to take off by hand ($out)" "[[ \$out == *'take the line ending agent-say-link@laptop out of'* && \$(ours) == 1 && \$(prompts) == $n ]]"
+grep -v ' agent-say-link@laptop$' "$ak" >"$ak.new" && mv "$ak.new" "$ak"
+grep -v '^pwbox ' "$T/known_hosts" >"$T/known_hosts.new" && mv "$T/known_hosts.new" "$T/known_hosts"
+# An older tmux-revive there: no _keyline, no _link. The link goes on the old way, and says so.
+mkdir -p "$T/oldsay"
+sed -e 's/^\t_keyline)$/\t_keyline-not-yet)/' -e 's/^if \[\[ \${1:-} == _link \]\]; then$/if false; then/' "$T/rsay/agent-say" >"$T/oldsay/agent-say"
+chmod +x "$T/oldsay/agent-say"
+grep -q '^	_keyline-not-yet)$' "$T/oldsay/agent-say" && grep -q '^if false; then$' "$T/oldsay/agent-say" || echo "    (couldn't make the older agent-say)"
+out=$(AGENT_SAY_REMOTE_CMD=$T/oldsay/agent-say say link devbox 2>&1 </dev/null)
+check "a server too old for the key links as before, and says to update it ($out)" "[[ \$out == *'linked to devbox'*'older than the link key'*'Update tmux-revive there'* && ! -e $lk/linkkey && \$(ours) == 0 ]]"
+AGENT_SAY_REMOTE_CMD=$T/oldsay/agent-say say unlink devbox >/dev/null 2>&1
+o=$(SSH_ORIGINAL_COMMAND='_link sync laptop' "$T/oldsay/agent-say" _link 2>&1 </dev/null)
+check "and one that has the key's line but no _link says to update it ($(lw h 1 "$o"))" "[[ \$(lw h 1 \"\$o\") == 'tmux-revive there is too old for the link key: update tmux-revive there' ]]"
+# Where the line can't be written (a jail may read keys from a file of root's): as before, with
+# the line shown for you to place.
+chmod 500 "$T/rhome/.ssh"
+out=$(say link devbox 2>&1 </dev/null)
+chmod 700 "$T/rhome/.ssh"
+check "where the line can't be written, the link goes on as before and shows the line to place ($out)" "[[ \$out == *'linked to devbox'*'link key: not put on devbox'*'link key line, for ~/.ssh/authorized_keys'*'restrict,command=\"$T/rhome/.local/bin/agent-say _link\" ssh-ed25519 '*' agent-say-link@laptop'* && ! -e $lk/linkkey ]]"
+# Placed there by hand, it's taken the next time you link.
+sed -n 's/^link key line, .*: //p' <<<"$out" >>"$ak"
+chmod 500 "$T/rhome/.ssh"
+out=$(say link devbox 2>&1 </dev/null)
+chmod 700 "$T/rhome/.ssh"
+check "a line you placed yourself is taken the next time you link ($out)" "[[ \$out == *'takes this link over its own key now'* && -e $lk/linkkey && \$(ours) == 1 ]]"
+say unlink devbox >/dev/null 2>&1
+# Layout 4, a restricted login shell (rbash): it runs no command named by a path, so the line
+# names agent-say bare, as on that login's own PATH. (Run here with this computer's rbash; no
+# real jailed server was tried.)
+if [[ -x /usr/bin/rbash ]]; then
+	RCMD='PATH="$HOME/.local/bin:$PATH" agent-say'
+	mkdir -p "$T/loginbin" && ln -sf "$T/rsay/agent-say" "$T/loginbin/agent-say"
+	echo /usr/bin/rbash >"$T/loginshell"
+	out=$(AGENT_SAY_REMOTE_CMD=$RCMD say link devbox 2>&1 </dev/null)
+	check "on an rbash login the line names agent-say bare, and the link moves to it ($out)" "[[ \$out == *'takes this link over its own key now'* ]] && grep -qx 'restrict,command=\"agent-say _link\" ssh-ed25519 [A-Za-z0-9+/=]* agent-say-link@laptop' $ak"
+	AGENT_SAY_PANE=$KM say kp 'through rbash' >/dev/null 2>&1
+	check "and messages go through it" "wait_seenr $KP 'through rbash'"
+	sed "s|command=\"agent-say _link\"|command=\"$T/loginbin/agent-say _link\"|" "$ak" >"$ak.new" && mv "$ak.new" "$ak"
+	out=$(withkey '_link sync laptop')
+	check "where a full path would have been refused ($out)" "[[ \$out == *'restricted'* ]]"
+	sed "s|command=\"$T/loginbin/agent-say _link\"|command=\"agent-say _link\"|" "$ak" >"$ak.new" && mv "$ak.new" "$ak"
+	AGENT_SAY_REMOTE_CMD=$RCMD say unlink devbox >/dev/null 2>&1
+	check "and unlink takes it off over that login" "[[ \$(ours) == 0 ]] && cmp -s $ak $T/ak.fixture"
+	rm -f "$T/loginbin/agent-say"
+	out=$(AGENT_SAY_REMOTE_CMD=$RCMD say link devbox 2>&1 </dev/null)
+	check "with agent-say not on that login's PATH, link says the one step root there takes ($out)" "[[ \$out == *'on devbox, its login shell is restricted (rbash), and agent-say isn'\\''t on its PATH. As root there, link ~'*'/.local/bin/agent-say into a folder on that PATH'* && ! -e $lk/on ]]"
+	rm -f "$T/loginshell"
+	rm -rf "$lk"
+fi
+tmux kill-pane -t "$KM"
+"$T/rbin/tmux" kill-server
 
 echo "$pass passed, $fail failed"
 ((fail == 0))

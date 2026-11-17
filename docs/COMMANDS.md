@@ -223,7 +223,8 @@ connection you have open to it) and shows it, and pops up a box for the password
 if the server takes one. If the key isn't in your known_hosts, you haven't
 confirmed it yet, so No comes first. A link that stops working shows why in LINKS,
 and **B** on it tries it once more. **B** on a working link links it again or
-unlinks it.
+unlinks it, and on a link not yet on the link key (see Linking computers) it offers
+**Use the link key**, which moves it there without unlinking.
 
 Once linked, that computer's panes show up in the list too, grouped under its
 name, with their USER and VER. **U** updates tmux-revive there over ssh, along
@@ -388,6 +389,64 @@ confirm the new key. Every connection the link makes is tied to the key you
 confirmed, whatever your ssh config says about known_hosts. ssh itself turns away
 a server showing any other key, and the link stops there.
 
+### The link key
+
+Your computer has a key of its own for links, `link-key` in agent-say's state
+folder, made the first time you link. When you link a server, agent-say logs in
+the way it always has (your own ssh key, or the password once) and adds one line
+for that key to `~/.ssh/authorized_keys` of the user the link logs in as there:
+
+```
+restrict,command="/home/you/.local/bin/agent-say _link" ssh-ed25519 AAAA... agent-say-link@laptop
+```
+
+Then it tries one check-in with the key. If that works, the link uses the key from
+then on, and `agent-say link` lists it as `on the link key`. A login with that key
+runs `agent-say _link` and nothing else: no shell, no terminal, no forwarding.
+`_link` takes only what a link asks for (a check-in, a message, and the panel's
+rows, peek, answers, update and naming), as plain words, never as a command line.
+That's how the server tells what you send over the link from what its own agents
+send. sshd vouches for it, by a key only your computer has. An agent there that
+runs as another user can't use that key, or write that user's files to add one.
+
+A server linked by password moves to the key the same way, at its first login, so
+the password is needed only then. The link then no longer needs that login to stay
+open.
+
+The line is found by its name, `agent-say-link@<your computer>`, never by where it
+is in the file, and every other line is left exactly as it was. The file as it was
+before the first change is kept beside it, once, as `authorized_keys.agent-say.bak`.
+Linking again replaces the line instead of adding a second one. Several computers
+linking one server each have their own line.
+
+`agent-say unlink` takes the line off again, over the same login: your own key, or
+the password login if it's still open. It never opens a login that would ask for a
+password. When it can't take the line off, it says which line to remove by hand.
+
+If the server turns the key away later (its line was removed, say), the link stops
+at once and doesn't try again. **B**, or `agent-say link <host>`, tries the key once.
+If it's still refused, the link comes off the key, and the next **B** logs in the
+way you link and puts the line back. A server whose tmux-revive is older than the
+key keeps linking the old way, and `agent-say link` says to update it there. If the
+line can't be written (some jails read keys from a file only root can change), the
+link goes on the old way, and **B** shows the line for you to place.
+
+A restricted login shell (`rbash`) runs no command named by a path, so there the
+line names `agent-say` bare, and it has to be on that login's PATH. If it isn't,
+`agent-say link` and **B** say the one step only root there can take: link
+`~<user>/.local/bin/agent-say` into a folder on that PATH. This has been tried
+with `rbash` on a test machine only. **Jailed servers are untested:** nothing has
+been run against a real chroot jail (jailkit and the like) or a command-limited
+shell such as `jk_lsh`. In a chroot jail, agent-say and what it uses (bash, tmux,
+jq, ps) have to be inside the jail, and `jk_lsh` has to allow agent-say.
+
+For now a server also takes links the old way, for links not moved to the key yet:
+it looks at the processes above a call for an ssh login. Until that goes, `_link`
+makes the same check as well as needing the key, so an agent that leaves its pane
+gets no more from it than from a plain send. Where that check can't be made (a Mac
+server, or one that is itself a container), a link on the key doesn't work yet. A
+later release removes the old way, and then only the key counts.
+
 ### Limits
 
 You can limit what the other computer may do here:
@@ -484,6 +543,13 @@ two. Agents on your servers can't allow anything, since they can't touch your
 computer's files. So a rogue server can't reach your computer's agents or your
 other servers' agents without you. Your computer names each sender's server itself,
 from the link it came in on.
+
+On a server, what comes over the link key counts as you, because only your computer
+holds that key and sshd lets it run nothing but `agent-say _link`. That holds against
+agents there running as any other user. An agent running as the same user the link
+logs in as, or as root, can do anything that user can, adding a key of its own
+included, so the key doesn't stop it, and nothing else in agent-say does either. That
+is the same as for agents on your own computer, below.
 
 Within one server, though, an agent's session is whatever that server says it is.
 A rogue process there could pass for another agent on the same server, but only

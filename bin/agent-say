@@ -36,7 +36,10 @@ set -euo pipefail
 umask 077 # the mailbox holds whatever agents say to each other: yours only
 
 die() { echo "agent-say: $*" >&2; exit 1; }
-unset LINK_TRY # set only inside agent-say, never from outside (see ssh_to)
+# Set only inside agent-say, never from outside: LINK_TRY and KEY_TRY (see ssh_to), LINK_CALL
+# (see _link).
+unset LINK_TRY KEY_TRY LINK_CALL
+LINK_CALL=""
 
 # --- the input box -----------------------------------------------------------------------
 # input_box TITLE PROMPT [secret|plain|note] [HINT] [QUESTION] -> BOX_REPLY: one line typed into a
@@ -306,7 +309,7 @@ follow_tmux_owner() {
 	[[ -d /run/user/$TS_UID && "$(stat -c %u -- "/run/user/$TS_UID" 2>/dev/null)" == "$TS_UID" ]] &&
 		env+=(XDG_RUNTIME_DIR="/run/user/$TS_UID")
 	exec "${drop[@]}" env -u AGENT_SAY_MAILBOX -u XDG_STATE_HOME -u XDG_RUNTIME_DIR -u TMUX \
-		-u AGENT_SAY_TEST_OWNER -u AGENT_SAY_TEST_ROOT "${env[@]}" "$self" "$@"
+		-u AGENT_SAY_TEST_OWNER -u AGENT_SAY_TEST_ROOT -u SSH_ORIGINAL_COMMAND "${env[@]}" "$self" "$@"
 }
 # Not when sourced (the panel's popup, run as you): only a command run is followed.
 CALLER=""
@@ -630,6 +633,20 @@ queue_local() { # queue_local FROM TO MESSAGE
 ssh_to() { # ssh_to HOST REMOTE-COMMAND (stdin passes through)
 	[[ "$1" != -* ]] || die "not a host: $1"
 	mkdir -p "$STATE"
+	# A link on the link key goes only with that key, on a connection of its own (key_opts):
+	# never through your own open one, nor the password login's, which logged in another way,
+	# so sshd would run what is sent there as a command, not agent-say _link. Stopped on a
+	# failure, nothing goes until you start it again, whatever else is open to it.
+	if link_keyed "$1"; then
+		if [[ -z ${LINK_TRY:-} && -f "$STATE/links/$1/paused" ]]; then
+			echo "agent-say: the link to $1 needs you first ($(head -n 1 "$STATE/links/$1/error" 2>/dev/null || echo stopped)); nothing was sent over ssh" >&2
+			return 1
+		fi
+		pin_opts "$1" || return 255
+		key_opts "$1"
+		$SSH "${KEY_OPTS[@]}" "${PIN_OPTS[@]}" "$1" "$2"
+		return
+	fi
 	# An ssh connection of your own already open to it (your config's ControlPath): ride that,
 	# with no new connection, once it shows the key confirmed (see riding).
 	if riding "$1"; then
@@ -824,11 +841,138 @@ ssh_login() { # ssh_login HOST FINGERPRINTS (one per line: the keys you confirme
 # the key you confirmed, so ssh turning it away means another key answered).
 needs_login() {
 	(($2 == 255)) || return 1
+	# On the link key, a password has nothing to open: only that key logs it in.
+	link_keyed "$1" && return 1
 	grep -qE 'Permission denied|Too many authentication failures' "$3" 2>/dev/null && return 0
 	grep -q 'Host key verification failed' "$3" 2>/dev/null || return 1
 	[[ ! -s "$STATE/links/$1/fingerprint" ]] || return 1
 	kh_find "$1"
 	[[ -z "$(kh_keys)" ]]
+}
+
+# --- the link key ------------------------------------------------------------------------
+# A linked server has to tell what the link brings (from you, on the computer that links it)
+# from what its own agents send. sshd tells them apart for it. This computer has a key for its
+# links (link_key), and each server it links on that key has one line for it in the login
+# user's own ~/.ssh/authorized_keys:
+#   restrict,command="<agent-say there> _link" ssh-ed25519 AAAA... agent-say-link@<this computer>
+# A login with that key runs agent-say _link and nothing else (no shell, terminal or
+# forwarding), with what was asked in SSH_ORIGINAL_COMMAND. Only this computer holds the key,
+# so an agent there running as another user can't log in with it, nor write that user's files
+# to add a key of its own. An agent running as the login user, or as root, can do whatever that
+# user can, and nothing in agent-say stops that.
+# The line goes in when you link (key_setup), over the login you link with, and comes out when
+# you unlink (key_unset). links/<host>/linkkey marks a link that uses it, and says how you
+# logged in to put it there (key or password). Every other link goes as it always has.
+LINK_KEY="$STATE/link-key"
+link_keyed() { [[ ( -f "$STATE/links/$1/linkkey" || ${KEY_TRY:-} == "$1" ) && -s $LINK_KEY ]]; }
+# key_opts HOST -> KEY_OPTS: the link key and no other (IdentitiesOnly), on the link's own
+# connection (links/<host>/linkmux), never $CONTROL, the password login's: what rides that one
+# would run as a command there, not as _link. The panel takes them from agent-say _key-opts.
+key_opts() {
+	KEY_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ControlMaster=auto -o "ControlPath=$STATE/links/$1/linkmux"
+		-o ControlPersist=120 -o IdentitiesOnly=yes -o "IdentityFile=$LINK_KEY" -o IdentityAgent=none)
+}
+# key_refused HOST STATUS STDERR-FILE: was the link key turned away? Refused outright, or another
+# key logged in instead (one your ssh config names, offered after it): then no forced command
+# ran, and a shell there took _link for a command it hasn't got.
+key_refused() {
+	grep -qE 'Permission denied|Too many authentication failures' "$3" 2>/dev/null && return 0
+	(($2 == 127)) && grep -q '_link' "$3" 2>/dev/null
+}
+# This computer's link key, made the first time a link needs it: ed25519 with no passphrase (the
+# poller logs in with it unattended), yours only. Prints its public half as a server's line has
+# it: its type and key, named agent-say-link@LABEL.
+link_key() {
+	if [[ ! -s $LINK_KEY ]]; then
+		mkdir -p "$STATE"
+		rm -f "$LINK_KEY.pub"
+		ssh-keygen -q -t ed25519 -N '' -C "agent-say-link@$LABEL" -f "$LINK_KEY" </dev/null >/dev/null 2>&1 || return 1
+	fi
+	chmod 600 "$LINK_KEY"
+	[[ -s $LINK_KEY.pub ]] || ssh-keygen -y -f "$LINK_KEY" >"$LINK_KEY.pub" 2>/dev/null </dev/null || return 1
+	awk -v c="agent-say-link@$LABEL" 'NR == 1 && $1 == "ssh-ed25519" {print $1, $2, c}' "$LINK_KEY.pub" | grep .
+}
+# What agent-say there is asked to do over a link. A host on the link key gets plain words, which
+# its _link reads and checks one by one; never a command line. Any other gets the command line
+# REMOTE_CMD runs, as before (a server not moved to the key yet, or too old for it).
+sync_req() { # sync_req HOST
+	if link_keyed "$1"; then echo "_link sync $LABEL"; else echo "$REMOTE_CMD _sync $(printf %q "$LABEL")"; fi
+}
+send_req() { # send_req HOST FROM NAME [local] [notice] [via=LABEL] [session=ID]: the message goes on stdin
+	local o env="" words="" h=$1 f=$2 n=$3
+	shift 3
+	for o; do
+		case $o in
+			local) env+="AGENT_SAY_LOCAL_ONLY=1 " words+="--local " ;;
+			notice) env+="AGENT_SAY_NOTICE=1 " words+="--notice " ;;
+			via=*) env+="AGENT_SAY_VIA=$(printf %q "${o#via=}") " words+="--via ${o#via=} " ;;
+			session=*) env+="AGENT_SAY_TO_SESSION=$(printf %q "${o#session=}") " words+="--session ${o#session=} " ;;
+		esac
+	done
+	if link_keyed "$h"; then echo "_link send $words$f $n"; else echo "$env$REMOTE_CMD --from $(printf %q "$f") $(printf %q "$n") -"; fi
+}
+# key_setup HOST -> KEY_SAID: put the link key's line on HOST over the login link just checked
+# (your own key, or the password login), then one check-in with the key, tried once. Only if
+# that works does the link move to it. Either way the link works; KEY_SAID says what happened,
+# for link to print after it says it's linked. AGENT_SAY_TEST_NO_LINK_KEY=1: none of it (the
+# tests of links as they were before the key).
+key_setup() {
+	local h=$1 d="$STATE/links/$1" pub out rc=0 how=key line put="" why=""
+	KEY_SAID=""
+	[[ -z ${AGENT_SAY_TEST_NO_LINK_KEY:-} ]] || return 0
+	pub="$(link_key)" || { KEY_SAID="link key: couldn't make one ($LINK_KEY), so the link goes on as before"; return 0; }
+	master_up "$h" && how=password
+	out="$(printf '%s\n' "$pub" | LINK_TRY=1 ssh_to "$h" "$REMOTE_CMD _keyline add $(printf %q "$LABEL")" 2>&1)" || rc=$?
+	line="$(sed -n 's/^line: //p' <<<"$out" | head -n 1)"
+	((rc == 0)) && [[ $out == *"added: "* ]] && put=1
+	if [[ -z $put ]]; then
+		case $out in
+			*_keyline* | *"usage: agent-say [--why"*)
+				KEY_SAID="link key: tmux-revive on $h is older than the link key, so the link goes on as before. Update tmux-revive there, then link it again"
+				return 0 ;;
+		esac
+		why="$(grep -m 1 '^agent-say: ' <<<"$out" || head -n 1 <<<"$out")" why=${why#agent-say: }
+		# agent-say there didn't answer at all (the connection went, say): nothing more now.
+		[[ -n $line ]] || { KEY_SAID="link key: not put on $h (${why:-no answer}), so the link goes on as before"; return 0; }
+		# It answered, but couldn't write the line. You may have placed it yourself (some jails
+		# read keys from a file only root can change), so the key is tried as below, once.
+	fi
+	# One check-in with the key, on its own connection: it must be that one that answered.
+	rc=0
+	{ local_names | sed 's/^/N /'; via_names "$h"; } |
+		KEY_TRY=$h LINK_TRY=1 ssh_to "$h" "$(KEY_TRY=$h sync_req "$h")" >/dev/null 2>"$d/key.err" || rc=$?
+	if ((rc == 0)) && $SSH -o "ControlPath=$d/linkmux" -O check "$h" >/dev/null 2>&1 </dev/null; then
+		echo "$how" >"$d/linkkey"
+		rm -f "$d/key.err"
+		KEY_SAID="link key: $h takes this link over its own key now (agent-say-link@$LABEL in its authorized keys)"
+		return 0
+	fi
+	if [[ -n $put ]]; then
+		KEY_SAID="link key: its line is on $h, but logging in with it didn't work ($(KEY_TRY=$h link_why "$h" "$rc" "$d/key.err")), so the link goes on as before"
+	else
+		KEY_SAID="link key: not put on $h ($why), so the link goes on as before"
+	fi
+	KEY_SAID+=$'\n'"link key line, for ~/.ssh/authorized_keys of the user it logs in as there, or wherever that server reads its keys: $line"
+	link_log "$d/key.err"
+	rm -f "$d/key.err"
+	return 0
+}
+# key_unset HOST: take this computer's line off HOST again (unlink), over the login it was put
+# there with: your own key, or a password login still open. Never a login that would ask for a
+# password, nor anything to a link stopped on a failure. Then it says which line to take off.
+key_unset() {
+	local h=$1 d="$STATE/links/$1" rc=0 out=""
+	[[ -f "$d/linkkey" ]] || return 0
+	if [[ ! -f "$d/paused" ]] && { [[ "$(cat "$d/linkkey" 2>/dev/null)" == key ]] || master_up "$h"; }; then
+		if riding "$h"; then
+			out="$(timeout 15 $SSH "${MUX_OPTS[@]}" "$h" "$REMOTE_CMD _keyline remove $(printf %q "$LABEL")" 2>&1 </dev/null)" || rc=$?
+		elif pin_opts "$h" 2>/dev/null; then
+			out="$(timeout 15 $SSH -o ConnectTimeout=5 "${SSH_OPTS[@]}" "${PIN_OPTS[@]}" "$h" "$REMOTE_CMD _keyline remove $(printf %q "$LABEL")" 2>&1 </dev/null)" || rc=$?
+		else rc=1; fi
+		((rc == 0)) && [[ $out == *"removed: "* ]] && return 0
+	fi
+	echo "agent-say: the link key's line is still on $h: take the line ending agent-say-link@$LABEL out of ~/.ssh/authorized_keys of the user it logs in as there" >&2
 }
 
 # --- links -------------------------------------------------------------------------------
@@ -870,7 +1014,19 @@ link_log() { # link_log STDERR-FILE (in the link's dir)
 link_why() { # link_why HOST STATUS STDERR-FILE
 	local e
 	e="$(cat "$3" 2>/dev/null || true)"
-	(($2 == 127)) && { echo "agent-say isn't installed there"; return; }
+	link_keyed "$1" && key_refused "$1" "$2" "$3" && { echo "link key refused: press B to log in and put it back"; return; }
+	if (($2 == 127)); then
+		# A restricted shell (rbash) keeps the PATH its login set, and runs no command named by a
+		# path: agent-say has to be on that PATH, which only root there can do (no retry helps).
+		if [[ $e == *"readonly variable"* || $e == *restricted* ]]; then
+			local u
+			u="$(timeout 5 $SSH -G "$1" 2>/dev/null </dev/null | awk '$1 == "user" {print $2; exit}')"
+			echo "its login shell is restricted (rbash), and agent-say isn't on its PATH. As root there, link ~${u:-USER}/.local/bin/agent-say into a folder on that PATH, then press B"
+		else
+			echo "agent-say isn't installed there"
+		fi
+		return
+	fi
 	case $e in
 		*"timed out"*) echo "can't reach (connection timed out)" ;;
 		*"Connection refused"*) echo "can't reach (connection refused)" ;;
@@ -878,7 +1034,10 @@ link_why() { # link_why HOST STATUS STDERR-FILE
 		*"No route to host"* | *"Network is unreachable"*) echo "can't reach (no network route)" ;;
 		*"Connection closed"* | *"Connection reset"* | *"kex_exchange_identification"* | *"Broken pipe"*) echo "can't reach (connection closed)" ;;
 		*"Host key verification failed"*) echo "host key doesn't match: press B to bridge again" ;;
-		*"Permission denied"* | *"Too many authentication failures"*) echo "login refused (key)" ;;
+		*"Permission denied"* | *"Too many authentication failures"*)
+			if link_keyed "$1"; then echo "link key refused: press B to log in and put it back"; else echo "login refused (key)"; fi ;;
+		# An agent-say there from before _link takes it as a send with nothing to send.
+		*"usage: agent-say [--why"*) echo "tmux-revive there is too old for the link key: update tmux-revive there" ;;
 		"agent-say: "*) e="${e#agent-say: }"; echo "${e%%$'\n'*}" ;;
 		"") echo "ssh to $1 failed (status $2)" ;;
 		*) e="${e%%$'\n'*}"; echo "${e:0:80}" ;;
@@ -1207,6 +1366,19 @@ ssh_local_conn() {
 		}
 		END { if (!n) exit 2; for (f in far) if (f in near) exit 0; exit 1 }'
 }
+# ssh_login_above: this process runs under an ssh login's server, with no agent anywhere above
+# it: what sending_agent takes for a person outside any pane, for _link's own check.
+ssh_login_above() {
+	local pid=$$ below="" sshd="" AK
+	while [[ -n $pid && $pid -gt 1 ]]; do
+		agent_cmd "$(ps -ww -o args= -p "$pid" 2>/dev/null)"
+		[[ -z $AK ]] || return 1
+		ssh_server_pid "$pid" "$below" && sshd=1
+		below=$pid
+		pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+	done
+	[[ -n $sshd ]]
+}
 ssh_named() { # ssh_named PID: its name is sshd's (sshd, or sshd-session from OpenSSH 9.8)
 	local c
 	c="$(cat "/proc/$1/comm" 2>/dev/null)"
@@ -1241,6 +1413,9 @@ sending_agent() {
 	local pid=$ORIGIN panes hit="" agent="" sshd="" anc=" " apid args AK
 	AGENT_PANE="" AGENT_SID=""
 	[[ -n $own_delivery ]] && return 0
+	# What a link brings over its link key (_link): sshd let it in by that key, which only the
+	# computer that links here holds, and that computer asked you there itself.
+	[[ -n $LINK_CALL ]] && return 0
 	panes="$(tmux list-panes -a -F '#{pane_pid} #{pane_id}' 2>/dev/null)" || return 1
 	# Up to the pane, or else all the way: an agent anywhere above counts.
 	local below=""
@@ -1340,7 +1515,7 @@ pane_sessions() { # "I name session" for each pane here with a name only it has
 # send would have: to a pane on a linked machine as from here, not relayed; to a pane here,
 # typed in here (queued while that pane is busy).
 relay_send() { # relay_send FROM NAME@HOST TEXT [RECIPIENT-KEY (see stamp)]
-	local env="AGENT_SAY_LOCAL_ONLY=1" s="${4:-}" rc=0
+	local how=(local) s="${4:-}" rc=0
 	s="${s#s:}"; s="${s%@*}"
 	[[ "${4:-}" == s:* ]] && valid_session "$s" || s=""
 	if [[ "${2#*@}" == "$LABEL" ]]; then
@@ -1349,9 +1524,9 @@ relay_send() { # relay_send FROM NAME@HOST TEXT [RECIPIENT-KEY (see stamp)]
 		AGENT_SAY_TO_SESSION="$s" queue_local "${1%"@$LABEL"}" "${2%@*}" "$3" || { echo "agent-say: ${2%@*} is busy, and $QUEUE_MAX messages already wait in the queue" >&2; return 1; }
 		return 0
 	fi
-	[[ "${1#*@}" == "$LABEL" ]] || env+=" AGENT_SAY_VIA=$(printf %q "$LABEL")"
-	[[ -n $s ]] && env+=" AGENT_SAY_TO_SESSION=$(printf %q "$s")"
-	printf '%s' "$3" | ssh_to "${2#*@}" "$env $REMOTE_CMD --from $(printf %q "$1") $(printf %q "${2%@*}") -" >/dev/null
+	[[ "${1#*@}" == "$LABEL" ]] || how+=("via=$LABEL")
+	[[ -n $s ]] && how+=("session=$s")
+	printf '%s' "$3" | ssh_to "${2#*@}" "$(send_req "${2#*@}" "$1" "${2%@*}" "${how[@]}")" >/dev/null
 }
 
 # A plain notice from agent-say itself to a pane on a linked machine: no reply address.
@@ -1881,10 +2056,10 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 				return 0
 			}
 			# Only to the session it was allowed for, not a new one in that pane.
-			[[ $rk == s:* ]] && renv="AGENT_SAY_TO_SESSION=$(printf %q "$rs") "
+			[[ $rk == s:* ]] && renv=$rs
 		fi
 		# The message travels on stdin, so no shell quoting of its content is needed.
-		printf '%s' "$msg" | ssh_to "$host" "$renv$REMOTE_CMD --from $(printf %q "$from") $(printf %q "$name") -"
+		printf '%s' "$msg" | ssh_to "$host" "$(send_req "$host" "$from" "$name" ${renv:+"session=$renv"})"
 		return
 	fi
 
@@ -1986,6 +2161,74 @@ if [[ -n ${AGENT_SAY_FOR:-} ]]; then
 	unset AGENT_SAY_PANE TMUX_PANE
 fi
 unset AGENT_SAY_FOR
+
+# A login on a link key (see key_setup): sshd runs agent-say _link for that key and nothing
+# else, and hands it what the link asked for in SSH_ORIGINAL_COMMAND. That is plain words,
+# never a command line: split on spaces, never run by a shell, and each word checked before it
+# goes anywhere. Only the requests a link makes are taken, as the calls they stand for. In this
+# process, and only here, the caller counts as a link (LINK_CALL, see sending_agent), whatever
+# --from says. It runs only as sshd starts it: never in a tmux pane (a login over ssh isn't in
+# one), for another user's pane (_serve), or once run again as a tmux's owner. Those are an
+# agent running it, which runs as itself, with its own state, and reaches no one else's panes.
+# And, while the old way still counts for links not on the key (see sending_agent), only under
+# an ssh login with no agent above it either (ssh_login_above): an agent that leaves its pane
+# (setsid) gets no more from _link than from a plain send. Fails closed where that can't be
+# told (no /proc: a Mac server, or a container).
+if [[ ${1:-} == _link ]]; then
+	((ORIGIN == $$)) && [[ -z $CALLER ]] && ! tmux_server_above && ssh_login_above ||
+		die "agent-say _link is what a link's key runs over ssh; it doesn't run here"
+	# As REMOTE_CMD runs it: a login over ssh often lacks ~/.local/bin, where tmux-revive puts
+	# agent-say and the tools a user installed there may live.
+	export PATH="$HOME/.local/bin:$PATH"
+	req=${SSH_ORIGINAL_COMMAND:-}
+	unset SSH_ORIGINAL_COMMAND AGENT_SAY_VIA AGENT_SAY_TO_SESSION AGENT_SAY_LOCAL_ONLY AGENT_SAY_NOTICE AGENT_SAY_PANE TMUX_PANE
+	# Letters, digits, . _ : % @ = + - and single spaces: every word a request has, and nothing a
+	# shell would read (a paste is hex; a key, lit: and hex).
+	((${#req} <= 90000)) && [[ $req =~ ^[A-Za-z0-9._:%@=+-]+(\ [A-Za-z0-9._:%@=+-]+)*$ ]] ||
+		die "_link takes only a link's requests; not run"
+	read -ra w <<<"$req"
+	[[ ${w[0]} == _link ]] || die "_link takes only a link's requests; not run"
+	# tmux-revive beside this agent-say, as the installer puts them, for the panel's requests.
+	revive="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/tmux-revive"
+	case ${w[1]:-} in
+		sync) # a check-in: _link sync LABEL (stdin: what _sync takes)
+			((${#w[@]} == 3)) && valid_host "${w[2]}" || die "usage: _link sync <label>"
+			set -- _sync "${w[2]}" ;;
+		send) # a message: _link send [--local] [--notice] [--via LABEL] [--session ID] FROM NAME (stdin: the text)
+			i=2
+			while [[ ${w[i]:-} == --* ]]; do
+				case ${w[i]} in
+					--local) export AGENT_SAY_LOCAL_ONLY=1 ;;
+					--notice) export AGENT_SAY_NOTICE=1 ;;
+					--via) valid_host "${w[i + 1]:-}" || die "usage: _link send ... --via <label>"
+						export AGENT_SAY_VIA=${w[i + 1]}; i=$((i + 1)) ;;
+					--session) valid_session "${w[i + 1]:-}" || die "usage: _link send ... --session <id>"
+						export AGENT_SAY_TO_SESSION=${w[i + 1]}; i=$((i + 1)) ;;
+					*) die "usage: _link send [--local] [--notice] [--via <label>] [--session <id>] <from> <name>" ;;
+				esac
+				i=$((i + 1))
+			done
+			((${#w[@]} == i + 2)) && valid_sender "${w[i]}" && valid_name "${w[i + 1]}" ||
+				die "usage: _link send [--local] [--notice] [--via <label>] [--session <id>] <from> <name>"
+			set -- --from "${w[i]}" "${w[i + 1]}" - ;;
+		# The panel's (remote_run): run as they are run in a shell, every argument checked again
+		# there by the panel itself (key_ok, paste_ok) before anything is sent to a pane.
+		rows) ((${#w[@]} == 2)) || die "usage: _link rows"
+			exec "$revive" panel --rows ;;
+		peek) ((${#w[@]} == 4)) && [[ ${w[2]} =~ ^%[0-9]+$ && ${w[3]} =~ ^[0-9]{1,2}$ ]] || die "usage: _link peek %<pane> <lines>"
+			exec "$revive" panel --peek "${w[2]}" "${w[3]}" ;;
+		keys) ((${#w[@]} >= 4 && ${#w[@]} <= 19)) && [[ ${w[2]} =~ ^%[0-9]+$ ]] || die "usage: _link keys %<pane> <key>..."
+			exec "$revive" panel --keys "${w[@]:2}" ;;
+		paste) ((${#w[@]} == 4)) && [[ ${w[2]} =~ ^%[0-9]+$ && ${w[3]} =~ ^[0-9a-f]+$ ]] || die "usage: _link paste %<pane> <hex>"
+			exec "$revive" panel --paste "${w[2]}" "${w[3]}" ;;
+		update) ((${#w[@]} == 2)) || die "usage: _link update"
+			exec "$revive" update </dev/null 2>&1 ;;
+		name) ((${#w[@]} == 4)) && [[ ${w[2]} =~ ^%[0-9]+$ ]] && valid_name "${w[3]}" || die "usage: _link name %<pane> <name>"
+			AGENT_SAY_PANE=${w[2]} exec "${BASH_SOURCE[0]}" name "${w[3]}" </dev/null 2>&1 ;;
+		*) die "_link takes only a link's requests (sync, send, rows, peek, keys, paste, update, name); not run" ;;
+	esac
+	LINK_CALL=1
+fi
 
 from="" REASON=""
 while :; do
@@ -2136,6 +2379,7 @@ case "$cmd" in
 				[[ -s "$d/error" ]] && st+=", last check-in failed: $(cat "$d/error")"
 				mode="read-write"; [[ -f "$d/read-only" ]] && mode="read-only"
 				[[ -f "$d/allow" ]] && mode+=", only to: $(paste -sd, "$d/allow")"
+				[[ -f "$d/linkkey" ]] && mode+=", on the link key"
 				key="$(head -n 1 "$d/fingerprint" 2>/dev/null)"
 				echo "$h  $st  $mode  key: ${key:-not recorded}  names: $(tr '\n' ' ' <"$d/names" 2>/dev/null)"
 			done
@@ -2220,7 +2464,7 @@ case "$cmd" in
 		link_check() {
 			local rc=0
 			{ local_names | sed 's/^/N /'; via_names "$host"; } |
-				LINK_TRY=1 ssh_to "$host" "$REMOTE_CMD _sync $(printf %q "$LABEL")" 2>"$d/check.err" >"$d/check.out" || rc=$?
+				LINK_TRY=1 ssh_to "$host" "$(sync_req "$host")" 2>"$d/check.err" >"$d/check.out" || rc=$?
 			# Each file whole or not at all: the poller may be reading them right now.
 			sed -n 's/^N //p' "$d/check.out" >"$d/names.$$" && mv "$d/names.$$" "$d/names"
 			sed -n 's/^I //p' "$d/check.out" | while read -r n s _; do valid_name "$n" && valid_session "${s:-}" && echo "$n $s"; done >"$d/sessions.$$" || true
@@ -2249,6 +2493,16 @@ case "$cmd" in
 			cat "$d/check.err" >&2; rm -f "$d/check.err"
 			die "$host's host key isn't the one you confirmed; not linked"
 		fi
+		# Turned away for the link key (its line gone from that server, say): it stops there, and
+		# comes off the key, so the next time you link it, it logs in the way you link and puts the
+		# line back. Not now: that would be a second login, on its own.
+		if ((rc)) && [[ -f "$d/linkkey" ]] && key_refused "$host" "$rc" "$d/check.err"; then
+			link_log "$d/check.err"
+			rm -f "$d/linkkey"
+			[[ -f "$d/on" ]] && echo "link key refused: press B to log in and put it back" >"$d/error" && touch "$d/paused"
+			cat "$d/check.err" >&2; rm -f "$d/check.err"
+			die "$host refused the link key, so it isn't linked. Link it again (B in the panel, or agent-say link $host) to log in and put the key back"
+		fi
 		if ((rc)) && needs_login "$host" "$rc" "$d/check.err"; then
 			rm -f "$d/check.err"
 			[[ -t 0 ]] || die "$host needs a login (a password, or its host key accepted): run agent-say link $host on a terminal, or press B in the panel"
@@ -2259,8 +2513,11 @@ case "$cmd" in
 		if ((rc)); then
 			# Tried once, and that's all: a link there already says why, and stays stopped.
 			link_log "$d/check.err"
-			[[ -f "$d/on" ]] && echo "$(link_why "$host" "$rc" "$d/check.err") · B to try again" >"$d/error" && touch "$d/paused"
+			why="$(link_why "$host" "$rc" "$d/check.err")"
+			[[ -f "$d/on" ]] && echo "$why · B to try again" >"$d/error" && touch "$d/paused"
 			cat "$d/check.err" >&2; rm -f "$d/check.err"
+			# A restricted login shell without agent-say on its PATH: the one step only root there can take.
+			[[ $why == *"restricted (rbash)"* ]] && die "on $host, $why"
 			die "couldn't run agent-say on $host over ssh. It needs ssh to log in (with a key, or once with its password), and agent-say installed there (run the tmux-revive installer on $host)."
 		fi
 		rm -f "$d/check.err"
@@ -2268,11 +2525,15 @@ case "$cmd" in
 		# key ssh itself accepted for it just now (in its known_hosts), on first use.
 		printf '%s\n' "$keys" | sed '/^$/d' >"$d/fingerprint.new" && mv "$d/fingerprint.new" "$d/fingerprint"
 		[[ -n $keys ]] || { tofu_record "$host" && [[ -s "$d/fingerprint" ]] && echo "recorded $host's host key on first use: $(paste -sd, "$d/fingerprint")"; } || true
+		# Not on the link key yet: it goes there now, over the login just checked (key_setup).
+		KEY_SAID=""
+		[[ -f "$d/linkkey" ]] || key_setup "$host"
 		was_on=""; [[ -f "$d/on" ]] && was_on=1
 		touch "$d/on"
 		rm -f "$d/error" "$d/login" "$d/paused"
 		start_poller "$host"
 		echo "linked to $host as '$LABEL'. Its panes: $(tr '\n' ' ' <"$d/names")"
+		[[ -z $KEY_SAID ]] || printf '%s\n' "$KEY_SAID"
 		[[ -f "$d/read-only" ]] && echo "Read-only: what its agents send here is held in the mailbox (agent-say read), not typed in."
 		[[ -f "$d/allow" ]] && echo "What it sends can reach only: $(paste -sd, "$d/allow")."
 		[[ -n $was_on ]] || echo "Agents on either side can now use plain names; name@$host or name@$LABEL picks a side." ;;
@@ -2293,11 +2554,21 @@ case "$cmd" in
 		# instead of waiting for a check-in that won't come.
 		# Bound to its confirmed key, as every connection to it is (or through your own open one).
 		# Not for a link stopped on a failure: that would be one more failed try on its server.
-		{ [[ ! -f "$d/paused" ]] && if riding "$2"; then echo B | timeout 15 $SSH "${MUX_OPTS[@]}" "$2" "$REMOTE_CMD _sync $(printf %q "$LABEL")" >/dev/null 2>&1
+		# On the link key, with that key, as all its calls go.
+		{ [[ ! -f "$d/paused" ]] && if link_keyed "$2"; then pin_opts "$2" 2>/dev/null && key_opts "$2" && echo B | timeout 15 $SSH -o ConnectTimeout=5 "${KEY_OPTS[@]}" "${PIN_OPTS[@]}" "$2" "$(sync_req "$2")" >/dev/null 2>&1
+		elif riding "$2"; then echo B | timeout 15 $SSH "${MUX_OPTS[@]}" "$2" "$REMOTE_CMD _sync $(printf %q "$LABEL")" >/dev/null 2>&1
 		else pin_opts "$2" 2>/dev/null && echo B | timeout 15 $SSH -o ConnectTimeout=5 "${SSH_OPTS[@]}" "${PIN_OPTS[@]}" "$2" "$REMOTE_CMD _sync $(printf %q "$LABEL")" >/dev/null 2>&1; fi; } ||
-			echo "agent-say: couldn't tell $2; messages it holds for here wait until you link again" >&2
-		# Its connection, a login kept open included, closes with it.
+			{ echo "agent-say: couldn't tell $2; messages it holds for here wait until you link again" >&2; told=no; }
+		# The link key's line comes off it, over the login that put it there (see key_unset). Not
+		# right after a call to it just failed: that would be a second try at once.
+		if [[ ${told:-} == no && -f "$d/linkkey" ]]; then
+			echo "agent-say: the link key's line is still on $2: take the line ending agent-say-link@$LABEL out of ~/.ssh/authorized_keys of the user it logs in as there" >&2
+		else
+			key_unset "$2"
+		fi
+		# Its connections, a login kept open and the link key's included, close with it.
 		$SSH -o "$CONTROL" -O exit "$2" >/dev/null 2>&1 </dev/null || true
+		[[ -e "$d/linkmux" ]] && { $SSH -o "ControlPath=$d/linkmux" -O exit "$2" >/dev/null 2>&1 </dev/null || true; }
 		rm -rf "$d"
 		echo "unlinked $2" ;;
 	_host-keys)
@@ -2332,6 +2603,67 @@ case "$cmd" in
 		valid_host "${2:-}" && [[ -s "$STATE/links/$2/fingerprint" ]] || exit 1
 		riding "$2" || exit 1
 		printf '%s\n' "${MUX_OPTS[@]}" ;;
+	_key-opts)
+		# For the panel: a link on the link key goes only with that key, on the link's own
+		# connection, bound to the host key confirmed (see key_opts). The options, one a line.
+		valid_host "${2:-}" && link_keyed "$2" || exit 1
+		pin_opts "$2" 2>/dev/null || exit 1
+		key_opts "$2"
+		printf '%s\n' "${KEY_OPTS[@]}" ${PIN_OPTS[@]+"${PIN_OPTS[@]}"} ;;
+	_keyline)
+		# The server half of key_setup and key_unset, run over the login you link with (your own
+		# key, or the password), never over the link key itself. It adds or removes LABEL's line in
+		# this user's own ~/.ssh/authorized_keys, the file sshd reads for a login as them. Lines are
+		# matched by their last field, exactly agent-say-link@LABEL, never by where they are, and
+		# every other line is left as it was. The file as it was the first time is kept beside it
+		# (authorized_keys.agent-say.bak), once; a later change never writes over that.
+		# add: the public key on stdin, "ssh-ed25519 KEY agent-say-link@LABEL". The line runs
+		# agent-say _link by its full path, found as REMOTE_CMD finds it, since a login over ssh
+		# often lacks ~/.local/bin on its PATH. A restricted shell (rbash) runs no command named
+		# by a path, so there it is the bare name, and only if that login's PATH has it.
+		op=${2:-} lab=${3:-}
+		[[ $op == add || $op == remove ]] && valid_host "$lab" || die "usage: agent-say _keyline add|remove <label>"
+		c="agent-say-link@$lab" sd="$HOME/.ssh" ak="$HOME/.ssh/authorized_keys"
+		[[ $HOME == /* && -d $HOME ]] || die "no home directory to keep ~/.ssh in"
+		[[ ! -L $sd && ! -L $ak ]] || die "~/.ssh/authorized_keys here is reached through a symbolic link, so it's left as it is"
+		if [[ $op == add ]]; then
+			IFS= read -r pub || [[ -n ${pub:-} ]] || die "no link key given"
+			[[ $pub =~ ^ssh-ed25519\ [A-Za-z0-9+/]{1,100}={0,2}\ (agent-say-link@[A-Za-z0-9][A-Za-z0-9._-]*)$ && ${BASH_REMATCH[1]} == "$c" ]] ||
+				die "that isn't a link key for $lab"
+			sh="${SHELL:-}"
+			[[ -n $sh ]] || sh="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7)"
+			if [[ ${sh##*/} == rbash ]]; then
+				command -v agent-say >/dev/null ||
+					die "this login's shell is restricted (rbash), and agent-say isn't on its PATH. As root here, link $HOME/.local/bin/agent-say into a folder on that PATH"
+				fc="agent-say _link"
+			else
+				fc="$(PATH="$HOME/.local/bin:$PATH" command -v agent-say 2>/dev/null)" || fc=""
+				[[ $fc == /* ]] || { fc="${BASH_SOURCE[0]}"; [[ $fc == /* ]] || fc="$PWD/$fc"; }
+				# Inside the line's quotes: a path with nothing sshd would read another way.
+				[[ $fc =~ ^/[A-Za-z0-9/._+-]+$ ]] || die "agent-say's path here ($fc) can't go in an authorized_keys line"
+				fc="$fc _link"
+			fi
+			line="restrict,command=\"$fc\" $pub"
+			# The line as it would be, first: should it not get written, it's what you place.
+			echo "line: $line"
+		fi
+		# Nothing of ours there to remove: nothing is touched.
+		if [[ $op == remove ]] && ! { [[ -e $ak ]] && awk -v c="$c" '$NF == c {f = 1} END {exit !f}' "$ak"; }; then
+			echo "removed: none"
+			exit 0
+		fi
+		if [[ ! -d $sd ]]; then mkdir -p "$sd" && chmod 700 "$sd" || die "can't make $sd"; fi
+		mode=600
+		if [[ -e $ak ]]; then
+			[[ -e $ak.agent-say.bak ]] || cp -p "$ak" "$ak.agent-say.bak" || die "can't keep a copy of $ak; nothing changed"
+			mode="$(stat -c %a "$ak" 2>/dev/null)" || mode=600
+		fi
+		t="$(mktemp "$sd/.authorized_keys.XXXXXX")" || die "can't write in $sd"
+		{
+			if [[ -e $ak ]]; then awk -v c="$c" '$NF != c' "$ak"; fi
+			if [[ $op == add ]]; then printf '%s\n' "$line"; fi
+		} >"$t" && chmod "$mode" "$t" && mv -f "$t" "$ak" || { rm -f "$t"; die "can't write $ak; nothing changed"; }
+		if [[ $op == add ]]; then echo "added: $line"; else echo "removed: $c"; fi ;;
 	_login)
 		# The panel's B for a host that wants a password, run in a popup over the panel: ssh's
 		# prompts in the box (askpass), each answer handed straight to ssh. --check: is a login open for it? The keys a password
@@ -2405,7 +2737,7 @@ case "$cmd" in
 			# Permissions, introductions (with what they held) and senders lapse after a day.
 			cull_sessions
 			if out="$( { local_names | sed 's/^/N /'; via_names "$host"; sed 's/^/A /' "$d/acks.sent"; } |
-				LINK_TRY=1 ssh_to "$host" "$REMOTE_CMD _sync $(printf %q "$LABEL")" 2>"$d/error.new")"; then
+				LINK_TRY=1 ssh_to "$host" "$(sync_req "$host")" 2>"$d/error.new")"; then
 				rm -f "$d/error" "$d/error.new" "$d/login"
 				worked=1 retried=""
 				[[ -s "$d/fingerprint" ]] || tofu_record "$host"
@@ -2533,6 +2865,14 @@ case "$cmd" in
 				link_log "$d/error.new"
 				if [[ -s "$d/fingerprint" ]] && grep -q 'Host key verification failed' "$d/error.new" 2>/dev/null; then
 					echo "stopped: host key changed since you linked it. Press L to link it again" >"$d/error"
+					rm -f "$d/error.new" "$d/login"
+					touch "$d/paused"
+					break
+				fi
+				# Turned away for the link key: it stops at once, not tried again (each try would be a
+				# refused login in that host's log). You put the key back (B, or agent-say link HOST).
+				if link_keyed "$host" && key_refused "$host" "$rc" "$d/error.new"; then
+					echo "$(link_why "$host" "$rc" "$d/error.new")" >"$d/error"
 					rm -f "$d/error.new" "$d/login"
 					touch "$d/paused"
 					break
@@ -2677,7 +3017,7 @@ case "$cmd" in
 			deliver_here "agent-say@$LABEL" "$3" "${4:-}" "" notice >/dev/null 2>&1 || true
 			exit 0
 		fi
-		printf '%s' "${4:-}" | ssh_to "$2" "AGENT_SAY_LOCAL_ONLY=1 AGENT_SAY_NOTICE=1 $REMOTE_CMD --from $(printf %q "agent-say@$LABEL") $(printf %q "$3") -" >/dev/null 2>&1 || true ;;
+		printf '%s' "${4:-}" | ssh_to "$2" "$(send_req "$2" "agent-say@$LABEL" "$3" local notice)" >/dev/null 2>&1 || true ;;
 	_revive)
 		# tmux-revive's restore, for a session a shutdown cut short: its question open, which
 		# its agent then took as declined, or its work under way. Its own words only, typed in
@@ -2807,7 +3147,7 @@ case "$cmd" in
 				while IFS= read -r -d '' a; do [[ $a == CODEX_THREAD_ID=* ]] && aenv+=("$a"); done <"/proc/$pid/environ" 2>/dev/null
 				cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null)" || cwd=/
 				(cd "$cwd" 2>/dev/null || cd /; exec env -u AGENT_SAY_PANE -u TMUX_PANE -u CODEX_THREAD_ID -u AGENT_SAY_TO_SESSION \
-					-u AGENT_SAY_VIA -u AGENT_SAY_LOCAL_ONLY -u AGENT_SAY_NOTICE -u AGENT_SAY_APPROVE_CODE "${aenv[@]}" "$0" "${args[@]}") \
+					-u AGENT_SAY_VIA -u AGENT_SAY_LOCAL_ONLY -u AGENT_SAY_NOTICE -u AGENT_SAY_APPROVE_CODE -u SSH_ORIGINAL_COMMAND "${aenv[@]}" "$0" "${args[@]}") \
 					<&"$rq" >"$o" 2>"$e" || rc=$?
 			else
 				echo "agent-say: this process isn't in a pane of root's tmux, so root's agent-say won't act for it" >"$e"

@@ -8,6 +8,9 @@ unset TMUX TMUX_PANE XDG_STATE_HOME # never your state dir (agents run with it s
 export REVIVE_DIR=$T/data AGENT_SAY_MAILBOX=$T/mail/mailbox.md REVIVE_PANEL_REFRESH=1 REVIVE_PANEL_SPLASH=0
 # Host keys come from the test's own known_hosts, never yours, and never from ssh-keyscan.
 export AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false
+# Links made here go the way they did before the link key (its own checks are in agent-say.sh;
+# the panel's requests over a link on the key are checked under "other computers").
+export AGENT_SAY_TEST_NO_LINK_KEY=1
 # Nor the ssh sessions open in your own terminals: they'd be offered in LINKS · SAVES and
 # announced on the key bar, taking rows and room the checks count on. The checks of that look
 # turn it back on.
@@ -2007,6 +2010,70 @@ check "--paste takes line breaks and tabs, and up to 40000 bytes" "[[ \$(pst %99
 check "--paste turns away CR, escapes, C1, bidi and zero-width characters, NUL and DEL" "[[ \$(pst %999 \$(hex \$'a\\rb')) == 2 && \$(pst %999 \$(hex \$'a\\e[2J')) == 2 && \$(pst %999 c29b) == 2 && \$(pst %999 \$(hex \$'a\\u202eb')) == 2 && \$(pst %999 \$(hex \$'a\\u200bb')) == 2 && \$(pst %999 6100) == 2 && \$(pst %999 617f) == 2 ]]"
 check "--paste turns away what isn't hex text, too much of it, or nothing to paste" "[[ \$(pst %999 4) == 2 && \$(pst %999 4A) == 2 && \$(pst %999 'zz') == 2 && \$(pst %999 '') == 2 && \$(pst %999 \$(hex '  ')) == 2 && \$(pst %999 \$(printf '61%.0s' {1..40001})) == 2 ]]"
 check "--paste turns away a bad pane id, or more or less than its two arguments" "[[ \$(pst 'far:0.0' 61) == 2 && \$(pst '%0;touch $T/pwn' 61) == 2 && \$(pst \$(hex x)) == 2 && \$(pst $farid 61 62) == 2 ]] && [[ ! -e $T/pwn ]]"
+
+# The same requests to a computer linked on the link key (agent-say's key_setup): plain words,
+# for agent-say _link there, which sshd runs for that key and nothing else. This fake ssh takes
+# only the link key, on the link's own connection, and runs _link as sshd would: out of this
+# process tree, under a stand-in sshd (a copy of bash named so), with the request in
+# SSH_ORIGINAL_COMMAND. agent-say there is a copy that takes that stand-in for the ssh server,
+# as test/agent-say.sh's is, beside a stand-in tmux-revive whose panel is the real one and
+# whose update only says it ran.
+mkdir -p "$T/kapp/bin" "$T/kabin"
+cp "$(command -v bash)" "$T/kabin/sshd"
+sed -e 's/== 0 \]\] || return 1 # installed by root$/== "$(id -u)" ]] || return 1 # the test'"'"'s stand-in/' \
+	-e 's/^\tssh_local_conn "\$ports"$/\treturn 0 # the stand-in has no TCP connection/' "$ROOT/bin/agent-say" >"$T/kapp/bin/agent-say"
+grep -q "# the test's stand-in" "$T/kapp/bin/agent-say" && grep -q "# the stand-in has no TCP connection" "$T/kapp/bin/agent-say" ||
+	echo "    (couldn't make the stand-in agent-say)"
+printf '#!/bin/bash\ncase $1 in\npanel) shift; exec bash %q "$@" ;;\nupdate) echo "$*" >>%q; printf "downloading\\n==> tmux-revive 1.2.0 -> 9.9.9, release v9.9.9\\n"; exit 0 ;;\nesac\nexit 1\n' \
+	"$ROOT/scripts/panel.sh" "$T/kupdate.calls" >"$T/kapp/bin/tmux-revive"
+chmod +x "$T/kapp/bin/agent-say" "$T/kapp/bin/tmux-revive"
+{
+	printf '#!/bin/bash\necho "$*" >>%q\nst=%q T=%q say=%q sshd=%q\n' "$T/key.calls" "$st" "$T" "$T/kapp/bin/agent-say" "$T/kabin/sshd"
+	printf 'renv=(HOME=%q PATH=%q:"$PATH" REVIVE_SOCKET=%q REVIVE_DIR=%q REVIVE_VERSION_FILE=%q CLAUDE_CODE_TMPDIR=%q AGENT_SAY_MAILBOX=%q)\n' \
+		"$T/rhome" "$T/rbin" "$rsock" "$T/remote-data" "$T/remote-version" "$T/rtmp" "$T/rstate/mailbox.md"
+	cat <<'EOF'
+cmd=${!#} h=${*: -2:1}
+[[ " $* " == *" IdentitiesOnly=yes "* && " $* " == *" IdentityFile=$st/link-key "* && " $* " == *" ControlPath=$st/links/$h/linkmux "* ]] ||
+	{ echo "me@$h: Permission denied (publickey)." >&2; exit 255; }
+d=$(mktemp -d "$T/kssh.XXXXXX")
+mkfifo "$d/o" "$d/e"
+SSH_ORIGINAL_COMMAND=$cmd SSH_CONNECTION="203.0.113.9 50022 10.0.0.2 22" setsid -f env -u TMUX -u TMUX_PANE "${renv[@]}" "$sshd" -c '"$1" _link >"$2/o" 2>"$2/e" </dev/null; echo $? >"$2/rc"' _ "$say" "$d"
+cat "$d/e" >&2 & e=$!
+cat "$d/o"
+wait "$e"
+for _ in $(seq 50); do [[ -s $d/rc ]] && break; sleep 0.1; done
+rc=$(cat "$d/rc" 2>/dev/null || echo 255)
+rm -rf "$d"
+exit "$rc"
+EOF
+} >"$T/keyssh"
+chmod +x "$T/keyssh"
+ssh-keygen -q -t ed25519 -N '' -C 'agent-say-link@here' -f "$st/link-key"
+echo key >"$st/links/far.example/linkkey"
+rm -f "$st/panel/far.example.rows"* "$T/key.calls"
+# The panel's own remote_run, as it is in panel.sh, to far.example.
+rr() { AGENT_SAY_SSH=$T/keyssh bash -c 'ASTATE=$1 ASAY=$2; shift 2; source <(sed -n "/^remote_run() {/,/^}/p" "$0"); remote_run far.example "$@"' "$ROOT/scripts/panel.sh" "$st" "$ROOT/bin/agent-say" "$@"; }
+out=$(rr rows)
+check "on the link key, rows come back over it" "grep -q 'far-top' <<<\"\$out\" && grep -q ' far.example _link rows\$' $T/key.calls"
+out=$(rr peek $farid 5)
+check "a peek comes back over it" "grep -q 'paste-42' <<<\"\$out\" && grep -q ' far.example _link peek $farid 5\$' $T/key.calls"
+out=$(rr keys $farid lit:$(hex 'echo keykeys-42') Enter)
+check "keys for a question go over it ($out)" "[[ \$out == sent ]] && for _ in \$(seq 1 20); do far_tm capture-pane -p -t $farid | grep -q '^keykeys-42' && break; sleep 0.2; done && far_tm capture-pane -p -t $farid | grep -q '^keykeys-42'"
+out=$(rr paste $farid $(hex 'echo keypaste-42'))
+check "a written answer goes over it ($out)" "[[ \$out == sent ]] && [[ \$(rr keys $farid Enter) == sent ]] && for _ in \$(seq 1 20); do far_tm capture-pane -p -t $farid | grep -q '^keypaste-42' && break; sleep 0.2; done && far_tm capture-pane -p -t $farid | grep -q '^keypaste-42'"
+out=$(RTIMEOUT=30 rr update)
+check "an update goes over it, as the fixed request, once ($out)" "[[ \$out == *'tmux-revive 1.2.0 -> 9.9.9'* && \$(wc -l <$T/kupdate.calls) == 1 ]] && grep -q ' far.example _link update\$' $T/key.calls"
+ktop=$(far_tm display -p -t far:0.1 '#{pane_id}')
+out=$(rr name $ktop far-keyed)
+check "naming a pane there goes over it ($out)" "[[ \$out == \"pane $ktop is now 'far-keyed'\"* && \$(far_tm display -p -t $ktop '#{@agent}') == far-keyed ]]"
+rr name $ktop far-top >/dev/null
+check "each with the link key alone, on the link's own connection, never the shared one" "[[ \$(grep -c . $T/key.calls) -ge 7 ]] && ! grep -q 'ssh-%C' $T/key.calls && ! grep -vq 'IdentityFile=$st/link-key' $T/key.calls"
+out=$(rr keys $farid Escape); st1=$?
+out2=$(rr name $ktop 'x;touch'); st2=$?
+check "and checked there all the same: a key off the list, or a word a shell would read, is refused" "((st1 != 0 && st2 != 0)) && [[ \$out != sent && \$(far_tm display -p -t $ktop '#{@agent}') == far-top ]]"
+out=$(far "$T/keyssh")
+check "the panel shows a computer on the link key as any other" "grep -q 'FAR.EXAMPLE · linked' <<<\"\$out\" && grep -q 'far-top .*top *▸ running' <<<\"\$out\""
+rm -f "$st/links/far.example/linkkey" "$st/link-key" "$st/link-key.pub" "$st/panel/far.example.rows"*
 
 # A question on the linked computer, answered from here over the link. Over there you're busy
 # in a pane of your own (far-sh): an agent there starting to ask must not move you off it (what

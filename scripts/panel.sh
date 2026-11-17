@@ -1584,36 +1584,61 @@ cache_dir() { # $RDIR, for this user only (an older panel made it with the defau
 	[[ -d $RDIR ]] || mkdir -p "$RDIR"
 	[[ -n $(find "$RDIR" -maxdepth 0 -perm 700 2>/dev/null) ]] || chmod 700 "$RDIR" 2>/dev/null
 }
-remote_run() { # remote_run HOST COMMAND: run it on that computer over the link's ssh connection
+# remote_run HOST REQUEST...: ask that computer, over the link's ssh connection, for one of
+# rows | peek %ID N | keys %ID KEY... | paste %ID HEX | update | name %ID NAME
+# (each argument checked by its caller before it gets here).
+remote_run() {
 	# The same socket as agent-say's link (its CONTROL), so a login opened for the link (a host
 	# that wants a password) carries these too. While the link waits for one, nothing is tried:
 	# each try would be a refused login in that host's log.
 	# Nor while it is stopped on a failure: each try would be one more failed connection there
 	# (a server's fail2ban counts them). It waits for you to press B.
 	[[ -f $ASTATE/links/$1/login || -f $ASTATE/links/$1/paused ]] && return 255
+	local h=$1 l=$ASTATE/links/$1 pin=() p c
+	shift
+	# A link on its link key: the request goes as plain words, which agent-say _link there
+	# checks and runs, with that key alone, on the link's own connection, bound to the host key
+	# you confirmed (agent-say _key-opts gives the options). Never through your own open
+	# connection or the password login's: either logged in another way, so _link wouldn't run.
+	if [[ -f $l/linkkey ]]; then
+		mapfile -t pin < <(timeout 20 "$ASAY" _key-opts "$h" </dev/null 2>/dev/null)
+		((${#pin[@]})) || return 255
+		# shellcheck disable=SC2086
+		timeout "${RTIMEOUT:-8}" ${AGENT_SAY_SSH:-ssh} -o ConnectTimeout=5 "${pin[@]}" "$h" "_link $*" </dev/null 2>/dev/null
+		return
+	fi
+	# Any other link: the command line for it, as a shell there runs it.
+	case $1 in
+		rows) c=$REMOTE_ROWS_CMD ;;
+		peek) c="$REMOTE_PEEK_CMD '$2' $3" ;;
+		keys) c="$REMOTE_KEYS_CMD '$2' ${*:3}" ;;
+		paste) c="$REMOTE_PASTE_CMD '$2' $3" ;;
+		update) c=$REMOTE_UPDATE_CMD ;;
+		name) c="AGENT_SAY_PANE='$2' $REMOTE_NAME_CMD '$3' </dev/null 2>&1" ;;
+		*) return 2 ;;
+	esac
 	# Bound to the host key you confirmed for the link, as agent-say's own calls are: ssh checks
 	# it against the link's pin, whatever the ssh config says. agent-say _pin checks it afresh
 	# on every call (a key revoked since, the fingerprint changed) and rebuilds it as needed; a
 	# link it refuses gets nothing sent.
-	local l=$ASTATE/links/$1 pin=() p
 	# Or through your own open ssh connection to it, as the link's poller goes (agent-say _ride
 	# says when, and how: it shows the key confirmed for the link, and no new connection is made).
-	if [[ -s $l/fingerprint ]] && mapfile -t pin < <(timeout 20 "$ASAY" _ride "$1" </dev/null 2>/dev/null) && ((${#pin[@]})); then
+	if [[ -s $l/fingerprint ]] && mapfile -t pin < <(timeout 20 "$ASAY" _ride "$h" </dev/null 2>/dev/null) && ((${#pin[@]})); then
 		# shellcheck disable=SC2086
-		timeout "${RTIMEOUT:-8}" ${AGENT_SAY_SSH:-ssh} "${pin[@]}" "$1" "$2" </dev/null 2>/dev/null
+		timeout "${RTIMEOUT:-8}" ${AGENT_SAY_SSH:-ssh} "${pin[@]}" "$h" "$c" </dev/null 2>/dev/null
 		return
 	fi
 	pin=()
 	if [[ -s $l/fingerprint ]]; then
-		p=$(timeout 20 "$ASAY" _pin "$1" </dev/null 2>/dev/null) && [[ -s $p ]] || return 255
+		p=$(timeout 20 "$ASAY" _pin "$h" </dev/null 2>/dev/null) && [[ -s $p ]] || return 255
 		pin=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$p" -o GlobalKnownHostsFile=/dev/null
 			-o HostKeyAlias=agent-say-confirmed -o CheckHostIP=no -o UpdateHostKeys=no)
 	fi
 	# shellcheck disable=SC2086 # AGENT_SAY_SSH may carry its own arguments, as in agent-say
 	timeout "${RTIMEOUT:-8}" ${AGENT_SAY_SSH:-ssh} -o BatchMode=yes -o ConnectTimeout=5 -o ControlMaster=auto \
-		-o "ControlPath=$ASTATE/ssh-%C" -o ControlPersist=120 "${pin[@]}" "$1" "$2" </dev/null 2>/dev/null
+		-o "ControlPath=$ASTATE/ssh-%C" -o ControlPersist=120 "${pin[@]}" "$h" "$c" </dev/null 2>/dev/null
 }
-fetch_rows() { remote_run "$1" "$REMOTE_ROWS_CMD"; }
+fetch_rows() { remote_run "$1" rows; }
 # rows_get HOST FILE: the rows into FILE, through a temporary file of its own (two panels may
 # be asking at once). Capped in bytes: one endless line from over there must not freeze this.
 rows_get() {
@@ -1643,7 +1668,7 @@ peek_get() { # peek_get HOST %ID LINES FILE
 	[[ $2 =~ ^%[0-9]+$ && $3 =~ ^[0-9]{1,2}$ ]] || return 1
 	t=$(mktemp "$4.XXXXXX") || return 1
 	PEEK_TMP=$t # for peek_drop
-	remote_run "$1" "$REMOTE_PEEK_CMD '$2' $3" | head -c 65536 >"$t"
+	remote_run "$1" peek "$2" "$3" | head -c 65536 >"$t"
 	st=${PIPESTATUS[0]}
 	if ((st == 0 || st == 141)); then # 141: more than head would take, cut off
 		mv -f "$t" "$4"; rm -f "$4.fail"
@@ -3422,7 +3447,7 @@ paste_answer() { # paste_answer TEXT: into the selected pane's question, here or
 	if [[ -z ${RVER[$h]:-} ]] || ver_lt "${RVER[$h]}" "$PASTE_SINCE"; then
 		flash "on $h: can't take a written answer (update tmux-revive there)"; return 1
 	fi
-	out=$(remote_run "$h" "$REMOTE_PASTE_CMD '$id' $x")
+	out=$(remote_run "$h" paste "$id" "$x")
 	st=$?
 	[[ $out == sent ]] && return 0
 	if ((st == 124 || st == 255)); then flash "on $h: can't be reached to answer"
@@ -3435,7 +3460,7 @@ send_answer() { # send_answer TOKEN...: to the selected pane, here or over the l
 	if [[ -z $h ]]; then keys_send "${P_ID[SEL]}" "$@" && return; flash "the keys didn't reach that pane"; return 1; fi
 	[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $id =~ ^%[0-9]+$ ]] || return 1
 	for k; do key_ok "$k" || return 1; done
-	out=$(remote_run "$h" "$REMOTE_KEYS_CMD '$id' $*")
+	out=$(remote_run "$h" keys "$id" "$@")
 	st=$?
 	[[ $out == sent ]] && return 0
 	if ((st == 124 || st == 255)); then flash "on $h: can't be reached to answer"
@@ -3801,7 +3826,7 @@ upd_start() {
 		elif [[ -f $d/paused ]]; then upd_add skip "$h" "" "skipped: link stopped · B"
 		else
 			upd_add job "$h" "$h"
-			RTIMEOUT=300 upd_job $((UPD_N - 1)) remote_run "$h" "$REMOTE_UPDATE_CMD"
+			RTIMEOUT=300 upd_job $((UPD_N - 1)) remote_run "$h" update
 		fi
 		upd_users "$h"
 	done
@@ -3963,7 +3988,7 @@ act() {
 			# The same letters a name may have there, so no quote or shell character gets through.
 			[[ $REPLY =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || { flash "that can't be a name: use letters, digits and . _ - : + ="; return; }
 			flash "naming it on $h…"; draw
-			out=$(remote_run "$h" "AGENT_SAY_PANE='$rid' $REMOTE_NAME_CMD '$REPLY' </dev/null 2>&1" | tail -c 4096)
+			out=$(remote_run "$h" name "$rid" "$REPLY" | tail -c 4096)
 			st=$?
 			out=$(grep -v '^[[:space:]]*$' <<<"$out" | head -n 1)
 			clean out
@@ -4039,14 +4064,20 @@ act() {
 		# now, or unlink it. Nothing changes until you say which.
 		# A link stopped on a failure is tried again, once, with the key it has (should another key
 		# answer, you are shown that one, as below).
-		local again="" was=""
+		# A link not on the link key yet can move to it: linked again as it is, with no unlink,
+		# which puts the key's line there over the login it links with (agent-say's key_setup).
+		local again="" was="" usekey="" kl kline
+		local -a lopts
 		if linked "$h" && [[ -f $ASTATE/links/$h/paused ]]; then
 			flash "trying $h again…"; draw
 		elif linked "$h"; then
-			pick "LINK $h AGAIN?" "${NOTE}It unlinks, then links again with the key ssh uses now." \
-				"No, leave it as it is" "Yes, link $h again" "Unlink $h" && ((PICKED > 1)) || { flash "link cancelled"; return; }
+			lopts=("No, leave it as it is" "Yes, link $h again" "Unlink $h")
+			[[ -f $ASTATE/links/$h/linkkey ]] || lopts+=("Use the link key for $h")
+			pick "LINK $h AGAIN?" "${NOTE}It unlinks, then links again with the key ssh uses now." "${lopts[@]}" &&
+				((PICKED > 1)) || { flash "link cancelled"; return; }
 			((PICKED == 3)) && { unlink_host "$h"; return; }
-			again=1 was=$(cat "$ASTATE/links/$h/fingerprint" 2>/dev/null)
+			if ((PICKED == 4)); then usekey=1; flash "moving $h to the link key…"; draw
+			else again=1 was=$(cat "$ASTATE/links/$h/fingerprint" 2>/dev/null); fi
 		fi
 		# Its host key, found the way ssh itself has it: the one in your known_hosts, else the one
 		# your open ssh connection to it uses, else (a host never connected to) the one ssh-keyscan
@@ -4135,6 +4166,18 @@ act() {
 		fi
 		clean out
 		[[ -n $linked_msg && $out == "linked to "* ]] && out=$linked_msg
+		# What came of the link key (key_setup): said instead, when moving to it was what you
+		# asked; and a line it couldn't put there itself, shown whole for you to place.
+		kl=$(grep -m 1 '^link key: ' <<<"$LOUT") kline=$(grep -m 1 '^link key line, ' <<<"$LOUT")
+		clean kl kline
+		if [[ -n $usekey && -n $kl ]] && [[ $out == "linked to "* || ( -n $linked_msg && $out == "$linked_msg" ) ]]; then
+			out=${kl#link key: }
+		fi
+		if [[ -n $kline ]]; then
+			local -a kn=("${NOTE}${kl#link key: }" "$NOTE")
+			while [[ -n $kline ]]; do kn+=("$NOTE${kline:0:70}"); kline=${kline:70}; done
+			pick "LINK KEY FOR $h" "${kn[@]}" "OK" || true
+		fi
 		# Tried once and failed: why, in a few words, as LINKS shows it.
 		if [[ $out != "linked to "* && -f $ASTATE/links/$h/paused ]]; then
 			out=$(head -n 1 "$ASTATE/links/$h/error" 2>/dev/null)
