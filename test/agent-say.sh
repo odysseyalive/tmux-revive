@@ -733,6 +733,10 @@ PY
 	out=$(detached "0$LA" "python3 $T/fakesshd.py '$E0 $ROOT/bin/agent-say lb undumpable-sshd; exit \$?'")
 	check "nor by one named sshd-session, not dumpable, that root's sshd didn't start ($out)" "[[ \$out == *\"can't tell which agent session\"* ]] && ! seen $LB 'undumpable-sshd'"
 fi
+# Nor a login from this computer itself (an agent here that can ssh to it): where the login
+# came from is in the environment sshd started its first process with.
+peer() { bash -c 'source <(sed -n "/^ssh_peer_remote() {/,/^}/p" "$1"); env SSH_CONNECTION="$2 50000 10.0.0.2 22" sleep 5 & p=$!; sleep 0.2; ssh_peer_remote $p; r=$?; kill $p; exit $r' _ "$ROOT/bin/agent-say" "$1"; }
+check "a login from another computer counts, one from this computer doesn't" "peer 203.0.113.7 && ! peer 127.0.0.1 && ! peer ::1 && ! peer ::ffff:127.0.0.1"
 out=$(detached "1$CX" "$E1 $ROOT/bin/agent-say la 'cx detached'")
 check "and one on a linked server sending here is refused there ($out)" "[[ \$out == *\"can't tell which agent session this comes from\"* && -z \$(ls $outbox) ]] && ! seen $LA 'cx detached'"
 # agent-say's own background work (_tell, _queued) is known by the key in the tmux it
