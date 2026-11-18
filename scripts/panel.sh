@@ -625,9 +625,10 @@ X_SSH=() X_WHERE=()
 T_PREV=""
 SHELLS=" sh bash zsh fish dash ksh tcsh csh nu "
 # An agent asking you something: a permission prompt or a multiple-choice question. Claude
-# Code's last step of a question, "Ready to submit your answers?", has no footer: named here,
-# or Enter on a multi-select's Submit seemed to answer it, and the panel stopped there.
-Q_RE='do you want to|would you like to|allow (once|always)|\(y/n\)|\[y/n\]|enter to select|esc to cancel|trust (this|the) folder|yes, proceed|press enter to continue|ready to submit your answers'
+# Code's last step of a question, "Review your answers", has no footer: named here, or Enter
+# on a multi-select's Submit seemed to answer it, and the panel stopped there. Its "Ready to
+# submit your answers?" line is gone in newer ones: its "1. Submit answers" choice is still there.
+Q_RE='do you want to|would you like to|allow (once|always)|\(y/n\)|\[y/n\]|enter to select|esc to cancel|trust (this|the) folder|yes, proceed|press enter to continue|ready to submit your answers|[0-9]\. submit answers'
 W_RE='esc to interrupt|ctrl\+c to interrupt'
 # The line a question's dialog starts under: a horizontal rule, or the top of a box.
 
@@ -936,7 +937,7 @@ wait_watch() {
 # 90 minutes, cooling as it ages: under 10 minutes bold vivid lime, under 45 vivid lime, then a
 # paler lime. WIDLE=1: waiting over 90 minutes, whoever started it, shown as IDLE. WAGENT=1:
 # under 90 minutes, a turn a message from another session started, shown as WAITING ON AGENT
-# in the usual green. WUNK=1: when it began isn't known (yet), shown as --- .
+# in the usual green. WUNK=1: when it began isn't known (yet), shown as loading...
 wait_colour() {
 	local s="" a
 	WCOL=$BGRN WIDLE=0 WAGENT=0 WUNK=0
@@ -1997,7 +1998,7 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 	working) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
 	waiting)
 		wait_colour "${2:-}"
-		if ((WUNK)); then CELL="$GRY  ---             $R"
+		if ((WUNK)); then CELL="$GRY  loading...      $R"
 		# A server it started still runs: waiting all the same, and said so.
 		elif [[ -n ${2:-} && -n ${P_SRV[$2]:-} ]]; then
 			if ((WIDLE)); then CELL="$BGRN◇ IDLE · server   $R"; else CELL="$WCOL◆ WAITING · server$R"; fi

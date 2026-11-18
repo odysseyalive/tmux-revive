@@ -1218,6 +1218,11 @@ check "the agent's own prompt, typed into, is still not a question" "[[ \$(msq |
 printf '%s\n' '←  ☒ Fruit  ✔ Submit  →' '' 'Review your answers' '' ' ● Which fruits?' '   → Banana' '' \
 	'Ready to submit your answers?' '' '❯ 1. Submit answers' '  2. Cancel' '' '' >"$T/msq.txt"
 check "the review after Submit is still asking (Enter there sends the answers)" "[[ \$(msq | head -1) == asking ]]"
+# Newer ones drop "Ready to submit your answers?", and a long review pushes its heading up.
+{ printf '%s\n' '←  ☒ Fruit  ✔ Submit  →' '' 'Review your answers' ''
+	for q in 1 2 3 4 5 6; do printf '%s\n' " │ ● Question $q?" '   → Its answer'; done
+	printf '%s\n' '' '❯ 1. Submit answers' '  2. Cancel' '' ''; } >"$T/msq.txt"
+check "and so is a newer one's review, with no 'Ready to submit' line" "[[ \$(msq | head -1) == asking ]]"
 
 echo "ssh links"
 # Which host an ssh command line connects to, as agent-say link takes it.
@@ -1510,11 +1515,11 @@ check "--rows there: busy, or asking, with fresh output: no such line" "[[ \$(gr
 out=$(far "$T/fakessh")
 check "here: a linked agent working with no record shows WORKING" "grep -q 'cl-none .*claude *. WORKING' <<<\"\$out\""
 check "here: one whose record says busy shows WORKING" "grep -q 'cl-busy .*claude *. WORKING' <<<\"\$out\""
-check "here: one whose record says idle, and not since when, shows --- " "grep -q 'cl-idle .*claude *--- ' <<<\"\$out\""
+check "here: one whose record says idle, and not since when, shows loading..." "grep -q 'cl-idle .*claude *loading\.\.\. ' <<<\"\$out\""
 check "here: one asking a question shows NEEDS ANSWER" "grep -q 'cl-ask .*claude *? NEEDS ANSWER' <<<\"\$out\""
 check "here: idle with agents working in the background shows WORKING" "grep -q 'cl-bg .*claude *. WORKING ' <<<\"\$out\""
 check "here: idle with a command still running under it shows WORKING" "grep -q 'cl-snap .*claude *. WORKING ' <<<\"\$out\""
-check "here: idle with only stale output, and not since when, shows --- " "grep -q 'cl-stale .*claude *--- ' <<<\"\$out\""
+check "here: idle with only stale output, and not since when, shows loading..." "grep -q 'cl-stale .*claude *loading\.\.\. ' <<<\"\$out\""
 check "here: a question still wins over agents in the background" "grep -q 'cl-bgask .*claude *? NEEDS ANSWER' <<<\"\$out\""
 check "and the frame is still exactly 140 wide" "[[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
 # How long each has waited on you, once those are gone: three since just now, the last
@@ -1553,7 +1558,7 @@ check "here: one an agent-say message started is WAITING ON AGENT in the usual g
 check "here: one waiting over 90 minutes shows IDLE, in the usual WAITING ON YOU colour" "grep cl-old <<<\"\$raw\" | grep -qF $'\e[92m◇ IDLE' && grep -q 'cl-old .*claude *◇ IDLE  ' <<<\"\$out\" && ! grep -q 'cl-old .*WAITING' <<<\"\$out\""
 check "here: resumed just now, its last turn two hours ago, shows IDLE" "grep -q 'cl-back .*claude *◇ IDLE  ' <<<\"\$out\""
 check "here: resumed just now, its last turn five minutes ago, shows WAITING ON YOU" "grep -q 'cl-back5 .*claude *◆ WAITING ON YOU' <<<\"\$out\""
-check "here: one waiting since a time not known shows --- in grey, not WAITING ON YOU" "grep 'cl-idle' <<<\"\$raw\" | grep -qF $'\e[90m  --- ' && ! grep 'cl-idle' <<<\"\$raw\" | grep -q WAITING"
+check "here: one waiting since a time not known shows loading... in grey, not WAITING ON YOU" "grep 'cl-idle' <<<\"\$raw\" | grep -qF $'\e[90m  loading... ' && ! grep 'cl-idle' <<<\"\$raw\" | grep -q WAITING"
 check "here: WAITING ON AGENT leaves a gap before the folder, and the frame is still 140 wide" "grep -q 'WAITING ON AGENT  ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
 for w in cl-typed cl-msg cl-old cl-back cl-back5; do far_tm kill-window -t far:$w; done
 # Their CPU and context left, drawn as this computer's own are. A busy pane there; a Claude
