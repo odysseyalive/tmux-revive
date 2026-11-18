@@ -3020,15 +3020,28 @@ case "$cmd" in
 		printf '%s' "${4:-}" | ssh_to "$2" "$(send_req "$2" "agent-say@$LABEL" "$3" local notice)" >/dev/null 2>&1 || true ;;
 	_revive)
 		# tmux-revive's restore, for a session a shutdown cut short: its question open, which
-		# its agent then took as declined, or its work under way. Its own words only, typed in
-		# once the session is up: what the restore (with the key) asks, never an agent.
+		# its agent then took as declined, its work under way, or background work it was
+		# waiting on; and for every Claude Code it resumed (-), the Artifacts whose comment
+		# replies didn't come back. Its own words only, and the Artifacts' links Claude Code
+		# itself recorded, typed in once the session is up: what the restore (with the key)
+		# asks, never an agent.
 		internal_caller || die "agent-say _revive is tmux-revive's own; not run"
-		[[ "${2:-}" =~ ^%[0-9]+$ ]] || die "usage: agent-say _revive <%pane-id> declined|interrupted"
-		case "${3:-}" in
-		declined) text="The computer shut down while your question was waiting, and it got marked declined. Your user didn't decline it, so please ask again." ;;
-		interrupted) text="Sorry about the interruption. The computer shut down while you were working, so please pick up where you left off." ;;
-		*) die "usage: agent-say _revive <%pane-id> declined|interrupted" ;;
+		usage="usage: agent-say _revive <%pane-id> -|declined|interrupted|tasks[,tasks]"
+		[[ "${2:-}" =~ ^%[0-9]+$ ]] || die "$usage"
+		[[ "${3:-}" == - || "${3:-}" =~ ^(declined|interrupted|tasks)(,(declined|interrupted|tasks))*$ ]] || die "$usage"
+		revive_started=$(date +%s)
+		text=""
+		case ,$3, in
+		*,declined,*) text="The computer shut down while your question was waiting, and it got marked declined. Your user didn't decline it, so please ask again." ;;
+		*,interrupted,*) text="Sorry about the interruption. The computer shut down while you were working, so please pick up where you left off." ;;
 		esac
+		if [[ ,$3, == *,tasks,* ]]; then
+			if [[ -n $text ]]; then
+				text+=" The shutdown also stopped the background work you were waiting on, so it won't report back. Please check what didn't finish and start it again."
+			else
+				text="Sorry about the interruption. The computer shut down while background work you were waiting on was still running, so it won't report back. Please check what didn't finish and start it again."
+			fi
+		fi
 		# Loaded: an agent running in the pane, its screen the same for 3 s after 5 s at least (a
 		# TUI drawing itself takes a moment), and a Claude Code's own record saying it is idle
 		# at its prompt; 3 minutes at most.
@@ -3047,6 +3060,36 @@ case "$cmd" in
 			fi
 			break
 		done
+		# A resumed Claude Code records each Artifact whose comment replies it couldn't restart,
+		# in its transcript (as its session record names it), up to a minute after it starts:
+		# they are waited for that long, the links taken only as that exact notice gives them.
+		# Not the one about the session also open in another pane: that is meant. (The tests
+		# wait less: AGENT_SAY_TEST_REVIVE_WAIT seconds.)
+		if [[ ${ak:-} == claude && -n ${apid:-} ]]; then
+			urls=() seen=0
+			re="^Artifact comment monitor for (?<u>https://claude\\.ai/artifact/[A-Za-z0-9]+) didn't resume: it couldn't restart in this session\\."
+			while :; do
+				tmux display-message -p -t "$2" '#{pane_id}' >/dev/null 2>&1 || exit 0
+				rec="$(claude_record "$apid")" tr="" sid=""
+				[[ -n $rec ]] && sid="$(jq -r '.sessionId // empty' "$rec" 2>/dev/null || true)"
+				if [[ $sid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+					for tr in "$(dirname "$(dirname "$rec")")"/projects/*/"$sid".jsonl; do [[ -f $tr ]] && break; done
+				fi
+				[[ -f $tr ]] || break # no session of its own to read
+				mapfile -t urls < <(tail -c 2000000 "$tr" 2>/dev/null | grep -F '"type":"system"' |
+					jq -Rnr --arg re "$re" --argjson since $((revive_started - 300)) '
+					[inputs | fromjson? | select(.type == "system" and (.content | type) == "string")
+						| select(((.timestamp // "") | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0) >= $since)
+						| .content | capture($re) | .u] | reduce .[] as $u ([]; if index([$u]) then . else . + [$u] end) | .[]' 2>/dev/null)
+				# Once some are in, one more look for the rest, written in the same moment.
+				((${#urls[@]} && seen++ || $(date +%s) - revive_started >= ${AGENT_SAY_TEST_REVIVE_WAIT:-90})) && break
+				sleep 2
+			done
+			list=""
+			for u in "${urls[@]}"; do [[ $u =~ ^https://claude\.ai/artifact/[A-Za-z0-9]+$ ]] && list+="${list:+ }$u"; done
+			[[ -n $list ]] && text+="${text:+ }The restart didn't bring back your comment replies on these Artifacts: $list. Please publish each one again to turn them back on, and if its file is gone, read the Artifact back first and publish to its link."
+		fi
+		[[ -n $text ]] || exit 0
 		# Then as a queued message: tried every 2 seconds while the pane can't take it yet.
 		mkdir -p "$STATE"; err="$STATE/revive.${2#%}.err"
 		while :; do

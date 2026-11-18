@@ -128,10 +128,13 @@ pane_cmd() { # pane_cmd PANE_JSON -> shell command line for the new pane
 # calls it once the process is gone, at a shutdown or before), asked again whenever it was; or
 # its turn under way when the computer shut down (interrupted), told from what it wrote at or
 # after the snapshot and its status in it, so work you stopped yourself before is left alone.
-# cut_short PANE_JSON -> CUT: declined, interrupted, or nothing
+# A Claude Code's background work (a shell, a Monitor or an agent) it was still waiting on is
+# cut short too (tasks): a shutdown kills it without a word, so it never reports back.
+# cut_short PANE_JSON -> CUT: declined, interrupted, tasks, one of the first two and tasks
+# (interrupted,tasks), or nothing
 saved_s=$(date -d "$(jq -r '.saved_at // empty' "$state")" +%s 2>/dev/null) || saved_s=""
 cut_short() {
-	local kind sid st f home cmd
+	local kind sid st f home cmd tasks=""
 	CUT=""
 	[[ -n $saved_s ]] || return 0
 	read -r kind sid st < <(jq -r '[.kind, .detail.sessionId // "-", .detail.status // "-"] | @tsv' <<<"$1")
@@ -160,7 +163,32 @@ cut_short() {
 				if $asked then "declined" elif ($l | t) >= $saved - 5 then "interrupted" else empty end
 			elif $l.type == "assistant" and $l.message.stop_reason == "end_turn" then empty
 			elif $st == "busy" or $st == "waiting" then (if $asked then "declined" else "interrupted" end)
-			else empty end' 2>/dev/null) ;;
+			else empty end' 2>/dev/null)
+		# Its background work launched (a shell or agent run in the background, a Monitor) that
+		# never sent its notification, in its own pass: notifications come in queue-operation and
+		# attachment records too. Read from the records, never the file's text, which quotes them
+		# in tool calls and results. Only since the last notice tmux-revive sent it, and within
+		# the day before the snapshot, so it is never asked twice. Work it stopped itself
+		# (TaskStop) gets no notification and is done.
+		tasks=$(tail -c 2000000 "$f" 2>/dev/null | grep -E '"type":"(user|assistant|queue-operation|attachment)"' |
+			jq -Rnr --argjson saved "$saved_s" '
+			def t: (.timestamp // "") | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0;
+			def blocks: if type == "string" then . else ([.[]? | select(.type == "text") | .text] | join("\n")) end;
+			def text: (if .type == "queue-operation" then .content elif .type == "attachment" then .attachment.prompt
+				else .message.content | blocks end) | strings;
+			[inputs | fromjson? | select(.type == "user" or .type == "assistant" or .type == "queue-operation" or .type == "attachment")] as $all
+			| ([$all | to_entries[] | select(.value.type == "user" and ([.value | text | startswith("[agent-say notice from tmux-revive")] | any)) | .key] | last // -1) as $since
+			| $all[$since + 1:] as $e
+			| [$e[] | select(.type == "assistant" and t >= $saved - 86400) | .message.content | arrays | .[]
+				| select(.type == "tool_use" and (.input.run_in_background == true or .name == "Monitor")) | .id] as $ids
+			| [($e[] | text | select(test("^\\s*<task-notification>")) | scan("<(?:task-id|tool-use-id)>([^<]+)</") | .[0]),
+				($e[] | select(.type == "assistant") | .message.content | arrays | .[]
+					| select(.type == "tool_use" and (.name == "TaskStop" or .name == "KillShell")) | (.input.task_id // .input.shell_id) | strings)] as $done
+			| [$e[] | select(.type == "user") | .message.content | arrays | .[]
+				| select(.type == "tool_result" and .is_error != true and (.tool_use_id as $i | any($ids[]; . == $i)))
+				| ([.content | blocks | match("(?:ID: |agentId: |\\(task |task id:? )([A-Za-z0-9_-]+)"; "g") | .captures[0].string] | first) as $task
+				| select((.tool_use_id as $u | any($done[]; . == $u)) or ($task != null and any($done[]; . == $task)) | not)]
+			| if length > 0 then "tasks" else empty end' 2>/dev/null) ;;
 	codex)
 		# Its last turn started and never ended (no task_complete or turn_aborted), written to
 		# within the hour before the snapshot; or stopped at or after it.
@@ -177,10 +205,14 @@ cut_short() {
 			else empty end' 2>/dev/null) ;;
 	esac
 	[[ $CUT == declined || $CUT == interrupted ]] || CUT=""
+	[[ $tasks == tasks ]] && CUT=${CUT:+$CUT,}tasks
+	return 0
 }
 
-# revive_say PANE declined|interrupted: agent-say's own, in the background, with the key that
-# marks it so (agent-say _revive takes nothing else): it waits for the session to be up.
+# revive_say PANE KINDS: agent-say's own, in the background, with the key that marks it so
+# (agent-say _revive takes nothing else): it waits for the session to be up. KINDS is what
+# cut_short found, or - for a Claude Code it didn't: that one is still told of the Artifacts
+# whose comment replies didn't come back with it, which only its resumed self records.
 revive_say() {
 	local k
 	k=$(tm show-options -gqv @agent-say-key 2>/dev/null)
@@ -255,7 +287,7 @@ while read -r sjson; do
 			if [[ $(jq -r '.kind' <<<"$pjson") =~ ^(claude|codex|cursor|crush|gemini)$ ]]; then
 				((agents++))
 				cut_short "$pjson"
-				[[ -n $CUT ]] && cut_panes+=("$last") cut_kinds+=("$CUT")
+				[[ -n $CUT || $(jq -r '.kind' <<<"$pjson") == claude ]] && cut_panes+=("$last") cut_kinds+=("${CUT:--}")
 			fi
 		done
 		tm select-layout -t "$wid" "$layout" >/dev/null 2>&1
@@ -286,10 +318,12 @@ for i in "${!placeholders[@]}"; do
 	fi
 done
 
-# Each session a shutdown cut short is asked, once it is up, to ask its question again or to
-# go on with its work: agent-say types it in, in the background, as tmux-revive.
+# Each session a shutdown cut short is asked, once it is up, to ask its question again, to go
+# on with its work, or to start its background work again; and each Claude Code, to publish
+# again the Artifacts whose replies didn't come back: agent-say types it in, in the
+# background, as tmux-revive.
 for i in "${!cut_panes[@]}"; do
-	log "pane ${cut_panes[i]}: ${cut_kinds[i]} at shutdown, asking it to carry on"
+	[[ ${cut_kinds[i]} != - ]] && log "pane ${cut_panes[i]}: ${cut_kinds[i]} at shutdown, asking it to carry on"
 	REVIVE_SAY=${REVIVE_SAY:-$REVIVE_ROOT/bin/agent-say} revive_say "${cut_panes[i]}" "${cut_kinds[i]}"
 done
 

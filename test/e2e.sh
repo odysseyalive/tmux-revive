@@ -717,6 +717,43 @@ cl "$run" "$(printf "$stop" "$(ts now)" '')"
 check "work stopped as it shut down: interrupted" "[[ \$(cuts claude busy) == interrupted ]]"
 cl "$run" '{"type":"assistant","timestamp":"'$(ts now)'","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}'
 check "busy at the snapshot but its turn ended after: nothing" "[[ \$(cuts claude busy) == - ]]"
+# Background work it was waiting on when it shut down, which never reported back: a shell
+# run in the background, a Monitor or an agent, launched since the last notice tmux-revive
+# sent and within the day; done once its notification is in, as Claude Code records it.
+bg() { # bg ID NAME TASK WHEN: a background launch and the reply naming its task
+	printf '{"type":"assistant","timestamp":"%s","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"%s","name":"%s","input":{"run_in_background":true}}]}}\n' "$(ts "$4")" "$1" "$2"
+	printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"%s","content":[{"type":"text","text":"%s"}]}]}}' "$(ts "$4")" "$1" "$3"
+}
+sh_bg=$(bg toolu_g Bash 'Command running in background with ID: b34hl3fij. Output is being written to: /tmp/b34hl3fij.output' '-2 minutes')
+ag_bg=$(bg toolu_a Agent 'Async agent launched successfully.\nagentId: a00282d5ce7cc081c (internal ID)' '-2 minutes')
+mo_bg='{"type":"assistant","timestamp":"'$(ts '-2 minutes')'","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_m","name":"Monitor","input":{}}]}}
+{"type":"user","timestamp":"'$(ts '-2 minutes')'","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_m","content":"Monitor started (task b1et1bvnl, expires in 21m 40s unless the source ends first)."}]}}'
+waits='{"type":"assistant","timestamp":"'$(ts '-1 minute')'","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"I will wait for it."}]}}'
+note() { printf '<task-notification>\\n<task-id>%s</task-id>\\n%s<status>completed</status>\\n</task-notification>' "$1" "${2:+<tool-use-id>$2</tool-use-id>\\n}"; }
+cl "$sh_bg" "$waits"
+check "a background shell it ended its turn waiting on, never reported: tasks" "[[ \$(cuts claude idle) == tasks ]]"
+cl "$sh_bg" "$waits" '{"type":"queue-operation","operation":"enqueue","timestamp":"'$(ts now)'","content":"'"$(note b34hl3fij toolu_g)"'"}'
+check "the same, its notification come in (a queue-operation record): nothing" "[[ \$(cuts claude idle) == - ]]"
+cl "$sh_bg" "$waits" '{"type":"user","timestamp":"'$(ts now)'","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":"'"$(note b34hl3fij toolu_g)"'"}]}}'
+check "a notification only quoted in a tool's output isn't one: tasks" "[[ \$(cuts claude idle) == tasks ]]"
+cl "$sh_bg" '{"type":"assistant","timestamp":"'$(ts '-1 minute')'","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_s","name":"TaskStop","input":{"task_id":"b34hl3fij"}}]}}' "$waits"
+check "one it stopped itself (TaskStop, which sends no notification): nothing" "[[ \$(cuts claude idle) == - ]]"
+cl "$ag_bg" "$waits"
+check "a background agent never reported: tasks" "[[ \$(cuts claude idle) == tasks ]]"
+cl "$ag_bg" "$waits" '{"type":"user","timestamp":"'$(ts now)'","message":{"role":"user","content":"'"$(note a00282d5ce7cc081c)"'"}}'
+check "the agent's notification by its task id only: nothing" "[[ \$(cuts claude idle) == - ]]"
+cl "$mo_bg" "$waits"
+check "a Monitor never reported: tasks" "[[ \$(cuts claude idle) == tasks ]]"
+cl "$mo_bg" "$waits" '{"type":"attachment","timestamp":"'$(ts now)'","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"'"$(note b1et1bvnl)"'"}}'
+check "the Monitor's notification (an attachment record): nothing" "[[ \$(cuts claude idle) == - ]]"
+cl "$(bg toolu_g Bash 'Command running in background with ID: b34hl3fij.' '-25 hours')" "$waits"
+check "a background shell launched more than a day before the snapshot: nothing" "[[ \$(cuts claude idle) == - ]]"
+cl "$sh_bg" '{"type":"user","timestamp":"'$(ts '-90 seconds')'","message":{"role":"user","content":"[agent-say notice from tmux-revive 10:00Z] Sorry about the interruption."}}' "$waits"
+check "one launched before tmux-revive's last notice: nothing, never asked twice" "[[ \$(cuts claude idle) == - ]]"
+cl "$sh_bg"
+check "busy at the snapshot with a background shell never reported: interrupted,tasks" "[[ \$(cuts claude busy) == interrupted,tasks ]]"
+cl "$sh_bg" "$ask"
+check "its question open, a background shell too: declined,tasks" "[[ \$(cuts claude waiting) == declined,tasks ]]"
 cxr=$CH/.codex/sessions/2026/01/05/rollout-2026-01-05T00-00-00-$CX.jsonl
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(ts '-5 minutes')" >"$cxr"
 check "codex: a turn started and never ended: interrupted" "[[ \$(cuts codex -) == interrupted ]]"
@@ -745,6 +782,34 @@ check "while its record says it is still busy loading, nothing is typed in (tmux
 printf '{"pid":%s,"sessionId":"s-r","status":"idle"}\n' "$fp" >"$HOME/.claude/sessions/$fp.json"
 for _ in $(seq 30); do [[ -s $T/typed ]] && break; sleep 0.5; done
 check "a session whose question was declined is asked, once loaded, to ask it again" "grep -q '^\\[agent-say notice from tmux-revive [0-9:]*Z\\] The computer shut down while your question was waiting, and it got marked declined. Your user didn.t decline it, so please ask again.\$' $T/typed && grep -q '^## \[tmux-revive -> $rp ' $AGENT_SAY_MAILBOX"
+# A Claude Code's Artifacts whose comment replies didn't come back, as its resumed self
+# records them in the transcript its session record names: their links follow what was cut
+# short, each once. Not the notice about it also open in another pane, nor one from before.
+RS=99999999-2222-3333-4444-555555555555
+mkdir -p "$HOME/.claude/projects/-r"
+an() { printf '{"type":"system","subtype":"informational","timestamp":"%s","content":"Artifact comment monitor for https://claude.ai/artifact/%s %s"}' "$(ts "$1")" "$2" "$3"; }
+an_lost="didn't resume: it couldn't restart in this session. Publish the Artifact again to turn automatic replies back on."
+an_open="didn't resume its automatic replies here: this conversation is also open in tmux pane %9."
+printf '%s\n' "$(an now K5mSbWWdcmEzBKstaxLDap "$an_lost")" "$(an now EiWEreoo2GN6GDffoonWWh "$an_lost")" "$(an now K5mSbWWdcmEzBKstaxLDap "$an_lost")" \
+	"$(an now OpenElsewhereAAAAAAAAAA "$an_open")" "$(an '-1 hour' OlderOneAAAAAAAAAAAAAA "$an_lost")" >"$HOME/.claude/projects/-r/$RS.jsonl"
+printf '{"pid":%s,"sessionId":"%s","status":"idle"}\n' "$fp" "$RS" >"$HOME/.claude/sessions/$fp.json"
+revive_done() { for _ in $(seq 60); do pgrep -f "_revive $rp " >/dev/null || return 0; sleep 0.5; done; return 1; }
+typed_text() { sed 's/^\[agent-say notice from tmux-revive [0-9:]*Z\] //' "$T/typed"; }
+: >"$T/typed"
+(PATH=${PATH//"$T/bin:"/}; source "$ROOT/scripts/common.sh"; REVIVE_SAY=$ROOT/bin/agent-say; export AGENT_SAY_TEST_REVIVE_WAIT=8; source <(sed -n '/^revive_say() {/,/^}/p' "$ROOT/scripts/restore.sh"); revive_say "$rp" tasks)
+revive_done
+check "background work it waited on, and Artifacts whose replies didn't come back: both asked for, each link once" "[[ \$(typed_text) == \"Sorry about the interruption. The computer shut down while background work you were waiting on was still running, so it won't report back. Please check what didn't finish and start it again. The restart didn't bring back your comment replies on these Artifacts: https://claude.ai/artifact/K5mSbWWdcmEzBKstaxLDap https://claude.ai/artifact/EiWEreoo2GN6GDffoonWWh. Please publish each one again to turn them back on, and if its file is gone, read the Artifact back first and publish to its link.\" ]]"
+: >"$T/typed"
+(PATH=${PATH//"$T/bin:"/}; source "$ROOT/scripts/common.sh"; REVIVE_SAY=$ROOT/bin/agent-say; export AGENT_SAY_TEST_REVIVE_WAIT=8; source <(sed -n '/^revive_say() {/,/^}/p' "$ROOT/scripts/restore.sh"); revive_say "$rp" interrupted,tasks)
+revive_done
+check "work under way and background work: the second said after the first" "[[ \$(typed_text) == \"Sorry about the interruption. The computer shut down while you were working, so please pick up where you left off. The shutdown also stopped the background work you were waiting on, so it won't report back. Please check what didn't finish and start it again. The restart didn't bring back\"* ]]"
+sed -i '/couldn/d' "$HOME/.claude/projects/-r/$RS.jsonl"
+: >"$T/typed"
+(PATH=${PATH//"$T/bin:"/}; source "$ROOT/scripts/common.sh"; REVIVE_SAY=$ROOT/bin/agent-say; export AGENT_SAY_TEST_REVIVE_WAIT=8; source <(sed -n '/^revive_say() {/,/^}/p' "$ROOT/scripts/restore.sh"); revive_say "$rp" -)
+revive_done; rd=$?
+check "nothing cut short and no replies lost (only the notice about another pane): nothing typed" "((rd == 0)) && [[ ! -s $T/typed ]]"
+ko=$(PATH=${PATH//"$T/bin:"/}; TMUX=$T/sock5,0,0 AGENT_SAY_INTERNAL=$(tmux -S "$T/sock5" show-options -gqv @agent-say-key) "$ROOT/bin/agent-say" --from tmux-revive _revive "$rp" 'tasks;x' 2>&1)
+check "and what it says is only its own: a kind it doesn't know is refused, even with the key" "[[ \$ko == *'usage: agent-say _revive'* ]]"
 tmux -S "$T/sock5" kill-server
 check "only agent-say's own may send it: an agent running it is refused" "! $ROOT/bin/agent-say --from x _revive %1 declined 2>/dev/null && ! AGENT_SAY_INTERNAL=0123456789abcdef0123456789abcdef $ROOT/bin/agent-say --from x _revive %1 declined 2>/dev/null"
 unset REVIVE_SOCKET
