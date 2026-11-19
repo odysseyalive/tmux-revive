@@ -5,7 +5,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T=$(mktemp -d "${TMPDIR:-/tmp}/panel-test.XXXXXX")
 unset TMUX TMUX_PANE XDG_STATE_HOME # never your state dir (agents run with it set)
-export REVIVE_DIR=$T/data AGENT_SAY_MAILBOX=$T/mail/mailbox.md REVIVE_PANEL_REFRESH=1 REVIVE_PANEL_SPLASH=0
+export REVIVE_DIR=$T/data AGENT_SAY_MAILBOX=$T/mail/mailbox.md REVIVE_PANEL_REFRESH=1 REVIVE_PANEL_SPLASH=0 REVIVE_PANEL_LOADBOX=0
 # Host keys come from the test's own known_hosts, never yours, and never from ssh-keyscan.
 export AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false
 # Links made here go the way they did before the link key (its own checks are in agent-say.sh;
@@ -1515,11 +1515,11 @@ check "--rows there: busy, or asking, with fresh output: no such line" "[[ \$(gr
 out=$(far "$T/fakessh")
 check "here: a linked agent working with no record shows WORKING" "grep -q 'cl-none .*claude *. WORKING' <<<\"\$out\""
 check "here: one whose record says busy shows WORKING" "grep -q 'cl-busy .*claude *. WORKING' <<<\"\$out\""
-check "here: one whose record says idle, and not since when, shows loading..." "grep -q 'cl-idle .*claude *loading\.\.\. ' <<<\"\$out\""
+check "here: one whose record says idle, and not since when, shows ---" "grep -q 'cl-idle .*claude *--- ' <<<\"\$out\""
 check "here: one asking a question shows NEEDS ANSWER" "grep -q 'cl-ask .*claude *? NEEDS ANSWER' <<<\"\$out\""
 check "here: idle with agents working in the background shows WORKING" "grep -q 'cl-bg .*claude *. WORKING ' <<<\"\$out\""
 check "here: idle with a command still running under it shows WORKING" "grep -q 'cl-snap .*claude *. WORKING ' <<<\"\$out\""
-check "here: idle with only stale output, and not since when, shows loading..." "grep -q 'cl-stale .*claude *loading\.\.\. ' <<<\"\$out\""
+check "here: idle with only stale output, and not since when, shows ---" "grep -q 'cl-stale .*claude *--- ' <<<\"\$out\""
 check "here: a question still wins over agents in the background" "grep -q 'cl-bgask .*claude *? NEEDS ANSWER' <<<\"\$out\""
 check "and the frame is still exactly 140 wide" "[[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
 # How long each has waited on you, once those are gone: three since just now, the last
@@ -1558,8 +1558,33 @@ check "here: one an agent-say message started is WAITING ON AGENT in the usual g
 check "here: one waiting over 90 minutes shows IDLE, in the usual WAITING ON YOU colour" "grep cl-old <<<\"\$raw\" | grep -qF $'\e[92m◇ IDLE' && grep -q 'cl-old .*claude *◇ IDLE  ' <<<\"\$out\" && ! grep -q 'cl-old .*WAITING' <<<\"\$out\""
 check "here: resumed just now, its last turn two hours ago, shows IDLE" "grep -q 'cl-back .*claude *◇ IDLE  ' <<<\"\$out\""
 check "here: resumed just now, its last turn five minutes ago, shows WAITING ON YOU" "grep -q 'cl-back5 .*claude *◆ WAITING ON YOU' <<<\"\$out\""
-check "here: one waiting since a time not known shows loading... in grey, not WAITING ON YOU" "grep 'cl-idle' <<<\"\$raw\" | grep -qF $'\e[90m  loading... ' && ! grep 'cl-idle' <<<\"\$raw\" | grep -q WAITING"
+check "here: one waiting since a time not known shows --- in grey, not WAITING ON YOU" "grep 'cl-idle' <<<\"\$raw\" | grep -qF $'\e[90m  --- ' && ! grep 'cl-idle' <<<\"\$raw\" | grep -q WAITING"
 check "here: WAITING ON AGENT leaves a gap before the folder, and the frame is still 140 wide" "grep -q 'WAITING ON AGENT  ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
+# Live, as right after tmux starts (REVIVE_PANEL_LOADBOX=1 stands in for that), with a linked
+# computer slow to send its rows: a box says it is loading, with a bar of what is ready, over
+# the panel as it goes on. No key closes it; it goes once the rows are in, for good.
+printf '#!/bin/sh\nsleep 5\nexec %q "$@"\n' "$T/fakessh" >"$T/slowssh"; chmod +x "$T/slowssh"
+rm -f "$st/panel/far.example.rows"*
+tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/slowssh REVIVE_PANEL_LOADBOX=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+lbs() { tm capture-pane -p -t work:lboxp; }
+wait_lb() { for _ in $(seq 1 ${2:-40}); do lbs | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
+check "right after tmux starts, while a linked computer's rows are still coming, a LOADING box is up" "wait_lb '▓ LOADING ▓' && lbs | grep -q 'Loading…'"
+check "with a bar of what is ready, not all of it" "lbs | grep -Eq '║  [█░]*░ ([0-9]+)/[0-9]+  ║'"
+tm send-keys -t work:lboxp Escape; sleep 0.3; tm send-keys -t work:lboxp m; sleep 1
+check "Esc doesn't close it, nor does any other key" "lbs | grep -q '▓ LOADING ▓' && ! lbs | grep -q 'MESSAGE TO'"
+check "it goes by itself once the rows are in" "for _ in \$(seq 1 60); do lbs | grep -q '▓ LOADING ▓' || break; sleep 0.25; done; ! lbs | grep -q '▓ LOADING ▓' && lbs | grep -q 'cl-idle'"
+sleep 2.5
+check "and it stays closed, the panel whole again" "! lbs | grep -q '▓ LOADING ▓' && lbs | grep -q 'cl-idle .*---'"
+tm kill-window -t work:lboxp
+rm -f "$st/panel/far.example.rows"*
+tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/slowssh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+wait_lb 'cl-idle' 60 && sleep 1
+check "REVIVE_PANEL_LOADBOX=0 (the tests' default): no box" "! lbs | grep -q '▓ LOADING ▓'"
+tm kill-window -t work:lboxp
+tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+wait_lb 'cl-idle' && sleep 1.5
+check "REVIVE_PANEL_LOADBOX=0 (the tests' default): no box" "! lbs | grep -q '▓ LOADING ▓'"
+tm kill-window -t work:lboxp
 for w in cl-typed cl-msg cl-old cl-back cl-back5; do far_tm kill-window -t far:$w; done
 # Their CPU and context left, drawn as this computer's own are. A busy pane there; a Claude
 # Code whose record names its transcript; and three with no record to be found, as over a

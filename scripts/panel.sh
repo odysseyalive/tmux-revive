@@ -841,7 +841,7 @@ claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting
 # a message from another session (a). W_SINCE[row], the time it began to wait, in seconds, and
 # W_FROM[row]: set by agents_look from a Claude Code record, by remote_panes from a linked
 # computer's #wait line, and otherwise by wait_watch from what the panel saw. Neither known,
-# WAITING ON YOU looks as it always has.
+# it shows --- (see wait_colour).
 declare -a W_SINCE=() W_FROM=()
 declare -A TF_K=() TF_V=() TF_A=() WW_ST=() WW_T0=() WW_W0=() MAIL_T=()
 MAIL_STAMP=""
@@ -937,7 +937,7 @@ wait_watch() {
 # 90 minutes, cooling as it ages: under 10 minutes bold vivid lime, under 45 vivid lime, then a
 # paler lime. WIDLE=1: waiting over 90 minutes, whoever started it, shown as IDLE. WAGENT=1:
 # under 90 minutes, a turn a message from another session started, shown as WAITING ON AGENT
-# in the usual green. WUNK=1: when it began isn't known (yet), shown as loading...
+# in the usual green. WUNK=1: when it began isn't known (yet), shown as ---
 wait_colour() {
 	local s="" a
 	WCOL=$BGRN WIDLE=0 WAGENT=0 WUNK=0
@@ -1401,7 +1401,7 @@ agents_look() {
 		# started goes on in the background is working, but takes input.
 		if [[ $kind == claude && $st != asking ]]; then
 			claude_look "$apid"
-			case $CST in busy) st=working ;; "") ;; *) st=waiting; ((CBG)) && st=agents ;; esac
+			case $CST in busy) st=working ;; "") A_LOAD[i]=$apid ;; *) st=waiting; ((CBG)) && st=agents ;; esac
 			[[ $st == waiting ]] && ((CSRV)) && P_SRV[i]=1
 		fi
 		# shellcheck disable=SC2086
@@ -1441,7 +1441,7 @@ gather() {
 	((++GATHER_N)) # a look of its own: what was read for the last one is read again
 	P_SRV=()
 	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=() P_ACCT=()
-	A_AT=() A_KIND=() A_PID=() A_TREE=() W_SINCE=() W_FROM=()
+	A_AT=() A_KIND=() A_PID=() A_TREE=() A_LOAD=() W_SINCE=() W_FROM=()
 	# The panes listed first, so the loading screen can count them off: steps are the process
 	# list, each pane, the agents' screens, then the links.
 	panes=$(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
@@ -1998,7 +1998,7 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 	working) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
 	waiting)
 		wait_colour "${2:-}"
-		if ((WUNK)); then CELL="$GRY  loading...      $R"
+		if ((WUNK)); then CELL="$GRY  ---             $R"
 		# A server it started still runs: waiting all the same, and said so.
 		elif [[ -n ${2:-} && -n ${P_SRV[$2]:-} ]]; then
 			if ((WIDLE)); then CELL="$BGRN◇ IDLE · server   $R"; else CELL="$WCOL◆ WAITING · server$R"; fi
@@ -4412,9 +4412,14 @@ loading() {
 	load_bar 0 1
 }
 # load_bar DONE TOTAL: under the loading screen's "Loading…", how far the first look has got,
-# so a slow one shows it moving rather than looking hung. Nothing once the panel is drawn.
+# so a slow one shows it moving rather than looking hung. Once the panel is drawn, while the
+# loading box is up, its spinner moves on instead: the box stays alive through a slow look.
 LOAD_AT=""
 load_bar() {
+	if ((LBOX)) && [[ -n $LBOX_AT ]]; then
+		printf '%s' "$e[${LBOX_AT% *};${LBOX_AT#* }H$BGBLU$BCYN${SPIN[++LBOX_SPIN % 4]}$R"
+		return 0
+	fi
 	[[ -n $LOAD_AT ]] || return 0
 	local w=36 n=$1 t=$2
 	((t > 0)) || t=1
@@ -4424,6 +4429,95 @@ load_bar() {
 	local on=$REP
 	rep ░ $((w - n))
 	printf '%s' "$e[${LOAD_AT% *};${LOAD_AT#* }H$BCYN$on$GRY$REP $R$GRY$(( $1 * 100 / t ))%$R  "
+}
+
+# The loading box: right after tmux starts, agents still starting show --- for a while, and a
+# look at every pane is slow on a machine that busy. A box over the panel says it is loading,
+# with a bar of what is ready, until it all is: each Claude Code here has written its record
+# (one that hasn't 2 minutes after it started, or that this user can't look into, never
+# will), and each linked computer has sent its rows (or a minute has gone). No key closes it;
+# q still quits the panel. Once per panel, never again after it closes.
+# REVIVE_PANEL_LOADBOX=1 shows it however long tmux has run, 0 never.
+LBOX=0 LBOX_ARMED=0 LBOX_T0=0 LBOX_AT="" LBOX_SPIN=0 LB_DONE=0 LB_TOT=0
+declare -a A_LOAD=()
+# lbox_young PID: started under 2 minutes ago, and this user can look into it.
+lbox_young() {
+	local st up
+	[[ $1 =~ ^[0-9]+$ && -r /proc/$1/environ && -r /proc/$1/stat ]] || return 1
+	read -r st </proc/"$1"/stat 2>/dev/null || return 1
+	st=${st##*) } # the fields after its name, which may hold spaces
+	read -ra st <<<"$st"
+	read -r up _ </proc/uptime 2>/dev/null || return 1
+	up=${up%.*}
+	((up - ${st[19]:-0} / ${CLK:-100} < 120))
+}
+lbox_count() { # -> LB_TOT: agents here and linked computers, LB_DONE: those ready
+	local i h
+	local -A hs=()
+	LB_TOT=0 LB_DONE=0
+	for i in "${!P_ID[@]}"; do
+		h=${P_HOST[i]:-}
+		if [[ -n $h ]]; then
+			[[ -n ${hs[$h]:-} ]] || { hs[$h]=1; ((++LB_TOT, ++LB_DONE)); }
+			# Names only, its rows not in yet: still asking it, for a minute at most.
+			[[ ${P_STATE[i]} == linked && ${hs[$h]} == 1 ]] && ((SECONDS - LBOX_T0 < 60)) && { hs[$h]=2; ((--LB_DONE)); }
+			continue
+		fi
+		((${P_AGENT[i]:-0})) || continue
+		((++LB_TOT))
+		[[ -n ${A_LOAD[i]:-} ]] && lbox_young "${A_LOAD[i]}" || ((++LB_DONE))
+	done
+}
+lbox_off() { ((LBOX)) || return 0; LBOX=0 LBOX_AT="" PREV=(); }
+# lbox_check: after each look. Arms the box at the first, then closes it once all is ready.
+lbox_check() {
+	local up
+	if ((!LBOX_ARMED)); then
+		LBOX_ARMED=1 LBOX_T0=$SECONDS
+		case ${REVIVE_PANEL_LOADBOX:-} in
+		0) return 0 ;;
+		1) ;;
+		*)
+			up=$(tm display-message -p '#{start_time}' 2>/dev/null)
+			[[ $up =~ ^[0-9]+$ ]] && ((${EPOCHSECONDS:-$(date +%s)} - up <= 180)) || return 0 ;;
+		esac
+		lbox_count
+		((LB_DONE < LB_TOT)) && LBOX=1
+		return 0
+	fi
+	((LBOX)) || return 0
+	lbox_count
+	((LB_DONE >= LB_TOT)) && lbox_off
+	return 0
+}
+# lbox_draw: the box, over what draw just put on the screen, framed as pick's.
+lbox_draw() {
+	local w=40 rows=${TLINES:-40} cols=${TCOLS:-80} top left title=LOADING d pl pw pf on
+	((w > cols - 4)) && w=$((cols - 4))
+	top=$(((rows - 6) / 2)) left=$(((cols - w) / 2))
+	((top < 1)) && top=1
+	((left < 1)) && left=1
+	rep ═ $((w - ${#title} - 11))
+	printf '%s' "$e[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
+	rep ' ' $((w - 2))
+	local blank=$REP
+	printf '%s' "$e[$((top + 1));${left}H$BGBLU$BWHT║$blank║$R$GRY░$R"
+	fld "Loading…" $((w - 8))
+	printf '%s' "$e[$((top + 2));${left}H$BGBLU$BWHT║  $BCYN${SPIN[LBOX_SPIN % 4]}$BWHT $B$FLD$R$BGBLU$BWHT  ║$R$GRY░$R"
+	LBOX_AT="$((top + 2)) $((left + 3))"
+	printf '%s' "$e[$((top + 3));${left}H$BGBLU$BWHT║$blank║$R$GRY░$R"
+	d=$LB_DONE
+	((d > LB_TOT)) && d=$LB_TOT
+	pl=" $d/$LB_TOT" pw=$((w - 6 - ${#pl}))
+	pf=$((LB_TOT ? pw * d / LB_TOT : 0))
+	rep █ "$pf"; on=$REP
+	rep ░ $((pw - pf))
+	printf '%s' "$e[$((top + 4));${left}H$BGBLU$BWHT║  $BCYN$on$CYN$REP$BWHT$pl  ║$R$GRY░$R"
+	printf '%s' "$e[$((top + 5));${left}H$BGBLU$BWHT║$blank║$R$GRY░$R"
+	rep ═ $((w - 2))
+	printf '%s' "$e[$((top + 6));${left}H$BGBLU$BWHT╚$REP╝$R$GRY░$R"
+	rep ░ "$w"
+	printf '%s' "$e[$((top + 7));$((left + 1))H$GRY$REP$R"
 }
 
 # ------------------------------------------------------------------ main
@@ -4575,6 +4669,12 @@ fold_load
 # are drawn once. Keys that only move the selection set nav.
 keys() {
 	key=$1
+	# While the loading box is up keys wait for nothing: they go, all but q (quit).
+	if ((LBOX)); then
+		[[ $key == [qQ] ]] && exit 0
+		while read -t 0 && IFS= read -rsn1 _; do :; done
+		return 0
+	fi
 	while :; do
 		[[ -z $key || $key == $'\r' ]] && key=enter # read stops at the newline Enter sends
 		if [[ $key == "$e" ]]; then
@@ -4633,6 +4733,7 @@ while :; do
 		done
 		TCOLS="" MSG_OLD=1 # looked at again along with the panes
 		LOAD_AT="" # the first look is in: no more loading bar
+		lbox_check
 		((UPD_N)) && upd_poll # what U started, finished since
 	fi
 	# Keep the same pane selected when panes come and go.
@@ -4654,6 +4755,7 @@ while :; do
 	# screen (a program writing to the terminal itself) is gone within that.
 	((SECONDS - FULL_T >= 15)) && PREV=() FULL_T=$SECONDS
 	draw
+	((LBOX)) && lbox_draw
 	nav=0
 	key=""
 	if ! IFS= read -rsn1 -t "$REFRESH" key; then
