@@ -208,6 +208,30 @@ check "another user's is kept apart by its uid ($out)" "[[ \$out == u$(id -u):s-
 out=$(sid $C 'stat() { [[ $* == *" /proc/"* ]] && return 1; command stat "$@"; }; ps() { [[ $* == *uid=* ]] && return 1; command ps "$@"; }')
 check "and with its process's user unknown, none is taken from the file ($out)" "[[ \$out == *':$C:$cpid:'* ]]"
 printf '{"pid":%s,"name":"from-claude","nameSource":"user","status":"idle"}' "$cpid" >"$HOME/.claude/sessions/$cpid.json"
+# A long line can take its Enter as a new line, as a paste does: the message sits in the prompt
+# unsent. Seen so (still idle, its start still on screen), one more Enter sends it, once.
+mkdir -p "$T/paste"
+cat >"$T/paste/claude" <<EOF
+#!$T/abin/claude
+n=0
+printf '> '
+while IFS= read -r line; do
+	if ((n == 0)); then n=1 buf=\$line; continue; fi
+	echo "\$buf\$line" >>$T/paste.typed; printf '> '
+done
+EOF
+chmod +x "$T/paste/claude"
+P=$(tmux new-window -d -P -F '#{pane_id}' -t s "$T/paste/claude")
+sleep 0.5
+ppid2=$(pgrep -f "^$T/abin/claude $T/paste/claude\$")
+printf '{"pid":%s,"status":"idle"}' "$ppid2" >"$HOME/.claude/sessions/$ppid2.json"
+tmux set-option -p -t "$P" @agent pasty
+AGENT_SAY_PANE=$A say pasty 'held by its first enter' >/dev/null 2>&1
+check "a message left unsent by its first Enter is sent by a second" "for _ in \$(seq 20); do grep -qF 'held by its first enter' $T/paste.typed 2>/dev/null && break; sleep 0.25; done; grep -qF 'held by its first enter' $T/paste.typed"
+check "and only once" "[[ \$(grep -c 'held by its first enter' $T/paste.typed) == 1 ]]"
+AGENT_SAY_PANE=$A say from-claude 'sent at once' >/dev/null 2>&1
+check "one sent at its first Enter gets no second (nothing empty typed after it)" "sleep 2.5; [[ \$(tail -n 1 $T/claude.typed) == *'sent at once'* ]]"
+tmux kill-pane -t "$P"
 out=$(AGENT_SAY_PANE=$SH say name 2>&1)
 check "no name given in a plain shell pane is refused" "grep -q 'no name of its own' <<<\"\$out\""
 out=$(AGENT_SAY_PANE=$A say name alpha2 2>&1)

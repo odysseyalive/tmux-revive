@@ -27,8 +27,9 @@
 #   --why "short reason"               one line on why you're writing, shown to the user while
 #                                      your first message waits for approval (also allowed after <to>)
 # Delivery: tmux send-keys -l (literal), then a separate Enter after a short delay, which is
-# how a human paste+submit looks to a TUI. Every message is also appended to the receiving
-# machine's mailbox file, so long text is read from there and nothing is lost if a submit misfires.
+# how a human paste+submit looks to a TUI, and one more if it stayed unsent (submit_check).
+# Every message is also appended to the receiving machine's mailbox file, so long text is read
+# from there and nothing is lost if a submit misfires.
 # Only a pane with an agent running in it is typed into (a shell would run the message, ssh or
 # a REPL take it as input), and not while scrolled back in copy mode, which would eat it.
 # Over ssh the remote machine needs agent-say in ~/.local/bin or on its PATH (or set AGENT_SAY_REMOTE_CMD).
@@ -2146,7 +2147,59 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	tmux send-keys -t "$target" -l -- "$line"
 	sleep "$ENTER_DELAY"
 	tmux send-keys -t "$target" Enter
+	submit_check "$target" "${tkind:-}" "${tapid:-}" "$line"
 	echo "sent to $to ($target)"
+}
+# submit_check PANE KIND PID LINE: a long line can still be taking its Enter as a new line when
+# it comes (a TUI reads a burst of typing as a paste), and the message sits in the prompt
+# unsent. Claude Code's record says busy once it is sent; failing that within 2 s, with the
+# start of the line still on screen and the agent still idle, one more Enter, once. Not for the
+# agents whose prompt can't be read: an Enter there could answer something else.
+submit_check() {
+	local i f head
+	[[ $2 == claude || $2 == codex ]] || return 0
+	head=${4:0:40}
+	for ((i = 0; i < 8; i++)); do
+		sleep 0.25
+		if [[ $2 == claude ]]; then
+			f="$(claude_record "$3")"
+			[[ -n $f && "$(jq -r '.status // empty' "$f" 2>/dev/null)" == idle ]] || return 0
+		fi
+		input_empty "$1" && return 0
+	done
+	tmux capture-pane -p -t "$1" 2>/dev/null | grep -qF -- "$head" || return 0 # the screen as shown
+	tmux send-keys -t "$1" Enter
+}
+
+# revive_tell PANE TEXT: a notice of _revive's, after a restart. Every pane restored is told
+# what it needs at about the same moment, so they take turns, REVIVE_GAP seconds apart (a lock
+# and the time of the last, shared by all of them). Then as a queued message: tried every 2
+# seconds while the pane can't take it yet.
+REVIVE_GAP="${AGENT_SAY_REVIVE_GAP:-5}"
+revive_tell() {
+	local lock="$STATE/revive.turn" last now err rc i
+	mkdir -p "$STATE"
+	for ((i = 0; i < 300; i++)); do
+		mkdir "$lock" 2>/dev/null && break
+		# One left by a _revive that died holding it: no turn takes this long.
+		[[ -n $(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null) ]] && rmdir "$lock" 2>/dev/null
+		sleep 0.2
+	done
+	last=$(cat "$STATE/revive.last" 2>/dev/null || true)
+	[[ $last =~ ^[0-9]+$ ]] || last=0
+	now=$(date +%s)
+	((now - last < REVIVE_GAP)) && sleep $((REVIVE_GAP - (now - last)))
+	date +%s >"$STATE/revive.last"
+	rmdir "$lock" 2>/dev/null || true
+	err="$STATE/revive.${1#%}.err"
+	while :; do
+		rc=0
+		deliver_here "$from" "$1" "$2" "" notice >/dev/null 2>"$err" || rc=$?
+		((rc == 75 && SECONDS < 600)) && { sleep 2; continue; }
+		((rc != 0)) && mail "[$from -> $1 $(date -u +%FT%TZ)] #$(date -u +%Y%m%d%H%M%S)-$$ (NOT DELIVERED: $(tr '\n' ' ' <"$err"))" "$2"
+		rm -f "$err"
+		return 0
+	done
 }
 
 # Sourced (the panel's popup does, to call approve after you typed back its code): the
@@ -3021,10 +3074,10 @@ case "$cmd" in
 	_revive)
 		# tmux-revive's restore, for a session a shutdown cut short: its question open, which
 		# its agent then took as declined, its work under way, or background work it was
-		# waiting on; and for every Claude Code it resumed (-), the Artifacts whose comment
-		# replies didn't come back. Its own words only, and the Artifacts' links Claude Code
-		# itself recorded, typed in once the session is up: what the restore (with the key)
-		# asks, never an agent.
+		# waiting on; and for a Claude Code it resumed that had an Artifact (-), the Artifacts
+		# whose comment replies didn't come back, in a notice of their own after that one. Its
+		# own words only, and the Artifacts' links Claude Code itself recorded, typed in once
+		# the session is up: what the restore (with the key) asks, never an agent.
 		internal_caller || die "agent-say _revive is tmux-revive's own; not run"
 		usage="usage: agent-say _revive <%pane-id> -|declined|interrupted|tasks[,tasks]"
 		[[ "${2:-}" =~ ^%[0-9]+$ ]] || die "$usage"
@@ -3060,6 +3113,9 @@ case "$cmd" in
 			fi
 			break
 		done
+		# What was cut short goes in at once, not after the Artifacts are waited for below.
+		[[ -n $text ]] && revive_tell "$2" "$text"
+		text=""
 		# A resumed Claude Code records each Artifact whose comment replies it couldn't restart,
 		# in its transcript (as its session record names it), up to a minute after it starts:
 		# they are waited for that long, the links taken only as that exact notice gives them.
@@ -3089,17 +3145,8 @@ case "$cmd" in
 			for u in "${urls[@]}"; do [[ $u =~ ^https://claude\.ai/artifact/[A-Za-z0-9]+$ ]] && list+="${list:+ }$u"; done
 			[[ -n $list ]] && text+="${text:+ }The restart didn't bring back your comment replies on these Artifacts: $list. Please publish each one again to turn them back on, and if its file is gone, read the Artifact back first and publish to its link."
 		fi
-		[[ -n $text ]] || exit 0
-		# Then as a queued message: tried every 2 seconds while the pane can't take it yet.
-		mkdir -p "$STATE"; err="$STATE/revive.${2#%}.err"
-		while :; do
-			rc=0
-			deliver_here "$from" "$2" "$text" "" notice >/dev/null 2>"$err" || rc=$?
-			((rc == 75 && SECONDS < 600)) && { sleep 2; continue; }
-			((rc != 0)) && mail "[$from -> $2 $(date -u +%FT%TZ)] #$(date -u +%Y%m%d%H%M%S)-$$ (NOT DELIVERED: $(tr '\n' ' ' <"$err"))" "$text"
-			rm -f "$err"
-			exit 0
-		done ;;
+		[[ -n $text ]] && revive_tell "$2" "$text"
+		exit 0 ;;
 	_grant)
 		# Refreshing is done only in the panel's popup, by grant_refresh once you've typed back
 		# its code, as allowing is: no command does it.

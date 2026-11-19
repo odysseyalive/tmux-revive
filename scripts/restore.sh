@@ -131,11 +131,12 @@ pane_cmd() { # pane_cmd PANE_JSON -> shell command line for the new pane
 # A Claude Code's background work (a shell, a Monitor or an agent) it was still waiting on is
 # cut short too (tasks): a shutdown kills it without a word, so it never reports back.
 # cut_short PANE_JSON -> CUT: declined, interrupted, tasks, one of the first two and tasks
-# (interrupted,tasks), or nothing
+# (interrupted,tasks), or nothing; ARTS=1: a Claude Code whose transcript has an Artifact's link
+# in it (one that never had one can't have lost its comment replies)
 saved_s=$(date -d "$(jq -r '.saved_at // empty' "$state")" +%s 2>/dev/null) || saved_s=""
 cut_short() {
 	local kind sid st f home cmd tasks=""
-	CUT=""
+	CUT="" ARTS=0
 	[[ -n $saved_s ]] || return 0
 	read -r kind sid st < <(jq -r '[.kind, .detail.sessionId // "-", .detail.status // "-"] | @tsv' <<<"$1")
 	[[ $sid =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || return 0
@@ -145,6 +146,7 @@ cut_short() {
 		[[ $home == /* ]] || home=$HOME/.claude
 		for f in "$home"/projects/*/"$sid".jsonl; do [[ -f $f ]] && break; done
 		[[ -f $f ]] || return 0
+		grep -qF 'https://claude.ai/artifact/' "$f" 2>/dev/null && ARTS=1
 		# Its last prompt, reply, or tool result: an interruption it recorded at or after the
 		# snapshot; else, busy or asking in it, a turn that never ended. Declined when what was
 		# cut short was its question (AskUserQuestion), answered by no one.
@@ -211,8 +213,9 @@ cut_short() {
 
 # revive_say PANE KINDS: agent-say's own, in the background, with the key that marks it so
 # (agent-say _revive takes nothing else): it waits for the session to be up. KINDS is what
-# cut_short found, or - for a Claude Code it didn't: that one is still told of the Artifacts
-# whose comment replies didn't come back with it, which only its resumed self records.
+# cut_short found, or - for a Claude Code it didn't that had an Artifact: that one is still
+# told of the Artifacts whose comment replies didn't come back with it, which only its resumed
+# self records.
 revive_say() {
 	local k
 	k=$(tm show-options -gqv @agent-say-key 2>/dev/null)
@@ -287,7 +290,7 @@ while read -r sjson; do
 			if [[ $(jq -r '.kind' <<<"$pjson") =~ ^(claude|codex|cursor|crush|gemini)$ ]]; then
 				((agents++))
 				cut_short "$pjson"
-				[[ -n $CUT || $(jq -r '.kind' <<<"$pjson") == claude ]] && cut_panes+=("$last") cut_kinds+=("${CUT:--}")
+				[[ -n $CUT ]] || ((ARTS)) && cut_panes+=("$last") cut_kinds+=("${CUT:--}")
 			fi
 		done
 		tm select-layout -t "$wid" "$layout" >/dev/null 2>&1
@@ -319,9 +322,9 @@ for i in "${!placeholders[@]}"; do
 done
 
 # Each session a shutdown cut short is asked, once it is up, to ask its question again, to go
-# on with its work, or to start its background work again; and each Claude Code, to publish
-# again the Artifacts whose replies didn't come back: agent-say types it in, in the
-# background, as tmux-revive.
+# on with its work, or to start its background work again; and each Claude Code that had an
+# Artifact, to publish again the ones whose replies didn't come back: agent-say types it in,
+# in the background, as tmux-revive, a few seconds between panes.
 for i in "${!cut_panes[@]}"; do
 	[[ ${cut_kinds[i]} != - ]] && log "pane ${cut_panes[i]}: ${cut_kinds[i]} at shutdown, asking it to carry on"
 	REVIVE_SAY=${REVIVE_SAY:-$REVIVE_ROOT/bin/agent-say} revive_say "${cut_panes[i]}" "${cut_kinds[i]}"

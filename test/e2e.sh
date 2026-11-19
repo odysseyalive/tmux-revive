@@ -48,7 +48,7 @@ t send-keys -t work:0.1 'echo marker-from-before-reboot' Enter
 t new-window -t work -n pager -c "$T/proj" "less /etc/hostname"
 t new-session -d -s agent -c "$T/proj"
 # The panel, the way `tmux-revive panel` runs it: bash .../scripts/panel.sh.
-export AGENT_SAY_MAILBOX=$T/mail/mailbox.md AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false REVIVE_PANEL_SPLASH=0
+export AGENT_SAY_MAILBOX=$T/mail/mailbox.md AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false REVIVE_PANEL_SPLASH=0 REVIVE_PANEL_LOADBOX=0 AGENT_SAY_REVIVE_GAP=0
 t new-window -d -t agent -n panel -c "$T/proj" "$ROOT/bin/tmux-revive panel"
 t send-keys -t agent "$T/bin/claude --model opus 'do not resend this prompt'" Enter
 sleep 1
@@ -696,12 +696,21 @@ cuts() { # cuts KIND STATUS: cut_short's answer for the session's record as writ
 		"$(date -d '-10 seconds' +%s)" "$ROOT/scripts/restore.sh" \
 		"{\"kind\":\"$1\",\"cmd\":\"codex resume $CX\",\"detail\":{\"sessionId\":\"$([[ $1 == claude ]] && echo $CS || echo $CX)\",\"configDir\":\"$CH/.claude\",\"status\":\"$2\"}}"
 }
+arts() { # arts: cut_short's ARTS for the session's transcript as written
+	HOME=$CH bash -c 'saved_s=$1; source <(sed -n "/^cut_short() {/,/^}/p" "$2"); cut_short "$3"; echo "$ARTS"' _ \
+		"$(date -d '-10 seconds' +%s)" "$ROOT/scripts/restore.sh" \
+		"{\"kind\":\"claude\",\"detail\":{\"sessionId\":\"$CS\",\"configDir\":\"$CH/.claude\",\"status\":\"idle\"}}"
+}
 ts() { date -u -d "$1" +%Y-%m-%dT%H:%M:%S.123Z; }
 cl() { printf '%s\n' "$@" >"$CH/.claude/projects/-p/$CS.jsonl"; }
 ask='{"type":"assistant","timestamp":"'$(ts '-1 minute')'","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_q","name":"AskUserQuestion","input":{}}]}}'
 run='{"type":"assistant","timestamp":"'$(ts '-1 minute')'","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_b","name":"Bash","input":{}}]}}'
 no='{"type":"user","timestamp":"%s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_q","content":"The user doesn'"'"'t want to proceed with this tool use. The tool use was rejected."}]}}'
 stop='{"type":"user","timestamp":"%s","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user%s]"}]}}'
+cl "$ask"
+check "a Claude Code that never had an Artifact isn't waited on for one" "[[ \$(arts) == 0 ]]"
+cl "$ask" '{"type":"user","timestamp":"'$(ts '-2 days')'","message":{"role":"user","content":"see https://claude.ai/artifact/AbcAbcAbcAbcAbcAbcAbc"}}'
+check "one whose transcript has an Artifact's link is" "[[ \$(arts) == 1 ]]"
 cl "$ask"
 check "a question open at the snapshot, unanswered: declined" "[[ \$(cuts claude waiting) == declined ]]"
 cl "$run"
@@ -798,11 +807,13 @@ typed_text() { sed 's/^\[agent-say notice from tmux-revive [0-9:]*Z\] //' "$T/ty
 : >"$T/typed"
 (PATH=${PATH//"$T/bin:"/}; source "$ROOT/scripts/common.sh"; REVIVE_SAY=$ROOT/bin/agent-say; export AGENT_SAY_TEST_REVIVE_WAIT=8; source <(sed -n '/^revive_say() {/,/^}/p' "$ROOT/scripts/restore.sh"); revive_say "$rp" tasks)
 revive_done
-check "background work it waited on, and Artifacts whose replies didn't come back: both asked for, each link once" "[[ \$(typed_text) == \"Sorry about the interruption. The computer shut down while background work you were waiting on was still running, so it won't report back. Please check what didn't finish and start it again. The restart didn't bring back your comment replies on these Artifacts: https://claude.ai/artifact/K5mSbWWdcmEzBKstaxLDap https://claude.ai/artifact/EiWEreoo2GN6GDffoonWWh. Please publish each one again to turn them back on, and if its file is gone, read the Artifact back first and publish to its link.\" ]]"
+check "background work it waited on, and Artifacts whose replies didn't come back: both asked for, each link once, the work first and on its own" "[[ \$(typed_text) == \"Sorry about the interruption. The computer shut down while background work you were waiting on was still running, so it won't report back. Please check what didn't finish and start it again.\"\$'\\n'\"The restart didn't bring back your comment replies on these Artifacts: https://claude.ai/artifact/K5mSbWWdcmEzBKstaxLDap https://claude.ai/artifact/EiWEreoo2GN6GDffoonWWh. Please publish each one again to turn them back on, and if its file is gone, read the Artifact back first and publish to its link.\" ]]"
 : >"$T/typed"
-(PATH=${PATH//"$T/bin:"/}; source "$ROOT/scripts/common.sh"; REVIVE_SAY=$ROOT/bin/agent-say; export AGENT_SAY_TEST_REVIVE_WAIT=8; source <(sed -n '/^revive_say() {/,/^}/p' "$ROOT/scripts/restore.sh"); revive_say "$rp" interrupted,tasks)
+(PATH=${PATH//"$T/bin:"/}; source "$ROOT/scripts/common.sh"; REVIVE_SAY=$ROOT/bin/agent-say; export AGENT_SAY_TEST_REVIVE_WAIT=8 AGENT_SAY_REVIVE_GAP=3; source <(sed -n '/^revive_say() {/,/^}/p' "$ROOT/scripts/restore.sh"); revive_say "$rp" interrupted,tasks)
 revive_done
-check "work under way and background work: the second said after the first" "[[ \$(typed_text) == \"Sorry about the interruption. The computer shut down while you were working, so please pick up where you left off. The shutdown also stopped the background work you were waiting on, so it won't report back. Please check what didn't finish and start it again. The restart didn't bring back\"* ]]"
+check "work under way and background work: the second said after the first" "[[ \$(typed_text) == \"Sorry about the interruption. The computer shut down while you were working, so please pick up where you left off. The shutdown also stopped the background work you were waiting on, so it won't report back. Please check what didn't finish and start it again.\"\$'\\n'\"The restart didn't bring back\"* ]]"
+rt=($(grep "^## \[tmux-revive -> $rp " "$AGENT_SAY_MAILBOX" | tail -n 2 | grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}Z' | tr -d Z | while IFS=: read -r h m s; do echo $((10#$h * 3600 + 10#$m * 60 + 10#$s)); done))
+check "notices after a restart take turns, a few seconds apart (${rt[*]})" "((\${#rt[@]} == 2 && rt[1] - rt[0] >= 3))"
 sed -i '/couldn/d' "$HOME/.claude/projects/-r/$RS.jsonl"
 : >"$T/typed"
 (PATH=${PATH//"$T/bin:"/}; source "$ROOT/scripts/common.sh"; REVIVE_SAY=$ROOT/bin/agent-say; export AGENT_SAY_TEST_REVIVE_WAIT=8; source <(sed -n '/^revive_say() {/,/^}/p' "$ROOT/scripts/restore.sh"); revive_say "$rp" -)
