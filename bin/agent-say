@@ -27,7 +27,8 @@
 #   --why "short reason"               one line on why you're writing, shown to the user while
 #                                      your first message waits for approval (also allowed after <to>)
 # Delivery: tmux send-keys -l (literal), then a separate Enter after a short delay, which is
-# how a human paste+submit looks to a TUI, and one more if it stayed unsent (submit_check).
+# how a human paste+submit looks to a TUI, and for a Claude Code one more if it stayed unsent
+# (submit_check).
 # Every message is also appended to the receiving machine's mailbox file, so long text is read
 # from there and nothing is lost if a submit misfires.
 # Only a pane with an agent running in it is typed into (a shell would run the message, ssh or
@@ -2152,22 +2153,24 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 }
 # submit_check PANE KIND PID LINE: a long line can still be taking its Enter as a new line when
 # it comes (a TUI reads a burst of typing as a paste), and the message sits in the prompt
-# unsent. Claude Code's record says busy once it is sent; failing that within 2 s, with the
-# start of the line still on screen and the agent still idle, one more Enter, once. Not for the
-# agents whose prompt can't be read: an Enter there could answer something else.
+# unsent. Claude Code's record says busy once it is sent; failing that within 2 s, with its
+# record still idle (no dialog of its own open) just before, and the start of the line in the
+# rows just above the cursor (the prompt, not scrollback), one more Enter, once. Claude Code
+# only: the others' prompts can't be told from an approval, which an Enter would answer.
 submit_check() {
-	local i f head
-	[[ $2 == claude || $2 == codex ]] || return 0
+	local i f head cy
+	[[ $2 == claude ]] || return 0
 	head=${4:0:40}
+	idle_rec() { f="$(claude_record "$1")"; [[ -n $f && "$(jq -r '.status // empty' "$f" 2>/dev/null)" == idle ]]; }
 	for ((i = 0; i < 8; i++)); do
 		sleep 0.25
-		if [[ $2 == claude ]]; then
-			f="$(claude_record "$3")"
-			[[ -n $f && "$(jq -r '.status // empty' "$f" 2>/dev/null)" == idle ]] || return 0
-		fi
+		idle_rec "$3" || return 0
 		input_empty "$1" && return 0
 	done
-	tmux capture-pane -p -t "$1" 2>/dev/null | grep -qF -- "$head" || return 0 # the screen as shown
+	cy="$(tmux display-message -p -t "$1" '#{cursor_y}' 2>/dev/null)" || return 0
+	[[ $cy =~ ^[0-9]+$ ]] || return 0
+	tmux capture-pane -p -t "$1" 2>/dev/null | sed -n "$((cy > 8 ? cy - 8 : 1)),$((cy + 1))p" | grep -qF -- "$head" || return 0
+	idle_rec "$3" && ! input_empty "$1" || return 0
 	tmux send-keys -t "$1" Enter
 }
 
