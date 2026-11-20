@@ -169,10 +169,14 @@ cut_short() {
 		# Its background work launched (a shell or agent run in the background, a Monitor) that
 		# never sent its notification, in its own pass: notifications come in queue-operation and
 		# attachment records too. Read from the records, never the file's text, which quotes them
-		# in tool calls and results. Only since the last notice tmux-revive sent it, and within
-		# the day before the snapshot, so it is never asked twice. Work it stopped itself
-		# (TaskStop) gets no notification and is done.
-		tasks=$(tail -c 2000000 "$f" 2>/dev/null | grep -E '"type":"(user|assistant|queue-operation|attachment)"' |
+		# in tool calls and results. Only since the last notice tmux-revive sent it, so it is never
+		# asked twice, however long ago it was launched or the computer was off; the whole
+		# transcript, cut down first to the records that can matter. Work it stopped itself
+		# (TaskStop) gets no notification and is done. A notification stamped at or after the
+		# snapshot that isn't completed is the shutdown killing it, as Claude Code goes down: cut
+		# short, not reported back.
+		tasks=$(grep -E '"run_in_background":true|"name":"(Monitor|TaskStop|KillShell)"|task-notification|agent-say notice from tmux-revive|ID: |agentId: |\(task |task id' "$f" 2>/dev/null |
+			grep -E '"type":"(user|assistant|queue-operation|attachment)"' |
 			jq -Rnr --argjson saved "$saved_s" '
 			def t: (.timestamp // "") | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0;
 			def blocks: if type == "string" then . else ([.[]? | select(.type == "text") | .text] | join("\n")) end;
@@ -181,9 +185,10 @@ cut_short() {
 			[inputs | fromjson? | select(.type == "user" or .type == "assistant" or .type == "queue-operation" or .type == "attachment")] as $all
 			| ([$all | to_entries[] | select(.value.type == "user" and ([.value | text | startswith("[agent-say notice from tmux-revive")] | any)) | .key] | last // -1) as $since
 			| $all[$since + 1:] as $e
-			| [$e[] | select(.type == "assistant" and t >= $saved - 86400) | .message.content | arrays | .[]
+			| [$e[] | select(.type == "assistant") | .message.content | arrays | .[]
 				| select(.type == "tool_use" and (.input.run_in_background == true or .name == "Monitor")) | .id] as $ids
-			| [($e[] | text | select(test("^\\s*<task-notification>")) | scan("<(?:task-id|tool-use-id)>([^<]+)</") | .[0]),
+			| [($e[] | select(t < $saved - 5 or (text | test("<status>completed</status>"))) | text
+				| select(test("^\\s*<task-notification>")) | scan("<(?:task-id|tool-use-id)>([^<]+)</") | .[0]),
 				($e[] | select(.type == "assistant") | .message.content | arrays | .[]
 					| select(.type == "tool_use" and (.name == "TaskStop" or .name == "KillShell")) | (.input.task_id // .input.shell_id) | strings)] as $done
 			| [$e[] | select(.type == "user") | .message.content | arrays | .[]
@@ -192,17 +197,17 @@ cut_short() {
 				| select((.tool_use_id as $u | any($done[]; . == $u)) or ($task != null and any($done[]; . == $task)) | not)]
 			| if length > 0 then "tasks" else empty end' 2>/dev/null) ;;
 	codex)
-		# Its last turn started and never ended (no task_complete or turn_aborted), written to
-		# within the hour before the snapshot; or stopped at or after it.
+		# Its last turn started and never ended (no task_complete or turn_aborted), however long
+		# before the snapshot; or stopped at or after it.
 		cmd=$(jq -r '.cmd // empty' <<<"$1")
 		home=$HOME/.codex
 		[[ $cmd =~ ^CODEX_HOME=(/[A-Za-z0-9/._-]+)\  ]] && home=${BASH_REMATCH[1]}
 		f=$(find "$home/sessions" -type f -name "rollout-*-$sid.jsonl" 2>/dev/null | head -n 1)
 		[[ -f $f ]] || return 0
-		CUT=$(tail -c 2000000 "$f" 2>/dev/null | grep -E '"(task_started|task_complete|turn_aborted)"' | tail -n 1 |
+		CUT=$(grep -E '"(task_started|task_complete|turn_aborted)"' "$f" 2>/dev/null | tail -n 1 |
 			jq -r --argjson saved "$saved_s" '
 			(.timestamp // "" | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0) as $t
-			| if .payload.type == "task_started" and $t >= $saved - 3600 then "interrupted"
+			| if .payload.type == "task_started" then "interrupted"
 			elif .payload.type == "turn_aborted" and $t >= $saved - 5 then "interrupted"
 			else empty end' 2>/dev/null) ;;
 	esac

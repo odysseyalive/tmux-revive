@@ -728,7 +728,7 @@ cl "$run" '{"type":"assistant","timestamp":"'$(ts now)'","message":{"stop_reason
 check "busy at the snapshot but its turn ended after: nothing" "[[ \$(cuts claude busy) == - ]]"
 # Background work it was waiting on when it shut down, which never reported back: a shell
 # run in the background, a Monitor or an agent, launched since the last notice tmux-revive
-# sent and within the day; done once its notification is in, as Claude Code records it.
+# sent, however long before; done once its notification is in, as Claude Code records it.
 bg() { # bg ID NAME TASK WHEN: a background launch and the reply naming its task
 	printf '{"type":"assistant","timestamp":"%s","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"%s","name":"%s","input":{"run_in_background":true}}]}}\n' "$(ts "$4")" "$1" "$2"
 	printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"%s","content":[{"type":"text","text":"%s"}]}]}}' "$(ts "$4")" "$1" "$3"
@@ -743,6 +743,11 @@ cl "$sh_bg" "$waits"
 check "a background shell it ended its turn waiting on, never reported: tasks" "[[ \$(cuts claude idle) == tasks ]]"
 cl "$sh_bg" "$waits" '{"type":"queue-operation","operation":"enqueue","timestamp":"'$(ts now)'","content":"'"$(note b34hl3fij toolu_g)"'"}'
 check "the same, its notification come in (a queue-operation record): nothing" "[[ \$(cuts claude idle) == - ]]"
+killed='<task-notification>\n<task-id>b34hl3fij</task-id>\n<tool-use-id>toolu_g</tool-use-id>\n<status>killed</status>\n</task-notification>'
+cl "$sh_bg" "$waits" '{"type":"queue-operation","operation":"enqueue","timestamp":"'$(ts now)'","content":"'"$killed"'"}'
+check "killed after the snapshot, as Claude Code goes down at the shutdown: tasks" "[[ \$(cuts claude idle) == tasks ]]"
+cl "$sh_bg" "$waits" '{"type":"queue-operation","operation":"enqueue","timestamp":"'$(ts '-1 minute')'","content":"'"$killed"'"}'
+check "killed a minute before the snapshot, stopped by you: nothing" "[[ \$(cuts claude idle) == - ]]"
 cl "$sh_bg" "$waits" '{"type":"user","timestamp":"'$(ts now)'","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":"'"$(note b34hl3fij toolu_g)"'"}]}}'
 check "a notification only quoted in a tool's output isn't one: tasks" "[[ \$(cuts claude idle) == tasks ]]"
 cl "$sh_bg" '{"type":"assistant","timestamp":"'$(ts '-1 minute')'","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_s","name":"TaskStop","input":{"task_id":"b34hl3fij"}}]}}' "$waits"
@@ -755,8 +760,11 @@ cl "$mo_bg" "$waits"
 check "a Monitor never reported: tasks" "[[ \$(cuts claude idle) == tasks ]]"
 cl "$mo_bg" "$waits" '{"type":"attachment","timestamp":"'$(ts now)'","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"'"$(note b1et1bvnl)"'"}}'
 check "the Monitor's notification (an attachment record): nothing" "[[ \$(cuts claude idle) == - ]]"
-cl "$(bg toolu_g Bash 'Command running in background with ID: b34hl3fij.' '-25 hours')" "$waits"
-check "a background shell launched more than a day before the snapshot: nothing" "[[ \$(cuts claude idle) == - ]]"
+cl "$(bg toolu_g Bash 'Command running in background with ID: b34hl3fij.' '-7 days')" "$waits"
+check "a background shell launched a week before the snapshot, never reported: tasks" "[[ \$(cuts claude idle) == tasks ]]"
+filler=$(printf '{"type":"assistant","timestamp":"%s","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"%s"}]}}' "$(ts '-1 minute')" "$(head -c 3000 /dev/zero | tr '\0' x)")
+cl "$sh_bg" $(for _ in $(seq 1000); do echo "$filler"; done) "$waits"
+check "one launched more than 2 MB back in a long transcript, never reported: tasks" "[[ \$(cuts claude idle) == tasks ]]"
 cl "$sh_bg" '{"type":"user","timestamp":"'$(ts '-90 seconds')'","message":{"role":"user","content":"[agent-say notice from tmux-revive 10:00Z] Sorry about the interruption."}}' "$waits"
 check "one launched before tmux-revive's last notice: nothing, never asked twice" "[[ \$(cuts claude idle) == - ]]"
 cl "$sh_bg"
@@ -768,8 +776,8 @@ printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\
 check "codex: a turn started and never ended: interrupted" "[[ \$(cuts codex -) == interrupted ]]"
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_complete"}}\n' "$(ts '-1 minute')" >>"$cxr"
 check "codex: its turn complete: nothing" "[[ \$(cuts codex -) == - ]]"
-printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(ts '-3 hours')" >"$cxr"
-check "codex: a turn left open hours before the snapshot: nothing" "[[ \$(cuts codex -) == - ]]"
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(ts '-7 days')" >"$cxr"
+check "codex: a turn started a week before the snapshot, never ended: interrupted" "[[ \$(cuts codex -) == interrupted ]]"
 
 # What the restore then sends, as agent-say types it: into a session that has loaded (an agent
 # in its pane, its screen settled, a Claude Code's record saying idle), as tmux-revive, needing
