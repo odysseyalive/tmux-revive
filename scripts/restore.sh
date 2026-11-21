@@ -148,8 +148,11 @@ cut_short() {
 		[[ -f $f ]] || return 0
 		grep -qF 'https://claude.ai/artifact/' "$f" 2>/dev/null && ARTS=1
 		# Its last prompt, reply, or tool result: an interruption it recorded at or after the
-		# snapshot; else, busy or asking in it, a turn that never ended. Declined when what was
-		# cut short was its question (AskUserQuestion), answered by no one.
+		# snapshot; a turn its transcript shows never ended (a tool call or its result last, or a
+		# prompt never answered), whatever the snapshot says, since a resumed session reads idle
+		# with its question still open from a shutdown before; else, busy or asking in it, a
+		# turn that never ended. Declined when what was cut short was its question
+		# (AskUserQuestion), answered by no one.
 		CUT=$(tail -c 2000000 "$f" 2>/dev/null | grep -E '"type":"(user|assistant)"' | grep -vF '"isMeta":true' |
 			jq -Rnr --argjson saved "$saved_s" --arg st "$st" '
 			def t: (.timestamp // "") | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0;
@@ -163,7 +166,11 @@ cut_short() {
 			| if $l == null then empty
 			elif $l.type == "user" and (($l | text) | startswith("[Request interrupted by user")) then
 				if $asked then "declined" elif ($l | t) >= $saved - 5 then "interrupted" else empty end
-			elif $l.type == "assistant" and $l.message.stop_reason == "end_turn" then empty
+			elif $l.type == "assistant" and ($l | uses | length) > 0 then (if $asked then "declined" else "interrupted" end)
+			elif $l.type == "assistant" then empty
+			elif ([$l.message.content | arrays | .[] | select(.type == "tool_result")] | length) > 0 then
+				(if $asked then "declined" else "interrupted" end)
+			elif $l.isCompactSummary != true and (($l | text) | test("^\\s*<(command-name|local-command)") | not) then "interrupted"
 			elif $st == "busy" or $st == "waiting" then (if $asked then "declined" else "interrupted" end)
 			else empty end' 2>/dev/null)
 		# Its background work launched (a shell or agent run in the background, a Monitor) that

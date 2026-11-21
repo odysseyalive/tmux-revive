@@ -715,7 +715,17 @@ cl "$ask"
 check "a question open at the snapshot, unanswered: declined" "[[ \$(cuts claude waiting) == declined ]]"
 cl "$run"
 check "busy at the snapshot, its turn never ended: interrupted" "[[ \$(cuts claude busy) == interrupted ]]"
-check "idle at the snapshot with nothing after it: nothing" "[[ \$(cuts claude idle) == - ]]"
+check "idle at the snapshot, its transcript ending on a tool call: interrupted" "[[ \$(cuts claude idle) == interrupted ]]"
+cl "$ask"
+check "idle at the snapshot, its question still open from a shutdown before (resumed, it reads idle): declined" "[[ \$(cuts claude idle) == declined ]]"
+cl "$run" '{"type":"user","timestamp":"'$(ts '-1 minute')'","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_b","content":"ok"}]}}'
+check "idle at the snapshot, its transcript ending on a tool result: interrupted" "[[ \$(cuts claude idle) == interrupted ]]"
+cl '{"type":"user","timestamp":"'$(ts '-1 day')'","message":{"role":"user","content":"[agent-say notice from tmux-revive] Sorry about the interruption."}}'
+check "idle at the snapshot, a prompt never answered: interrupted" "[[ \$(cuts claude idle) == interrupted ]]"
+cl '{"type":"assistant","timestamp":"'$(ts '-1 minute')'","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}' '{"type":"user","timestamp":"'$(ts '-1 minute')'","message":{"role":"user","content":"<local-command-stdout>Set model</local-command-stdout>"}}'
+check "idle at the snapshot, a slash command's output last: nothing" "[[ \$(cuts claude idle) == - ]]"
+cl '{"type":"assistant","timestamp":"'$(ts '-1 minute')'","message":{"stop_reason":"stop_sequence","content":[{"type":"text","text":"done"}]}}'
+check "idle at the snapshot, its reply finished: nothing" "[[ \$(cuts claude idle) == - ]]"
 cl "$ask" "$(printf "$no" "$(ts now)")" "$(printf "$stop" "$(ts now)" ' for tool use')"
 check "the question declined as it shut down, after the snapshot: declined" "[[ \$(cuts claude idle) == declined ]]"
 cl "$ask" "$(printf "$no" "$(ts '-1 hour')")" "$(printf "$stop" "$(ts '-1 hour')" ' for tool use')"
@@ -748,13 +758,13 @@ cl "$sh_bg" "$waits" '{"type":"queue-operation","operation":"enqueue","timestamp
 check "killed after the snapshot, as Claude Code goes down at the shutdown: tasks" "[[ \$(cuts claude idle) == tasks ]]"
 cl "$sh_bg" "$waits" '{"type":"queue-operation","operation":"enqueue","timestamp":"'$(ts '-1 minute')'","content":"'"$killed"'"}'
 check "killed a minute before the snapshot, stopped by you: nothing" "[[ \$(cuts claude idle) == - ]]"
-cl "$sh_bg" "$waits" '{"type":"user","timestamp":"'$(ts now)'","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":"'"$(note b34hl3fij toolu_g)"'"}]}}'
+cl "$sh_bg" "$waits" '{"type":"user","timestamp":"'$(ts now)'","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":"'"$(note b34hl3fij toolu_g)"'"}]}}' '{"type":"assistant","timestamp":"'$(ts now)'","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"noted"}]}}'
 check "a notification only quoted in a tool's output isn't one: tasks" "[[ \$(cuts claude idle) == tasks ]]"
 cl "$sh_bg" '{"type":"assistant","timestamp":"'$(ts '-1 minute')'","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_s","name":"TaskStop","input":{"task_id":"b34hl3fij"}}]}}' "$waits"
 check "one it stopped itself (TaskStop, which sends no notification): nothing" "[[ \$(cuts claude idle) == - ]]"
 cl "$ag_bg" "$waits"
 check "a background agent never reported: tasks" "[[ \$(cuts claude idle) == tasks ]]"
-cl "$ag_bg" "$waits" '{"type":"user","timestamp":"'$(ts now)'","message":{"role":"user","content":"'"$(note a00282d5ce7cc081c)"'"}}'
+cl "$ag_bg" "$waits" '{"type":"user","timestamp":"'$(ts now)'","message":{"role":"user","content":"'"$(note a00282d5ce7cc081c)"'"}}' '{"type":"assistant","timestamp":"'$(ts now)'","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"noted"}]}}'
 check "the agent's notification by its task id only: nothing" "[[ \$(cuts claude idle) == - ]]"
 cl "$mo_bg" "$waits"
 check "a Monitor never reported: tasks" "[[ \$(cuts claude idle) == tasks ]]"
