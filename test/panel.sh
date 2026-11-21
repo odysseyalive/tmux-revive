@@ -1018,6 +1018,41 @@ check "a pane asking a question shows its question in place of the peek" "wait_q
 aid=$(tm display -p -t work:asker '#{pane_id}')
 hq=$(tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_SEL=$aid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
 check "with the peek hidden, a question still opens it" "grep -q 'QUESTION · asker' <<<\"\$hq\" && ! grep -q '\[p\] show' <<<\"\$hq\""
+# A pane wider than the box (130 columns, the box 96 inside its border): a long line goes on
+# in the rows under it, none of it cut off, the highlighted choice's band and all. A rule the
+# pane's full width is cut, not wrapped into a stub row; the footer is still the last row.
+cat >"$T/wide.sh" <<'WIDE'
+clear
+echo "history line 1"
+printf 'history %s\n' "$(printf '@%.0s' {1..110})"
+printf '─%.0s' {1..130}; echo
+echo " Halfway through a long feature build you need to know where every error code is defined across a large monorepo. ENDQ"
+echo
+echo " ❯ 1. Grep and Read through the monorepo in the main session, keeping every result in this one context window ENDC"
+echo "      what it does"
+echo "   2. No"
+echo
+echo " Enter to select · ↑/↓ to navigate · Esc to cancel"
+sleep 300
+WIDE
+tm new-window -d -t work -n wideq "$T/bin/codex $T/wide.sh"
+tm set-option -p -t work:wideq @agent wideq
+sleep 0.7
+wid=$(tm display -p -t work:wideq '#{pane_id}')
+wraw=$(tm run-shell "REVIVE_PANEL_SEL=$wid COLUMNS=100 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
+# wbox TITLE: the rows of the box titled TITLE, without its border and scroll bar.
+wbox() { plain <<<"$wraw" | awk -v t="$1" 'index($0, t){on=1; next} on && /^╠|^╚/{exit} on' | sed 's/^║ │ \{0,1\}//; s/[[:space:]]*[▲▼░▓]\{0,1\}║$//; s/[[:space:]]*$//'; }
+wjoin() { wbox "$1" | tr '\n' ' ' | tr -s ' '; }
+check "a line wider than the box goes on in the rows under it, nothing cut" "wjoin 'QUESTION · wideq' | grep -qF 'Halfway through a long feature build you need to know where every error code is defined across a large monorepo. ENDQ' && [[ \$(wbox 'QUESTION · wideq' | grep -c 'ENDQ\|Halfway') == 2 ]]"
+check "a line with no space to break at is cut at the width, every character kept" "[[ \$(wbox 'QUESTION · wideq' | tr -cd '@' | wc -c) == 110 ]]"
+check "the highlighted choice's band goes on in its wrapped row" "wjoin 'QUESTION · wideq' | grep -qF '❯ 1. Grep and Read through the monorepo in the main session, keeping every result in this one context window ENDC' && band \"\$(grep -F ENDC <<<\"\$wraw\")\" && ! grep -qF 'Grep and Read' <<<\"\$(grep -F ENDC <<<\"\$wraw\")\""
+check "a full-width rule is cut, not wrapped into a stub row" "[[ \$(wbox 'QUESTION · wideq' | grep -c '^─\\+\$') == 1 ]]"
+check "the footer is still the box's last row of text" "[[ \$(wbox 'QUESTION · wideq' | grep . | tail -1) == *'Esc to cancel' ]]"
+tm new-window -d -t work -n widep "echo 'peek of a wide pane: every error code is defined across a large monorepo, and the search will produce lots of output ENDP'; sleep 300"
+sleep 0.5
+wraw=$(tm run-shell "REVIVE_PANEL_SEL=$(tm display -p -t work:widep '#{pane_id}') COLUMNS=100 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
+check "the peek wraps a wide pane's lines too" "wjoin 'PEEK · ' | grep -qF 'the search will produce lots of output ENDP'"
+tm kill-window -t work:wideq; tm kill-window -t work:widep
 # All of it, as in Claude Code: the question, the first and the last choice, and the footer,
 # with the rule between choices 5 and 6 not cutting anything off.
 for want in 'Do you want to proceed?' 'rm -rf build' '❯ 1. Yes' '5. Type something.' '6. Chat about this' 'Enter to select'; do
@@ -2397,6 +2432,29 @@ at respawn-pane -k -t asks:q "$T/bin/codex $T/ask.sh $T/ans6"
 sleep 3
 check "with @revive-question-alert off, none at all" "[[ \$(alerts asker4) == 2 ]]"
 check "a pane that isn't an agent is never announced" "[[ \$(grep -c 'question:' $T/adata/revive.log) == 2 ]]"
+# A command that ran @revive-done-after seconds or more, back at its shell prompt: said once,
+# bell and all. A short one isn't, nor one whose pane closes, nor any with the alert off.
+dones() { local n; n=$(grep -c "done: $1" "$T/adata/revive.log" 2>/dev/null); echo "${n:-0}"; }
+at set-option -g @revive-question-bell on
+at set-option -g @revive-done-after 3
+client
+at new-window -d -t asks -n run "bash --norc --noprofile"
+sleep 0.5
+at send-keys -t asks:run 'sleep 1' Enter
+sleep 4
+check "a command shorter than @revive-done-after isn't announced" "[[ \$(dones '') == 0 ]]"
+at send-keys -t asks:run 'sleep 7' Enter
+sleep 5
+check "a long one is, once it finishes" "wait_ok '[[ \$(dones \"asks:2.0 (asks:2.0) · sleep done after\") == 1 ]]'"
+check "on the client, with a bell" "wait_ok 'cscreen | grep -q \"asks:2.0 (asks:2.0) · sleep done after\"' && wait_ok bell"
+at new-window -d -t asks -n gone "sleep 5"
+sleep 7
+check "a pane that closes as its command ends isn't announced" "[[ \$(dones '') == 1 ]]"
+at set-option -g @revive-done-alert off
+at send-keys -t asks:run 'sleep 5' Enter
+sleep 8
+check "with @revive-done-alert off, none at all" "[[ \$(dones '') == 1 ]]"
+check "an agent (the codex stand-in) is never announced" "! grep -q 'done:.*codex' $T/adata/revive.log"
 kill "$dpid" 2>/dev/null
 tm kill-window -t work:client 2>/dev/null
 at kill-server 2>/dev/null

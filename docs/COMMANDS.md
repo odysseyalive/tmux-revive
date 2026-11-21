@@ -214,6 +214,9 @@ asking one, tmux shows a message naming the pane and rings the bell, once per
 question. See `@revive-question-alert` and `@revive-question-bell` to turn these
 off.
 
+Same goes for long-running commands, like an `rsync`. If one runs a minute or more,
+tmux lets you know when it's done. See `@revive-done-alert` and `@revive-done-after`.
+
 ### Linked computers in the panel
 
 When a pane ssh's into another computer, the panel spots it and offers to link the
@@ -585,7 +588,9 @@ set -g @revive-panel-key P
 | `@revive-status-key` | `none` | a prefix key that shows `tmux-revive status` in a popup |
 | `@revive-programs` | see below | programs a pane comes back running |
 | `@revive-question-alert` | `on` | the message when an agent asks a question |
-| `@revive-question-bell` | `on` | the bell with that message |
+| `@revive-question-bell` | `on` | rings the bell with that message, and when a long command finishes |
+| `@revive-done-alert` | `on` | the message you get when a long command finishes |
+| `@revive-done-after` | `60` | how many seconds a command has to run before it counts as long |
 | `@revive-auto-restore` | `on` | restore on the first start after a reboot |
 | `@revive-shutdown-hook` | `on` | on Linux, save right before shutdown or sleep |
 | `@revive-claude-remote-control` | `on` | bring back a Claude Code session's Remote Control link too |

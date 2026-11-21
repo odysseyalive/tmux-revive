@@ -11,6 +11,7 @@
 #   panel.sh --paste %ID HEX     a written answer for that question, pasted unsent (the same)
 #   panel.sh --show %ID  retired: changes nothing, and fails (an older computer's J asked for it)
 #   panel.sh --asking   the panes whose agent is asking a question now: id, place, name (daemon.sh)
+#   panel.sh --running  each pane's shell or program, agents left out: id, place, state, command, name (daemon.sh)
 #
 # REVIVE_PANEL_POPUP=1 (set by @revive-panel-key) closes the panel after O opens a pane, since a
 # popup would otherwise sit on top of the pane it opened.
@@ -24,10 +25,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/help.sh" # the ? page
 # this too; it's said again here because the cache holds what's on other computers' screens.
 umask 077
 
-ONCE=0 ROWS=0 PEEKMODE=0 KEYSMODE=0 PASTEMODE=0 SHOWMODE=0 ASKMODE=0
+ONCE=0 ROWS=0 PEEKMODE=0 KEYSMODE=0 PASTEMODE=0 SHOWMODE=0 ASKMODE=0 RUNMODE=0
 [[ ${1:-} == --once ]] && ONCE=1
 [[ ${1:-} == --rows ]] && ROWS=1
 [[ ${1:-} == --asking ]] && ASKMODE=1
+[[ ${1:-} == --running ]] && RUNMODE=1
 if [[ ${1:-} == --peek ]]; then
 	# Asked for by another computer: nothing but a pane id and a line count gets through.
 	[[ ${2:-} =~ ^%[0-9]+$ && ${3:-} =~ ^[1-9][0-9]?$ ]] && (($3 <= 60)) ||
@@ -2294,7 +2296,9 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 # last line is the pane's last line of text, and it reads upward from there, each after
 # a │ in COLOUR. STYLED 1: each line in its QSTYLE colour (the question), else dim. A screen
 # shorter than the box is padded above, so the bottoms still line up; a taller one scrolls
-# back PB rows from the bottom, with a scroll bar in BAR-COLOUR.
+# back PB rows from the bottom, with a scroll bar in BAR-COLOUR. A line wider than the box
+# goes on in the rows under it (peek_wrap), so none of it is lost: the pane can be as wide as
+# the panel, and the box is narrower by its border and scroll bar.
 blank_tail() { # blank_tail ARRAY: more than 3 blank rows at its end cut to 1
 	local -n bt=$1
 	local k=${#bt[@]}
@@ -2302,13 +2306,60 @@ blank_tail() { # blank_tail ARRAY: more than 3 blank rows at its end cut to 1
 	((${#bt[@]} - k > 3)) && bt=("${bt[@]:0:k+1}")
 	return 0
 }
+# peek_wrap WIDTH -> PWL, PWS, PWH: L as the box's rows, a line too long for WIDTH carried on in
+# the rows under it, broken at a space when there's one in its second half. The rows it goes
+# on in start as far in as the line's text does (a choice's, after its number), so a wrapped
+# paragraph still reads as one. Each row
+# keeps its line's QSTYLE (the highlighted choice's band goes on too) and its part of the
+# line's QHI. Overflow that's only blanks or box drawing is cut as before: a rule drawn the
+# pane's full width would otherwise leave a stub of a row under it.
+PW_STUB='^[[:space:]─━═╌│┃╭╮╯╰┌┐└┘├┤┬┴┼]*$'
+peek_wrap() {
+	local w=$1 i s o r t cut next ind pad a b x y k
+	PWL=() PWS=() PWH=()
+	for i in "${!L[@]}"; do
+		s=${L[i]} o=0 pad=""
+		while :; do
+			k=${#PWL[@]} r=$((w - ${#pad}))
+			PWS[k]=${QSTYLE[i]:-}
+			if ((${#s} <= r)) || [[ ${s:r} =~ $PW_STUB ]]; then
+				cut=${#s} next=${#s}
+			else
+				t=${s:0:r+1} t=${t% *} # up to the last space that fits
+				if [[ $t != "${s:0:r+1}" && -n ${t//[[:space:]│]/} ]] && ((${#t} > r / 2)); then cut=${#t} next=$((cut + 1))
+				else cut=$r next=$r; fi
+			fi
+			PWL[k]=$pad${s:0:cut}
+			if [[ -n ${QHI[i]:-} ]]; then
+				read -r a b <<<"${QHI[i]}"
+				x=$((a > o ? a : o)) y=$((a + b))
+				((y > o + cut)) && y=$((o + cut))
+				((y > o + r)) && y=$((o + r))
+				((y > x)) && PWH[k]="$((x - o + ${#pad})) $((y - x))"
+			fi
+			((next < ${#s})) || break
+			if ((!o)); then
+				[[ $s =~ ^[[:space:]│]*(❯[[:space:]]*)?([0-9]+\.[[:space:]]+)? ]] # a choice's: under its text
+				ind=${#BASH_REMATCH[0]}
+				((ind > w / 2)) && ind=0
+				printf -v pad '%*s' "$ind" ''
+			fi
+			s=${s:next} o=$((o + next))
+		done
+	done
+}
 peek_rows() {
 	local h=$1 c=$2 n start i w=$((IW - 2)) vw=$IW st a b
+	local -a PWL PWS PWH
 	# Many blank rows under the last text go but one: an agent just resumed, or a screen just
 	# cleared, has its text at the top and the rest blank, and the bottom alone showed nothing.
 	# A row or two (under a question's footer) stay, so the bottoms still line up.
 	blank_tail L
-	n=${#L[@]}
+	# Wrapped at the box's width; if that's more rows than fit, the scroll bar takes a column,
+	# so again at one narrower. From here on n, PB and the rest count the box's rows.
+	peek_wrap "$w"
+	((${#PWL[@]} > h && h > 0)) && peek_wrap $((IW - 3))
+	n=${#PWL[@]}
 	((PB > n - h)) && PB=$((n - h))
 	((PB < 0)) && PB=0
 	start=$((n - h - PB))
@@ -2318,10 +2369,10 @@ peek_rows() {
 	for ((i = n; i < h; i++)); do row "$c│$R"; done
 	for ((i = 0; i < h && start + i < n; i++)); do
 		RBAR=${SB[i]:-}
-		fld "${L[start + i]}" "$w"
-		if (($3)); then st=${QSTYLE[start + i]:-$BWHT}; else st=$DIM; fi
-		if (($3)) && [[ -n ${QHI[start + i]:-} ]]; then
-			read -r a b <<<"${QHI[start + i]}"
+		fld "${PWL[start + i]}" "$w"
+		if (($3)); then st=${PWS[start + i]:-$BWHT}; else st=$DIM; fi
+		if (($3)) && [[ -n ${PWH[start + i]:-} ]]; then
+			read -r a b <<<"${PWH[start + i]}"
 			row "$c│$R $st${FLD:0:a}$QBAND$B$BWHT${FLD:a:b}$R$st${FLD:a+b}$R" "$vw"
 		else
 			row "$c│$R $st$FLD$R" "$vw"
@@ -4583,6 +4634,35 @@ if ((ASKMODE)); then
 		clean loc name
 		printf '%s\t%s\t%s\n' "$id" "$loc" "$name" # place before name: a name may be empty
 	done < <(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{@agent}' 2>/dev/null)
+	exit 0
+fi
+if ((RUNMODE)); then
+	# For daemon.sh's finished alerts: each pane's shell, back at its prompt, or the program in
+	# front of it, the panel's "running" (gather), left out when that program is an agent. The
+	# process list only when some pane runs other than a shell: an agent is looked for in those.
+	panes=$(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{@agent}' 2>/dev/null)
+	while IFS=$'\t' read -r id loc ppid0 cmd name; do
+		[[ $SHELLS == *" ${cmd#-} "* ]] && continue
+		while read -r pid ppid args; do PCHILD[$ppid]+="$pid " PARGS[$pid]=$args; done < <(ps -ww -eo pid=,ppid=,args= 2>/dev/null)
+		break
+	done <<<"$panes"
+	while IFS=$'\t' read -r id loc ppid0 cmd name; do
+		[[ -n $id ]] || continue
+		st=shell
+		if [[ $SHELLS != *" ${cmd#-} "* ]]; then
+			st=program q=("$ppid0") kind=""
+			while ((${#q[@]})) && [[ -z $kind ]]; do
+				p=${q[0]} q=("${q[@]:1}")
+				agent_kind "${PARGS[$p]:-}"
+				kind=$AKIND
+				# shellcheck disable=SC2206
+				[[ -n ${PCHILD[$p]:-} ]] && q+=(${PCHILD[$p]})
+			done
+			[[ -n $kind ]] && continue
+		fi
+		clean loc cmd name
+		printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$loc" "$st" "${cmd#-}" "$name" # name last: it may be empty
+	done <<<"$panes"
 	exit 0
 fi
 if ((ROWS)); then
