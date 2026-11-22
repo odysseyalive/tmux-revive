@@ -1327,6 +1327,15 @@ sed -i 's/enter select · esc back/enter confirm · esc cancel/' "$T/msq.txt"
 check "and so is one that confirms" "[[ \$(msq | head -1) == asking ]]"
 printf '%s\n' '• Done.' '' '› Write tests for @filename' '' '  ? for shortcuts' >"$T/msq.txt"
 check "Codex at its own prompt is not asking" "[[ \$(msq | head -1) == waiting ]]"
+# Coloured as Claude Code's are (captured): the history above the two blank lines grey, the
+# question bold yellow, the › choice on the band, the others white, the key hints grey.
+printf '%s\n' '• Finished waiting' '  └ No agents completed yet' '' '■ You have hit your usage limit.' '' '' \
+	'  Approaching rate limits' '  Switch to gpt-6-luna for lower credit usage?' '' '' \
+	'› 1. Switch to gpt-6-luna                   Fast and affordable model for easier tasks.' '  2. Keep current model' \
+	'  3. Keep current model (never show again)  Hide future rate limit reminders about switching models' '' \
+	'  enter select · esc back' >"$T/msq.txt"
+check "a Codex question's history is grey, its question bold yellow" "msq | grep -qxF 'gd|■ You have hit your usage limit.' && msq | grep -qxF 'BY|  Approaching rate limits' && msq | grep -qxF 'BY|  Switch to gpt-6-luna for lower credit usage?'"
+check "its › choice bright on the band, the others white, its key hints grey" "msq | grep -q '^BW|› 1\. Switch' && msq | grep -qxF 'W|  2. Keep current model' && msq | grep -qxF 'g|  enter select · esc back'"
 
 echo "ssh links"
 # Which host an ssh command line connects to, as agent-say link takes it.

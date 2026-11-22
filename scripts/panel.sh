@@ -2492,23 +2492,34 @@ qhi() {
 # the question itself bold yellow, the highlighted choice bold bright white on a band, the other
 # choices white with their descriptions dim, the history above and the footer grey. Only
 # colours are chosen here, nothing is cut, so a dialog shaped some other way just looks
-# plainer. -> QSTYLE[i]
+# plainer. Codex marks its highlighted choice with a › where Claude Code has a ❯, draws no
+# rule over its dialog (two blank lines set it apart instead), and ends it in key hints,
+# "enter select · esc back". -> QSTYLE[i]
 question_parts() {
 	local i first=-1 top=-1 last=-1
 	QSTYLE=()
 	# The first choice: "1." (or "❯ 1.") nearest the bottom that starts a run of choices.
 	for ((i = ${#L[@]} - 1; i >= 0; i--)); do
-		[[ ${L[i]} =~ ^[[:space:]│]*(❯[[:space:]]*)?1\.[[:space:]] ]] && { first=$i; break; }
+		[[ ${L[i]} =~ ^[[:space:]│]*([❯›][[:space:]]*)?1\.[[:space:]] ]] && { first=$i; break; }
 	done
 	((first < 0)) && return 0
 	# The dialog's top: the nearest rule above the first choice, else the blank-line gap.
 	for ((i = first - 1; i >= 0 && i >= first - 20; i--)); do
 		[[ ${L[i]} =~ ^[[:space:]]*[─━═╌]{8,} ]] && { top=$i; break; }
 	done
+	# No rule: above the question, past the blank lines under it, two blank lines in a row.
+	if ((top < 0)); then
+		i=$((first - 1))
+		while ((i > 0)) && [[ ${L[i]} =~ ^[[:space:]]*$ ]]; do ((i--)); done
+		while ((i > 0 && i >= first - 10)); do
+			[[ ${L[i]} =~ ^[[:space:]]*$ && ${L[i - 1]} =~ ^[[:space:]]*$ ]] && { top=$i; break; }
+			((i--))
+		done
+	fi
 	((top < 0)) && top=$((first > 6 ? first - 6 : 0))
 	# The footer: "Enter to select", "Esc to cancel" and the like, after the choices.
 	for ((i = ${#L[@]} - 1; i > first; i--)); do
-		[[ ${L[i]} =~ (Esc to|Enter to|to navigate|to cancel) ]] && { last=$i; break; }
+		[[ ${L[i]} =~ (Esc to|Enter to|to navigate|to cancel|[Ee]nter (select|confirm|submit|choose)|[Ee]sc (back|cancel|close)) ]] && { last=$i; break; }
 	done
 	for ((i = 0; i < ${#L[@]}; i++)); do
 		if ((i < top)); then QSTYLE[i]=$GRY$DIM                          # history above it
@@ -2516,8 +2527,8 @@ question_parts() {
 		elif ((i < first)); then QSTYLE[i]=$B$BYEL                         # the question
 		elif ((last >= 0 && i >= last)); then QSTYLE[i]=$GRY                # the footer
 		# The highlighted choice brighter than the rest, on the QBAND.
-		elif [[ ${L[i]} =~ ^[[:space:]│]*❯.*\[[^[:space:]]\] ]]; then QSTYLE[i]=$QBAND$B$BGRN # highlighted, and ticked
-		elif [[ ${L[i]} =~ ^[[:space:]│]*❯ ]]; then QSTYLE[i]=$QBAND$B$BWHT  # the highlighted choice
+		elif [[ ${L[i]} =~ ^[[:space:]│]*[❯›].*\[[^[:space:]]\] ]]; then QSTYLE[i]=$QBAND$B$BGRN # highlighted, and ticked
+		elif [[ ${L[i]} =~ ^[[:space:]│]*[❯›] ]]; then QSTYLE[i]=$QBAND$B$BWHT # the highlighted choice
 		elif [[ ${L[i]} =~ ^[[:space:]│]*[0-9]+\.[[:space:]]*\[[^[:space:]]\] ]]; then QSTYLE[i]=$B$BGRN # a ticked choice ([✔], as Claude Code greens it)
 		elif [[ ${L[i]} =~ ^[[:space:]│]*(\[.\][[:space:]]*)?[0-9]+\. ]]; then QSTYLE[i]=$BWHT # a choice
 		# A multi-select's Next or Submit, a choice too though it has no number: white like
