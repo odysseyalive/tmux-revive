@@ -630,7 +630,8 @@ SHELLS=" sh bash zsh fish dash ksh tcsh csh nu "
 # Code's last step of a question, "Review your answers", has no footer: named here, or Enter
 # on a multi-select's Submit seemed to answer it, and the panel stopped there. Its "Ready to
 # submit your answers?" line is gone in newer ones: its "1. Submit answers" choice is still there.
-Q_RE='do you want to|would you like to|allow (once|always)|\(y/n\)|\[y/n\]|enter to select|esc to cancel|trust (this|the) folder|yes, proceed|press enter to continue|ready to submit your answers|[0-9]\. submit answers'
+# Codex's dialogs end in key hints instead: "enter select · esc back", "Enter select, Esc cancel".
+Q_RE='do you want to|would you like to|allow (once|always)|\(y/n\)|\[y/n\]|enter to select|esc to cancel|trust (this|the) folder|yes, proceed|press enter to continue|ready to submit your answers|[0-9]\. submit answers|enter (select|confirm|submit|choose)[^[:alnum:]]{1,8}esc (back|cancel|close)'
 W_RE='esc to interrupt|ctrl\+c to interrupt'
 # The line a question's dialog starts under: a horizontal rule, or the top of a box.
 
@@ -680,16 +681,35 @@ claude_record() { # claude_record PID -> RECORD: Claude Code's session record fo
 own_plain() {
 	[[ -f $1 && $2 =~ ^[0-9]+$ && "$(realpath -e -- "$1" 2>/dev/null)" == "$1" && "$(stat -c %u -- "$1" 2>/dev/null)" == "$2" ]]
 }
-# The Claude account a Claude Code is signed in to, for ACCOUNT: the part of its address before
-# the @, cut to 12. Its config folder holds it (.claude.json, oauthAccount), and the folder is
+# The account an agent is signed in to, for ACCOUNT: the part of its address before the @, cut
+# to 12. A Claude Code's config folder holds it (.claude.json, oauthAccount), and the folder is
 # the one its environment names (CLAUDE_CONFIG_DIR), else .claude in its home, read once for
-# each process. The default folder's may be in the home itself, as ~/.claude.json. Claude Code
-# writes that file often, so it is looked at no more than every 30 s, and read again only when
-# its size or time has changed since. Another user's is read only when it is that user's own
-# and reached by no symbolic link, as their records are.
-declare -A CL_CDIR=() CL_ACCT=() CL_ASTAMP=() CL_AT=()
+# each process. The default folder's may be in the home itself, as ~/.claude.json. A Codex's is
+# in its sign-in (auth.json, the address its id_token names) in its CODEX_HOME, else .codex in
+# its home; signed in with an API key it has none. Claude Code writes its file often, so a file
+# is looked at no more than every 30 s, and read again only when its size or time has changed
+# since. Another user's is read only when it is that user's own and reached by no symbolic
+# link, as their records are.
+declare -A CL_CDIR=() CX_CDIR=() CL_ACCT=() CL_ASTAMP=() CL_AT=()
+acct_read() { # acct_read PID FILE JQ-FILTER -> ACCT: the account FILE names, or nothing
+	local f=$2 e st
+	if [[ -z ${CL_AT[$f]:-} ]] || ((SECONDS - CL_AT[$f] >= 30)); then
+		CL_AT[$f]=$SECONDS
+		st=$(fstamp "$f")
+		if [[ $st != "${CL_ASTAMP[$f]:-}" ]]; then
+			CL_ASTAMP[$f]=$st CL_ACCT[$f]=""
+			if [[ -n $st ]] && { [[ ${PUID[$1]:-$UID} == "$UID" ]] || own_plain "$f" "${PUID[$1]}"; }; then
+				e=$(jq -r "$3" -- "$f" 2>/dev/null)
+				e=${e%%@*} e=${e:0:12}
+				[[ $e =~ ^[A-Za-z0-9._+-]+$ ]] && CL_ACCT[$f]=$e
+			fi
+		fi
+	fi
+	ACCT=${CL_ACCT[$f]:-}
+	return 0
+}
 claude_acct() { # claude_acct PID -> ACCT: its account's name, or nothing
-	local d="" h="" e f st
+	local d="" h="" e f
 	ACCT=""
 	if [[ -z ${CL_CDIR[$1]:-} ]]; then
 		if [[ $1 =~ ^[0-9]+$ && -r /proc/$1/environ ]]; then
@@ -710,22 +730,32 @@ claude_acct() { # claude_acct PID -> ACCT: its account's name, or nothing
 		CL_CDIR[$1]=$d
 	fi
 	d=${CL_CDIR[$1]}
-	if [[ -z ${CL_AT[$d]:-} ]] || ((SECONDS - CL_AT[$d] >= 30)); then
-		CL_AT[$d]=$SECONDS
-		f=$d/.claude.json
-		[[ ! -f $f && $d == */.claude ]] && f=${d%/.claude}/.claude.json
-		st=$(fstamp "$f")
-		if [[ $st != "${CL_ASTAMP[$d]:-}" ]]; then
-			CL_ASTAMP[$d]=$st CL_ACCT[$d]=""
-			if [[ -n $st ]] && { [[ ${PUID[$1]:-$UID} == "$UID" ]] || own_plain "$f" "${PUID[$1]}"; }; then
-				e=$(jq -r '.oauthAccount.emailAddress // empty | strings' -- "$f" 2>/dev/null)
-				e=${e%%@*} e=${e:0:12}
-				[[ $e =~ ^[A-Za-z0-9._+-]+$ ]] && CL_ACCT[$d]=$e
-			fi
+	f=$d/.claude.json
+	[[ ! -f $f && $d == */.claude ]] && f=${d%/.claude}/.claude.json
+	acct_read "$1" "$f" '.oauthAccount.emailAddress // empty | strings'
+}
+codex_acct() { # codex_acct PID -> ACCT: its account's name, or nothing
+	local d="" h="" e
+	ACCT=""
+	if [[ -z ${CX_CDIR[$1]:-} ]]; then
+		if [[ $1 =~ ^[0-9]+$ && -r /proc/$1/environ ]]; then
+			while IFS= read -r -d '' e; do
+				case $e in
+				CODEX_HOME=/*) d=${e#*=} ;;
+				HOME=/*) h=${e#*=} ;;
+				esac
+			done 2>/dev/null <"/proc/$1/environ"
+			[[ -n $d || -z $h ]] || d=$h/.codex
+		elif [[ ${PUID[$1]:-$UID} == "$UID" ]]; then
+			d=${CODEX_HOME:-$HOME/.codex} # no environment to read (macOS): this user's own
 		fi
+		d=${d%/}
+		[[ -n $d ]] || return 0
+		CX_CDIR[$1]=$d
 	fi
-	ACCT=${CL_ACCT[$d]:-}
-	return 0
+	# The id_token's middle part, base64url without its padding, is JSON naming the address.
+	acct_read "$1" "${CX_CDIR[$1]}/auth.json" '.tokens.id_token // empty | strings | split(".")[1] // empty
+		| gsub("-"; "+") | gsub("_"; "/") | . + ("=" * ((4 - length % 4) % 4)) | @base64d | fromjson? | .email // empty | strings'
 }
 # Claude Code's record says idle between turns even while agents it started in the background
 # (the Agent tool's run_in_background, background shells) go on working, and it has no field
@@ -1298,7 +1328,8 @@ usecs() {
 # P_WP the pane's window.pane as tmux's status bar numbers it (empty when not known). P_USER is
 # the user its agent (or the program it runs) runs as, empty when not known; P_INST whether that
 # user has tmux-revive: "owner" (it's the tmux owner's own), a version, or empty (none known).
-# P_ACCT is the Claude account its Claude Code is signed in to (claude_acct), empty for others.
+# P_ACCT is the account its Claude Code or Codex is signed in to (claude_acct, codex_acct), empty
+# for others.
 P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=() P_ACCT=()
 ME=$(id -un 2>/dev/null)
 USER_RE='^[A-Za-z_][A-Za-z0-9_.-]{0,31}$'
@@ -1410,7 +1441,7 @@ agents_look() {
 		ctx_left "$kind" "$apid" "${P_ID[i]}" ${A_TREE[j]}
 		[[ $kind == codex && $st == waiting && -n $CX_FILE ]] && codex_waits "$CX_FILE" "$apid" && st=working
 		P_STATE[i]=$st P_CTX[i]=$CTX
-		[[ $kind == claude ]] && claude_acct "$apid" && P_ACCT[i]=$ACCT
+		case $kind in claude) claude_acct "$apid" && P_ACCT[i]=$ACCT ;; codex) codex_acct "$apid" && P_ACCT[i]=$ACCT ;; esac
 		# Waiting on you: since when its record says, and whether a message from another
 		# session started the turn that ended there.
 		if [[ $st == waiting && -n $CSU ]]; then
@@ -1771,7 +1802,7 @@ remote_panes() {
 					rwait[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
 					continue
 				fi
-				# The Claude account its Claude Code is signed in to, likewise.
+				# The account its Claude Code or Codex is signed in to, likewise.
 				if [[ ${id:0:40} =~ ^\#acct\ (%[0-9]{1,9})\ ([A-Za-z0-9._+-]{1,12})$ && -z $loc ]]; then
 					v=${BASH_REMATCH[2]}
 					clean v
@@ -3540,9 +3571,12 @@ question_look() {
 # question_free -> QFREE, QFREEN, QON, QEMPTY, QHAS: Claude Code's last choice is often a
 # free-text box ("5. Type something.", "3. [ ] Type something"), where any letter is typed, j
 # and k too. Once seen, j and k move and letters wait for E, whatever row the panel last saw
-# lit: that view lags the keys still queued. An answer in it replaces the label, so its number
-# is kept, or known as the one before "Chat about this" (another tab of the question has its
-# own). As this look sees it: QCUR, the cursor's choice (x: a row with no number); QON, on it; QEMPTY, it still says "Type something"
+# lit: that view lags the keys still queued. An answer in it replaces the label, so it is
+# known as the one before "Chat about this" as well, which Claude Code adds only under a
+# question that has one: a choice already written in (typed in the pane, or before the panel
+# last left the question, or on another tab) is found though "Type something" was never seen.
+# Each tab of the question has its own; a step with neither (the review after Submit) has none.
+# As this look sees it: QCUR, the cursor's choice (x: a row with no number); QON, on it; QEMPTY, it still says "Type something"
 # (Enter there declines the whole question: see answer); QHAS, its row is there at all.
 question_free() {
 	local i cur="" ph="" chat="" nums=" "
@@ -3560,7 +3594,8 @@ question_free() {
 		[[ ${QL[i]} =~ ^[[:space:]│]*(❯[[:space:]]*)?1\.[[:space:]] ]] && break
 	done
 	if [[ -n $ph ]]; then QFREE=1 QFREEN=$ph
-	elif ((QFREE)) && [[ -n $chat ]] && ((chat > 1)); then QFREEN=$((chat - 1)); fi
+	elif [[ -n $chat ]] && ((chat > 1)); then QFREE=1 QFREEN=$((chat - 1))
+	else QFREEN=""; fi
 	QON=0 QEMPTY=0 QHAS=0 QCUR=$cur
 	[[ -n $QFREEN && $cur == "$QFREEN" ]] && QON=1
 	[[ -n $ph && $ph == "$QFREEN" ]] && QEMPTY=1
@@ -4682,7 +4717,7 @@ if ((ROWS)); then
 	for i in "${!P_ID[@]}"; do
 		[[ ${P_STATE[i]} == self ]] && continue
 		folder=${P_DIR[i]##*/}
-		# The Claude account its Claude Code is signed in to, on a line of its own as well, and
+		# The account its Claude Code or Codex is signed in to, on a line of its own as well, and
 		# first, so the lines rows had before keep their places next to the row.
 		[[ ${P_ACCT[i]:-} =~ ^[A-Za-z0-9._+-]{1,12}$ ]] && printf '#acct %s %s\n' "${P_ID[i]}" "${P_ACCT[i]}"
 		# Whose pane it is, and whether that user has tmux-revive here, likewise.

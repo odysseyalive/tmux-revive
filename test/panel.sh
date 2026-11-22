@@ -369,7 +369,8 @@ chmod +x "$T/stub/xdg-open"
 # goes there too, so even if the panel failed to pass it along, the real one wouldn't run.
 tm set-environment -g REVIVE_WORKFORCE_INSTALL_CMD "touch $T/installed"
 tm set-environment -g REVIVE_PLAYWRIGHT_INSTALL_CMD "touch $T/pw-installed"
-tm new-window -d -t work -n helpw "env PATH=$T/stub:$PATH REVIVE_WORKFORCE_INSTALL_CMD='touch $T/installed' REVIVE_PLAYWRIGHT_INSTALL_CMD='touch $T/pw-installed' REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm set-environment -g REVIVE_CODEX_INSTALL_CMD "touch $T/cx-installed"
+tm new-window -d -t work -n helpw "env PATH=$T/stub:$PATH REVIVE_WORKFORCE_INSTALL_CMD='touch $T/installed' REVIVE_PLAYWRIGHT_INSTALL_CMD='touch $T/pw-installed' REVIVE_CODEX_INSTALL_CMD='touch $T/cx-installed' REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
 hscreen() { tm capture-pane -p -t work:helpw; }
 hwait() { for _ in $(seq 1 30); do hscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 hgone() { for _ in $(seq 1 30); do hscreen | grep -qF -- "$1" || return 0; sleep 0.2; done; return 1; }
@@ -416,6 +417,12 @@ tm send-keys -t work:helpw y
 pwinstalled() { for _ in $(seq 1 30); do [[ -e $T/pw-installed ]] && return 0; sleep 0.2; done; return 1; }
 check "and y runs it in a new tmux window of its own" "pwinstalled && tm list-windows -F '#{window_name}' | grep -qx playwright-mcp"
 tm kill-window -t work:playwright-mcp 2>/dev/null
+tm send-keys -t work:helpw c
+check "c asks before installing Codex Workforce, showing what it would run" "hwait \"This runs Codex Workforce's installer\" && hscreen | grep -q 'touch $T/cx-installed'"
+tm send-keys -t work:helpw y
+cxinstalled() { for _ in $(seq 1 30); do [[ -e $T/cx-installed ]] && return 0; sleep 0.2; done; return 1; }
+check "and y runs it in a new tmux window of its own" "cxinstalled && tm list-windows -F '#{window_name}' | grep -qx codex-workforce"
+tm kill-window -t work:codex-workforce 2>/dev/null
 # Tall enough, the ads stay put at the bottom and only the words above them scroll.
 tm resize-window -t work:helpw -x 160 -y 50; sleep 1.5
 tm send-keys -t work:helpw Home; sleep 0.5
@@ -451,6 +458,9 @@ for c in 60 80 100 160; do
 	w=$((c < 80 ? 80 : c)) # the panel is never narrower than 80
 	check "the help page fits $c columns ($(awk '{w[length]=1} END{for (k in w) printf "%s ", k}' <<<"$out"))" "grep -q 'Claude Workforce' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$w ' ]]"
 	# Fitting by being cut short doesn't count: nothing on the page itself ends in a …
+	# Its two install buttons side by side where the box has room, one over the other where not.
+	b=$(grep -c 'i   Claude Workforce' <<<"$out"); [[ $(grep -c 'i   Claude Workforce .*c   Codex Workforce' <<<"$out") == 1 ]] && b=side
+	check "its Workforce buttons are both there at $c ($b)" "grep -q 'c   Codex Workforce' <<<\"\$out\" && [[ $c != 100 || $b == side ]]"
 	check "and none of its lines is cut short at $c" "! sed -n '/HELP · HOW TO USE/,\$p' <<<\"\$out\" | grep -q '…'"
 	# That's with the ads pinned under the words (200 lines leaves room). Too short for that,
 	# everything scrolls together, and fits the same.
@@ -585,6 +595,15 @@ sleep 1
 out=$(cframe 160)
 check "Codex holding no rollout open: its own, by its CODEX_HOME and folder (100k of 400k: 75%)" "[[ \$(grep -c 'codex .* 75% ║' <<<\"\$out\") == 1 ]]"
 check "a rollout for another folder isn't used: a dash" "[[ \$(grep -c 'codex .*·····    – ║' <<<\"\$out\") == 1 ]] && ! grep -q 'codex .* 40% ║' <<<\"\$out\""
+# Its sign-in in its CODEX_HOME says which account it is: the address its id_token names
+# (base64url, unpadded), up to the @, cut to 12, as a Claude Code's is.
+b64u() { printf '%s' "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+printf '{"auth_mode":"chatgpt","tokens":{"id_token":"%s.%s.sig"}}\n' "$(b64u '{"alg":"RS256"}')" "$(b64u '{"email":"codex.fixture@example.com","name":"??>"}')" >"$CX/auth.json"
+rows=$(tm run-shell "HOME=$H REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows")
+check "a Codex's account, from the sign-in in its CODEX_HOME, on a line before its row" "[[ \$(grep -c '^#acct %[0-9]* codex\.fixtur\$' <<<\"\$rows\") == 2 ]] && grep -A4 '^#acct %[0-9]* codex\.fixtur\$' <<<\"\$rows\" | grep -q $'\x1fcodex\x1f'"
+out=$(cframe 200)
+check "and shows under ACCOUNT" "grep -q ' ACCOUNT ' <<<\"\$out\" && [[ \$(grep -c ' codex\.fixtur .* codex ' <<<\"\$out\") == 2 ]]"
+rm -f "$CX/auth.json"
 # A second codex in the same folder, started later, has the rollout started since it did; the
 # first keeps its own. A `codex resume` has the older one it goes on writing.
 sleep 2.5
@@ -949,13 +968,15 @@ mkdir -p "$T/bin" && cp "$(command -v bash)" "$T/bin/codex"
 cat >"$T/ask.sh" <<'ASK'
 # A stand-in agent asking a question, as Claude Code draws one: history above, a rule, the
 # question and its choices. Every key it reads goes to OUT.keys; the answer to OUT. With
-# nofree, choice 5 is a plain one (as in Codex's), not a free-text box. As in Claude Code, it
+# nofree, choice 5 is a plain one (as in Codex's), not a free-text box, and choice 6 isn't
+# "Chat about this", which Claude Code shows only under a free-text one. As in Claude Code, it
 # asks for bracketed paste, takes a paste on the free-text choice as text (line breaks and
 # all), Ctrl-U there takes the line before the cursor (or the break before it), and Enter on
 # it with nothing in it declines the whole question.
 out=$1 sel=1 n=6 typed="" free=1
 opts=("Yes" "No" "Maybe" "Later" "Type something." "Chat about this")
-[[ ${2:-} == nofree ]] && opts[4]="Not now" free=0
+[[ ${2:-} == nofree ]] && opts[4]="Not now" opts[5]="Never" free=0
+[[ ${2:-} == written ]] && typed="written before" # its free-text choice written in already
 stty -icanon -echo
 printf '\e[?2004h'
 show() {
@@ -1159,8 +1180,19 @@ check "the changed answer replaces it" "wait_q '         three more' 15 && grep 
 tm send-keys -t work:qpanel Enter
 check "your own Enter then picks it: the answer arrives exactly, line breaks included" "for _ in \$(seq 1 25); do [[ -s $T/ans2 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans2 2>/dev/null) == \"custom:\$want\" ]]"
 check "and nothing the box coloured carries a colour code" "! grep -q \$'\\e' $T/ans2 && ! grep -q '\\[[0-9;]*m' $T/ans2 && grep -q '^paste:' $T/ans2.keys && ! grep '^paste:' $T/ans2.keys | grep -qE '\\\\E|\\[[0-9;]*m'"
-# A dialog with no free-text choice: letters go to it as they always have.
+# A question whose free-text choice was written in before the panel came to it (in the pane,
+# or before it last left the question): its label is the answer, and [E]nter is still offered.
 wait_q 'PEEK · asker' 30 >/dev/null # done answering the last one
+tm respawn-pane -k -t work:asker "$T/bin/codex $T/ask.sh $T/ans9 written"
+wait_q 'QUESTION · asker' 30 >/dev/null
+tm send-keys -t work:qpanel Enter; wait_q 'ANSWERING asker' >/dev/null
+tm send-keys -t work:qpanel -l 'jjjj'
+check "written in before, it's still the free-text choice: j moves to it and [E]nter is offered" "wait_q '❯ 5. written before' 15 && wait_q '[E]nter' 15 && ! grep -qxE '[jk]' $T/ans9.keys"
+tm send-keys -t work:qpanel E
+check "and E opens the box to write its answer in" "wait_q 'Esc closes' 15 && qhas 'ANSWER · asker' && ! grep -qxE 'E|e' $T/ans9.keys"
+tm send-keys -t work:qpanel Escape; wait_q 'closed; nothing was sent' 15 >/dev/null
+tm send-keys -t work:qpanel C-]; wait_q 'left the question' >/dev/null
+# A dialog with no free-text choice: letters go to it as they always have.
 tm respawn-pane -k -t work:asker "$T/bin/codex $T/ask.sh $T/ans8 nofree"
 wait_q 'QUESTION · asker' 30 >/dev/null
 tm send-keys -t work:qpanel Enter; wait_q 'ANSWERING asker' >/dev/null
@@ -1247,6 +1279,32 @@ qfree() { bash -c 'source <(sed -n "/^question_free() {/,/^}/p" "$1"); QFREE=0 Q
 check "a multi-select's free-text choice is found, the cursor on Submit off it" "[[ \$(qfree) == '1 3 0' ]]"
 sed -i 's/^  3\. \[ \] Type something$/❯ 3. [ ] Type something/; s/^❯    Submit$/     Submit/' "$T/msq.txt"
 check "and with the cursor on it, it's on it" "[[ \$(qfree) == '1 3 1' ]]"
+# A question of several tabs, this one a multi-select (captured): its free-text choice is 5,
+# the multi-select's Submit under it and "Chat about this" after the rule.
+printf '%s\n' '←  ☒ Scope  ☒ Cleanup   Submit  →' '' 'Beyond the agent list, what should the README cleanup cover?' '' \
+	'  1. [ ] Agent list only' '     Just fix the supported-agents wording (line 6) and leave the rest as is.' \
+	'  2. [ ] Tighten the prose' '     Trim and smooth the existing sections; voice pass through oa-work before it ships.' \
+	'  3. [ ] Fix stale steps' '     Check each key and step (N, G, M, B, U, P, ?) against the current panel and correct anything that has drifted.' \
+	'  4. [ ] Drop the ad sections' '     Remove or shrink the Claude Workforce and playwright-mcp sections at the end.' \
+	'❯ 5. [ ] Type something' '     Submit' "$(printf '─%.0s' {1..46})" '  6. Chat about this' '' \
+	'Enter to select · Tab/Arrow keys to navigate · ctrl+g to edit in Nvim · Esc to cancel' >"$T/msq.txt"
+check "a tab of several, a multi-select, with the cursor on Type something: on it" "[[ \$(qfree) == '1 5 1' ]]"
+# Written in already, its label is the answer: the panel, just come to the question, has never
+# seen "Type something" there, and still offers [E]nter on it.
+sed -i 's/^❯ 5\. \[ \] Type something$/❯ 5. [ ] But add codex-workforce install button to help menu under tame your AI/' "$T/msq.txt"
+cp "$T/msq.txt" "$T/qtab1.txt"
+check "written in, it's still the free-text choice, found by the Chat about this under it" "[[ \$(qfree) == '1 5 1' && \$(msq | head -1) == asking ]]"
+sed -i 's/^❯ 5\. /  5. /; s/^     Submit$/❯    Submit/' "$T/msq.txt"
+check "and with the cursor on Submit, off it" "[[ \$(qfree) == '1 5 0' ]]"
+# From tab to tab (Left and Right while answering): each tab's own free-text choice, written in
+# or not, and none on the review after Submit, though its Cancel has the last tab's number.
+printf '%s\n' '←  ☒ Scope  ☒ Cleanup   Submit  →' '' 'What scope?' '' '  1. README only' '❯ 2. the help menu too' \
+	"$(printf '─%.0s' {1..46})" '  3. Chat about this' '' 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel' >"$T/qtab2.txt"
+printf '%s\n' '←  ☒ Scope  ☒ Cleanup  ✔ Submit  →' '' 'Review your answers' '' ' ● What scope?' '   → the help menu too' '' \
+	'  1. Submit answers' '❯ 2. Cancel' '' >"$T/qtab3.txt"
+qfrees() { bash -c 'source <(sed -n "/^question_free() {/,/^}/p" "$1"); shift; QFREE=0 QFREEN=""
+	for f; do mapfile -t QL <"$f"; question_free; printf "%s " "$QFREE/$QFREEN/$QON"; done' _ "$ROOT/scripts/panel.sh" "$@"; }
+check "from tab to tab, each tab's own free-text choice, and none on the review" "[[ \$(qfrees $T/qtab1.txt $T/qtab2.txt $T/qtab3.txt $T/qtab1.txt) == '1/5/1 1/2/1 1//0 1/5/1 ' ]]"
 printf '%s\n' 'chat' "$(printf '─%.0s' {1..50})" '❯ do you want to see it' "$(printf '─%.0s' {1..50})" >"$T/msq.txt"
 check "the agent's own prompt, typed into, is still not a question" "[[ \$(msq | head -1) == waiting ]]"
 # The step after Submit (captured): no footer, only its own question.
@@ -1258,6 +1316,17 @@ check "the review after Submit is still asking (Enter there sends the answers)" 
 	for q in 1 2 3 4 5 6; do printf '%s\n' " │ ● Question $q?" '   → Its answer'; done
 	printf '%s\n' '' '❯ 1. Submit answers' '  2. Cancel' '' ''; } >"$T/msq.txt"
 check "and so is a newer one's review, with no 'Ready to submit' line" "[[ \$(msq | head -1) == asking ]]"
+# A Codex choice (captured from Codex 0.171): its footer is key hints, its cursor a › on a
+# numbered choice, not its prompt.
+printf '%s\n' '• Finished waiting' '' '  Approaching rate limits' '  Switch to gpt-6-luna for lower credit usage?' '' '' \
+	'› 1. Switch to gpt-6-luna                   Fast and affordable model for easier tasks.' '  2. Keep current model' \
+	'  3. Keep current model (never show again)  Hide future rate limit reminders about switching models' '' \
+	'  enter select · esc back' >"$T/msq.txt"
+check "a Codex choice, its footer key hints, is asking" "[[ \$(msq | head -1) == asking ]]"
+sed -i 's/enter select · esc back/enter confirm · esc cancel/' "$T/msq.txt"
+check "and so is one that confirms" "[[ \$(msq | head -1) == asking ]]"
+printf '%s\n' '• Done.' '' '› Write tests for @filename' '' '  ? for shortcuts' >"$T/msq.txt"
+check "Codex at its own prompt is not asking" "[[ \$(msq | head -1) == waiting ]]"
 
 echo "ssh links"
 # Which host an ssh command line connects to, as agent-say link takes it.

@@ -71,7 +71,7 @@ There's nothing new to learn. Work in tmux the way you always have, detach or
 close the terminal, shut down, and when you come back, type `tmux`. Everything
 reopens: sessions, windows, splits, the programs running in them, and your AI
 agents in the exact conversation they were in. That covers Claude Code (Remote
-Control link and all), Codex, Cursor Agent and Crush.
+Control link and all) and Codex.
 
 The installer adds a small `tmux` wrapper to your shell. A bare `tmux` outside
 tmux, and `tmux attach`, go to `tmux-revive open`. Every other tmux command
@@ -263,7 +263,7 @@ Then just ask your agent in plain words:
 
 | Command | What it does |
 |---|---|
-| `agent-say name [name]` | name this pane. It also renames its window and the agent's session (Claude Code, Codex, Cursor). With no name, it uses the agent session's own name |
+| `agent-say name [name]` | name this pane. It also renames its window and the agent's session (Claude Code, Codex). With no name, it uses the agent session's own name |
 | `agent-say list` | every pane and its name |
 | `agent-say <to> <message...>` | send. `<to>` is a name, a `%pane-id`, or `name@ssh-host` |
 | `agent-say <to> -` | send the message read from stdin |

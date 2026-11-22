@@ -1,11 +1,11 @@
 # shellcheck shell=bash
 # The control panel's help page: ? opens it in place of everything from the PANES band down,
 # with the banner left above it. The words live in help.txt (its top says how to mark them
-# up); this draws them BBS style, scrolls them, and runs the two buttons in the ads. The ads
+# up); this draws them BBS style, scrolls them, and runs the buttons in the ads. The ads
 # stay put at the bottom while the words above them scroll, when there's room for both.
 #
 # Sourced by panel.sh, which gives it the colours, row/sect/tab, draw and flash. Run on its
-# own, `help.sh --install workforce|playwright` is what an install button starts in a new tmux window.
+# own, `help.sh --install workforce|codex|playwright` is what an install button starts in a new tmux window.
 
 HELP_FILE="$(dirname "${BASH_SOURCE[0]}")/help.txt"
 HELP=0 HELP_TOP=0 HELP_VIEW=1 HELP_W=-1 HROWS=() HSPLIT=0
@@ -19,6 +19,7 @@ HELP_MIN=8
 WF_URL=https://raw.githubusercontent.com/odysseyalive/claude-workforce/main/install
 PW_URL=https://github.com/odysseyalive/playwright-mcp
 PWI_URL=https://raw.githubusercontent.com/odysseyalive/playwright-mcp/main/install
+CWF_URL=https://raw.githubusercontent.com/odysseyalive/codex-workforce/main/install
 
 # Claude Workforce's own one-line installer for this system, from its README: the bash one
 # for Linux and macOS (WSL is Linux), the PowerShell one on Windows. What the confirmation
@@ -28,6 +29,17 @@ workforce_cmd() {
 	case $(uname -s) in
 	Linux | Darwin | *BSD) printf 'bash -c "$(curl -fsSL %s)"' "$WF_URL" ;;
 	MINGW* | MSYS* | CYGWIN*) printf 'powershell.exe -NoProfile -Command "irm %s.ps1 | iex"' "$WF_URL" ;;
+	*) return 1 ;;
+	esac
+}
+
+# Codex Workforce's, from the top of its installer, the same way. REVIVE_CODEX_INSTALL_CMD
+# stands in for it in tests.
+codex_cmd() {
+	if [[ -n ${REVIVE_CODEX_INSTALL_CMD:-} ]]; then printf '%s' "$REVIVE_CODEX_INSTALL_CMD"; return; fi
+	case $(uname -s) in
+	Linux | Darwin | *BSD) printf 'bash -c "$(curl -fsSL %s)"' "$CWF_URL" ;;
+	MINGW* | MSYS* | CYGWIN*) printf 'powershell.exe -NoProfile -Command "irm %s.ps1 | iex"' "$CWF_URL" ;;
 	*) return 1 ;;
 	esac
 }
@@ -47,6 +59,7 @@ playwright_cmd() {
 what() {
 	case $1 in
 	workforce) WNAME="Claude Workforce" WCMD=workforce_cmd WWIN=workforce WENV=REVIVE_WORKFORCE_INSTALL_CMD ;;
+	codex) WNAME="Codex Workforce" WCMD=codex_cmd WWIN=codex-workforce WENV=REVIVE_CODEX_INSTALL_CMD ;;
 	playwright) WNAME="playwright-mcp" WCMD=playwright_cmd WWIN=playwright-mcp WENV=REVIVE_PLAYWRIGHT_INSTALL_CMD ;;
 	*) return 1 ;;
 	esac
@@ -122,17 +135,28 @@ hrule() {
 	RULE=$r
 }
 # hbutton KEY LABEL: a solid button, the key on a black cap at its left. Half blocks above and
-# below pad it, and a fade frames it from outside: nothing shaded touches the words.
+# below pad it, and a fade frames it from outside: nothing shaded touches the words. Buttons
+# on lines next to each other sit side by side while they fit the line, else one under the
+# other: HBQ holds the row of them until something else comes (hbtn_flush).
+HBQ=() HBQW=0
 hbutton() {
-	local fg bg cap blk n
+	local fg bg cap blk n w
 	if ((HBN % 2)); then fg=$BLU bg="$e[44m$B$BWHT" cap="$e[40m$B$BWHT"
 	else fg=$BYEL bg="$e[103m$B$e[30m" cap="$e[40m$B$BYEL"; fi
 	HBN=$((HBN + 1))
 	blk="$bg $cap $1 $R$bg  $2  $R"
-	n=$((${#2} + 8))
-	rep ▄ "$n"; hpush "     $fg$REP$R"
-	hpush "  $fg░▒▓$R$blk$fg▓▒░$R"
-	rep ▀ "$n"; hpush "     $fg$REP$R"
+	n=$((${#2} + 8)) w=$((${#2} + 16))
+	((${#HBQ[@]} && HBQW + w > HCW)) && hbtn_flush
+	rep ▄ "$n"; HBQ[0]+="     $fg$REP$R   "
+	HBQ[1]+="  $fg░▒▓$R$blk$fg▓▒░$R"
+	rep ▀ "$n"; HBQ[2]+="     $fg$REP$R   "
+	HBQW=$((HBQW + w))
+}
+hbtn_flush() {
+	local i
+	((${#HBQ[@]})) || return 0
+	for i in 0 1 2; do hpush "${HBQ[i]}"; done
+	HBQ=() HBQW=0
 }
 # The boxes. hbox_close lays the open one out: under the page, or, on a wide panel, beside the
 # box before it (HPEND holds that one until its partner comes). hflush puts a lone one down.
@@ -246,7 +270,7 @@ hart_close() {
 help_build() {
 	local ln k t i c tw pad
 	local -a tags=() big sun
-	HW=$1 HROWS=() HBOX=0 HBLANK=1 HPARA="" HBC=$BMAG HB=() HPEND=() HPEND_END=() HBN=0
+	HW=$1 HROWS=() HBOX=0 HBLANK=1 HPARA="" HBC=$BMAG HB=() HPEND=() HPEND_END=() HBN=0 HBQ=() HBQW=0
 	HART=() HARTW=0 HHEAD_AT=-1 HSPLIT=-1
 	HSIDE=$((HW >= 110)) HBW=$HW
 	((HSIDE)) && HBW=$(((HW - 2) / 2))
@@ -289,6 +313,7 @@ help_build() {
 	fi
 	while IFS= read -r ln || [[ -n $ln ]]; do
 		clean ln
+		[[ $ln == .button\ * ]] || hbtn_flush
 		HCW=$((HBOX ? HBW - 5 : HW - 2))
 		# Text that starts beside a picture is wrapped to leave it room; under it, it isn't.
 		((HARTW && ${#HROWS[@]} < HART_AT + ${#HART[@]})) && HCW=$((HCW - HARTW - 2))
@@ -394,7 +419,7 @@ help_frame() {
 	done
 	RBAR=""
 	last=$((HELP_TOP + view < n ? HELP_TOP + view : n))
-	kcs ↑↓/j/k " scroll" PgUp/PgDn " page" i/p " install" Esc " close"
+	kcs ↑↓/j/k " scroll" PgUp/PgDn " page" i/c/p " install" Esc " close"
 	k=$KC
 	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	vlen "$k"
@@ -448,6 +473,7 @@ help_view() {
 		k) ((HELP_TOP--)) ;;
 		j) ((HELP_TOP++)) ;;
 		i | I) help_install workforce ;;
+		c | C) help_install codex ;;
 		p | P) help_install playwright ;;
 		o | O) help_open "$PW_URL" ;;
 		$'\e')
@@ -510,7 +536,7 @@ help_confirm() {
 
 # The install button: ask, then run the installer in a new tmux window of its own, where its
 # output and its question can be seen. Nothing runs without a y.
-help_install() { # help_install workforce|playwright
+help_install() { # help_install workforce|codex|playwright
 	local cmd run
 	what "$1" || return
 	cmd=$("$WCMD") || { flash "no $WNAME installer for $OS"; return; }
@@ -541,7 +567,7 @@ help_open() {
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	# --install-workforce: what older panels run.
 	case ${1:-} in --install) w=${2:-} ;; --install-workforce) w=workforce ;; *) w="" ;; esac
-	what "$w" || { echo "usage: help.sh --install workforce|playwright" >&2; exit 2; }
+	what "$w" || { echo "usage: help.sh --install workforce|codex|playwright" >&2; exit 2; }
 	cmd=$("$WCMD") || { echo "There's no $WNAME installer for $(uname -s)."; exit 1; }
 	printf 'Installing %s:\n  %s\n\n' "$WNAME" "$cmd"
 	bash -c "$cmd"

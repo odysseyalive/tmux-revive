@@ -8,7 +8,8 @@
 ;   $ command          a command to type, shown as is (never wrapped at spaces)
 ;   .box Title         starts a boxed ad; .end closes it. On a wide panel, two boxes in a
 ;                      row sit side by side.
-;   .button K Label    a button inside a box: K is the key that presses it
+;   .button K Label    a button inside a box: K is the key that presses it. Buttons on
+;                      lines next to each other sit side by side when they fit.
 ;   `text`             inside any line: shown like a command
 ;   .art NAME          a picture for the section, on the line under its = Title. It sits
 ;                      to the right of the section on a wide panel, above the words on a
@@ -47,13 +48,14 @@ Got agents on a remote server? I wanted mine right here with the rest.
 As long as tmux keeps running there, its windows show up right here in the Revive panel, even after you close that terminal. [U]pdate Revive on all open sessions. Some user sessions require a manual update.
 
 .box Tame Your AI
-I built Claude Workforce because I wanted my AI to get more done, and to show its work.
+I built Claude Workforce, and Codex Workforce for Codex, because I wanted my AI to get more done and show its work.
 - Ask for several things at once. Each job goes to a helper in the background, and a work list keeps track, so an interruption doesn't lose your place.
 - Every helper proves its work with a check that passes or fails.
 - Plan in auto mode with /blueprint. Nothing gets built until you say so.
 - Hire agents who know their job well, each with its own handbook, so you build a team instead of leaning on one generalist.
-- When a new model comes out, audit your skills and agents so you know what still works and where you can trim.
-.button i Install Claude Workforce
+- When a new model comes out, audit your skills and agents so you know what still works and what you can cut.
+.button i Claude Workforce
+.button c Codex Workforce
 .end
 
 .box playwright-mcp
