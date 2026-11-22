@@ -968,8 +968,9 @@ wait_watch() {
 # wait_colour ROW -> WCOL: WAITING ON YOU's colour. A turn you started yourself lights it for
 # 90 minutes, cooling as it ages: under 10 minutes bold vivid lime, under 45 vivid lime, then a
 # paler lime. WIDLE=1: waiting over 90 minutes, whoever started it, shown as IDLE. WAGENT=1:
-# under 90 minutes, a turn a message from another session started, shown as WAITING ON AGENT
-# in the usual green. WUNK=1: when it began isn't known (yet), shown as ---
+# under 90 minutes, a turn a message from another session started, done: shown as AGENT'S
+# TURN DONE in the usual green, since nothing in it waits on you (or on anyone). WUNK=1:
+# when it began isn't known (yet), shown as ---
 wait_colour() {
 	local s="" a
 	WCOL=$BGRN WIDLE=0 WAGENT=0 WUNK=0
@@ -2025,6 +2026,7 @@ sel_fix() {
 }
 
 state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters wide (the column 20 on a wide panel)
+	CPAD="  " # what fills a wide panel's column after it
 	case $1 in
 	asking) CELL="$B$BMAG$BLINK?$R$B$BMAG NEEDS ANSWER    $R" ;;
 	grant) CELL="$B$BMAG$BLINK⚑ [G]RANT ACCESS$R  " ;; # its agent waits for access (G)
@@ -2036,7 +2038,9 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 		elif [[ -n ${2:-} && -n ${P_SRV[$2]:-} ]]; then
 			if ((WIDLE)); then CELL="$BGRN◇ IDLE · server   $R"; else CELL="$WCOL◆ WAITING · server$R"; fi
 		elif ((WIDLE)); then CELL="$BGRN◇ IDLE            $R"
-		elif ((WAGENT)); then CELL="$WCOL◆ WAITING ON AGENT$R"
+		# The whole of it where the column is 20 wide, one space left before FOLDER.
+		elif ((WAGENT && ${sw:-0})); then CELL="$WCOL◆ AGENT'S TURN DONE$R" CPAD=" "
+		elif ((WAGENT)); then CELL="$WCOL◆ AGENT TURN DONE $R"
 		else CELL="$WCOL◆ WAITING ON YOU  $R"; fi ;;
 	# Idle at its prompt while its work goes on in the background: working all the same (its
 	# peek says it takes input).
@@ -2120,7 +2124,7 @@ draw_panes() {
 	# USER, ACCOUNT and VER, and a space after each.
 	extra=$((UW + VW + 2 + (as ? AW + 1 : 0)))
 	GW=$((cw - 67 - KW - NW - FW - extra))
-	sw=2 # STATE is 20 wide, room for WAITING ON AGENT and a gap; 18 when the panel is narrow
+	sw=2 # STATE is 20 wide, room for AGENT'S TURN DONE and a gap; 18 when the panel is narrow
 	# A narrow panel cuts GIT first, down to 13, then the folder and the name, down to 10. Too
 	# narrow for that, the folder and GIT go and the name has their room: the narrowest panel
 	# takes the name down to 10 to keep CTX LEFT.
@@ -2202,7 +2206,7 @@ draw_panes() {
 		if ((P_AGENT[i])); then cells+="$BCYN$FLD$R "; else cells+="$CYN$FLD$R "; fi
 		state_cell "${stc[i]}" "$i"
 		cells+=$CELL
-		((sw)) && cells+="  "
+		((sw)) && cells+=$CPAD
 		if ((wide)); then
 			fld "$folder" "$FW"
 			cells+="$BBLU$FLD$R "

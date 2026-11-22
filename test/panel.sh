@@ -1658,12 +1658,12 @@ rm -f "$st/panel/far.example.rows"*
 raw=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
 out=$(plain <<<"$raw")
 check "here: a turn you typed, waiting since just now, is bold vivid lime" "grep 'cl-typed' <<<\"\$raw\" | grep -qF $'\e[1m\e[38;5;118m◆ WAITING ON YOU'"
-check "here: one an agent-say message started is WAITING ON AGENT in the usual green" "grep 'cl-msg' <<<\"\$raw\" | grep -qF $'\e[92m◆ WAITING ON AGENT'"
+check "here: one an agent-say message started, done, is AGENT'S TURN DONE in the usual green" "grep 'cl-msg' <<<\"\$raw\" | grep -qF $'\e[92m◆ AGENT'\\''S TURN DONE'"
 check "here: one waiting over 90 minutes shows IDLE, in the usual WAITING ON YOU colour" "grep cl-old <<<\"\$raw\" | grep -qF $'\e[92m◇ IDLE' && grep -q 'cl-old .*claude *◇ IDLE  ' <<<\"\$out\" && ! grep -q 'cl-old .*WAITING' <<<\"\$out\""
 check "here: resumed just now, its last turn two hours ago, shows IDLE" "grep -q 'cl-back .*claude *◇ IDLE  ' <<<\"\$out\""
 check "here: resumed just now, its last turn five minutes ago, shows WAITING ON YOU" "grep -q 'cl-back5 .*claude *◆ WAITING ON YOU' <<<\"\$out\""
 check "here: one waiting since a time not known shows --- in grey, not WAITING ON YOU" "grep 'cl-idle' <<<\"\$raw\" | grep -qF $'\e[90m  --- ' && ! grep 'cl-idle' <<<\"\$raw\" | grep -q WAITING"
-check "here: WAITING ON AGENT leaves a gap before the folder, and the frame is still 140 wide" "grep -q 'WAITING ON AGENT  ' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
+check "here: AGENT'S TURN DONE leaves a gap before the folder, and the frame is still 140 wide" "grep -q \"AGENT'S TURN DONE \" <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
 # Live, as right after tmux starts (REVIVE_PANEL_LOADBOX=1 stands in for that), with a linked
 # computer slow to send its rows: a box says it is loading, with a bar of what is ready, over
 # the panel as it goes on. No key closes it; it goes once the rows are in, for good.
