@@ -647,6 +647,89 @@ check "the turn interrupted while waiting: not WORKING" "[[ \$(grep -c 'codex *.
 cxwait c3 2026-01-01T00:00:00.000Z
 out=$(cframe 160)
 check "a wait call from before the codex started isn't its own: not WORKING" "[[ \$(grep -c 'codex *. WORKING ' <<<\"\$out\") == 0 ]]"
+# Stopped at its usage limit: its rollout's last turn complete with the error
+# usage_limit_exceeded, as Codex 0.171 writes it (the message's time has no date; its token
+# counts say when each limit resets, to the second, and its plan). LIMIT and when it lifts,
+# though it was waiting on its agents before; READY TO RESUME once that's past, or its plan
+# has changed since; as before once it goes on.
+# limlabel EPOCH [WIDTH]: the STATE cell's words for a limit lifting then, as the panel says it:
+# the time today, with its date another day; the first form that fits WIDTH (19, 18 narrow).
+limlabel() {
+	local t c
+	t=$(date -d "@$1" +%I:%M%p) t=${t#0} t=${t,,} t=${t/:00/}
+	[[ $(date -d "@$1" +%F) == "$(date +%F)" ]] || t="$(date -d "@$1" '+%b %-d') $t"
+	if [[ $t == *" "* ]]; then
+		for c in "◷ BACK $t" "◷ $t"; do ((${#c} <= ${2:-19})) && break; done
+	else c="◷ BACK AT $t"; fi
+	echo "$c"
+}
+# cxmsg EPOCH: Codex's message for a limit lifting then ("Nov 25th, 2026 3:04 PM" another day).
+cxmsg() {
+	local d t=$(date -d "@$1" '+%-I:%M %p')
+	if [[ $(date -d "@$1" +%F) != "$(date +%F)" ]]; then
+		d=$(date -d "@$1" +%-d)
+		case $d in 1 | 21 | 31) d+=st ;; 2 | 22) d+=nd ;; 3 | 23) d+=rd ;; *) d+=th ;; esac
+		t="$(date -d "@$1" +%b) $d, $(date -d "@$1" +%Y) $t"
+	fi
+	printf 'You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at %s.' "$t"
+}
+cxlimit() { # cxlimit RESET-EPOCH [AT-ISO] [PLAN]: the turn ends at the limit (a fixture from a real rollout)
+	printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":98.0,"window_minutes":300,"resets_at":%s},"secondary":{"used_percent":16.0,"window_minutes":10080,"resets_at":%s},"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"individual_limit":null,"spend_control_reached":null,"plan_type":"%s","rate_limit_reached_type":null}}}\n' "${2:-$(cxnow)}" "$1" $(($1 + 50000)) "${3:-plus}" >>"$cxa"
+	printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_complete","turn_id":"t","last_agent_message":null,"error":{"message":"%s","codex_error_info":"usage_limit_exceeded"}}}\n' "${2:-$(cxnow)}" "$(cxmsg "$1")" >>"$cxa"
+}
+lim=$((($(date +%s) + 7200) / 60 * 60 + 55)) # as the real one: 55 s into the minute its message names
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
+cxwait c4
+cxout c4
+cxlimit "$lim"
+out=$(cframe 160)
+check "a Codex stopped at its usage limit after waiting on its agents: LIMIT and when it lifts, not WORKING" "grep -qF 'codex     $(limlabel "$lim")' <<<\"\$out\" && ! grep -q 'codex *. WORKING ' <<<\"\$out\""
+rows=$(tm run-shell "HOME=$H REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows")
+check "--rows: a line before its row with the seconds until it lifts, the row saying waiting" "grep -A3 '^#limit %[0-9]* 7[0-9][0-9][0-9] 0\$' <<<\"\$rows\" | grep -q $'\x1fcodex\x1fwaiting\x1f'"
+# Another day: its date as well as its time ("Nov 24 3:04pm"), LIMIT cut short to fit, then
+# left out on a narrow panel, every row still exactly the frame's width.
+far=$((($(date +%s) + 3 * 86400) / 3600 * 3600 + 295))
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
+cxlimit "$far"
+out=$(cframe 160)
+check "a limit lifting another day: its date and time ($(limlabel "$far"))" "grep -qF 'codex     $(limlabel "$far")' <<<\"\$out\" && grep -qF '$(date -d "@$far" '+%b %-d')' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '160 ' ]]"
+out=$(cframe 100)
+check "and on a narrow panel, cut to fit ($(limlabel "$far" 18))" "grep -qF '$(limlabel "$far" 18)' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '100 ' ]]"
+# On the hour, no :00 (so LIMIT stays whole for a one-digit hour).
+far=$((far - 295))
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
+cxlimit "$far"
+out=$(cframe 100)
+check "another day on the hour: its date and the hour, no :00 ($(limlabel "$far" 18))" "grep -qF '$(limlabel "$far" 18)' <<<\"\$out\" && ! grep -q 'codex .*◷.*:00' <<<\"\$out\""
+# An older Codex's error event, its wait call still unanswered: the limit outranks the wait.
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
+cxwait c5
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"error","message":"%s"}}\n' "$(cxnow)" "$(cxmsg "$lim")" >>"$cxa"
+out=$(cframe 160)
+check "a usage limit outranks a wait on its agents still unanswered" "grep -qF 'codex     ◷ BACK' <<<\"\$out\" && ! grep -q 'codex *. WORKING ' <<<\"\$out\""
+# Its message's time only (no token counts), written three hours ago for two hours ago: the time
+# is the next one after the message, not after now, so it has lifted.
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
+past=$(($(date +%s) - 7200))
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_complete","error":{"message":"%s","codex_error_info":"usage_limit_exceeded"}}}\n' "$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%S.123Z)" "$(cxmsg "$past")" >>"$cxa"
+out=$(cframe 160)
+check "its time passed (written 3 h ago for 2 h ago): READY TO RESUME, in WAITING ON YOU's bold lime" "grep -q 'codex *◆ READY TO RESUME' <<<\"\$out\""
+# Its plan now, from its sign-in, other than the one the rollout gave when it was hit: an upgrade.
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
+cxlimit "$lim"
+printf '{"auth_mode":"chatgpt","tokens":{"id_token":"%s.%s.sig"}}\n' "$(b64u '{"alg":"RS256"}')" "$(b64u '{"email":"codex.fixture@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"plus"}}')" >"$CX/auth.json"
+out=$(cframe 160)
+check "the same plan in its sign-in: still LIMIT" "grep -qF 'codex     ◷ BACK' <<<\"\$out\""
+printf '{"auth_mode":"chatgpt","tokens":{"id_token":"%s.%s.sig"}}\n' "$(b64u '{"alg":"RS256"}')" "$(b64u '{"email":"codex.fixture@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"pro"}}')" >"$CX/auth.json"
+out=$(cframe 160)
+check "its plan changed since (plus to pro): READY · NEW PLAN" "grep -q 'codex *◆ READY · NEW PLAN' <<<\"\$out\""
+rows=$(tm run-shell "HOME=$H REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows")
+check "--rows: its #limit line says the plan changed" "grep -q '^#limit %[0-9]* [0-9]* 1\$' <<<\"\$rows\""
+rm -f "$CX/auth.json"
+# It goes on (a new turn): the limit is over, whatever its screen still shows.
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
+out=$(cframe 160)
+check "a new turn after the limit: no LIMIT or READY" "! grep -q 'codex *◷ \|codex *◆ READY' <<<\"\$out\""
 tm kill-window -t work:cxa
 # A `codex resume ID` just started, as a restore after a reboot starts one: its rollout, named
 # for ID, not written since. Waiting since then, the last time it was written: two hours ago
@@ -727,6 +810,40 @@ if command -v python3 >/dev/null && { command -v ss || command -v lsof; } >/dev/
 	check "and its peek says a server it started runs" "grep -q 'PEEK · .*a server it started runs' <<<\"\$out\""
 	check "and the rows it gives a linked computer say so" "tm run-shell 'HOME=$H CLAUDE_CODE_TMPDIR=$T/ltmp REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows' | grep -qx '#serving $clid'"
 fi
+# A Claude Code stopped at its usage limit: its transcript ends in the error it writes itself
+# (isApiErrorMessage, as a real one's other errors are; no real usage-limit one was on hand, so
+# the words are Claude Code 2.1's own: "You've hit your session limit · resets 10pm (Zone)").
+mkdir -p "$T/cll"
+tm new-window -d -t work -n cll -c "$T/cll" "env HOME=$H $T/bin/claude -c 'sleep 300; :'"
+sleep 0.5
+llpid=$(tm display -p -t work:cll '#{pane_pid}')
+printf '{"pid":%s,"sessionId":"s-lim","status":"idle","statusUpdatedAt":%s000}\n' "$llpid" "$(date +%s)" >"$H/.claude/sessions/$llpid.json"
+printf '{"oauthAccount":{"emailAddress":"lim@example.com","planDisplayName":"Pro","organizationRateLimitTier":"default_claude_pro","hasExtraUsageEnabled":false}}\n' >"$H/.claude.json"
+lim=$((($(date +%s) + 7200) / 60 * 60))
+cllimit() { # cllimit RESET-EPOCH: the turn ends at the limit, its time in UTC
+	local t
+	t=$(TZ=UTC date -d "@$1" +%I:%M%p) t=${t#0} t=${t,,} t=${t/:00/}
+	[[ $(TZ=UTC date -d "@$1" +%F) == "$(TZ=UTC date +%F)" ]] || t="$(TZ=UTC date -d "@$1" '+%b %-d'), $t"
+	printf '{"parentUuid":"p","isSidechain":false,"type":"assistant","uuid":"u","timestamp":"%s","message":{"model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","type":"message","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"You'"'"'ve hit your session limit · resets %s (UTC)"}]},"error":"rate_limit","isApiErrorMessage":true,"sessionId":"s-lim"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.123Z)" "$t"
+}
+{
+	printf '{"type":"user","message":{"role":"user","content":"go on"},"timestamp":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+	cllimit "$lim"
+	printf '{"type":"last-prompt"}\n'
+} >"$H/.claude/projects/-w/s-lim.jsonl"
+out=$(cframe 160)
+check "a Claude Code at its usage limit: LIMIT and when it lifts, in this computer's time" "grep -qF 'claude    $(limlabel "$lim")' <<<\"\$out\""
+llid=$(tm display -p -t work:cll '#{pane_id}')
+out=$(tm run-shell "HOME=$H REVIVE_PANEL_SEL=$llid COLUMNS=160 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+check "and its peek says when the limit lifts" "grep -q 'PEEK · .*usage limit, back ' <<<\"\$out\""
+printf '{"oauthAccount":{"emailAddress":"lim@example.com","planDisplayName":"Max","organizationRateLimitTier":"default_claude_max_5x","hasExtraUsageEnabled":false}}\n' >"$H/.claude.json"
+out=$(cframe 160)
+check "its account's plan changed since the panel saw the limit (Pro to Max): READY · NEW PLAN" "grep -q 'claude *◆ READY · NEW PLAN' <<<\"\$out\""
+printf '{"type":"user","message":{"role":"user","content":"continue"},"timestamp":"%s"}\n{"type":"assistant","message":{"model":"claude-opus-5-5","content":[],"usage":{"input_tokens":10}},"timestamp":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" "$(date -u +%Y-%m-%dT%H:%M:%S.500Z)" >>"$H/.claude/projects/-w/s-lim.jsonl"
+out=$(cframe 160)
+check "once it goes on after the limit: as before, WAITING ON YOU" "grep -q 'claude *◆ WAITING ON YOU *cll' <<<\"\$out\" && ! grep -q 'claude *◷ \|claude *◆ READY' <<<\"\$out\""
+tm kill-window -t work:cll
+rm -f "$H/.claude.json" "$H/.claude/sessions/$llpid.json"
 tm kill-window -t work:cl;tm kill-window -t work:cx; tm kill-window -t work:cl2
 
 echo "access"
@@ -1852,6 +1969,24 @@ rm -f "$st/panel/far.example.rows"
 out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=200 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
 check "a linked computer's account line shows in ACCOUNT; one with other characters, or too long, does not" "grep -q 'acct-ok .* ok\.name+1 ' <<<\"\$out\" && ! grep -q 'bad;name\|thirteenchar' <<<\"\$out\" && grep -q 'acct-bad ' <<<\"\$out\" && grep -q 'acct-long ' <<<\"\$out\""
 rm -f "$st/panel/far.example.rows"
+# A linked pane at its usage limit (a #limit line before its row: the seconds until it lifts, -
+# when not known, and 1 when its plan changed since): shown in this computer's time. A row
+# without one, as an older panel sends, as before.
+{
+	printf '#owner tester\n'
+	printf '#limit %%5 7200 0\n%%5\x1f0:1.0\x1flim-far\x1fcodex\x1fwaiting\x1fw\x1fmain\x1f1\x1f1024\x1f1\n'
+	printf '#limit %%6 0 0\n%%6\x1f0:2.0\x1flim-past\x1fclaude\x1fwaiting\x1fw\x1fmain\x1f1\x1f1024\x1f1\n'
+	printf '#limit %%7 - 1\n%%7\x1f0:3.0\x1flim-plan\x1fclaude\x1fwaiting\x1fw\x1fmain\x1f1\x1f1024\x1f1\n'
+	printf '#limit %%8 x 0\n%%8\x1f0:4.0\x1flim-bad\x1fclaude\x1fwaiting\x1fw\x1fmain\x1f1\x1f1024\x1f1\n'
+	printf '%%9\x1f0:5.0\x1flim-none\x1fclaude\x1fwaiting\x1fw\x1fmain\x1f1\x1f1024\x1f1\n'
+} >"$T/oldrows"
+lim=$(($(date +%s) + 7200))
+out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=160 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+check "a linked pane at its limit: LIMIT and when it lifts here" "grep -q 'lim-far .*◷ ' <<<\"\$out\" && { grep -qF \"\$(limlabel \$lim)\" <<<\"\$out\" || grep -qF \"\$(limlabel \$((lim + 1)))\" <<<\"\$out\"; }"
+check "its limit lifted there: READY TO RESUME; its plan changed: READY · NEW PLAN" "grep -q 'lim-past .*◆ READY TO RESUME' <<<\"\$out\" && grep -q 'lim-plan .*◆ READY · NEW PLAN' <<<\"\$out\""
+check "a #limit line out of form, or none (an older panel): its row as before" "grep -q 'lim-bad .*--- ' <<<\"\$out\" && grep -q 'lim-none .*--- ' <<<\"\$out\" && ! grep -q 'lim-bad .*◷\|lim-none .*◷' <<<\"\$out\""
+check "ready to resume needs you: its computer's heading counts the two" "grep -q 'FAR.EXAMPLE .* 2 needs you' <<<\"\$out\""
+rm -f "$st/panel/far.example.rows"
 for w in cl-none cl-busy cl-idle cl-ask spin cl-fd cl-cwd cl-two cl-two2; do far_tm kill-window -t far:$w; done
 rm -rf "$T/rhome/.claude" "$st/panel/far.example.rows"*
 farsel() { tm run-shell "AGENT_SAY_SSH=$1 REVIVE_PANEL_SEL=$2 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
@@ -1963,7 +2098,8 @@ touch -d '-2 minutes' "$st/panel/far.example.peek-77"
 farsel "$T/fakessh" far-sh@far.example >/dev/null
 check "the cache is private (700, files 600)" "[[ \$(stat -c %a $st/panel) == 700 && \$(stat -c %a $st/panel/far.example.rows) == 600 ]] && ! find $st/panel -type f -perm /077 | grep -c . >/dev/null"
 check "a peek over a minute old is deleted" "[[ ! -e $st/panel/far.example.peek-77 ]]"
-check "and no temporary files are left" "! ls $st/panel | grep -cvE '^(ticks|panel\\.err|update|far\\.example\\.(rows(\\.old)?|peek-[0-9]+(\\.fail)?))$' >/dev/null"
+# (limit-SESSION: the plan a Claude Code had when the panel saw it at its usage limit, kept.)
+check "and no temporary files are left" "! ls $st/panel | grep -cvE '^(ticks|panel\\.err|update|limit-[A-Za-z0-9_.-]+|far\\.example\\.(rows(\\.old)?|peek-[0-9]+(\\.fail)?))$' >/dev/null"
 # Bidi overrides and zero-width characters from over there are stripped like controls.
 printf '%%9\x1fbidi\xe2\x80\xae0:0\x1fzw\xe2\x80\x8bname\x1fapp\x1fwaiting\x1ffo\xe2\x81\xa6ld\x1fmain\x1f1\x1f1\x1f1\n' >"$T/bidirows"
 printf '#!/bin/sh\ncat %s\n' "$T/bidirows" >"$T/bidissh"; chmod +x "$T/bidissh"

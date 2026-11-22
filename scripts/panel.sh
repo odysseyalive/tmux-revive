@@ -626,6 +626,32 @@ declare -A PCHILD PARGS PRSS PCPU PPAR PUID INPANE TICKS_PREV GIT GIT_T
 X_SSH=() X_WHERE=()
 T_PREV=""
 SHELLS=" sh bash zsh fish dash ksh tcsh csh nu "
+# shell_job PANE_PID -> SJOB: what a pane tmux calls a shell is running in front, or nothing.
+# tmux names a pane after its foreground process, so "bash backup.sh" (and the zip under it)
+# looked like a shell at its prompt. The terminal's foreground job tells: a shell running a
+# script or a -c command is a program, named after the script; a bare shell (bash, su -) isn't.
+shell_job() {
+	local fg w a
+	SJOB=""
+	if [[ -r /proc/$1/stat ]]; then
+		read -r a </proc/"$1"/stat || return 0
+		a=${a##*) } # past the command name, which may hold spaces
+		read -r _ _ _ _ _ fg _ <<<"$a"
+	else
+		fg=$(ps -o tpgid= -p "$1" 2>/dev/null)
+		fg=${fg// /}
+	fi
+	[[ $fg =~ ^[0-9]+$ && $fg != "$1" && -n ${PARGS[$fg]:-} ]] || return 0
+	read -ra a <<<"${PARGS[$fg]}"
+	w=${a[0]##*/}
+	[[ $SHELLS == *" ${w#-} "* ]] || return 0
+	for w in "${a[@]:1}"; do
+		[[ $w == -c ]] && { SJOB=${a[0]##*/}; SJOB="${SJOB#-} -c"; return 0; }
+		[[ $w == -* ]] && continue
+		SJOB=${w##*/}
+		return 0
+	done
+}
 # An agent asking you something: a permission prompt or a multiple-choice question. Claude
 # Code's last step of a question, "Review your answers", has no footer: named here, or Enter
 # on a multi-select's Submit seemed to answer it, and the panel stopped there. Its "Ready to
@@ -690,27 +716,37 @@ own_plain() {
 # is looked at no more than every 30 s, and read again only when its size or time has changed
 # since. Another user's is read only when it is that user's own and reached by no symbolic
 # link, as their records are.
-declare -A CL_CDIR=() CX_CDIR=() CL_ACCT=() CL_ASTAMP=() CL_AT=()
-acct_read() { # acct_read PID FILE JQ-FILTER -> ACCT: the account FILE names, or nothing
-	local f=$2 e st
+# Its plan comes from the same file, read with it (PLAN): what it was when a usage limit was
+# hit, against what it is now, says an upgrade has lifted it (see limit_look).
+declare -A CL_CDIR=() CX_CDIR=() CL_ACCT=() CL_ASTAMP=() CL_AT=() CL_PLAN=() CL_PFILE=()
+acct_read() { # acct_read PID FILE JQ-FILTER PLAN-FILTER -> ACCT: the account FILE names, PLAN: its plan, or nothing
+	local f=$2 e p st
 	if [[ -z ${CL_AT[$f]:-} ]] || ((SECONDS - CL_AT[$f] >= 30)); then
 		CL_AT[$f]=$SECONDS
 		st=$(fstamp "$f")
 		if [[ $st != "${CL_ASTAMP[$f]:-}" ]]; then
-			CL_ASTAMP[$f]=$st CL_ACCT[$f]=""
+			CL_ASTAMP[$f]=$st CL_ACCT[$f]="" CL_PLAN[$f]=""
 			if [[ -n $st ]] && { [[ ${PUID[$1]:-$UID} == "$UID" ]] || own_plain "$f" "${PUID[$1]}"; }; then
-				e=$(jq -r "$3" -- "$f" 2>/dev/null)
+				IFS=$'\x1f' read -r e p < <(jq -r "[(first($3) // \"\"), (first($4) // \"\")] | map(tostring | gsub(\"[\\u0000-\\u001f]\"; \"\")) | join(\"\\u001f\")" -- "$f" 2>/dev/null)
 				e=${e%%@*} e=${e:0:12}
 				[[ $e =~ ^[A-Za-z0-9._+-]+$ ]] && CL_ACCT[$f]=$e
+				p=${p//[^A-Za-z0-9._\/:+-]/_} CL_PLAN[$f]=${p:0:80}
 			fi
 		fi
 	fi
-	ACCT=${CL_ACCT[$f]:-}
+	ACCT=${CL_ACCT[$f]:-} PLAN=${CL_PLAN[$f]:-}
 	return 0
 }
-claude_acct() { # claude_acct PID -> ACCT: its account's name, or nothing
+# A Claude Code's plan: the name its account's plan goes by and its limits' tiers, and whether
+# it may go on past a limit on extra usage. A Codex's: the plan its id_token names.
+CL_PLAN_JQ='.oauthAccount // empty | [.planDisplayName, .organizationRateLimitTier, .userRateLimitTier, .seatTier, .hasExtraUsageEnabled] | map(. // "-" | tostring) | join("/")'
+CX_TOKEN_JQ='.tokens.id_token // empty | strings | split(".")[1] // empty
+		| gsub("-"; "+") | gsub("_"; "/") | . + ("=" * ((4 - length % 4) % 4)) | @base64d | fromjson?'
+CX_PLAN_JQ="$CX_TOKEN_JQ"' | ."https://api.openai.com/auth".chatgpt_plan_type // empty | strings'
+CL_ACCT_JQ='.oauthAccount.emailAddress // empty | strings'
+claude_acct() { # claude_acct PID -> ACCT: its account's name, PLAN: its plan, or nothing
 	local d="" h="" e f
-	ACCT=""
+	ACCT="" PLAN=""
 	if [[ -z ${CL_CDIR[$1]:-} ]]; then
 		if [[ $1 =~ ^[0-9]+$ && -r /proc/$1/environ ]]; then
 			while IFS= read -r -d '' e; do
@@ -719,6 +755,9 @@ claude_acct() { # claude_acct PID -> ACCT: its account's name, or nothing
 				HOME=/*) h=${e#*=} ;;
 				esac
 			done 2>/dev/null <"/proc/$1/environ"
+			# Its plan as Claude Code itself keeps it: with no CLAUDE_CONFIG_DIR, in the home's
+			# .claude.json (one in .claude may be an old copy).
+			[[ -z $d && -n $h ]] && CL_PFILE[$1]=$h/.claude.json
 			[[ -n $d || -z $h ]] || d=$h/.claude
 		else
 			# No environment to read (macOS): the folder its record is in, if one is found.
@@ -732,11 +771,18 @@ claude_acct() { # claude_acct PID -> ACCT: its account's name, or nothing
 	d=${CL_CDIR[$1]}
 	f=$d/.claude.json
 	[[ ! -f $f && $d == */.claude ]] && f=${d%/.claude}/.claude.json
-	acct_read "$1" "$f" '.oauthAccount.emailAddress // empty | strings'
+	if [[ -n ${CL_PFILE[$1]:-} && ${CL_PFILE[$1]} != "$f" && -f ${CL_PFILE[$1]} ]]; then
+		acct_read "$1" "${CL_PFILE[$1]}" "$CL_ACCT_JQ" "$CL_PLAN_JQ"
+		e=$PLAN
+		acct_read "$1" "$f" "$CL_ACCT_JQ" "$CL_PLAN_JQ"
+		PLAN=$e
+	else
+		acct_read "$1" "$f" "$CL_ACCT_JQ" "$CL_PLAN_JQ"
+	fi
 }
-codex_acct() { # codex_acct PID -> ACCT: its account's name, or nothing
+codex_acct() { # codex_acct PID -> ACCT: its account's name, PLAN: its plan, or nothing
 	local d="" h="" e
-	ACCT=""
+	ACCT="" PLAN=""
 	if [[ -z ${CX_CDIR[$1]:-} ]]; then
 		if [[ $1 =~ ^[0-9]+$ && -r /proc/$1/environ ]]; then
 			while IFS= read -r -d '' e; do
@@ -754,8 +800,7 @@ codex_acct() { # codex_acct PID -> ACCT: its account's name, or nothing
 		CX_CDIR[$1]=$d
 	fi
 	# The id_token's middle part, base64url without its padding, is JSON naming the address.
-	acct_read "$1" "${CX_CDIR[$1]}/auth.json" '.tokens.id_token // empty | strings | split(".")[1] // empty
-		| gsub("-"; "+") | gsub("_"; "/") | . + ("=" * ((4 - length % 4) % 4)) | @base64d | fromjson? | .email // empty | strings'
+	acct_read "$1" "${CX_CDIR[$1]}/auth.json" "$CX_TOKEN_JQ"' | .email // empty | strings' "$CX_PLAN_JQ"
 }
 # Claude Code's record says idle between turns even while agents it started in the background
 # (the Agent tool's run_in_background, background shells) go on working, and it has no field
@@ -1212,6 +1257,27 @@ ctx_reported() {
 	((${EPOCHSECONDS:-$(date +%s)} - at <= ${REVIVE_CTX_TTL:-600})) && CTX=$pct
 	return 0
 }
+# claude_tfile PID SID -> TFILE: its session's transcript (SID from its record), or nothing.
+claude_tfile() {
+	local f
+	TFILE=""
+	claude_record "$1"
+	if [[ -z $RECORD ]]; then
+		claude_transcript "$1"
+		TFILE=$TRANSCRIPT
+		return 0
+	fi
+	[[ $2 =~ ^[A-Za-z0-9-]+$ ]] || return 0
+	for f in "${RECORD%/sessions/*}"/projects/*/"$2".jsonl; do
+		[[ -f $f ]] || continue
+		# A record found by its environment (another user's): its transcript must be its own too.
+		if [[ $RECORD == "${CL_EREC[$1]:-}" ]]; then
+			[[ -n ${CL_TROK[$f]:-} ]] || { own_plain "$f" "$(stat -c %u -- "$RECORD")" && CL_TROK[$f]=1; } || continue
+		fi
+		TFILE=$f
+		return 0
+	done
+}
 ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its context window left, or nothing; CX_FILE: a Codex's rollout
 	local kind=$1 apid=$2 pane=$3 f sid p
 	shift 3
@@ -1224,21 +1290,8 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 		elif [[ -n $RECORD ]]; then sid=$(jq -r '.sessionId // empty' "$RECORD" 2>/dev/null); fi
 		ctx_reported "$pane" "$apid" "$sid"
 		[[ -n $CTX ]] && return 0
-		if [[ -z $RECORD ]]; then
-			claude_transcript "$apid"
-			[[ -n $TRANSCRIPT ]] && ctx_cached "$TRANSCRIPT" claude_ctx_file
-			return 0
-		fi
-		[[ $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
-		for f in "${RECORD%/sessions/*}"/projects/*/"$sid".jsonl; do
-			[[ -f $f ]] || continue
-			# A record found by its environment (another user's): its transcript must be its own too.
-			if [[ $RECORD == "${CL_EREC[$apid]:-}" ]]; then
-				[[ -n ${CL_TROK[$f]:-} ]] || { own_plain "$f" "$(stat -c %u -- "$RECORD")" && CL_TROK[$f]=1; } || continue
-			fi
-			ctx_cached "$f" claude_ctx_file
-			return 0
-		done ;;
+		claude_tfile "$apid" "$sid"
+		[[ -n $TFILE ]] && ctx_cached "$TFILE" claude_ctx_file ;;
 	codex)
 		for p in "$@"; do
 			while IFS= read -r f; do
@@ -1254,6 +1307,195 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 		CX_FILE=$ROLLOUT
 		[[ -n $ROLLOUT ]] && ctx_cached "$ROLLOUT" codex_ctx_file ;;
 	esac
+}
+
+# ------------------------------------------------------------------ usage limits
+# An agent stopped at its plan's usage limit waits for the limit to lift, not for you: LIMIT,
+# and when it lifts. Its own record says so, never its screen (the words stay there after it
+# goes on): the turn that ended there is the last thing in it, so it holds only until it does
+# anything else (a slash command such as /usage or /login isn't). Claude Code's transcript ends
+# in the error it writes itself (isApiErrorMessage:
+# "You've hit your session limit · resets 10pm (Europe/Paris)", more than a day out "Nov 25,
+# 3pm", once "Claude AI usage limit reached|EPOCH"). Codex's rollout ends in a turn complete with
+# the error usage_limit_exceeded ("... or try again at 10:10 PM.", another day "Nov 25th, 2026
+# 3:04 PM"), its token counts before it giving when each of its limits resets (resets_at) and
+# its plan. The time has no date: it's the next one after the error was written, in the zone it
+# names, else this computer's, worked out once. Once past it, or its account's plan has changed
+# since (an upgrade), it's READY TO RESUME, and waits on you after all.
+declare -A LIM_STAMP=() LIM_VAL=() LIM_BASE=()
+declare -a P_LIM=() P_LWHY=() # by row: when its limit lifts (epoch), "plan" when its plan changed since
+LIM_MON=" jan feb mar apr may jun jul aug sep oct nov dec"
+LIM_RE='(resets|try again at)( at)? ((jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* ([0-9]{1,2})(st|nd|rd|th)?,( ([0-9]{4}),?)? )?([0-9]{1,2})(:([0-9]{2}))? ?([ap]m)?( \(([A-Za-z][A-Za-z0-9_+/-]*)\))?'
+tz_off() { # tz_off EPOCH -> TZO: the offset from UTC then, in seconds, in the zone TZ names
+	local z
+	printf -v z '%(%z)T' "$1"
+	TZO=$(((10#${z:1:2} * 3600 + 10#${z:3:2} * 60) * ${z:0:1}1))
+}
+local_epoch() { # local_epoch Y M D H MIN -> LEPOCH: that wall-clock time in the zone TZ names
+	local o
+	printf -v o '%04d-%02d-%02dT%02d:%02d:00Z' "$1" "$2" "$3" "$4" "$5"
+	iso_epoch "$o"
+	tz_off "$ISO_S"
+	LEPOCH=$((ISO_S - TZO))
+	o=$TZO
+	tz_off "$LEPOCH"
+	((TZO == o)) || LEPOCH=$((ISO_S - TZO))
+}
+lim_reset() { # lim_reset AT TEXT -> LRESET: when the limit TEXT (written at AT) lifts, or nothing
+	local at=$1 h mi y mo d z w o
+	local -a m=()
+	LRESET=""
+	if [[ $2 =~ \|([0-9]{10})([^0-9]|$) ]]; then LRESET=${BASH_REMATCH[1]}; return 0; fi
+	shopt -s nocasematch
+	[[ $2 =~ $LIM_RE ]] && m=("${BASH_REMATCH[@]}")
+	shopt -u nocasematch
+	((${#m[@]})) || return 0
+	h=$((10#${m[9]})) mi=$((10#${m[11]:-0}))
+	case ${m[12],,} in pm) ((h < 12)) && h=$((h + 12)) ;; am) ((h == 12)) && h=0 ;; esac
+	((h < 24 && mi < 60)) || return 0
+	# In the zone it names, if this computer knows it (else this computer's own).
+	z=${m[14]:-}
+	if [[ -n $z && $z != *..* ]]; then
+		for d in /usr/share/zoneinfo /var/db/timezone/zoneinfo /usr/share/lib/zoneinfo; do
+			[[ -f $d/$z ]] && { local -x TZ=$z; break; }
+		done
+	fi
+	if [[ -n ${m[4]} ]]; then
+		mo=${LIM_MON%%" ${m[4],,}"*} mo=$((${#mo} / 4 + 1)) d=$((10#${m[5]})) y=${m[8]}
+		[[ -n $y ]] || printf -v y '%(%Y)T' "$at"
+		local_epoch "$y" "$mo" "$d" "$h" "$mi"
+		# No year: the next such day, which may be next year's.
+		[[ -z ${m[8]} ]] && ((LEPOCH < at - 86400)) && local_epoch $((y + 1)) "$mo" "$d" "$h" "$mi"
+		LRESET=$LEPOCH
+		return 0
+	fi
+	printf -v w '%(%H %M %S)T' "$at"
+	read -r y mo d <<<"$w"
+	w=$((h * 3600 + mi * 60 - (10#$y * 3600 + 10#$mo * 60 + 10#$d)))
+	((w <= -60)) && w=$((w + 86400))
+	# A change of the clocks in between moves it by as much.
+	tz_off "$at"
+	o=$TZO
+	tz_off $((at + w))
+	LRESET=$((at + w - (TZO - o)))
+}
+lim_at() { # lim_at ISO-TIME -> ISO_S, as iso_epoch, its fraction of a second dropped
+	local t=${1%Z}
+	iso_epoch "${t%.*}Z"
+}
+# Each of these prints "AT RESET PLAN" (the error's time, when the limit lifts or -, the plan
+# when it was hit or -) when the last turn ended at the limit, or nothing.
+claude_limit_file() { # a transcript ->
+	local at t
+	IFS=$'\x1f' read -r at t < <(tail -c 2000000 "$1" 2>/dev/null | grep -E '"type":"(user|assistant)"' |
+		jq -Rnr 'last(inputs | fromjson? | select(type == "object" and (.type == "user" or .type == "assistant") and .isSidechain != true and .isMeta != true
+				and ((.message.content | type) != "string" or (.message.content | test("^\\s*<(command-|local-command-)") | not))))
+			| select(.type == "assistant" and .isApiErrorMessage == true)
+			| ([.message.content[]? | select(.type == "text") | .text] | join(" ")) as $t
+			| select($t | test("^(You.ve hit your|You.ve reached your|You.re out of (usage|extra usage)|Your org is out of usage|Claude AI usage limit reached)"; "i"))
+			| [(.timestamp // ""), ($t | gsub("[\u0000-\u001f]"; " "))] | join("\u001f")' 2>/dev/null)
+	lim_at "${at:-}"
+	[[ -n $ISO_S ]] || return 0
+	lim_reset "$ISO_S" "$t"
+	echo "$ISO_S ${LRESET:--} -"
+}
+codex_limit_file() { # a rollout ->
+	local at rs pl t r
+	IFS=$'\x1f' read -r at rs pl t < <(tail -c 2000000 "$1" 2>/dev/null | grep -E '"(task_started|task_complete|turn_aborted|token_count|error)"' |
+		jq -Rnr 'reduce (inputs | fromjson? | select(type == "object" and (.payload | type == "object"))) as $e ({rl: null, pl: null, lim: null};
+			$e.payload as $p
+			| if $p.type == "token_count" and ($p.rate_limits | type == "object") then
+				(if ($p.rate_limits.plan_type | type == "string") then .pl = $p.rate_limits.plan_type else . end)
+				| (if ([$p.rate_limits.primary, $p.rate_limits.secondary] | map(objects) | length) > 0 then .rl = $p.rate_limits else . end)
+			elif $p.type == "task_started" or $p.type == "turn_aborted" then .lim = null
+			elif $p.type == "task_complete" and ($p.error | type == "object") then
+				.lim = (if ($p.error.codex_error_info | tostring | test("usage_limit")) then {at: $e.timestamp, t: ($p.error.message // ""), rl: .rl, pl: .pl} else null end)
+			elif $p.type == "error" and ($p.message // "" | tostring | test("usage limit"; "i")) then .lim = {at: $e.timestamp, t: $p.message, rl: .rl, pl: .pl}
+			else . end)
+			| .lim // empty
+			| [(.at // ""), ([.rl.primary.resets_at?, .rl.secondary.resets_at?] | map(numbers | floor | tostring) | join(" ")), (.pl // ""), .t]
+			| map(tostring | gsub("[\u0000-\u001f]"; " ")) | join("\u001f")' 2>/dev/null)
+	lim_at "${at:-}"
+	[[ -n $ISO_S ]] || return 0
+	lim_reset "$ISO_S" "$t"
+	# The time one of its limits resets, to the second, when it's in that minute.
+	for r in $rs; do [[ $r =~ ^[0-9]{1,12}$ && -n $LRESET ]] && ((r >= LRESET && r < LRESET + 60)) && LRESET=$r; done
+	pl=${pl//[^A-Za-z0-9._\/:+-]/_} pl=${pl:0:80}
+	echo "$ISO_S ${LRESET:--} ${pl:--}"
+}
+lim_cached() { # lim_cached FILE FUNC -> LIMV: FUNC FILE's answer, worked out again only when FILE changes
+	local st
+	LIMV=""
+	st=$(fstamp "$1")
+	[[ -n $st ]] || return 0
+	if [[ ${LIM_STAMP[$1]:-} != "$st" ]]; then LIM_VAL[$1]=$("$2" "$1") LIM_STAMP[$1]=$st; fi
+	LIMV=${LIM_VAL[$1]}
+}
+# Claude Code's transcript keeps no plan: the one its account had when a panel first saw the
+# limit is kept for it (in the panel's cache folder, as limit-SESSION), so a panel opened after
+# an upgrade can still tell.
+lim_base() { # lim_base FILE AT PLAN-NOW -> LBASE: its plan when the limit at AT was hit, as first seen
+	local k f a="" p=""
+	LBASE=""
+	k=${1##*/} k=${k%.jsonl}
+	[[ $k =~ ^[A-Za-z0-9_.-]{1,120}$ ]] || return 0
+	f=$RDIR/limit-$k
+	if [[ ${LIM_BASE[$f]:-} == "$2 "* ]]; then LBASE=${LIM_BASE[$f]#* }; return 0; fi
+	[[ -f $f ]] && read -r a p _ 2>/dev/null <"$f"
+	if [[ $a != "$2" || -z $p ]]; then
+		[[ -n $3 ]] || return 0
+		p=$3
+		cache_dir
+		printf '%s %s\n' "$2" "$p" >"$f" 2>/dev/null
+		find "$RDIR" -maxdepth 1 -name 'limit-*' -mtime +8 -delete 2>/dev/null
+	fi
+	LIM_BASE[$f]="$2 $p" LBASE=$p
+}
+# limit_look KIND AGENT_PID ROW: whether that agent, waiting, stopped at its usage limit. When
+# it did: P_LIM and P_LWHY for ROW, and LST limit (not lifted yet) or ready.
+limit_look() {
+	local kind=$1 apid=$2 i=$3 f="" at r pl base sid=""
+	LST=""
+	case $kind in
+	claude)
+		claude_record "$apid"
+		[[ -n $RECORD && $RECORD == "${CL_REC:-}" ]] && sid=${CL_SID:-}
+		claude_tfile "$apid" "$sid"
+		f=$TFILE
+		[[ -n $f ]] && lim_cached "$f" claude_limit_file ;;
+	codex)
+		f=${CX_FILE:-}
+		[[ -n $f ]] && lim_cached "$f" codex_limit_file ;;
+	*) return 1 ;;
+	esac
+	[[ -n $f && -n $LIMV ]] || return 1
+	read -r at r pl <<<"$LIMV"
+	# Its plan now, from where its ACCOUNT comes from.
+	case $kind in claude) claude_acct "$apid" ;; codex) codex_acct "$apid" ;; esac
+	base=${pl#-}
+	[[ -n $base ]] || { lim_base "$f" "$at" "$PLAN"; base=$LBASE; }
+	[[ $r == - ]] || P_LIM[i]=$r
+	# A Codex's sign-in says its plan as its rollout does, but only one written since the limit
+	# is taken to say it changed (an older one may just name it otherwise).
+	if [[ -n $base && -n $PLAN && $base != "$PLAN" ]] &&
+		{ [[ $kind != codex ]] || (($(stat -c %Y "${CX_CDIR[$apid]}/auth.json" 2>/dev/null || stat -f %m "${CX_CDIR[$apid]}/auth.json" 2>/dev/null || echo 0) >= at)); }; then
+		P_LWHY[i]=plan LST=ready
+	elif [[ $r != - ]] && ((${EPOCHSECONDS:-$(date +%s)} >= r)); then LST=ready
+	else LST=limit; fi
+	return 0
+}
+# lim_when EPOCH -> LWHEN: when a limit lifts, as short as it goes: 10:10pm today, with its
+# date another day (Nov 23 3pm, Nov 23 3:04pm).
+lim_when() {
+	local d n t
+	LWHEN=""
+	[[ $1 =~ ^[0-9]+$ ]] || return 0
+	printf -v d '%(%Y%m%d)T' "$1"
+	printf -v n '%(%Y%m%d)T' -1
+	printf -v t '%(%I:%M%p)T' "$1"
+	t=${t#0} t=${t,,} t=${t/:00/}
+	if [[ $d == "$n" ]]; then LWHEN=$t
+	else printf -v d '%(%b %d)T' "$1"; LWHEN="${d/ 0/ } $t"; fi
 }
 
 screen_state() { # screen_state PANE -> LSTATE: asking / working / waiting, read off the bottom of the screen
@@ -1440,7 +1682,11 @@ agents_look() {
 		fi
 		# shellcheck disable=SC2086
 		ctx_left "$kind" "$apid" "${P_ID[i]}" ${A_TREE[j]}
-		[[ $kind == codex && $st == waiting && -n $CX_FILE ]] && codex_waits "$CX_FILE" "$apid" && st=working
+		# Stopped at its usage limit: that, though a Codex's rollout says it was waiting on its
+		# agents (the limit ended that turn), and said once the rest is worked out, as waiting.
+		LST=""
+		[[ $st == waiting ]] && limit_look "$kind" "$apid" "$i"
+		[[ -z $LST && $kind == codex && $st == waiting && -n $CX_FILE ]] && codex_waits "$CX_FILE" "$apid" && st=working
 		P_STATE[i]=$st P_CTX[i]=$CTX
 		case $kind in claude) claude_acct "$apid" && P_ACCT[i]=$ACCT ;; codex) codex_acct "$apid" && P_ACCT[i]=$ACCT ;; esac
 		# Waiting on you: since when its record says, and whether a message from another
@@ -1457,6 +1703,7 @@ agents_look() {
 		elif [[ $kind == codex && $st == waiting && -n $CX_FILE ]]; then
 			W_SINCE[i]=$(stat -L -c %Y "$CX_FILE" 2>/dev/null || stat -L -f %m "$CX_FILE" 2>/dev/null)
 		fi
+		[[ -n $LST ]] && P_STATE[i]=$LST
 	done
 	JQ_ST=() JQ_SID=() JQ_SU=() JQ_SA=()
 }
@@ -1473,7 +1720,7 @@ gather() {
 	done <<<"$all"
 	now=${EPOCHREALTIME:-$SECONDS}
 	((++GATHER_N)) # a look of its own: what was read for the last one is read again
-	P_SRV=()
+	P_SRV=() P_LIM=() P_LWHY=()
 	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=() P_ACCT=()
 	A_AT=() A_KIND=() A_PID=() A_TREE=() A_LOAD=() W_SINCE=() W_FROM=()
 	# The panes listed first, so the loading screen can count them off: steps are the process
@@ -1531,8 +1778,10 @@ gather() {
 			st=agent
 			A_AT+=("${#P_ID[@]}") A_KIND+=("$kind") A_PID+=("$apid") A_TREE+=("${tree[*]}")
 			P_APP+=("$kind") P_AGENT+=(1)
-		elif [[ $SHELLS == *" ${cmd#-} "* ]]; then
+		elif [[ $SHELLS == *" ${cmd#-} "* ]] && { shell_job "$ppid0"; [[ -z $SJOB ]]; }; then
 			st=shell P_APP+=("${cmd#-}") P_AGENT+=(0)
+		elif [[ $SHELLS == *" ${cmd#-} "* ]]; then
+			st=program P_APP+=("$SJOB") P_AGENT+=(0)
 		else
 			st=program P_APP+=("$cmd") P_AGENT+=(0)
 		fi
@@ -1756,8 +2005,8 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 	fi
 }
 remote_panes() {
-	local d h f id loc name app st folder git cpu mem agent got v wp lg S=$'\x1f'
-	local -A rctx rbg rsrv ruser rinst rwait racct
+	local d h f id loc name app st folder git cpu mem agent got v wp lg ft S=$'\x1f'
+	local -A rctx rbg rsrv ruser rinst rwait racct rlim
 	P_GROUPS=0
 	# Other computers' screens are kept no longer than they're shown: a minute at most. So are
 	# the temporary files of an ask cut off by the panel closing.
@@ -1770,7 +2019,7 @@ remote_panes() {
 		lg=0
 		[[ -f $d/login ]] && lg=1
 		if ((lg)); then :; elif ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
-		f="$RDIR/$h.rows" got=0 RVER[$h]="" ROWNER[$h]="" rctx=() rbg=() rsrv=() ruser=() rinst=() rwait=() racct=()
+		f="$RDIR/$h.rows" got=0 RVER[$h]="" ROWNER[$h]="" rctx=() rbg=() rsrv=() ruser=() rinst=() rwait=() racct=() rlim=() ft=""
 		# Rows a minute old or newer; older means that computer stopped answering.
 		if ((!lg)) && [[ -s $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
 			while IFS=$S read -r id loc name app st folder git cpu mem agent; do
@@ -1803,6 +2052,13 @@ remote_panes() {
 					rwait[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
 					continue
 				fi
+				# Stopped at its usage limit: the seconds until it lifts (- not known), and whether
+				# its plan has changed since (1), likewise. When it lifts is worked out by this
+				# computer's clock, and shown in its time.
+				if [[ ${id:0:40} =~ ^\#limit\ (%[0-9]{1,9})\ (-|[0-9]{1,9})\ ([01])$ && -z $loc ]]; then
+					rlim[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
+					continue
+				fi
 				# The account its Claude Code or Codex is signed in to, likewise.
 				if [[ ${id:0:40} =~ ^\#acct\ (%[0-9]{1,9})\ ([A-Za-z0-9._+-]{1,12})$ && -z $loc ]]; then
 					v=${BASH_REMATCH[2]}
@@ -1829,6 +2085,16 @@ remote_panes() {
 				case $st in asking | working | waiting | agents | shell | program) ;; *) st=program ;; esac
 				[[ $st =~ ^(waiting|working)$ && -n ${rbg[$id]:-} ]] && st=agents
 				[[ $st == asking && $f -ot $RDIR/$h.answered-${id#%} ]] && st=waiting # answered from here since
+				# Its seconds count from when the rows came (the file's time), not from now.
+				v=""
+				if [[ $st == waiting && -n ${rlim[$id]:-} ]]; then
+					v=${rlim[$id]% *}
+					[[ -n $ft ]] || ft=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
+					[[ $v == - ]] && v="" || v=$((${ft:-${EPOCHSECONDS:-$(date +%s)}} + v))
+					st=limit
+					[[ ${rlim[$id]#* } == 1 ]] && st=ready
+					[[ -n $v ]] && ((${EPOCHSECONDS:-$(date +%s)} >= v)) && st=ready
+				fi
 				[[ $cpu =~ ^[0-9]{1,4}$ ]] || cpu=0
 				[[ $mem =~ ^[0-9]{1,10}$ ]] || mem=0
 				[[ $agent == 1 ]] || agent=0
@@ -1840,6 +2106,8 @@ remote_panes() {
 				P_CTX+=("${rctx[$id]:-}") P_AGENT+=("$agent") P_SSH+=("") P_HOST+=("$h") P_RID+=("$id") P_WP+=("$wp")
 				P_USER+=("${ruser[$id]:-}") P_INST+=("${rinst[$id]:-}") P_ACCT+=("${racct[$id]:-}")
 				[[ $st == waiting && -n ${rsrv[$id]:-} ]] && P_SRV[${#P_ID[@]} - 1]=1
+				[[ $st == limit || $st == ready ]] && P_LIM[${#P_ID[@]} - 1]=$v
+				[[ $st == ready && ${rlim[$id]#* } == 1 ]] && P_LWHY[${#P_ID[@]} - 1]=plan
 				if [[ $st == waiting && -n ${rwait[$id]:-} ]]; then
 					W_SINCE[${#P_ID[@]} - 1]=$((${EPOCHSECONDS:-$(date +%s)} - ${rwait[$id]% *})) W_FROM[${#P_ID[@]} - 1]=${rwait[$id]#* }
 				fi
@@ -2026,6 +2294,7 @@ sel_fix() {
 }
 
 state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters wide (the column 20 on a wide panel)
+	local w
 	CPAD="  " # what fills a wide panel's column after it
 	case $1 in
 	asking) CELL="$B$BMAG$BLINK?$R$B$BMAG NEEDS ANSWER    $R" ;;
@@ -2042,6 +2311,27 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 		elif ((WAGENT && ${sw:-0})); then CELL="$WCOL◆ AGENT'S TURN DONE$R" CPAD=" "
 		elif ((WAGENT)); then CELL="$WCOL◆ AGENT TURN DONE $R"
 		else CELL="$WCOL◆ WAITING ON YOU  $R"; fi ;;
+	# Stopped at its usage limit, and when it lifts (lim_when), in amber: nothing to do yet.
+	# "BACK AT" a time today; another day's date makes it longer: BACK, then nothing, before the time goes.
+	limit)
+		lim_when "${2:+${P_LIM[$2]:-}}"
+		# The first of these that fits: 19 where the column is 20 wide (one space before FOLDER).
+		w=18
+		((${sw:-0})) && w=19
+		if [[ -z $LWHEN ]]; then CELL="◷ USAGE LIMIT"
+		else
+			if [[ $LWHEN == *" "* ]]; then
+				for CELL in "◷ BACK $LWHEN" "◷ $LWHEN"; do ((${#CELL} <= w)) && break; done
+			else CELL="◷ BACK AT $LWHEN"; fi
+		fi
+		fld "$CELL" 18
+		((${#CELL} > 18)) && { fld "$CELL" 19; CPAD=" "; }
+		CELL="$e[38;5;214m$FLD$R" ;;
+	# Its limit lifted, or its plan changed since (an upgrade): it can go on, and waits on you
+	# for it, in WAITING ON YOU's brightest.
+	ready)
+		if [[ -n ${2:-} && ${P_LWHY[$2]:-} == plan ]]; then CELL="$B$e[38;5;118m◆ READY · NEW PLAN$R"
+		else CELL="$B$e[38;5;118m◆ READY TO RESUME $R"; fi ;;
 	# Idle at its prompt while its work goes on in the background: working all the same (its
 	# peek says it takes input).
 	agents) CELL="$BYEL${SPIN[TICK % 4]} WORKING         $R" ;;
@@ -2106,11 +2396,12 @@ draw_panes() {
 		# Its agent waiting for access through here: said in its STATE, unless it asks a question.
 		st=${P_STATE[i]}
 		[[ $st != asking && -n ${P_NAME[i]} && $gw == *" ${P_NAME[i]}@${P_HOST[i]:-${AGENT_SAY_HOST:-$HOST}} "* ]] && st=grant
-		# Whether the row needs you (a question, access waiting, [U]), and how many on each
+		# Whether the row needs you (a question, access waiting, ready to go on after a usage
+		# limit, [U]), and how many on each
 		# computer do, for its heading.
 		stc[i]=$st need[i]=0 key=${P_HOST[i]:-.}
 		cnt[$key]=$((${cnt[$key]:-0} + 1))
-		[[ $st == asking || $st == grant || $v == "[U]" ]] && need[i]=1 needc[$key]=$((${needc[$key]:-0} + 1))
+		[[ $st == asking || $st == grant || $st == ready || $v == "[U]" ]] && need[i]=1 needc[$key]=$((${needc[$key]:-0} + 1))
 	done
 	((NW > 29)) && NW=29
 	((FW > 35)) && FW=35
@@ -2318,6 +2609,11 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 	kc p " hide"
 	# Its agents working in the background don't keep it from taking what you type.
 	if [[ ${P_STATE[SEL]:-} == agents ]]; then sectk "${ft}PEEK · $name · agents busy, takes input" "$KC" $fc "${WB[1]}" "${WK[1]}"
+	elif [[ ${P_STATE[SEL]:-} == limit ]]; then
+		lim_when "${P_LIM[SEL]:-}"
+		sectk "${ft}PEEK · $name · usage limit${LWHEN:+, back $LWHEN}" "$KC" $fc "${WB[1]}" "${WK[1]}"
+	elif [[ ${P_STATE[SEL]:-} == ready && ${P_LWHY[SEL]:-} == plan ]]; then sectk "${ft}PEEK · $name · new plan, ready to resume" "$KC" $fc "${WB[1]}" "${WK[1]}"
+	elif [[ ${P_STATE[SEL]:-} == ready ]]; then sectk "${ft}PEEK · $name · limit lifted, ready to resume" "$KC" $fc "${WB[1]}" "${WK[1]}"
 	elif [[ -n ${P_SRV[SEL]:-} ]]; then sectk "${ft}PEEK · $name · a server it started runs" "$KC" $fc "${WB[1]}" "${WK[1]}"; else sectk "${ft}PEEK · $name" "$KC" $fc "${WB[1]}" "${WK[1]}"; fi
 	if [[ -n ${P_HOST[SEL]:-} ]]; then
 		remote_peek 60 # all it may ask for, to scroll back through
@@ -4689,16 +4985,13 @@ fi
 if ((RUNMODE)); then
 	# For daemon.sh's finished alerts: each pane's shell, back at its prompt, or the program in
 	# front of it, the panel's "running" (gather), left out when that program is an agent. The
-	# process list only when some pane runs other than a shell: an agent is looked for in those.
+	# process list every time: a shell running a script (bash backup.sh) is a program too.
 	panes=$(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{@agent}' 2>/dev/null)
-	while IFS=$'\t' read -r id loc ppid0 cmd name; do
-		[[ $SHELLS == *" ${cmd#-} "* ]] && continue
-		while read -r pid ppid args; do PCHILD[$ppid]+="$pid " PARGS[$pid]=$args; done < <(ps -ww -eo pid=,ppid=,args= 2>/dev/null)
-		break
-	done <<<"$panes"
+	while read -r pid ppid args; do PCHILD[$ppid]+="$pid " PARGS[$pid]=$args; done < <(ps -ww -eo pid=,ppid=,args= 2>/dev/null)
 	while IFS=$'\t' read -r id loc ppid0 cmd name; do
 		[[ -n $id ]] || continue
 		st=shell
+		[[ $SHELLS == *" ${cmd#-} "* ]] && shell_job "$ppid0" && [[ -n $SJOB ]] && cmd=$SJOB
 		if [[ $SHELLS != *" ${cmd#-} "* ]]; then
 			st=program q=("$ppid0") kind=""
 			while ((${#q[@]})) && [[ -z $kind ]]; do
@@ -4744,6 +5037,16 @@ if ((ROWS)); then
 		# shows it, and a line before it says it takes input.
 		st=${P_STATE[i]}
 		[[ $st == agents ]] && { printf '#agents %s\n' "${P_ID[i]}"; st=working; }
+		# Stopped at its usage limit: the row says waiting, as a panel from before this shows
+		# it, and a line before it the seconds until the limit lifts (- not known; 0 lifted) and
+		# whether its plan has changed since (1).
+		if [[ $st == limit || $st == ready ]]; then
+			v=- w=0
+			[[ ${P_LIM[i]:-} =~ ^[0-9]+$ ]] && v=$((P_LIM[i] > NOW_S ? P_LIM[i] - NOW_S : 0))
+			[[ ${P_LWHY[i]:-} == plan ]] && w=1
+			printf '#limit %s %s %s\n' "${P_ID[i]}" "$v" "$w"
+			st=waiting
+		fi
 		[[ -n ${P_SRV[i]:-} ]] && printf '#serving %s\n' "${P_ID[i]}"
 		[[ $st == waiting && -n ${W_SINCE[i]:-} && ${W_FROM[i]:-} =~ ^[au]$ ]] &&
 			printf '#wait %s %s %s\n' "${P_ID[i]}" $((W_SINCE[i] > NOW_S ? 0 : NOW_S - W_SINCE[i])) "${W_FROM[i]}"
