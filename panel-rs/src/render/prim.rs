@@ -295,3 +295,79 @@ impl Ctx {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compat::tests::{bash, inputs, setup};
+
+    /// panel.sh's colours and drawing helpers (the "colours" section up to banner_rows) and
+    /// trim_colored, cut out of it as they are.
+    fn bash_prims() -> String {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/panel.sh")).unwrap();
+        let a = src.find("\n# ------------------------------------------------------------------ colours\n").expect("colours in panel.sh");
+        let b = src.find("\nbanner_rows() {").expect("banner_rows in panel.sh");
+        let t = src.find("\ntrim_colored() {").expect("trim_colored in panel.sh");
+        let te = src[t + 1..].find("\n}\n").unwrap() + t + 4;
+        format!("{}\n{}", &src[a..b], &src[t..te])
+    }
+
+    /// fld, vlen, padv, trim_colored, row (with and without a scroll bar's cell) and sbar, over
+    /// coloured strings and bytes that aren't UTF-8, against bash's own: the fuzz the retired
+    /// --component stage ran, kept as a unit test (plan, Risks).
+    #[test]
+    fn primitives_as_bash() {
+        setup();
+        let sgr: [&[u8]; 6] = [R, b"\x1b[1;32m", b"\x1b[38;5;123m", b"\x1b[m", b"\x1b[1", b"\x1b[\x1b[0mm"];
+        let mut texts = inputs();
+        let base = texts.clone();
+        for (i, t) in base.iter().enumerate().take(40) {
+            texts.push(cat(&[sgr[i % 6], t, sgr[(i + 2) % 6], b"x\xff", R]));
+        }
+        let ws: [i64; 6] = [-1, 0, 1, 3, 10, 30];
+        let args: Vec<&[u8]> = texts.iter().map(|v| v.as_slice()).collect();
+        let script = format!(
+            "{}\nTICK=0 W=80 IW=12\nfor s; do vlen \"$s\"; printf '%s\\0' \"$VLEN\"; for w in {}; do ((w >= 0)) && {{ fld \"$s\" \"$w\"; printf '%s\\0' \"$FLD\"; }}; padv \"$s\" \"$w\"; printf '%s\\0' \"$PADV\"; trim_colored \"$s\" \"$w\"; printf '%s\\0' \"$TRIM\"; done
+OUT=(); RBAR=''; row \"$s\"; RBAR=$'\\e[34m\\u2593'; row \"$s\"; RBAR=''; printf '%s\\0' \"${{OUT[@]}}\"; done
+for h in 1 2 5; do for n in 0 3 9; do for o in 0 2 7; do sbar $h $n $o 1 0; printf '%s\\0' \"${{#SB[@]}}\" \"${{SB[@]}}\"; done; done; done",
+            bash_prims(),
+            ws.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(" ")
+        );
+        let out = bash(&script, &args);
+        let mut o = out.split(|&c| c == 0).map(|v| v.to_vec());
+        let mut cx = Ctx::new();
+        cx.iw = 12;
+        for s in &texts {
+            assert_eq!(crate::compat::itoa(cx.vlen(s)), o.next().unwrap(), "vlen {:?}", s);
+            for &w in &ws {
+                // fld at a negative width can be bash's "substring expression < 0", which ends
+                // its whole loop: the panel never asks for one, so it isn't compared
+                if w >= 0 {
+                    assert_eq!(cx.fld(s, w), o.next().unwrap(), "fld {:?} {}", s, w);
+                }
+                assert_eq!(cx.padv(s, w), o.next().unwrap(), "padv {:?} {}", s, w);
+                assert_eq!(cx.trim_colored(s, w), o.next().unwrap(), "trim_colored {:?} {}", s, w);
+            }
+            cx.out.clear();
+            cx.rbar = Vec::new();
+            cx.row(s, None);
+            cx.rbar = "\x1b[34m▓".as_bytes().to_vec();
+            cx.row(s, None);
+            cx.rbar = Vec::new();
+            for l in std::mem::take(&mut cx.out) {
+                assert_eq!(l, o.next().unwrap(), "row {:?}", s);
+            }
+        }
+        for h in [1, 2, 5] {
+            for n in [0, 3, 9] {
+                for off in [0, 2, 7] {
+                    let sb = cx.sbar(h, n, off, 1, 0, None);
+                    assert_eq!(crate::compat::itoa(sb.len() as i64), o.next().unwrap(), "sbar {} {} {}", h, n, off);
+                    for (_, c) in sb {
+                        assert_eq!(c, o.next().unwrap(), "sbar {} {} {}", h, n, off);
+                    }
+                }
+            }
+        }
+    }
+}

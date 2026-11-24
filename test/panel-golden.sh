@@ -387,6 +387,11 @@ snaps() {
 	check "notice-queued: the first notice shows, the second waits" "cmp -s <(sframe notice) <(sframe notice-queued)"
 	check "answering-notice: no box while a question is answered" "! sframe answering-notice | grep -ac 'Esc closes' >/dev/null && sframe answering-notice | grep -ac 'ANSWERING asker' >/dev/null"
 	check "help-notice: the box over the ? page" "sframe help-notice | grep -ac 'HELP · HOW TO USE REVIVE' >/dev/null && sframe help-notice | tail -n 1 | grep -ac 'Esc closes' >/dev/null"
+	# The cpu graph draws the history it has: 12 samples and the frame's own after a grey floor;
+	# 230 fill it, no floor. (cframe: the cpu row as drawn, its colours kept.)
+	cframe() { env "${RENV[@]}" COLUMNS=130 LINES=45 REVIVE_PANEL_SNAP="load:$T/snap/$1" bash "$ROOT/scripts/panel.sh" --once </dev/null | grep -a ' cpu '; }
+	check "spark-short: a grey floor, then its 13 samples in colour" "[[ \$(cframe spark-short | grep -ao $'\\e\\[\\(34\\|94\\|96\\|93\\)m[▁▂▃▄▅▆▇█]' | wc -l) == 13 ]] && cframe spark-short | grep -aq $'\\e\\[90m▁'"
+	check "spark-long: no floor, every cell a sample" "! cframe spark-long | grep -aq $'\\e\\[90m▁'"
 	check "the scenes differ" "[[ \$(for s in 0 1 2 3 4; do sframe scene\$s-tick0 | md5sum; done | sort -u | wc -l) == 5 ]]"
 	# Drawn from a snapshot, the panel starts no program at all once it has read it.
 	if command -v strace >/dev/null; then
@@ -417,6 +422,9 @@ render() {
 		# The ? page is also drawn 160 wide: two boxes side by side, the pictures beside the words.
 		grid=$GRID
 		[[ $n == help* ]] && grid+=" 160x24 160x40 160x60"
+		# Under 23 lines the peek isn't drawn, so a focus on it goes back to PANES: draw starts
+		# again (FOCUS=0; draw), keeping what its first pass changed.
+		[[ $n == focus-* ]] && grid+=" 80x20 130x14"
 		key=$({ echo "$base $GOLDEN_A $grid $RNOW"; cat "$f"; } | sha256sum | cut -c1-64)
 		if [[ ${GOLDEN_NOCACHE:-} != 1 && -s $CACHE/$key ]]; then
 			cp "$CACHE/$key" "$T/out/$n.a"; ((hit++))
