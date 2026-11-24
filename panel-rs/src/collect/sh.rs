@@ -428,10 +428,16 @@ pub fn run_env(argv: &[&[u8]], envs: &[(&str, &[u8])], umask: Option<libc::mode_
 /// ARGV with its output cut at CAP bytes, as `cmd | head -c CAP` does: the reader closes the
 /// pipe once it has CAP, so a writer still going gets SIGPIPE (141). -> (status, bytes)
 pub fn run_capped(argv: &[&[u8]], cap: usize) -> (i32, Bytes) {
+    run_capped_env(argv, cap, &[])
+}
+pub fn run_capped_env(argv: &[&[u8]], cap: usize, envs: &[(&str, &[u8])]) -> (i32, Bytes) {
     use std::io::Read;
     let mut c = Command::new(os(argv[0]));
     for a in &argv[1..] {
         c.arg(os(a));
+    }
+    for (k, v) in envs {
+        c.env(k, os(v));
     }
     c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     let mut ch = match c.spawn() {

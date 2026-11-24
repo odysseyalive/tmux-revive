@@ -487,6 +487,16 @@ printf '{"timestamp":"%s","type":"session_meta","payload":{"cwd":"%s","timestamp
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":64000},"model_context_window":256000}}}\n' "$ts" >>"$r"
 exec -a codex sleep 100000
 CX
+	# The Codex works in a repository with a change not yet committed (GIT: main*), and the
+	# busy Claude Code in one that sets its own clean filter (no dirty check there: GIT: main).
+	local g
+	for g in "$d/work/cx" "$d/work/flt"; do
+		mkdir -p "$g"
+		git -C "$g" init -q -b main && echo one >"$g/f" && git -C "$g" add f &&
+			git -C "$g" -c user.name=t -c user.email=t@example.com commit -qm one && echo two >"$g/f"
+	done
+	git -C "$d/work/flt" config filter.x.clean cat
+	tmux -S "$s" respawn-pane -k -t work:cl-busy -c "$d/work/flt" "env HOME=$h bash $d/claude.sh $h busy cccc-3"
 	tmux -S "$s" new-window -d -t work -n cx-wait -c "$d/work/cx" "env HOME=$h CODEX_HOME=$h/.codex bash $d/codex.sh $h $d/work/cx"
 }
 # snapdiff.py A B: two snapshots' records, NAME[INDEX], that differ, with what CPU and memory

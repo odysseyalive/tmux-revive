@@ -12,9 +12,6 @@ impl G {
     pub fn remote_panes(&mut self) {
         self.p_groups = 0;
     }
-    pub fn git_info(&mut self, _d: &[u8]) -> Bytes {
-        Vec::new()
-    }
     pub fn peek_look(&mut self, _h: &[u8], _id: &[u8], _n: i64) -> (Bytes, Vec<Bytes>) {
         (Vec::new(), Vec::new())
     }

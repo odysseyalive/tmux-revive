@@ -6,6 +6,7 @@
 
 pub mod agents;
 pub mod gather;
+pub mod git;
 pub mod jq;
 pub mod once;
 pub mod procs;
