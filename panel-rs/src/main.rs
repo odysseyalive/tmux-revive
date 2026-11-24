@@ -2,8 +2,10 @@
 //! byte for byte (plan/rust-panel-2026-11-23.md).
 //!
 //!   tmux-revive-panel --once --snapshot FILE   the frame a bash --once draws from that snapshot
-//!   tmux-revive-panel --once                   the same, from REVIVE_PANEL_SNAP=load:FILE as bash
-//!                                              takes it; REVIVE_PANEL_SIZES as bash's
+//!   tmux-revive-panel --once                   with REVIVE_PANEL_SNAP=load:FILE, the same, as bash
+//!                                              takes it (REVIVE_PANEL_SIZES as bash's); without,
+//!                                              it gathers for itself, as bash's --once does
+//!                                              (save:FILE writes the snapshot as snap_save)
 //!   tmux-revive-panel                          the live panel (Phase 3; keys not ported yet are
 //!                                              handed over to the bash panel, ui/handoff.rs)
 //!   tmux-revive-panel --probe                  "ok VERSION": the install-time check (Phase 6.2)
@@ -70,8 +72,7 @@ fn main() {
         [] => ui::run(&root()),
         ["--probe"] => println!("ok {}", VERSION.trim()),
         ["--once", "--snapshot", _] | ["--snapshot", _, "--once"] | ["--once"] => {
-            // --snapshot F, or as bash takes it: REVIVE_PANEL_SNAP=load:F (save: needs the looks,
-            // which come with Phase 2)
+            // --snapshot F, or as bash takes it: REVIVE_PANEL_SNAP=load:F; else it gathers
             let f: std::ffi::OsString = if a.len() == 3 {
                 if a[0] == "--once" { args[2].clone() } else { args[1].clone() }
             } else {

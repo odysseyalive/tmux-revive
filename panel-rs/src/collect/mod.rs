@@ -8,11 +8,11 @@ pub mod agents;
 pub mod gather;
 pub mod git;
 pub mod jq;
+pub mod links;
 pub mod mail;
 pub mod once;
 pub mod procs;
 pub mod sh;
-mod stub;
 
 use sh::Bytes;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -140,6 +140,12 @@ pub struct G {
     pub rver: BTreeMap<Bytes, Bytes>,
     pub rowner: BTreeMap<Bytes, Bytes>,
     pub peek_files: HashSet<Bytes>,
+    /// RFETCH_T/RFETCH_PID and PFETCH_T/PFETCH_PID: when each host's rows (each pane's peek)
+    /// were last asked for, and whether that ask is still going
+    pub rgate: links::Gate,
+    pub pgate: links::Gate,
+    /// PEEK_EVERY: REFRESH, seconds between asks for a linked pane's screen
+    pub peek_every: i64,
 }
 
 pub const SHELLS: &[u8] = b" sh bash zsh fish dash ksh tcsh csh nu ";
@@ -205,6 +211,8 @@ impl G {
         g.version = if m(VER_RE, &v) { v } else { Vec::new() };
         let bg = sh::env("REVIVE_BG_SECS").filter(|v| !v.is_empty()).unwrap_or_else(|| b"20".to_vec());
         g.bg_secs = n(&bg);
+        let rf = sh::env("REVIVE_PANEL_REFRESH").filter(|v| !v.is_empty()).unwrap_or_else(|| b"2".to_vec());
+        g.peek_every = n(&rf);
         g
     }
 

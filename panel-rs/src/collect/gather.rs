@@ -100,27 +100,19 @@ pub fn ssh_dest(args: &[u8]) -> Bytes {
     Vec::new()
 }
 
-/// getent passwd UID's name and home
-fn passwd(uid: &[u8]) -> Option<(Bytes, Bytes)> {
-    let u: libc::uid_t = std::str::from_utf8(uid).ok()?.parse().ok()?;
-    let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
-    let mut buf = vec![0 as libc::c_char; 16384];
-    let mut res: *mut libc::passwd = std::ptr::null_mut();
-    let r = unsafe { libc::getpwuid_r(u, &mut pw, buf.as_mut_ptr(), buf.len(), &mut res) };
-    if r != 0 || res.is_null() {
-        return None;
-    }
-    let name = unsafe { std::ffi::CStr::from_ptr(pw.pw_name) }.to_bytes().to_vec();
-    let home = unsafe { std::ffi::CStr::from_ptr(pw.pw_dir) }.to_bytes().to_vec();
-    Some((name, home))
-}
-
 impl G {
     /// user_of UID -> UNAME: its user name (the number if it has none)
     pub fn user_of(&mut self, uid: &[u8]) -> Bytes {
         if !self.unames.contains_key(uid) {
-            // IFS=: read -r n _ _ _ _ h _ < <(getent passwd "$1"); [[ -n $n ]] || n=$(id -un "$1")
-            let (mut nm, h) = passwd(uid).unwrap_or_default();
+            // IFS=: read -r n _ _ _ _ h _ < <(getent passwd "$1"); [[ -n $n ]] || n=$(id -un "$1").
+            // Run as bash runs them, from PATH (the suite's getent stands in for other users).
+            let o = sh::run(&[b"getent", b"passwd", uid]);
+            let first = sh::lines(&o.out).into_iter().next().unwrap_or_else(|| sh::cmdsub(&o.out));
+            let f = sh::read_delim(&first, 7, b':');
+            let (mut nm, h) = (f[0].clone(), f[5].clone());
+            if nm.is_empty() {
+                nm = sh::cmdsub(&sh::run(&[b"id", b"-un", uid]).out);
+            }
             if !m(USER_RE, &nm) {
                 nm = uid.to_vec();
             }

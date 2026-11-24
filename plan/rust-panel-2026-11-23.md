@@ -532,6 +532,27 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
 
   **Ships:** `PANEL="$ROOT/panel-rs/target/release/tmux-revive-panel" bash test/panel.sh` passes its `--once` checks. A program count is recorded under `strace -f -e trace=execve` (Verification).
 
+**As built (Phase 2, 2026-11-24).** Every collector `gather` and `draw` call is ported; `tmux-revive-panel --once` gathers for itself.
+- **Sequential, not threaded, so far.** `--once` runs the collectors in bash's order (`collect/once.rs`: two gathers 0.5 s apart, `REVIVE_PANEL_SEL`, `fold_load`, `sel_fix`). The collector threads, `PanesGen` and 2.2's interleave test belong with the live loop and move to Phase 3. The links' `Gate` (in flight, 10 s, `PEEK_EVERY`) and its worker threads are built and tested now, since `--once` never takes that path.
+- **Draw-time looks stay draw-time** (corrects "these move out of the draw path" for `--once`). A plain bash `--once` reads the peek and question screens, the linked peek, the intros, `messages` and `links_saves` while it draws, and only when the frame shows them. `render::Live` lets the Rust render make the same looks at the same moments, so the tmux, ssh and `ps` argv match bash's (the suite's shim counts `show-option -gqv @revive-interval`). With `REVIVE_PANEL_SNAP=save:F` the binary runs `snap_look` and writes `F` as `snap_save` does.
+- **Still runs programs, as bash does.**
+  - `tmux` (the same argv);
+  - `git` (`pgit`'s flags);
+  - `timeout`, `AGENT_SAY_SSH`/`ssh` and `agent-say _key-opts/_ride/_pin` for links;
+  - `getent passwd UID` and `id -un UID`, once per uid (the suite's `uidps` stands in a `getent`);
+  - `ss`/`lsof` for `listen_load`;
+  - `ps` and `lsof` only where `/proc` can't answer, or under `REVIVE_PANEL_PROCS=ps`.
+
+  Everything else (`jq`, `stat`, `head`, `tail`, `grep`, `awk`, `find`, `readlink`, `cut`, `paste`, `wc`, `mktemp`, `mv`, `rm`, and `ps -o args=` for a link's poller) is now a file read.
+- **Tier 2 is `bash test/panel-golden.sh live-once`.**
+  - It runs 12 scenarios on a fixture of its own, with two add-ons the tier-1 snapshots don't have (tier 1 addresses rows by number):
+    - `agents_addon`: stand-in Claude Codes (waiting after an agent-say message, at a usage limit, busy) and a Codex with a rollout, git repositories including one with a submodule filter;
+    - `mail_addon`: grants, a queue, four access requests, a peer, read-only and allow, a running poller.
+  - It diffs the saved snapshots record by record (`snapdiff.py`, CPU, memory and `SECONDS` masked) and the plain frames (`mask.py`).
+  - The `notice` scenarios are left out until the notice rework (branch `no-link-notices`) lands.
+- **Programs started** (Verification): count the `execve` calls that succeed (`grep 'execve(' | grep -c '= 0$'`). Rust's `Command` tries each `PATH` folder in turn, so a raw `grep -c execve` counts every miss as well.
+- **Bash bug found and fixed in both:** `git_info`'s `status` recursed into submodules and ran filters from a submodule's own config, which the repo-filter check never sees. Both now pass `--ignore-submodules=dirty` (5f89f52).
+
 ### Phase 3: The live panel, with no modals yet
 
 - **3.1** The writer: changed lines only, `ESC[row;1H…ESC[K`, the `ESC[J` tail, everything inside `ESC[?2026h … ESC[H ESC[?2026l` (`:3248-3256`). A cargo test feeds the same `PREV`/`OUT` pairs to this writer and to bash's loop, extracted with sed, and compares the bytes.

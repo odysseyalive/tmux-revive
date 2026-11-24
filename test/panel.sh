@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The panel under test: the bash one, or another that must draw the same (the Rust panel, see
 # plan/rust-panel-2026-11-23.md): PANEL=/path/to/tmux-revive-panel bash test/panel.sh. What
 # linked computers and the daemon run (--rows, --asking...) is the bash one all the same.
+# Where a ps stands in (fakeps, uidps), REVIVE_PANEL_PROCS=ps makes the Rust panel run it, as
+# bash does, rather than read /proc (bash ignores it).
 PANEL=${PANEL:-bash $ROOT/scripts/panel.sh}
 T=$(mktemp -d "${TMPDIR:-/tmp}/panel-test.XXXXXX")
 unset TMUX TMUX_PANE XDG_STATE_HOME # never your state dir (agents run with it set)
@@ -1548,7 +1550,7 @@ mkdir -p "$T/fakeps"
 	printf 'exit $st\n'
 } >"$T/fakeps/ps"
 chmod +x "$T/fakeps/ps"
-out=$(tm run-shell "PATH=$T/fakeps:\$PATH REVIVE_PANEL_OUTSIDE_SSH=1 REVIVE_PANEL_PEEK=0 COLUMNS=140 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
+out=$(tm run-shell "REVIVE_PANEL_PROCS=ps PATH=$T/fakeps:\$PATH REVIVE_PANEL_OUTSIDE_SSH=1 REVIVE_PANEL_PEEK=0 COLUMNS=140 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 check "only your own ssh outside tmux is offered, not another user's" "grep -c 'mine.example · ssh in' <<<\"\$out\" >/dev/null && ! grep -c 'evil.example' <<<\"\$out\" >/dev/null"
 
 tm new-window -d -t work -n sshpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=false REVIVE_PANEL_REFRESH=1 $PANEL"
@@ -2319,7 +2321,7 @@ far_tm set-option -p -t far:as-deploy @agent as-deploy
 printf '%s %s\n' "$(far_tm display -p -t far:as-deploy '#{pane_pid}')" "$DEPLOY_UID" >>"$T/uidmap"
 rm -f "$st/panel/far.example.rows"* "$st/users/deploy" "$T/far.calls" "$T/update.calls"
 echo 1.1.0 >"$T/remote-version"
-tm new-window -d -t work -n vpanel "env PATH=$T/uidps:$T/usudo:\$PATH AGENT_SAY_SSH=$T/logssh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
+tm new-window -d -t work -n vpanel "env REVIVE_PANEL_PROCS=ps PATH=$T/uidps:$T/usudo:\$PATH AGENT_SAY_SSH=$T/logssh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 rscreen() { tm capture-pane -p -t work:vpanel; }
 wait_r() { for _ in $(seq 1 ${2:-60}); do rscreen | grep -c -- "$1" >/dev/null && return 0; sleep 0.25; done; return 1; }
 gone_r() { for _ in $(seq 1 20); do rscreen | grep -c -- "$1" >/dev/null || return 0; sleep 0.25; done; return 1; }
@@ -2785,7 +2787,7 @@ tm new-window -d -t work -n ldeploy "sleep 300"; tm set-option -p -t work:ldeplo
 printf '%s 0\n%s %s\n' "$(tm display -p -t work:lroot '#{pane_pid}')" "$(tm display -p -t work:ldeploy '#{pane_pid}')" "$DEPLOY_UID" >>"$T/uidmap"
 echo 1.0.0 >"$T/umail/users/deploy"
 echo 1.2.0 >"$T/local-version"
-uframe() { tm run-shell "PATH=$T/uidps:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_PANEL_PEEK=0 COLUMNS=${2:-140} LINES=50 REVIVE_PANEL_SEL=${1:-none} REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md $PANEL --once"; }
+uframe() { tm run-shell "REVIVE_PANEL_PROCS=ps PATH=$T/uidps:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_PANEL_PEEK=0 COLUMNS=${2:-140} LINES=50 REVIVE_PANEL_SEL=${1:-none} REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md $PANEL --once"; }
 raw=$(uframe) out=$(plain <<<"$raw")
 check "USER and VER come right after NAME" "grep -q ' NAME *USER *VER *APP ' <<<\"\$out\""
 check "a pane where root works with no tmux-revive: root, and [U] in the warn colour" "grep -q 'l-root *root *\[U\] *sleep' <<<\"\$out\" && grep -qF $'\\e[93m[U]' <<<\"\$raw\""
@@ -2801,7 +2803,7 @@ done
 out=$(uframe none 120 | plain)
 check "at 120 columns USER and VER still show" "grep -q 'l-root *root *\[U\]' <<<\"\$out\""
 
-tm new-window -d -t work -n upanel "env PATH=$T/uidps:$T/usudo:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md REVIVE_PANEL_REFRESH=1 $PANEL"
+tm new-window -d -t work -n upanel "env REVIVE_PANEL_PROCS=ps PATH=$T/uidps:$T/usudo:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md REVIVE_PANEL_REFRESH=1 $PANEL"
 uscreen() { tm capture-pane -p -t work:upanel; }
 wait_u() { for _ in $(seq 1 40); do uscreen | grep -c -- "$1" >/dev/null && return 0; sleep 0.25; done; return 1; }
 gone_u() { for _ in $(seq 1 20); do uscreen | grep -c -- "$1" >/dev/null || return 0; sleep 0.25; done; return 1; }
