@@ -2191,6 +2191,24 @@ outside_ssh() {
 		clean where
 		X_SSH+=("$h") X_WHERE+=("${where:-a terminal}")
 	done
+	# The process table came in an associative array's order, which is no order at all: LINKS ·
+	# SAVES and B list them by host, then where, byte by byte (C), the same in any locale.
+	((${#X_SSH[@]} > 1)) && xssh_sort
+	return 0
+}
+xssh_sort() { # X_SSH and X_WHERE, as pairs, in order of host and then where
+	local LC_ALL=C i j k
+	local -a s=()
+	for i in "${!X_SSH[@]}"; do
+		k=${X_SSH[i]}$'\x1f'${X_WHERE[i]} # \x1f sorts before any character a host or where has
+		for ((j = ${#s[@]}; j > 0; j--)); do
+			[[ ${s[j - 1]} > $k ]] || break
+			s[j]=${s[j - 1]}
+		done
+		s[j]=$k
+	done
+	X_SSH=() X_WHERE=()
+	for k in "${s[@]}"; do X_SSH+=("${k%%$'\x1f'*}") X_WHERE+=("${k#*$'\x1f'}"); done
 }
 
 # ------------------------------------------------------------------ sections
