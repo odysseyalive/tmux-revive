@@ -69,7 +69,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 plain() { sed 's/\x1b\[[0-9;]*m//g'; }
-# A notice long enough to wrap to three lines in its box (70 columns at most).
+# A notice longer than the key bar (since 1.2.57 a notice is the key bar's flash, never a box).
 LONG_NOTICE="linked to far.example with the key from your known_hosts: SHA256:Xq3v9yTzW1bK8mPpL0aRfE6cD2sN4uH7jG5iO1kQwYc. Its panes show in PANES once its first rows came in, and B unlinks it."
 
 # fixtures DIR SOCKET [links]: a tmux server at SOCKET, its panes, and the state a panel run with
@@ -293,7 +293,7 @@ snaps() {
 	save linked-ask far-claude@far.example
 	save help 0 REVIVE_PANEL_HELP=1
 	save tick7 0 REVIVE_PANEL_PEEK=0 REVIVE_PANEL_TICK=7 REVIVE_PANEL_ART=space
-	# A notice's box over the panel, short, and long enough to wrap to several lines.
+	# A notice, short and long: on the key bar since 1.2.57, with no box over the panel.
 	save notice 0 "REVIVE_PANEL_NOTICE=saved"
 	save notice-long 0 "REVIVE_PANEL_NOTICE=$LONG_NOTICE"
 	local n s ok
@@ -325,7 +325,6 @@ snaps() {
 	# and a second behind the first, which shows only once that one is closed.
 	snapedit "$T/snap/help" "$T/snap/help-notice" "NOTICES+=open this in your browser: https://example.com/tmux-revive/help"
 	snapedit "$T/snap/answering" "$T/snap/answering-notice" "NOTICES+=saved"
-	snapedit "$T/snap/notice" "$T/snap/notice-queued" "NOTICES+=a second notice, shown after the first"
 	# The rows' other states (the fixture's panes are 0 shell, 1 asker, 2 odd-one, 3-4 on
 	# Zed.example, 5-6 on far.example, 7 on folded.example): a usage limit that lifts today and
 	# one another day, ready (after a limit, and on a new plan), waiting on you by age and by
@@ -388,9 +387,8 @@ snaps() {
 	check "linked: Zed.example can't be reached" "sframe linked | grep -ac '● Zed.example ssh: connect to host' >/dev/null"
 	check "folded: far.example folded to its heading" "sframe folded | grep -ac '▶.*FAR.EXAMPLE · linked · 2 panes' >/dev/null && ! sframe folded | grep -ac '0\\.1\\] *far-top' >/dev/null"
 	check "help: the ? page" "sframe help | grep -ac 'HELP · HOW TO USE REVIVE' >/dev/null"
-	check "notice: its box, over the panel" "sframe notice | tail -n 1 | grep -ac '║ saved .*Esc closes' >/dev/null && sframe notice | grep -ac 'C O N T R O L' >/dev/null"
-	check "notice-long: wrapped at 80 columns to three lines or more, with the hint under them" "[[ \$(sframe notice-long 80 24 | tail -n 1 | grep -ao 'H║ [^║]*║' | wc -l) -ge 5 ]] && sframe notice-long 80 24 | tail -n 1 | grep -ac 'H║ SHA256:Xq3v9y' >/dev/null"
-	check "notice-queued: the first notice shows, the second waits" "cmp -s <(sframe notice) <(sframe notice-queued)"
+	check "notice: on the key bar, no box over the panel" "sframe notice | grep -ac ' saved .*\\[O\\]pen' >/dev/null && ! sframe notice | grep -ac 'Esc closes' >/dev/null && sframe notice | grep -ac 'C O N T R O L' >/dev/null"
+	check "notice-long: on the key bar at 80 columns too, no box" "sframe notice-long 80 24 | grep -ac '║ *linked to far.example' >/dev/null && ! sframe notice-long 80 24 | grep -ac 'Esc closes' >/dev/null"
 	check "answering-notice: no box while a question is answered" "! sframe answering-notice | grep -ac 'Esc closes' >/dev/null && sframe answering-notice | grep -ac 'ANSWERING asker' >/dev/null"
 	check "help-notice: the box over the ? page" "sframe help-notice | grep -ac 'HELP · HOW TO USE REVIVE' >/dev/null && sframe help-notice | tail -n 1 | grep -ac 'Esc closes' >/dev/null"
 	# The cpu graph draws the history it has: 12 samples and the frame's own after a grey floor;
