@@ -11,13 +11,4 @@ impl G {
     pub fn peek_look(&mut self, _h: &[u8], _id: &[u8], _n: i64) -> (Bytes, Vec<Bytes>) {
         (Vec::new(), Vec::new())
     }
-    pub fn intros_look(&mut self) -> Vec<Bytes> {
-        Vec::new()
-    }
-    pub fn messages(&mut self) -> (Vec<Bytes>, i64, i64, Bytes) {
-        (Vec::new(), 0, -1, b"0".to_vec())
-    }
-    pub fn links_saves(&mut self) -> Vec<Bytes> {
-        Vec::new()
-    }
 }

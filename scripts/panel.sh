@@ -1563,8 +1563,10 @@ git_info() { # git_info DIR -> GITI: "branch" or "branch*" (uncommitted changes)
 		# git-lfs) are trusted; one the repo sets itself means no dirty check there.
 		filters=$(pgit "$d" config --show-scope --get-regexp '^filter\..*\.(clean|process)$' 2>/dev/null |
 			grep -v $'^\\(global\\|system\\)\t')
+		# A submodule's own config isn't in that check, and status would rehash its files with
+		# that config's filters: never inside one (a submodule whose commit moved still shows).
 		if [[ -z $filters ]]; then
-			dirty=$(pgit "$d" status --porcelain -uno 2>/dev/null | head -c1)
+			dirty=$(pgit "$d" status --porcelain -uno --ignore-submodules=dirty 2>/dev/null | head -c1)
 			[[ -n $dirty ]] && b+="*"
 		fi
 	fi
