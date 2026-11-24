@@ -2,13 +2,10 @@
 # The Rust panel is checked against the bash one, frame for frame (plan/rust-panel-2026-11-23.md).
 # Everything runs on private tmux servers and in a folder of its own (never yours):
 #
-#   bash test/panel-golden.sh          all of it: snaps, components, render, twins
+#   bash test/panel-golden.sh          all of it: snaps, render, twins
 #   bash test/panel-golden.sh snaps    snapshots saved by --once from a fixture server, each loaded
 #                                      back and drawn: the same frame as the save run drew, at every
 #                                      size alone as in one REVIVE_PANEL_SIZES run (tier 1's ground)
-#   bash test/panel-golden.sh components  until the Rust panel draws a frame: what it has ported,
-#                                      call by call, against panel.sh's own functions (needs cargo,
-#                                      or GOLDEN_RS); the art at the sizes the frames draw it
 #   bash test/panel-golden.sh render   every scenario at every size, panel A's frames against B's,
 #                                      byte for byte (tier 1)
 #   bash test/panel-golden.sh twins    A and B live, each on a server of its own with the same
@@ -405,75 +402,6 @@ snaps() {
 	tmux -S "$FS" kill-server 2>/dev/null
 }
 
-# ------------------------------------------------------------------ components
-# Until the Rust panel draws a whole frame (plan Phase 1.3, steps 4 to 9), what it has ported is
-# compared one call at a time: panel-rs/tests/component.sh cuts bash's own functions out of
-# scripts/panel.sh and runs the calls of panel-rs/tests/calls.py, and `tmux-revive-panel
-# --component` runs the same, byte for byte. The art is drawn at the sizes bash's frames draw it
-# at (a scene snapshot at every size of the grid), beside the banner, and at a few small sizes.
-# GOLDEN_RS: the binary (default: built here with cargo). bash's results are cached as A's
-# frames are. This stage goes once render compares whole frames.
-components() {
-	echo "components (until a frame is drawn): panel.sh's functions against tmux-revive-panel --component"
-	[[ -d $T/snap ]] || { echo "  no snapshots: run with snaps first (or no argument)" >&2; ((fail++)); return; }
-	local rs=${GOLDEN_RS:-$ROOT/panel-rs/target/release/tmux-revive-panel} cs=$ROOT/panel-rs/tests/component.sh
-	local py=$ROOT/panel-rs/tests/calls.py d=$T/comp sizes g key f loc tz n ok
-	if [[ -z ${GOLDEN_RS:-} ]]; then
-		command -v cargo >/dev/null || { echo "  no cargo to build panel-rs with (or set GOLDEN_RS)" >&2; ((fail++)); return; }
-		cargo build --release --locked --quiet --manifest-path "$ROOT/panel-rs/Cargo.toml" || { ((fail++)); return; }
-	fi
-	mkdir -p "$CACHE" "$d"
-	# The art in each frame of the grid: IW wide (W is 80 at least), as many rows as are under ART ·.
-	sizes=$(env "${RENV[@]}" REVIVE_PANEL_SIZES="$GRID" REVIVE_PANEL_SNAP="load:$T/snap/scene0-tick0" bash "$ROOT/scripts/panel.sh" --once </dev/null | plain |
-		awk '/^--- /{split($2, s, "x"); w = (s[1] < 80 ? 80 : s[1]) - 4; on = 0; next} /ART ·/{on = 1; n = 0; next} on && /^║/{n++; next} on{print w "x" n; on = 0}' | sort -u | tr '\n' ' ')
-	echo "  the frames draw the art at: ${sizes:-nowhere}"
-	# bash's results for a call list, from the cache when the functions and calls are the same.
-	bashrun() { # bashrun NAME: $d/NAME.in through component.sh -> $d/NAME.a
-		key=$(cat "$cs" "$ROOT/scripts/panel.sh" "$d/$1.in" | sha256sum | cut -c1-64)
-		if [[ ${GOLDEN_NOCACHE:-} != 1 && -s $CACHE/comp-$key ]]; then cp "$CACHE/comp-$key" "$d/$1.a"
-		else
-			LC_ALL=C.UTF-8 TZ=UTC bash "$cs" <"$d/$1.in" >"$d/$1.a"
-			[[ ${GOLDEN_NOCACHE:-} == 1 ]] || cp "$d/$1.a" "$CACHE/comp-$key"
-		fi
-	}
-	for g in prims banner art; do
-		python3 -I "$py" "$g" "$sizes" >"$d/$g.in"
-		bashrun "$g"
-		LC_ALL=C.UTF-8 TZ=UTC "$rs" --component <"$d/$g.in" >"$d/$g.b"
-		n=$(grep -ac '' "$d/$g.a")
-		check "$g: $n calls, bash's and Rust's results the same bytes" "((n > 0)) && cmp -s $d/$g.a $d/$g.b"
-		cmp -s "$d/$g.a" "$d/$g.b" || echo "    $(diff <(grep -an '' "$d/$g.a") <(grep -an '' "$d/$g.b") | grep -ac '^<') calls differ; the first at line $(cmp "$d/$g.a" "$d/$g.b" | awk '{print $NF}')"
-	done
-	# Fresh frames are compared, never bash's memo of them: the memo must draw the same. Each scene
-	# and size at TICK 1 then 7, so the scenes that only blink serve 7 from 1's memo.
-	python3 -I "$py" memo "$sizes" >"$d/memo.in"
-	python3 -I "$py" fresh "$sizes" >"$d/fresh.in"
-	: >"$d/hits"
-	COMPONENT_MEMO_LOG=$d/hits LC_ALL=C.UTF-8 TZ=UTC bash "$cs" <"$d/memo.in" >"$d/memo.a"
-	bashrun fresh
-	n=$(grep -c hit "$d/hits")
-	check "art: bash's frames from its memo ($n served from it) are the ones it draws afresh" "((n > 0)) && cmp -s $d/memo.a $d/fresh.a"
-	# The clock and the */ globs' order, under each locale and zone.
-	mkdir -p "$d/globs"/{B,a,_c,Zed.example,far.example,.hidden,é,"x y"} "$d/globs/"$'caf\xe9'
-	python3 -I "$py" locale "$d/globs" >"$d/locale.in"
-	ok=1
-	for loc in C.UTF-8 en_US.UTF-8 C; do
-		for tz in UTC America/New_York Asia/Kolkata; do
-			LC_ALL=$loc TZ=$tz bash "$cs" <"$d/locale.in" >"$d/locale.a"
-			LC_ALL=$loc TZ=$tz "$rs" --component <"$d/locale.in" >"$d/locale.b"
-			cmp -s "$d/locale.a" "$d/locale.b" || { ok=0; echo "    differs under LC_ALL=$loc TZ=$tz"; }
-		done
-	done
-	check "strftime and the */ glob's order, under three locales and three zones" "((ok))"
-	# Every scenario's snapshot reads and draws (render compares what it draws).
-	ok=1
-	for f in "$T"/snap/*; do
-		[[ ${f##*/} == *.* ]] && continue
-		env "${RENV[@]}" "$rs" --once --snapshot "$f" </dev/null >/dev/null 2>&1 || { ok=0; echo "    ${f##*/} doesn't draw"; }
-	done
-	check "every scenario's snapshot reads and draws" "((ok))"
-}
-
 # ------------------------------------------------------------------ render
 render() {
 	echo "render (tier 1): A ${GOLDEN_A}, B ${GOLDEN_B}"
@@ -592,10 +520,9 @@ twins() {
 case ${1:-all} in
 snaps) snaps ;;
 render) snaps >/dev/null; render ;;
-components) snaps >/dev/null; components ;;
 twins) twins ;;
-all) snaps; components; render; twins ;;
-*) echo "usage: panel-golden.sh [snaps|components|render|twins]" >&2; exit 2 ;;
+all) snaps; render; twins ;;
+*) echo "usage: panel-golden.sh [snaps|render|twins]" >&2; exit 2 ;;
 esac
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 ((fail == 0))

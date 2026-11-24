@@ -5,13 +5,11 @@
 //!   tmux-revive-panel --once                   the same, from REVIVE_PANEL_SNAP=load:FILE as bash
 //!                                              takes it; REVIVE_PANEL_SIZES as bash's
 //!   tmux-revive-panel --probe                  "ok VERSION": the install-time check (Phase 6.2)
-//!   tmux-revive-panel --component              test-only: builders one call at a time (component.rs)
 
 // The port is under way: colours, helpers and snapshot fields the later steps use are here already.
 #![allow(dead_code)]
 
 mod compat;
-mod component;
 mod render;
 mod snapshot;
 
@@ -31,12 +29,6 @@ fn main() {
     let a: Vec<&str> = args.iter().map(|s| s.to_str().unwrap_or("")).collect();
     match a.as_slice() {
         ["--probe"] => println!("ok {}", VERSION.trim()),
-        ["--component"] => {
-            let stdout = std::io::stdout();
-            if component::run(&mut std::io::stdin().lock(), &mut stdout.lock()).is_err() {
-                exit(1);
-            }
-        }
         ["--once", "--snapshot", _] | ["--snapshot", _, "--once"] | ["--once"] => {
             // --snapshot F, or as bash takes it: REVIVE_PANEL_SNAP=load:F (save: needs the looks,
             // which come with Phase 2)

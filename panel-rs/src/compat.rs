@@ -1,8 +1,8 @@
 //! Bash's semantics, made explicit (plan Step 1.2). The panel's text is bytes from end to end:
 //! panes, files and other computers need not send valid UTF-8, and bash counts what it can't
 //! decode a byte at a time. Every helper here is checked against the bash it stands for, in
-//! the tests at the bottom (bash one-liners over the same inputs) and by the component driver
-//! (panel-rs/tests/component.sh), which runs the panel's own functions.
+//! the tests at the bottom (bash one-liners over the same inputs), and through whole frames by
+//! test/panel-golden.sh's render stage.
 
 use std::ffi::CString;
 use std::sync::Once;
@@ -857,7 +857,7 @@ for s; do printf '%s\0' "${s//[[:cntrl:]]/}" "${s//[$C1]/}" "${s//[$ZW]/}"; done
         for f in fmts {
             for t in [0i64, 1795000000, 1700000000, -3, 4102444800] {
                 let out = bash("printf \"%($1)T\" \"$2\"", &[f, t.to_string().as_bytes()]);
-                // UTC here (setup); other zones are compared through the binary (tests/components.rs).
+                // UTC here (setup); other zones and LC_TIME are not compared since the component stage went (plan, 1.3).
                 assert_eq!(strftime(f, t), out, "%({:?})T {}", f, t);
             }
         }
