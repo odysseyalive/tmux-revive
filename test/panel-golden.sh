@@ -763,6 +763,34 @@ live() {
 	tmux -S "$C" send-keys -t work:panel x # any key looks again
 	check "a pane opened between the pane list and the agents' look shows, not asking" "for _ in \$(seq 1 40); do lvc | grep -q 'intruder' && break; sleep 0.2; done; [[ -e $shim/done ]] && lvc | grep -q intruder && ! lvc | grep 'intruder' | grep -q 'NEEDS ANSWER'"
 	check "and the agent asking still shows NEEDS ANSWER on its own row" "lvc | grep 'asker' | grep -q 'NEEDS ANSWER'"
+	# Linked computers (a fake ssh, never a real one), the peek off: headings, folding (f, F,
+	# Enter on a heading) and the arrows across a folded heading, on both panels.
+	local D=$T/lvd.sock E=$T/lve.sock d
+	for d in lvd lve; do
+		fixtures "$T/$d" "$T/$d.sock" links
+		env_for "$T/$d" "$T/$d.sock"
+		local cmd=$GOLDEN_A
+		[[ $d == lve ]] && cmd=$GOLDEN_B
+		# shellcheck disable=SC2145
+		tmux -S "$T/$d.sock" new-window -d -t work -n panel "env ${ENV[*]} REVIVE_PANEL_REFRESH=60 REVIVE_PANEL_NOW=$RNOW REVIVE_PANEL_PEEK=0 AGENT_SAY_KEYSCAN=false AGENT_SAY_KNOWN_HOSTS=$T/$d/kh AGENT_SAY_TEST_NO_LINK_KEY=1 $cmd"
+	done
+	settle "$D" far-top && settle "$E" far-top
+	local -a lsteps=("|far-top" "End|▸ PANES" "Down|▸ PANES" "f|▸ PANES" "Up|▸ PANES" "Down|▸ PANES" "Down|▸ PANES" "Up Up|▸ PANES" "Enter|▸ PANES" "F|▸ PANES" "Down|▸ PANES" "F|▸ PANES" "Home|▸ PANES" "PPage|▸ PANES" "NPage|▸ PANES")
+	for step in "${lsteps[@]}"; do
+		keys=${step%%|*} text=${step#*|}
+		# shellcheck disable=SC2086
+		[[ -n $keys ]] && for k in $keys; do tmux -S "$D" send-keys -t work:panel "$k"; tmux -S "$E" send-keys -t work:panel "$k"; sleep 0.15; done
+		settle "$D" "$text" && settle "$E" "$text"
+		for i in 1 2 3 4 5 6 7 8; do
+			shot "$D" >"$T/shot.a"
+			shot "$E" >"$T/shot.b"
+			cmp -s "$T/shot.a" "$T/shot.b" && break
+			sleep 0.2
+		done
+		check "linked: after '${keys:-the start}': the same screen and cursor" "grep -aqF -- '$text' $T/shot.a && cmp -s $T/shot.a $T/shot.b"
+		[[ -n ${GOLDEN_DEBUG:-} ]] && plain <"$T/shot.b" | grep -E '▶|▓▒░ [A-Z]' | cut -c1-70
+		cmp -s "$T/shot.a" "$T/shot.b" || diff "$T/shot.a" "$T/shot.b" | head -${GOLDEN_DIFF:-6} | sed 's/^/      /'
+	done
 }
 
 case ${1:-all} in
