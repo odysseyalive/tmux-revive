@@ -1888,7 +1888,7 @@ raw=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=140 LINES=50 REVIVE_DIR=$RE
 out=$(plain <<<"$raw")
 check "here: a turn you typed, waiting since just now, is bold vivid lime" "grep 'cl-typed' <<<\"\$raw\" | grep -cF $'\e[1m\e[38;5;118m◆ WAITING ON YOU' >/dev/null"
 check "here: one an agent-say message started, done, is AGENT'S TURN DONE in the usual green" "grep 'cl-msg' <<<\"\$raw\" | grep -cF $'\e[92m◆ AGENT'\\''S TURN DONE'" >/dev/null
-check "here: one waiting over 90 minutes shows IDLE, in the usual WAITING ON YOU colour" "grep cl-old <<<\"\$raw\" | grep -cF $'\e[92m◇ IDLE' >/dev/null && grep -q 'cl-old .*claude *◇ IDLE  ' <<<\"\$out\" && ! grep -q 'cl-old .*WAITING' <<<\"\$out\""
+check "here: one waiting over 90 minutes shows IDLE, in gray" "grep cl-old <<<\"\$raw\" | grep -cF $'\e[90m◇ IDLE' >/dev/null && grep -q 'cl-old .*claude *◇ IDLE  ' <<<\"\$out\" && ! grep -q 'cl-old .*WAITING' <<<\"\$out\""
 check "here: resumed just now, its last turn two hours ago, shows IDLE" "grep -q 'cl-back .*claude *◇ IDLE  ' <<<\"\$out\""
 check "here: resumed just now, its last turn five minutes ago, shows WAITING ON YOU" "grep -q 'cl-back5 .*claude *◆ WAITING ON YOU' <<<\"\$out\""
 check "here: one waiting since a time not known shows --- in grey, not WAITING ON YOU" "grep 'cl-idle' <<<\"\$raw\" | grep -cF $'\e[90m  --- ' >/dev/null && ! grep 'cl-idle' <<<\"\$raw\" | grep -c WAITING >/dev/null"
