@@ -1032,7 +1032,7 @@ wait_watch() {
 }
 # wait_colour ROW -> WCOL: WAITING ON YOU's colour. A turn you started yourself lights it for
 # 90 minutes, cooling as it ages: under 10 minutes bold vivid lime, under 45 vivid lime, then a
-# paler lime. WIDLE=1: waiting over 90 minutes, whoever started it, shown as IDLE. WAGENT=1:
+# paler lime. WIDLE=1: waiting over 90 minutes, whoever started it, shown as IDLE, in gray. WAGENT=1:
 # under 90 minutes, a turn a message from another session started, done: shown as AGENT'S
 # TURN DONE in the usual green, since nothing in it waits on you (or on anyone). WUNK=1:
 # when it began isn't known (yet), shown as ---
@@ -2369,8 +2369,8 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 		if ((WUNK)); then CELL="$GRY  ---             $R"
 		# A server it started still runs: waiting all the same, and said so.
 		elif [[ -n ${2:-} && -n ${P_SRV[$2]:-} ]]; then
-			if ((WIDLE)); then CELL="$BGRN◇ IDLE · server   $R"; else CELL="$WCOL◆ WAITING · server$R"; fi
-		elif ((WIDLE)); then CELL="$BGRN◇ IDLE            $R"
+			if ((WIDLE)); then CELL="$GRY◇ IDLE · server   $R"; else CELL="$WCOL◆ WAITING · server$R"; fi
+		elif ((WIDLE)); then CELL="$GRY◇ IDLE            $R"
 		# The whole of it where the column is 20 wide, one space left before FOLDER.
 		elif ((WAGENT && ${sw:-0})); then CELL="$WCOL◆ AGENT'S TURN DONE$R" CPAD=" "
 		elif ((WAGENT)); then CELL="$WCOL◆ AGENT TURN DONE $R"

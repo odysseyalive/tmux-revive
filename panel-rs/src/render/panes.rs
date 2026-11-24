@@ -245,12 +245,12 @@ impl Ctx {
                     cat(&[GRY, b"  ---             ", R])
                 } else if row.is_some() && !self.p.a("P_SRV", row.unwrap()).is_empty() {
                     if w.idle {
-                        cat(&[BGRN, "◇ IDLE · server   ".as_bytes(), R])
+                        cat(&[GRY, "◇ IDLE · server   ".as_bytes(), R])
                     } else {
                         cat(&[&w.col, "◆ WAITING · server".as_bytes(), R])
                     }
                 } else if w.idle {
-                    cat(&[BGRN, "◇ IDLE            ".as_bytes(), R])
+                    cat(&[GRY, "◇ IDLE            ".as_bytes(), R])
                 } else if w.agent && sw != 0 {
                     self.p.cpad = b" ".to_vec();
                     cat(&[&w.col, "◆ AGENT'S TURN DONE".as_bytes(), R])
