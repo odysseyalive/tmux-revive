@@ -61,6 +61,16 @@ screen() { tm capture-pane -p -t work:panel; }
 wait_screen() { for _ in $(seq 1 30); do screen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 # wait_ok CHECK: CHECK (eval'd) comes true within 6 seconds.
 wait_ok() { for _ in $(seq 1 30); do eval "$1" && return 0; sleep 0.2; done; return 1; }
+# A notice: what a key did, or news from the background, in a box over the panel that only Esc
+# closes, as its foot says. notice_text SCREEN: the words in the one SCREEN (a function printing
+# a panel's screen) shows, its lines joined. boxed SCREEN TEXT: one up there holds TEXT, within
+# 6 seconds. nobox SCREEN: none is, within 6 seconds. unbox SCREEN KEYS...: once one is up, Esc
+# (KEYS... sends it), and it's gone.
+NOTE_RE='║ Esc closes +║░'
+notice_text() { "$1" | grep -cE "$NOTE_RE" >/dev/null && "$1" | sed -n 's/.*║ \(.*\) ║░.*/\1/p' | sed 's/ *$//' | grep -v '^Esc closes$' | grep . | paste -sd ' '; }
+boxed() { local _; for _ in $(seq 1 30); do notice_text "$1" | grep -cF -- "$2" >/dev/null && return 0; sleep 0.2; done; return 1; }
+nobox() { local _; for _ in $(seq 1 30); do "$1" | grep -cE "$NOTE_RE" >/dev/null || return 0; sleep 0.2; done; return 1; }
+unbox() { local s=$1 _; shift; for _ in $(seq 1 30); do "$s" | grep -cE "$NOTE_RE" >/dev/null && break; sleep 0.2; done; "$@" Escape; nobox "$s"; }
 # wcols TITLE < CAPTURE (capture-pane -e): the colours of the window titled TITLE's left and
 # right edges, on its title line and its rows down to the next divider, one "LEFT RIGHT" for
 # each different pair (34 the frame's blue, 96 bright cyan, 95 bright magenta). A capture only
@@ -272,20 +282,35 @@ tm send-keys -t work:panel Down; wait_screen '[0.1] ▶' >/dev/null
 tm send-keys -t work:panel n; sleep 0.5
 tm send-keys -t work:panel 'top-watch' Enter
 named() { for _ in $(seq 1 30); do tm list-panes -a -F '#{@agent}' | grep -qx "$1" && return 0; sleep 0.2; done; return 1; }
-check "N renames the selected pane" "named top-watch && wait_screen '▶ top-watch'"
+check "N renames the selected pane, and says so in a box" "named top-watch && wait_screen '▶ top-watch' && boxed screen \"is now 'top-watch'\""
+unbox screen tm send-keys -t work:panel >/dev/null
 # Typed into N, h j k l are letters of the name, not moves.
 tm send-keys -t work:panel n; wait_screen 'New name for' >/dev/null
 tm send-keys -t work:panel -l 'hjkl-top'; tm send-keys -t work:panel Enter
 check "a name with h, j, k and l in it goes through N whole" "named hjkl-top && wait_screen '▶ hjkl-top'"
+unbox screen tm send-keys -t work:panel >/dev/null
 tm send-keys -t work:panel n; wait_screen 'New name for' >/dev/null
 tm send-keys -t work:panel -l 'top-watch'; tm send-keys -t work:panel Enter
-named top-watch >/dev/null; wait_screen '▶ top-watch' >/dev/null
+named top-watch >/dev/null; wait_screen '▶ top-watch' >/dev/null; unbox screen tm send-keys -t work:panel >/dev/null
 # O opens: the selected pane becomes tmux's active one.
 tm send-keys -t work:panel O
-check "O opens the selected pane" "wait_screen 'opened top-watch' && [[ \$(tm display -p -t work:0 '#{pane_index}') == 1 ]]"
+check "O opens the selected pane, and says nothing: you're taken there" "for _ in \$(seq 1 30); do [[ \$(tm display -p -t work:0 '#{pane_index}') == 1 ]] && break; sleep 0.2; done; [[ \$(tm display -p -t work:0 '#{pane_index}') == 1 ]] && sleep 1.5 && nobox screen"
 tm select-pane -t work:0.0
 tm send-keys -t work:panel s
 check "S saves" "wait_screen '(manual)'"
+# What a key did shows in a box over the panel, centred, and not on the key bar; only Esc closes
+# it. Other keys are ignored meanwhile: q doesn't quit, an arrow doesn't move.
+check "and says it's saved in a box over the panel, not on the key bar" "boxed screen saved && ! screen | tail -3 | grep -cF ' saved ' >/dev/null"
+check "the box's foot says Esc closes it, and nothing more" "screen | grep -cE '║ Esc closes +║░' >/dev/null && [[ \$(notice_text screen) == saved ]]"
+selb=$(screen | grep -o '\[[0-9.]*\] ▶')
+tm send-keys -t work:panel q x Down Up Down; sleep 1.5
+check "q, another key or an arrow leave it up: the panel stays, the selection too ($selb)" "tm list-windows -F '#{window_name}' | grep -qx panel && boxed screen saved && [[ \$(screen | grep -o '\[[0-9.]*\] ▶') == '$selb' ]]"
+# The panel goes on under it: its clock moves, the box still over it.
+clock() { screen | grep -o '[0-9][0-9]:[0-9][0-9]:[0-9][0-9]' | head -1; }
+c0=$(clock); sleep 2.5
+check "the panel keeps refreshing under the box: its clock moves on ($c0)" "[[ -n '$c0' && \$(clock) != '$c0' ]] && boxed screen saved"
+tm send-keys -t work:panel Escape
+check "Esc closes it, the panel whole under it" "nobox screen && wait_screen 'C O N T R O L' && screen | head -1 | grep -q '^╔'"
 check "the peek box shows the selected pane" "screen | grep -q 'PEEK · top-watch'"
 # Every row is repainted right as p hides and shows it.
 whole() { local s; s=$(screen); [[ ${s%%$'\n'*} == ╔* && ${s##*$'\n'} == *╝ ]] && seen 'PEEK · ' && seen 'MESSAGES'; }
@@ -320,11 +345,13 @@ tm send-keys -t work:panel m; sleep 0.5
 check "M opens a box to write the message in, saying how to finish and back out" "wait_screen 'MESSAGE TO' && wait_screen 'Enter sends · Alt-Enter new line · Esc closes'"
 tm send-keys -t work:panel -l 'never sent'; sleep 0.3
 tm send-keys -t work:panel Escape
-check "Esc backs out of a message" "wait_screen 'message cancelled' && ! screen | grep -q 'Esc closes'"
+check "Esc backs out of a message" "boxed screen 'message cancelled' && ! screen | grep -q 'MESSAGE TO'"
+unbox screen tm send-keys -t work:panel >/dev/null
 tm send-keys -t work:panel m; sleep 0.5
 tm send-keys -t work:panel -l 'never sent either'; sleep 0.3
 tm send-keys -t work:panel C-c; sleep 1
-check "Ctrl-C backs out too, and the panel stays open" "tm list-windows -F '#{window_name}' | grep -qx panel && wait_screen 'message cancelled' && wait_screen 'C O N T R O L' && ! screen | grep -q 'Esc closes'"
+check "Ctrl-C backs out too, and the panel stays open" "tm list-windows -F '#{window_name}' | grep -qx panel && boxed screen 'message cancelled' && wait_screen 'C O N T R O L' && ! screen | grep -q 'MESSAGE TO'"
+unbox screen tm send-keys -t work:panel >/dev/null
 check "nothing was sent" "! grep -qs 'never sent' $AGENT_SAY_MAILBOX"
 # A paste into the box is text, its line breaks (CR, as a terminal sends them) included, never
 # Enter: the box stays open. Long text scrolls, a long line wraps, PgUp goes back up.
@@ -335,11 +362,22 @@ check "a paste of many lines stays in the box, which scrolls to its end and wrap
 tm send-keys -t work:panel PPage PPage PPage
 check "PgUp goes back up to its first line" "wait_screen '║ line 01'"
 tm send-keys -t work:panel Escape
-check "and Esc still sends none of it, the box gone" "wait_ok '! screen | grep -q \"Esc closes\"' && wait_screen 'message cancelled' && ! screen | grep -qF '║ line' && ! grep -qs 'line 40' $AGENT_SAY_MAILBOX"
+check "and Esc still sends none of it, the box gone" "wait_ok '! screen | grep -q \"MESSAGE TO\"' && boxed screen 'message cancelled' && ! screen | grep -qF '║ line' && ! grep -qs 'line 40' $AGENT_SAY_MAILBOX"
+unbox screen tm send-keys -t work:panel >/dev/null
 wait_screen 'C O N T R O L' >/dev/null
 before=$(screen | grep -o 'ART · [a-z ]*' | head -1)
 tm send-keys -t work:panel a
 check "A switches the artwork ($before)" "for _ in \$(seq 1 20); do after=\$(screen | grep -o 'ART · [a-z ]*' | head -1); [[ -n \$after && \$after != '$before' ]] && break; sleep 0.2; done; [[ \$after != '$before' ]]"
+check "and says nothing more: ART's title names it" "sleep 1.5 && nobox screen"
+# At 80 columns a long notice wraps inside its box: every row of it whole, its edges on screen.
+tm resize-window -t work:panel -x 80 -y 30; sleep 1.5
+tm send-keys -t work:panel B; wait_screen 'other host' >/dev/null; tm send-keys -t work:panel Enter; wait_screen 'Host to link' >/dev/null
+long='not a host at all but a sentence long enough that its notice needs two rows at eighty columns END'
+tm send-keys -t work:panel -l "$long"; tm send-keys -t work:panel Enter
+check "at 80 columns a long notice wraps in its box, every word kept" "boxed screen \"not a host name: $long\" && (( \$(screen | grep -c '║ [^║]* ║░') >= 3 ))"
+check "and the box fits: its rows all as wide, none past the 80 columns" "[[ \$(screen | grep -o '║ [^║]* ║░' | awk '{print length}' | sort -u | wc -l) == 1 && \$(screen | awk '{print length}' | sort -nu | tail -1) == 80 ]]"
+unbox screen tm send-keys -t work:panel >/dev/null
+tm resize-window -t work:panel -x 130 -y 40; sleep 1
 tm send-keys -t work:panel q; sleep 1
 check "Q quits" "! tm list-windows -F '#{window_name}' | grep -qx panel"
 # An arrow redraws from what was gathered: the links and saves aren't looked at again for it.
@@ -408,24 +446,30 @@ tm resize-window -t work:helpw -x 130 -y 40; sleep 1
 tm send-keys -t work:helpw i
 check "i asks before installing, showing what it would run" "hwait 'yes, run it' && hscreen | grep -q 'touch $T/installed'"
 tm send-keys -t work:helpw n
-check "n says no, and nothing runs" "hwait 'install cancelled' && sleep 1 && [[ ! -e $T/installed ]] && ! tm list-windows -F '#{window_name}' | grep -qx workforce"
+check "n says no, and nothing runs, in a box" "boxed hscreen 'install cancelled · nothing was run' && sleep 1 && [[ ! -e $T/installed ]] && ! tm list-windows -F '#{window_name}' | grep -qx workforce"
+unbox hscreen tm send-keys -t work:helpw >/dev/null
 check "and the help page stays open" "hscreen | grep -q 'HELP · HOW TO USE' && ! hscreen | grep -q 'yes, run it'"
 tm send-keys -t work:helpw i; hwait 'yes, run it' >/dev/null
 tm send-keys -t work:helpw y
 installed() { for _ in $(seq 1 30); do [[ -e $T/installed ]] && return 0; sleep 0.2; done; return 1; }
 check "y runs the installer in a new tmux window" "installed && tm list-windows -F '#{window_name}' | grep -qx workforce"
+check "and says where, in a box over the help page" "boxed hscreen 'installing in the new tmux window: workforce' && hscreen | grep -q 'HELP · HOW TO USE'"
+unbox hscreen tm send-keys -t work:helpw >/dev/null
+check "which Esc closes, the help page still open" "hscreen | grep -q 'HELP · HOW TO USE'"
 tm kill-window -t work:workforce 2>/dev/null
 tm send-keys -t work:helpw p
 check "p asks before installing playwright-mcp, showing what it would run" "hwait \"This runs playwright-mcp's installer\" && hscreen | grep -q 'touch $T/pw-installed'"
 tm send-keys -t work:helpw y
 pwinstalled() { for _ in $(seq 1 30); do [[ -e $T/pw-installed ]] && return 0; sleep 0.2; done; return 1; }
 check "and y runs it in a new tmux window of its own" "pwinstalled && tm list-windows -F '#{window_name}' | grep -qx playwright-mcp"
+unbox hscreen tm send-keys -t work:helpw >/dev/null
 tm kill-window -t work:playwright-mcp 2>/dev/null
 tm send-keys -t work:helpw c
 check "c asks before installing Codex Workforce, showing what it would run" "hwait \"This runs Codex Workforce's installer\" && hscreen | grep -q 'touch $T/cx-installed'"
 tm send-keys -t work:helpw y
 cxinstalled() { for _ in $(seq 1 30); do [[ -e $T/cx-installed ]] && return 0; sleep 0.2; done; return 1; }
 check "and y runs it in a new tmux window of its own" "cxinstalled && tm list-windows -F '#{window_name}' | grep -qx codex-workforce"
+unbox hscreen tm send-keys -t work:helpw >/dev/null
 tm kill-window -t work:codex-workforce 2>/dev/null
 # Tall enough, the ads stay put at the bottom and only the words above them scroll.
 tm resize-window -t work:helpw -x 160 -y 50; sleep 1.5
@@ -445,7 +489,7 @@ check "End shows the last of the words, the ads still under them ($q2)" "[[ $las
 tm send-keys -t work:helpw i
 check "and their buttons still work there: i asks" "hwait 'yes, run it'"
 tm send-keys -t work:helpw n
-check "n says no" "hwait 'install cancelled' && [[ \$(hfoot) == \"\$f0\" ]]"
+check "n says no" "boxed hscreen 'install cancelled' && unbox hscreen tm send-keys -t work:helpw && [[ \$(hfoot) == \"\$f0\" ]]"
 tm resize-window -t work:helpw -x 90 -y 30; sleep 1.5
 check "a resize redraws it to the new size" "hwhole && [[ \$(hscreen | head -1 | awk '{print length}') == 90 && \$(hscreen | wc -l) == 30 ]] && hscreen | grep -q 'HELP · HOW TO USE'"
 tm resize-window -t work:helpw -x 130 -y 40; sleep 0.5
@@ -976,13 +1020,16 @@ check "Esc there closes it too, nothing changed" "gone_a '2  Deny' && [[ \$(stat
 echo wrong >"$T/popup.code"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; akey 1
 check "Approve asks for the code in a popup; a wrong one approves nothing" "wait_a \"not approved: the code didn't match, so it's still waiting\" && grep -q '^display-popup ' $T/popup.log && [[ \$(state) == '$before' ]]"
+unbox ascreen akey >/dev/null
 echo right >"$T/popup.code"; : >"$T/popup.log"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; akey 1
 check "the code typed back approves it" "wait_a 'live-root@far.invalid and dev-root@near.invalid can talk now' && [[ ! -e $T/mail/intros/$ia ]] && grep -q '^allow s:$ia@far.invalid s:to$ia@near.invalid live-root@far.invalid dev-root@near.invalid [0-9]*\$' $T/mail/grants"
+unbox ascreen akey >/dev/null
 check "the one the other way with it, and only that one" "[[ ! -e $T/mail/intros/$ic && -e $T/mail/intros/$ib && -e $T/mail/intros/$id ]]"
 check "and then just the panel: no box asks again" "sleep 1 && ! ascreen | grep -qE 'LINK AGENTS TOGETHER|[0-9]  (Approve|Deny)' && [[ \$(grep -c '^display-popup ' $T/popup.log) == 1 ]]"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '2  Deny' >/dev/null; akey 2
 check "Deny declines it, both ways" "wait_a \"declined: cx@far.invalid and dev-root@near.invalid can't talk\" && [[ ! -e $T/mail/intros/$ib && ! -e $T/mail/intros/$id ]] && [[ \$(grep -c '^deny s:$ib@far.invalid ' $T/mail/grants) == 1 ]]"
+unbox ascreen akey >/dev/null
 check "with nothing waiting, MESSAGES has no waiting line" "gone_a 'waiting for [G]rant access' && wait_a '✓ 2 approved'"
 before=$(state)
 akey g; wait_a 'APPROVED' >/dev/null
@@ -994,18 +1041,22 @@ check "Esc there changes nothing" "gone_a '2  Remove' && [[ \$(state) == '$befor
 echo wrong >"$T/popup.code"; : >"$T/popup.log"
 akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '1  Refresh' >/dev/null; akey 1
 check "Refresh asks for the code in the same popup; a wrong one is turned away" "wait_a \"not refreshed: the code didn't match\" 60 && grep -q '^display-popup ' $T/popup.log"
+unbox ascreen akey >/dev/null
 check "and refreshes nothing" "[[ \$(state) == '$before' ]]"
 echo right >"$T/popup.code"
 start=$(date +%s)
 akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '1  Refresh' >/dev/null; akey 1
 check "Refresh restarts its day" "wait_a 'refreshed: ann@far.invalid → bob@near.invalid · 24h left' && awk -v s=$start '\$4 == \"ann@far.invalid\" && \$6 >= s {f = 1} END {exit !f}' $T/mail/grants"
+unbox ascreen akey >/dev/null
 check "and logs it" "grep -q ' refresh s:a1@far.invalid s:b1@near.invalid ' $T/mail/grants.log"
 akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '2  Remove' >/dev/null; akey 2
 check "Remove takes it away" "wait_a 'removed: ann@far.invalid → bob@near.invalid' && ! grep -q 'ann@far.invalid' $T/mail/grants && grep -q 'live-root@far.invalid' $T/mail/grants"
+unbox ascreen akey >/dev/null
 rm -f "$T/mail/grants"
 check "with nothing left, the bar has no [G]rant access" "gone_a '[G]rant access' && gone_a ' approved'"
 akey g
-check "and G says there's nothing" "wait_a 'nothing waiting or approved'"
+check "and G says there's nothing, in a box" "boxed ascreen 'nothing waiting or approved'"
+unbox ascreen akey >/dev/null
 akey q
 tm kill-window -t work:acc 2>/dev/null
 rm -rf "$T/mail/intros" "$T/mail/grants"* "$T/popup.log"
@@ -1321,7 +1372,17 @@ for _ in 1 2 3 4; do tm send-keys -t work:qpanel Down; sleep 0.4; done
 wait_q '❯ 5. Not now' 15 >/dev/null
 tm send-keys -t work:qpanel -l 'jk'
 check "with no free-text choice, letters still go to the question, j and k too" "for _ in \$(seq 1 25); do grep -qx k $T/ans8.keys 2>/dev/null && break; sleep 0.2; done; grep -qx j $T/ans8.keys && grep -qx k $T/ans8.keys && ! qhas '[E]nter'"
-tm send-keys -t work:qpanel C-]; wait_q 'left the question' >/dev/null
+# News from the background (a new ssh) waits while a question is answered: no box takes the
+# keys meant for it. Once the question is left, the box comes, and only its own Esc closes it.
+tm new-window -d -t work -n qssh "bash -c 'exec -a \"ssh me@asked.example\" sleep 300'"; sleep 3
+check "a new ssh while answering opens no box: still answering" "qhas 'ANSWERING asker' && nobox qscreen"
+tm send-keys -t work:qpanel Escape
+check "the Esc that leaves the question is the question's; then a box says what came" "wait_q 'left the question' && boxed qscreen 'new ssh: asked.example · B bridges it'"
+sleep 1.5
+check "and it stays up until an Esc of its own" "boxed qscreen 'new ssh: asked.example'"
+tm send-keys -t work:qpanel Escape
+check "which closes it" "nobox qscreen"
+tm kill-window -t work:qssh
 tm send-keys -t work:qpanel q
 tm kill-window -t work:asker
 # Answering looks at the agent's screen again right after a key is sent, not 0.3 s later; and a
@@ -1376,6 +1437,7 @@ check "a URL is magenta and underlined, without the full stop after it" "[[ \$(m
 tm send-keys -t work:mpanel Enter
 check "M sends a message of several lines, whole" "for _ in \$(seq 1 30); do grep -q '^two lines\$' $AGENT_SAY_MAILBOX 2>/dev/null && break; sleep 0.2; done; grep -A2 -- '^## \\[panel -> ' $AGENT_SAY_MAILBOX | grep -qx 'a note in' && grep -A2 -- '^## \\[panel -> ' $AGENT_SAY_MAILBOX | grep -qx 'two lines'"
 check "the coloured words go as typed: no colour codes in the message" "grep -qF -- \"\$tok \\\`one two\" $AGENT_SAY_MAILBOX && grep -qF -- 'eleven twelve\` x' $AGENT_SAY_MAILBOX && ! grep -q \$'\\e' $AGENT_SAY_MAILBOX && ! grep -q '\\[[0-9;]*m' $AGENT_SAY_MAILBOX"
+unbox mscreen tm send-keys -t work:mpanel >/dev/null
 tm send-keys -t work:mpanel q
 tm kill-window -t work:mrecv
 
@@ -1495,7 +1557,16 @@ wait_ssh() { for _ in $(seq 1 40); do sshscreen | grep -qF -- "$1" && return 0; 
 wait_ssh 'C O N T R O L'
 # A pane connecting somewhere: a process whose command line is an ssh one.
 tm new-window -d -t work -n remote "bash -c 'exec -a \"ssh -p 2222 me@devbox.example\" sleep 300'"
-check "a new ssh connection is announced" "wait_ssh 'new ssh: devbox.example · B bridges it'"
+check "a new ssh connection is announced, in a box" "boxed sshscreen 'new ssh: devbox.example · B bridges it' && ! sshscreen | tail -3 | grep -cF 'new ssh' >/dev/null"
+unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
+# Two at once: a box for each, one after the other, each closed by an Esc of its own.
+tm new-window -d -t work -n q1ssh "bash -c 'exec -a \"ssh one.example\" sleep 300'"; tm new-window -d -t work -n q2ssh "bash -c 'exec -a \"ssh two.example\" sleep 300'"
+check "two new ssh connections at once: a box for the first" "boxed sshscreen 'new ssh: one.example'"
+tm send-keys -t work:sshpanel Escape
+check "its Esc closes it, and the second's box comes" "boxed sshscreen 'new ssh: two.example' && ! notice_text sshscreen | grep -cF one.example >/dev/null"
+tm send-keys -t work:sshpanel Escape
+check "and that one's own Esc closes it" "nobox sshscreen"
+tm kill-window -t work:q1ssh; tm kill-window -t work:q2ssh; sleep 1.5
 check "and offered for linking" "wait_ssh 'devbox.example · ssh in'"
 tm send-keys -t work:sshpanel r; sleep 0.7
 check "r does nothing: no popup" "! sshscreen | grep -q 'ATTACH SERVERS' && wait_ssh 'C O N T R O L'"
@@ -1518,7 +1589,8 @@ popup_square() {
 }
 check "the popup's edges line up on every row" "popup_square"
 tm send-keys -t work:sshpanel Escape
-check "Esc closes the popup" "wait_ssh 'link cancelled' && ! sshscreen | grep -q 'ATTACH SERVERS'"
+check "Esc closes the popup" "boxed sshscreen 'link cancelled' && ! sshscreen | grep -q 'ATTACH SERVERS'"
+unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 # Linking a host ssh has no key for asks you to confirm one first, as ssh would; No (the first
 # choice, so a bare Enter) links nothing.
 ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey"
@@ -1528,12 +1600,14 @@ tm send-keys -t work:sshpanel B; sleep 0.7; tm send-keys -t work:sshpanel Enter
 check "picking a host ssh has no key for asks yes or no, and says none was found" "wait_ssh 'LINK devbox.example?' && wait_ssh 'no key found (not in known_hosts' && wait_ssh \"No, don't link\" && wait_ssh 'Yes, link devbox.example'"
 tm send-keys -t work:sshpanel Enter
 check "No links nothing" "wait_ssh 'link cancelled' && [[ ! -e $(dirname "$AGENT_SAY_MAILBOX")/links/devbox.example ]]"
+unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 # A host ssh already trusts (its key in known_hosts): only yes or no, Yes first, its key shown.
 printf 'devbox.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >"$T/known_hosts"
 tm send-keys -t work:sshpanel B; sleep 0.7; tm send-keys -t work:sshpanel Enter
 check "a host ssh already trusts: one yes or no, with the key from your known_hosts, no list of keys" "wait_ssh 'LINK devbox.example?' && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -q '1 *Yes, link devbox.example' && ! sshscreen | grep -q 'its key is'"
 tm send-keys -t work:sshpanel Enter
 check "Enter links it, and shows what happened" "wait_ssh \"couldn't run agent-say on devbox.example\""
+unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 # Pretend the link is up, then take it down with U.
 st=$(dirname "$AGENT_SAY_MAILBOX"); mkdir -p "$st/links/devbox.example"; touch "$st/links/devbox.example/on"
 # What the link lets that computer do shows beside it.
@@ -1549,6 +1623,7 @@ hl_line 'other host'; tm send-keys -t work:sshpanel u; sleep 0.5
 check "U on a line that isn't a link does nothing" "sshscreen | grep -q 'ATTACH SERVERS' && [[ -e $st/links/devbox.example/on ]]"
 tm send-keys -t work:sshpanel Up; sleep 0.2; tm send-keys -t work:sshpanel u
 check "U on the link's line unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $st/links/devbox.example ]] && ! sshscreen | grep -q 'ATTACH SERVERS'"
+unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 # A link that fails (here: stopped on another key than the one linked). L offers to link it again:
 # it unlinks, then links with the key ssh uses now, after one yes or no. Or unlinks it.
 sk=$st/links/devbox.example
@@ -1567,18 +1642,22 @@ tm send-keys -t work:sshpanel 2
 check "linking again shows the key ssh uses now, warns it isn't the one linked before, No first" "wait_ssh \"WARNING: devbox.example's HOST KEY CHANGED\" && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -q \"1 *No, don't link devbox.example\""
 tm send-keys -t work:sshpanel 2
 check "and yes unlinks the old one and links again (its old key and error gone)" "wait_ssh \"couldn't run agent-say on devbox.example\" && [[ ! -e $sk/on && ! -e $sk/error && ! -e $sk/fingerprint ]]"
+unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 broken
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh "link again" >/dev/null; pick_line "devbox.example  · stopped"
 wait_ssh 'LINK devbox.example AGAIN?' >/dev/null; tm send-keys -t work:sshpanel 1
 check "No there leaves it as it was" "wait_ssh 'link cancelled' && [[ -e $sk/on && -s $sk/error ]]"
+unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh "link again" >/dev/null; pick_line "devbox.example  · stopped"
 wait_ssh 'LINK devbox.example AGAIN?' >/dev/null; tm send-keys -t work:sshpanel 3
 # Each unlink says the same, so wait for the link itself to go, not only for the words.
 gone_sk() { for _ in $(seq 1 50); do [[ -e $sk ]] || break; sleep 0.2; done; [[ ! -e $sk ]] && wait_ssh 'unlinked devbox.example'; }
 check "Unlink there unlinks the failing link" "gone_sk"
+unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 broken
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh "link again" >/dev/null; hl_line "devbox.example  · stopped"; tm send-keys -t work:sshpanel U
 check "and so does U on its line in B" "gone_sk"
+unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 # A link stopped on a failure (paused): LINKS says why, and B tries it once more, with its key.
 mkdir -p "$sk"; touch "$sk/on" "$sk/paused"; echo "$fp (ED25519)" >"$sk/fingerprint"
 # Written as an older agent-say wrote it, with L: the popup drops that too.
@@ -1588,8 +1667,10 @@ tm send-keys -t work:sshpanel B; sleep 0.7
 check "B offers it, to try again" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -q \"devbox.example  · can't reach (connection timed out) · try again\""
 pick_line "devbox.example  · can.t reach"
 check "picking it tries once, with no questions, and says why it failed again" "wait_ssh 'devbox.example: ssh to devbox.example failed' && ! sshscreen | grep -q 'AGAIN?' && [[ -e $sk/paused && -e $sk/on ]] && grep -q 'B to try again' $sk/error"
+unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh 'try again' >/dev/null; hl_line "devbox.example  ·"; tm send-keys -t work:sshpanel u
 check "U in B unlinks it" "gone_sk"
+unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 tm send-keys -t work:sshpanel q
 tm kill-window -t work:remote 2>/dev/null
 # live.example: ssh keeps no key for it (known_hosts /dev/null, keys not checked), but an ssh
@@ -1618,6 +1699,7 @@ tm send-keys -t work:livepanel "$n"
 check "a key read through your open ssh connection: shown, said to be seen for the first time, No first" "wait_lv 'key read through your open ssh connection: $fp (ED25519)' && wait_lv 'First time we see this key' && lvs | grep -q \"1 *No, don't link live.example\""
 tm send-keys -t work:livepanel Enter
 check "and Enter links nothing" "for _ in \$(seq 1 40); do lvs | grep -q 'LINK live.example?' || break; sleep 0.2; done; ! lvs | grep -q 'LINK live.example?' && [[ ! -e $st/links/live.example ]]"
+unbox lvs tm send-keys -t work:livepanel >/dev/null
 tm send-keys -t work:livepanel q
 tm kill-window -t work:liveremote 2>/dev/null
 
@@ -2192,18 +2274,20 @@ rtop=$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.1 '#{pane
 wait_far() { for _ in $(seq 1 ${2:-30}); do farscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 rename_far() { tm send-keys -t work:farpanel n; wait_far 'New name for' >/dev/null; tm send-keys -t work:farpanel -l "$1"; tm send-keys -t work:farpanel Enter; }
 rename_far far-renamed
-check "N names a linked computer's pane there" "wait_far \"on far.example: pane $rtop is now 'far-renamed'\" && [[ \$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t $rtop '#{@agent}') == far-renamed ]]"
+check "N names a linked computer's pane there" "boxed farscreen \"on far.example: pane $rtop is now 'far-renamed'\" && [[ \$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t $rtop '#{@agent}') == far-renamed ]]"
 check "with agent-say name, for that pane, nothing else" "[[ \$(cat $T/name.cmd) == \"AGENT_SAY_PANE='$rtop' PATH=\\\"\\\$HOME/.local/bin:\\\$PATH\\\" agent-say name 'far-renamed' </dev/null 2>&1\" ]]"
-check "and its row shows the new name, still selected" "wait_far '▶ far-renamed' 40"
+check "and its row shows the new name, still selected" "unbox farscreen tm send-keys -t work:farpanel && wait_far '▶ far-renamed' 40"
 rm -f "$T/name.cmd"
 rename_far "x';touch $T/pwn;'"
 check "a name that can't be one never leaves here" "wait_far \"that can't be a name\" && [[ ! -e $T/name.cmd && ! -e $T/pwn ]]"
+unbox farscreen tm send-keys -t work:farpanel >/dev/null
 rename_far list
 check "and one agent-say there turns away is refused there" "wait_far \"on far.example: 'list' can't be a name\" && [[ \$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t $rtop '#{@agent}') == far-renamed ]]"
+unbox farscreen tm send-keys -t work:farpanel >/dev/null
 # Read-only holds what that computer sends here; like V, naming there from here isn't that.
 touch "$st/links/far.example/read-only"
 rename_far far-top
-check "on a read-only link too, as V and answering are" "wait_far \"on far.example: pane $rtop is now 'far-top'\" && wait_far '▶ far-top' 40"
+check "on a read-only link too, as V and answering are" "boxed farscreen \"on far.example: pane $rtop is now 'far-top'\" && unbox farscreen tm send-keys -t work:farpanel && wait_far '▶ far-top' 40"
 # O on a linked computer's pane stays faded, even with a pane here ssh'd there, and moves no
 # focus: not here, not in tmux over there. It only says so.
 rt() { tmux -L "revive-panel-remote-$$" -f /dev/null "$@"; }
@@ -2214,6 +2298,7 @@ sleep 2.5
 check "with a pane here ssh'd there, O stays faded" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\""
 tm send-keys -t work:farpanel O
 check "O there only says so" "wait_far 'O opens panes on this computer only'"
+unbox farscreen tm send-keys -t work:farpanel >/dev/null
 check "and moves nothing, here or over there" "[[ \$(tm display -p -t work '#{window_name}') == '$herewin' && \$(rt display -p -t far '#{window_name}') == elsewhere && ! -e $T/show.cmd ]]"
 rm -f "$st/links/far.example/read-only"
 tm kill-window -t work:farssh; rt kill-window -t far:elsewhere
@@ -2273,6 +2358,7 @@ for _ in $(seq 1 60); do fn | grep -q 'far-two *◌ linked' && break; sleep 0.25
 for _ in $(seq 1 25); do fn | grep -q '▶ far-two' && break; tm send-keys -t work:farnames Down; sleep 0.4; done
 tm select-window -t work:farnames; tm send-keys -t work:farnames O
 check "O on a names-only row moves nothing, and asks nothing over there" "for _ in \$(seq 1 30); do fn | grep -c 'O opens panes on this computer only' >/dev/null && break; sleep 0.2; done; fn | grep -c 'O opens panes on this computer only' >/dev/null && [[ \$(tm display -p -t work '#{window_name}') == farnames ]] && ! grep -c -- '--show' $T/ssh.log >/dev/null && [[ ! -e $T/show.cmd ]]"
+unbox fn tm send-keys -t work:farnames >/dev/null
 tm send-keys -t work:farnames q; tm kill-window -t work:farssh
 
 # --keys: a pane id, then key names from a short list or lit:HEX text, nothing else.
@@ -2487,10 +2573,17 @@ tm send-keys -t work:pwpanel B; wait_pw 'ATTACH SERVERS' >/dev/null; tm send-key
 wait_pw 'key from your known_hosts' >/dev/null; tm send-keys -t work:pwpanel Enter
 check "B on a host that wants a password opens a login, where ssh asks for it" "login_typed hunter2"
 check "and once it's typed, the link is made" "wait_pw 'linked to pw.example' 75 && [[ -e $pwl/on && -e $T/pw.master ]]"
+unbox pws tm send-keys -t work:pwpanel >/dev/null
 check "the poller and the panel's calls over it ask nothing more" "wait_pw 'far-top' 75 && [[ \$(grep -c 'ControlMaster=yes' $T/pwssh.log) == 1 ]]"
 check "LINKS shows it linked" "wait_pw 'pw.example · linked' 50"
 rm -f "$T/pw.master" # the login dropped: a reboot over there, or the network gone a while
-check "a dropped login shows as needing one" "wait_pw 'pw.example · needs login · [B] log in' 75 && wait_pw 'pw.example needs login · B to type its password'"
+check "a dropped login shows as needing one, and a box says so" "wait_pw 'pw.example · needs login · [B] log in' 75 && boxed pws 'pw.example needs login · B to type its password'"
+unbox pws tm send-keys -t work:pwpanel >/dev/null
+# Said once for the drop, not again by a panel started anew while it still needs one.
+tm new-window -d -t work -n pw2 "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+pw2() { tm capture-pane -p -t work:pw2; }
+check "a panel started again doesn't say it again" "for _ in \$(seq 1 40); do pw2 | grep -q 'pw.example · needs login' && break; sleep 0.2; done; pw2 | grep -q 'pw.example · needs login' && sleep 2.5 && nobox pw2 && [[ -e $REVIVE_DIR/panel/login-said/pw.example ]]"
+tm kill-window -t work:pw2
 check "its panes too, not as unreachable" "wait_pw 'needs login · B' 50 && ! pws | grep -q 'unreachable'"
 pw_tries() { grep -c 'BatchMode=yes.* pw.example ' "$T/pwssh.log"; }
 n=$(pw_tries); sleep 3
@@ -2499,7 +2592,8 @@ tm send-keys -t work:pwpanel B; wait_pw 'needs login: type its password' >/dev/n
 check "B offers it first, to log in again" "pws | grep -q '1 *pw.example  · needs login: type its password'"
 tm send-keys -t work:pwpanel Enter
 check "and picking it opens the login again" "login_typed hunter2"
-check "after which the link picks up by itself" "wait_pw 'logged in to pw.example' 50 && for _ in \$(seq 1 50); do [[ ! -e $pwl/login ]] && break; sleep 0.2; done; [[ ! -e $pwl/login ]] && wait_pw 'pw.example · linked' 75"
+check "after which the link picks up by itself" "boxed pws 'logged in to pw.example; its link picks up again' && unbox pws tm send-keys -t work:pwpanel && for _ in \$(seq 1 50); do [[ ! -e $pwl/login ]] && break; sleep 0.2; done; [[ ! -e $pwl/login ]] && wait_pw 'pw.example · linked' 75"
+check "logged in, what was said is forgotten, so the next drop is said again" "for _ in \$(seq 1 30); do [[ -e $REVIVE_DIR/panel/login-said/pw.example ]] || break; sleep 0.2; done; [[ ! -e $REVIVE_DIR/panel/login-said/pw.example ]]"
 check "a host with a key (far.example) never got a login" "! grep 'ControlMaster=yes' $T/pwssh.log | grep -vq ' pw.example' && [[ ! -e $st/links/far.example/login ]]"
 # Another computer answers to pw.example, with a key of its own: a key problem, not a login.
 ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey9"
@@ -2521,10 +2615,12 @@ link_pw() {
 }
 link_pw
 check "with another key presented, it stops there: no login opens, nothing is asked or linked" "wait_pw \"pw.example's host key isn't the one you confirmed; not linked\" 50 && [[ -z \$(login_win) && \$(prompts) == $p && ! -e $T/pw.master && ! -e $pwl/on ]]"
+unbox pws tm send-keys -t work:pwpanel >/dev/null
 echo "$T/hostkey.pub" >"$T/pw.presented"
 link_pw
 check "with the key you confirmed, ssh asks for the password" "login_typed hunter2 && [[ \$(prompts) == \$(($p + 1)) ]]"
 check "the link is made, and known_hosts has that key now" "wait_pw 'linked to pw.example' 75 && grep -q '^pw.example ssh-ed25519' $T/known_hosts"
+unbox pws tm send-keys -t work:pwpanel >/dev/null
 tm send-keys -t work:pwpanel q
 AGENT_SAY_SSH=$T/pwssh "$ROOT/bin/agent-say" unlink pw.example >/dev/null 2>&1
 tm kill-window -t work:pwssh 2>/dev/null
@@ -2886,6 +2982,7 @@ check "Enter on it unfolds it" "wait_sp 'fold-a' && [[ ! -e $REVIVE_DIR/panel/fo
 tm_s Home; top_sp >/dev/null
 tm_s f
 check "f on this computer's pane says it can't be folded" "wait_sp \"this computer can't be folded\" && [[ ! -e $REVIVE_DIR/panel/fold/fold.example ]]"
+unbox sscr tm_s >/dev/null
 # A second linked computer: f folds one, F every one, and F again opens them all. This
 # computer's panes never fold. F is the help page's secret: the bar offers only [F]old, for one.
 mkdir -p "$T/smail/links/later.example"; touch "$T/smail/links/later.example/on"
@@ -2924,8 +3021,10 @@ td send-keys -t dt:0 d
 check "D asks first, and says it all comes back" "wait_d 'DETACH TMUX?' && wait_d 'This session will restore even after reboot.' && wait_d 'No, stay' && wait_d 'Yes, detach'"
 td send-keys -t dt:0 Escape
 check "Esc keeps you here" "gone_d 'DETACH TMUX?' && wait_d 'detach cancelled' && (( \$(dclients) == 1 ))"
+unbox dscr td send-keys -t dt:0 >/dev/null
 sleep 0.3; td send-keys -t dt:0 D; wait_d 'DETACH TMUX?' >/dev/null; td send-keys -t dt:0 1
-check "and so does No" "gone_d 'DETACH TMUX?' && (( \$(dclients) == 1 ))"
+check "and so does No" "gone_d 'DETACH TMUX?' && boxed dscr 'detach cancelled' && (( \$(dclients) == 1 ))"
+unbox dscr td send-keys -t dt:0 >/dev/null
 sleep 0.3; td send-keys -t dt:0 D; wait_d 'DETACH TMUX?' >/dev/null; td send-keys -t dt:0 2
 check "Yes detaches: the client is gone, the session and the panel still run" "for _ in \$(seq 1 30); do (( \$(dclients) == 0 )) && break; sleep 0.2; done; (( \$(dclients) == 0 )) && td has-session -t dt && wait_d 'C O N T R O L'"
 td kill-server; tm kill-window -t work:dclient 2>/dev/null

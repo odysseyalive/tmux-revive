@@ -4,7 +4,7 @@
 # up); this draws them BBS style, scrolls them, and runs the buttons in the ads. The ads
 # stay put at the bottom while the words above them scroll, when there's room for both.
 #
-# Sourced by panel.sh, which gives it the colours, row/sect/tab, draw and flash. Run on its
+# Sourced by panel.sh, which gives it the colours, row/sect/tab, draw and notice. Run on its
 # own, `help.sh --install workforce|codex|playwright` is what an install button starts in a new tmux window.
 
 HELP_FILE="$(dirname "${BASH_SOURCE[0]}")/help.txt"
@@ -447,6 +447,7 @@ help_frame() {
 	done
 	((${#OUT[@]} < ${#PREV[@]})) && buf+="$e[$((${#OUT[@]} + 1));1H$e[J"
 	PREV=("${OUT[@]}")
+	notice_up && { notice_box; buf+=$NB; } # a notice over the page, as over the panel
 	[[ -n $buf ]] && printf '%s' "$e[?2026h$buf$e[?2026l"
 }
 
@@ -467,6 +468,8 @@ help_view() {
 		# Over 128: the second is up. The panel's clock moves on every other one (its REFRESH,
 		# 2s), so the page's beacons blink as they would on the panel.
 		if ((st)); then ((st > 128)) && { ((++hsec % 2)) || ((TICK++)); continue; }; break; fi
+		# What an install or link button did shows in a box over the page; keys are its till Esc.
+		notice_up && { notice_key "$k"; continue; }
 		case $k in
 		x | X | q | Q | '?') break ;;
 		' ') HELP_TOP=$((HELP_TOP + HELP_VIEW - 1)) ;;
@@ -539,17 +542,17 @@ help_confirm() {
 help_install() { # help_install workforce|codex|playwright
 	local cmd run
 	what "$1" || return
-	cmd=$("$WCMD") || { flash "no $WNAME installer for $OS"; return; }
+	cmd=$("$WCMD") || { notice "no $WNAME installer for $OS"; return; }
 	[[ -n ${!WENV:-} || $cmd == powershell* ]] || command -v curl >/dev/null ||
-		{ flash "installing $WNAME needs curl"; return; }
-	help_confirm "INSTALL ${WNAME^^}?" "$cmd" || { flash "install cancelled · nothing was run"; return; }
+		{ notice "installing $WNAME needs curl"; return; }
+	help_confirm "INSTALL ${WNAME^^}?" "$cmd" || { notice "install cancelled · nothing was run"; return; }
 	# A new window gets tmux's environment, not the panel's: a stand-in goes along by hand.
 	printf -v run '%q %q --install %q' "$BASH" "$REVIVE_ROOT/scripts/help.sh" "$1"
 	[[ -n ${!WENV:-} ]] && printf -v run 'env %s=%q %s' "$WENV" "${!WENV}" "$run"
 	tm new-window -n "$WWIN" "$run" ||
-		{ flash "couldn't open a tmux window for the installer"; return; }
+		{ notice "couldn't open a tmux window for the installer"; return; }
 	[[ -n ${REVIVE_PANEL_POPUP:-} ]] && exit 0 # out of the way of the window it opened
-	flash "installing in the new tmux window: $WWIN"
+	notice "installing in the new tmux window: $WWIN"
 }
 
 # The link button: the page in a browser, or the address to open by hand.
@@ -557,10 +560,10 @@ help_open() {
 	local op=""
 	if [[ $OS == Darwin ]] && command -v open >/dev/null; then op=open
 	elif command -v xdg-open >/dev/null; then op=xdg-open; fi
-	[[ -n $op ]] || { flash "open this in your browser: $1"; return; }
+	[[ -n $op ]] || { notice "open this in your browser: $1"; return; }
 	"$op" "$1" </dev/null >/dev/null 2>&1 &
 	disown 2>/dev/null
-	flash "opening $1"
+	notice "opening $1"
 }
 
 # ------------------------------------------------------------------ run on its own
