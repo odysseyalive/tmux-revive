@@ -8,6 +8,8 @@ Revised again after release 1.2.55 was merged into `rust-panel` (`b3669ca`). 1.2
 
 ### The notice box (1.2.55): ported byte for byte, drawn over a panel that goes on
 
+**Out of date since 1.2.57** (main `d9035e8`): the user removed the boxes. `notice` is `flash` again, one line on the key bar for 5 s; nothing is queued in `NOTICES`, and the background notices (a new ssh, a link needing its login) are gone, as is the `login-said` folder (1.2.57 removes it at start). The live Rust panel ports none of `notice_box`, `notice_up`, `notice_key` or the queue: wherever bash calls `notice`, it flashes. What follows is kept for the record and for `--once`'s render of an old snapshot.
+
 This is the user's own request, made before the Rust panel and shipped in bash in 1.2.55 (unverified: relayed in the task brief that asked for this revision, 2026-11-23): **the panel keeps drawing under a notice.** Before 1.2.55 a box held the panel still until a key; now `draw` paints the first notice's box over every frame, inside the same `?2026` update (1.2.55: `scripts/panel.sh:3342-3343`), and `help_frame` does the same over the ? page (1.2.55: `scripts/help.sh:454`). The Rust panel must keep both halves:
 
 - **The box, byte for byte.** It is `note_box` with no title and the hint `Esc closes`, made (`NB_ONLY=1`) rather than written, from the first notice wrapped by `help_wrap` to `TCOLS - 10` columns, between 20 and 70, cut to `TLINES - 6` lines, with backticks turned to `'` first (`notice_box`, 1.2.55: `:4465-4476`). It is cached by size and text (`NB_KEY`); the cache is an optimisation, never state.
@@ -570,6 +572,14 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
   **Interim hand-over (as built, until Phases 4 and 5):** every key whose `act()` branch isn't ported yet (O M N B U G I S D ?, and Enter on an asking pane) restores the terminal and runs `bash scripts/panel.sh` with `REVIVE_PANEL_HANDOFF=KEY`, `REVIVE_PANEL_SEL=<pane id>` and `REVIVE_PANEL_HSEL=<heading>`. The hook (after `keys()` in `panel.sh`, inert without that variable) gathers, selects that pane, draws, runs `act KEY`, and exits 100, writing its `NOTICES` and `FLASH` to `REVIVE_PANEL_HANDBACK` for the Rust panel to show; an update `U` started keeps the bash panel running until `upd_running` is false. Status 100 resumes the Rust panel with the same selection and a full repaint; any other status (Q, O's `exec tmux attach` or popup exit, Ctrl-C) ends it.
 
   **Ships:** the user can run the Rust panel by choice. The live-panel checks in `test/panel.sh` that need no modal pass under `PANEL=…`. Tier 3 covers the loading box (`lboxp`, `:1798-1814`) and the splash (`:2562`).
+
+  **As built (Phase 3, `panel-rs/src/ui/`):**
+  - The UI thread owns one `render::Ctx` for the panel's life (draw changes PO, PB_FOR, WON, MO, SO, PEEK and CPU_HIST as bash's globals), draws with `live = None`, and swaps the gathered arrays into its snapshot as each generation comes in.
+  - Three collector threads, each with its own `G`: `panes` (`G::gather`), `mail` (`intros_look`, `messages`, `links_saves`, with the newest generation's panes, since `links_saves` reads `P_SSH`/`X_SSH`) and `peek` (`tm capture-pane` of the selected pane here, `-e` too while it asks; `peek_look` for a linked one). They run when kicked, as bash looks again: every REFRESH without a key, after any key but a move; the peek also when the selection moves. A round's frame waits up to 300 ms for its mail and peek, then is drawn with what there is.
+  - One difference from bash, by choice: a key that looks again (`f`, `F`, Enter on a heading, any unbound key) is drawn at once as well as after the look; bash draws it only after the gather. `p P a A` are as bash (at once, then the look).
+  - TZ is the process's: bash's `TZ=ZONE printf '%(…)T'` (`lim_reset`, the messages' introduction times) is `compat::in_zone`, under a lock that every `strftime` takes, so a collector's moment in another zone never reaches the UI thread's clock.
+  - A generation replaces every gathered array at once (`swap_gen`), so a row never mixes two gathers; within one gather the agents' look targets panes by id (`capture-pane -t %ID`), so a pane opened between the pane list and that look can't take another's state (checked live in `test/panel-golden.sh live`).
+  - `gather` has no progress events yet, so the loading screen's bar stays at 0% until the first look is in, and the loading box's spinner moves only when it is drawn again.
 
 ### Phase 4: Every key and modal
 
