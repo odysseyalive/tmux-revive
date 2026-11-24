@@ -37,7 +37,12 @@ export REVIVE_SOURCE=$T/src
 tm() { tmux -L "revive-panel-test-$$" -f /dev/null "$@"; }
 pass=0 fail=0
 check() {
-	if eval "$2"; then
+	# An unset variable in a check is that check failing, never the suite stopping (set -u).
+	local ok=0
+	set +u
+	eval "$2" && ok=1
+	set -u
+	if ((ok)); then
 		printf '  \033[32mpass\033[0m %s\n' "$1"; ((pass++))
 	else
 		printf '  \033[31mFAIL\033[0m %s\n' "$1"; ((fail++))
