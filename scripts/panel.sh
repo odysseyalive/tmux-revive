@@ -5527,7 +5527,7 @@ if [[ -n $HANDOFF ]]; then
 	[[ ${REVIVE_PANEL_FLASH_AGE:-} =~ ^-?[0-9]{1,12}$ ]] && FLASH=${REVIVE_PANEL_FLASH:-} FLASH_T=$((SECONDS - REVIVE_PANEL_FLASH_AGE))
 	messages # G on the key bar: draw doesn't look at the messages while the pane asks
 	draw
-	act "$HANDOFF"
+	box_flow act "$HANDOFF" # as keys() runs it: Esc on a box brings the one before back
 	((UPD_N)) && upd_running || handback
 fi
 held=0 FULL_T=$SECONDS
