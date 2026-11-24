@@ -2580,7 +2580,7 @@ rm -f "$T/pw.master" # the login dropped: a reboot over there, or the network go
 check "a dropped login shows as needing one, and a box says so" "wait_pw 'pw.example · needs login · [B] log in' 75 && boxed pws 'pw.example needs login · B to type its password'"
 unbox pws tm send-keys -t work:pwpanel >/dev/null
 # Said once for the drop, not again by a panel started anew while it still needs one.
-tm new-window -d -t work -n pw2 "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n pw2 "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 pw2() { tm capture-pane -p -t work:pw2; }
 check "a panel started again doesn't say it again" "for _ in \$(seq 1 40); do pw2 | grep -q 'pw.example · needs login' && break; sleep 0.2; done; pw2 | grep -q 'pw.example · needs login' && sleep 2.5 && nobox pw2 && [[ -e $REVIVE_DIR/panel/login-said/pw.example ]]"
 tm kill-window -t work:pw2

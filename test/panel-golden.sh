@@ -53,6 +53,8 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 plain() { sed 's/\x1b\[[0-9;]*m//g'; }
+# A notice long enough to wrap to three lines in its box (70 columns at most).
+LONG_NOTICE="linked to far.example with the key from your known_hosts: SHA256:Xq3v9yTzW1bK8mPpL0aRfE6cD2sN4uH7jG5iO1kQwYc. Its panes show in PANES once its first rows came in, and B unlinks it."
 
 # fixtures DIR SOCKET [links]: a tmux server at SOCKET, its panes, and the state a panel run with
 # DIR's environment (env_for) reads: a shell with text on its screen, a stand-in agent (a copy of
@@ -255,6 +257,9 @@ snaps() {
 	save linked-ask far-claude@far.example
 	save help 0 REVIVE_PANEL_HELP=1
 	save tick7 0 REVIVE_PANEL_PEEK=0 REVIVE_PANEL_TICK=7 REVIVE_PANEL_ART=space
+	# A notice's box over the panel, short, and long enough to wrap to several lines.
+	save notice 0 "REVIVE_PANEL_NOTICE=saved"
+	save notice-long 0 "REVIVE_PANEL_NOTICE=$LONG_NOTICE"
 	local n s ok
 	for n in "${SAVED[@]}"; do
 		# Loaded back, at the size it was saved at and the save's own clock: the frame the save drew.
@@ -280,12 +285,17 @@ snaps() {
 	snapedit "$T/snap/linked" "$T/snap/heading" HSEL=far.example
 	snapedit "$T/snap/linked" "$T/snap/folded" "FOLD[far.example]=1" HSEL=far.example
 	snapedit "$T/snap/help" "$T/snap/help-scrolled" HELP_TOP=30
+	# A notice over the ? page; one waiting while a question is answered (no box till it's done);
+	# and a second behind the first, which shows only once that one is closed.
+	snapedit "$T/snap/help" "$T/snap/help-notice" "NOTICES+=open this in your browser: https://example.com/tmux-revive/help"
+	snapedit "$T/snap/answering" "$T/snap/answering-notice" "NOTICES+=saved"
+	snapedit "$T/snap/notice" "$T/snap/notice-queued" "NOTICES+=a second notice, shown after the first"
 	for s in 0 1 2 3 4; do
 		for n in 0 1 7; do snapedit "$T/snap/shell-hidden" "$T/snap/scene$s-tick$n" SCENE=$s TICK=$n; done
 	done
 	# One REVIVE_PANEL_SIZES run is the same as a run for each size alone: nothing a frame
 	# changes is carried into the next.
-	for n in shell question answering linked help folded; do
+	for n in shell question answering linked help folded notice-long help-notice; do
 		env "${RENV[@]}" REVIVE_PANEL_SIZES="80x24 200x60 100x40 130x24" REVIVE_PANEL_SNAP="load:$T/snap/$n" \
 			bash "$ROOT/scripts/panel.sh" --once </dev/null | grep -av '^--- ' >"$T/snap/$n.sizes"
 		ok=1
@@ -296,7 +306,8 @@ snaps() {
 	done
 	# And the scenarios show what they're for (a stand-in for reading the frames). grep -c, not
 	# -q, at the end of a pipe: pipefail fails a pipe that grep closed early.
-	sframe() { env "${RENV[@]}" COLUMNS=130 LINES=45 REVIVE_PANEL_SNAP="load:$T/snap/$1" bash "$ROOT/scripts/panel.sh" --once </dev/null | plain; }
+	# sframe NAME [COLS LINES]: the scenario's frame, plain (130x45 unless given).
+	sframe() { env "${RENV[@]}" COLUMNS=${2:-130} LINES=${3:-45} REVIVE_PANEL_SNAP="load:$T/snap/$1" bash "$ROOT/scripts/panel.sh" --once </dev/null | plain; }
 	check "outside: two ssh sessions to one host and one to another, sorted (by host, then where)" "sframe outside | grep -ao '[a-z]*\.example · ssh in [a-z ]*' | tr '\n' '|' | grep -cx 'alpha.example · ssh in a terminal |zeta.example · ssh in a terminal |' >/dev/null"
 	check "question: the question shows" "sframe question | grep -ac 'QUESTION · asker' >/dev/null"
 	check "answering: the ANSWERING bar" "sframe answering | grep -ac 'ANSWERING asker' >/dev/null"
@@ -304,12 +315,20 @@ snaps() {
 	check "linked: Zed.example can't be reached" "sframe linked | grep -ac '● Zed.example ssh: connect to host' >/dev/null"
 	check "folded: far.example folded to its heading" "sframe folded | grep -ac '▶.*FAR.EXAMPLE · linked · 2 panes' >/dev/null && ! sframe folded | grep -ac '0\\.1\\] *far-top' >/dev/null"
 	check "help: the ? page" "sframe help | grep -ac 'HELP · HOW TO USE REVIVE' >/dev/null"
+	check "notice: its box, over the panel" "sframe notice | tail -n 1 | grep -ac '║ saved .*Esc closes' >/dev/null && sframe notice | grep -ac 'C O N T R O L' >/dev/null"
+	check "notice-long: wrapped at 80 columns to three lines or more, with the hint under them" "[[ \$(sframe notice-long 80 24 | tail -n 1 | grep -ao 'H║ [^║]*║' | wc -l) -ge 5 ]] && sframe notice-long 80 24 | tail -n 1 | grep -ac 'H║ SHA256:Xq3v9y' >/dev/null"
+	check "notice-queued: the first notice shows, the second waits" "cmp -s <(sframe notice) <(sframe notice-queued)"
+	check "answering-notice: no box while a question is answered" "! sframe answering-notice | grep -ac 'Esc closes' >/dev/null && sframe answering-notice | grep -ac 'ANSWERING asker' >/dev/null"
+	check "help-notice: the box over the ? page" "sframe help-notice | grep -ac 'HELP · HOW TO USE REVIVE' >/dev/null && sframe help-notice | tail -n 1 | grep -ac 'Esc closes' >/dev/null"
 	check "the scenes differ" "[[ \$(for s in 0 1 2 3 4; do sframe scene\$s-tick0 | md5sum; done | sort -u | wc -l) == 5 ]]"
 	# Drawn from a snapshot, the panel starts no program at all once it has read it.
 	if command -v strace >/dev/null; then
 		env "${RENV[@]}" COLUMNS=130 LINES=45 REVIVE_PANEL_SNAP="load:$T/snap/linked" \
 			strace -f -qq -e trace=execve,openat -o "$T/strace" bash "$ROOT/scripts/panel.sh" --once >/dev/null </dev/null
 		check "drawn from a snapshot, nothing is run once it's read" "! awk '/snap\\/linked\"/{on=1; next} on' $T/strace | grep -c execve >/dev/null"
+		env "${RENV[@]}" COLUMNS=80 LINES=24 REVIVE_PANEL_SNAP="load:$T/snap/notice-long" \
+			strace -f -qq -e trace=execve,openat -o "$T/strace" bash "$ROOT/scripts/panel.sh" --once >/dev/null </dev/null
+		check "nor with a notice's box drawn over it" "! awk '/snap\\/notice-long\"/{on=1; next} on' $T/strace | grep -c execve >/dev/null"
 	else
 		echo "  (strace not installed: the check that a snapshot's frame runs nothing is skipped)"
 	fi
@@ -399,6 +418,9 @@ twins() {
 		"J|▸ MESSAGES"
 		"Up|▸ MESSAGES"
 		"K K|▸ PANES"
+		"f|be folded"
+		"x|be folded"
+		"Escape|▸ PANES"
 		"?|HELP · HOW TO USE REVIVE"
 		"j j|HELP · HOW TO USE REVIVE"
 		"Escape|▸ PANES"
