@@ -449,7 +449,7 @@ cell = "[█▓▒░·]" + esc
 meter = re.compile(esc.join([cell] * 5) + esc + r" +[0-9]+%" + esc + r" +[0-9.]+[KMG]")
 for line in sys.stdin.read().split("\n"):
     plain = re.sub(r"\x1b\[[0-9;:]*m", "", line)
-    if re.search(r"║ cpu ", plain):
+    if re.search(r"║ +cpu ", plain):
         print("<the cpu graph>"); continue
     if "C O N T R O L" in plain:
         line = re.sub(r"(\$" + esc + " " + esc + r")[█ ]", r"\1<cursor>", line, count=1)
