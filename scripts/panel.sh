@@ -5417,6 +5417,33 @@ keys() {
 		read -t 0 && IFS= read -rsn1 key || break
 	done
 }
+# A hand-over from the Rust panel (panel-rs, REVIVE_PANEL_RS=1) for a key it doesn't do yet:
+# REVIVE_PANEL_HANDOFF is the key, as keys() names it, and REVIVE_PANEL_SEL the pane it had
+# selected (REVIVE_PANEL_HSEL its heading). That one key is acted on here, every box it opens
+# and a question's answering with it; then this panel exits 100 for the Rust one to carry on,
+# its notices and flash left in REVIVE_PANEL_HANDBACK. An update U started keeps it here, the
+# panel as usual, until the update is done.
+HANDOFF=${REVIVE_PANEL_HANDOFF:-}
+handback() {
+	local i f=${REVIVE_PANEL_HANDBACK:-}
+	if [[ -n $f ]]; then
+		{
+			for i in "${!NOTICES[@]}"; do printf 'NOTICES\0%s\0%s\0' "$i" "${NOTICES[i]}"; done
+			[[ -n $FLASH ]] && printf 'FLASH\0\0%s\0FLASH_AGE\0\0%s\0' "$FLASH" $((SECONDS - FLASH_T))
+		} >"$f"
+	fi
+	exit 100
+}
+if [[ -n $HANDOFF ]]; then
+	gather
+	for i in "${!P_ID[@]}"; do [[ ${P_ID[i]} == "${REVIVE_PANEL_SEL:-}" ]] && SEL=$i; done
+	HSEL=${REVIVE_PANEL_HSEL:-}
+	sel_fix
+	LOAD_AT=""
+	draw
+	act "$HANDOFF"
+	((UPD_N)) && upd_running || handback
+fi
 held=0 SSH_FIRST=1 FULL_T=$SECONDS
 while :; do
 	# Moving the selection only redraws from what was gathered last; everything is looked at
@@ -5453,6 +5480,7 @@ while :; do
 		LOAD_AT="" # the first look is in: no more loading bar
 		lbox_check
 		((UPD_N)) && upd_poll # what U started, finished since
+		[[ -n $HANDOFF ]] && ! upd_running && handback # the update done: back to the Rust panel
 	fi
 	# Keep the same pane selected when panes come and go.
 	if [[ -n $SEL_ID ]]; then
