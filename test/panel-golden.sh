@@ -15,6 +15,8 @@
 #                                      fixtures, the same keys sent to both, their screens and
 #                                      cursors compared with CPU, memory and the cpu graph masked
 #                                      (tier 3)
+#   bash test/panel-golden.sh live     the Rust panel live (B) against bash (A), twins' way, and a
+#                                      key it hands over to bash (N, Esc) coming back to it
 #
 # GOLDEN_A and GOLDEN_B: the two panels, as commands: A bash scripts/panel.sh, B the Rust one,
 # panel-rs/target/release/tmux-revive-panel (built here with cargo unless GOLDEN_B is given). The
@@ -686,13 +688,73 @@ twins() {
 	done
 }
 
+# ------------------------------------------------------------------ live (Phase 3)
+# The Rust panel live (GOLDEN_B) against the bash one (GOLDEN_A), each on a server of its own
+# with the same fixtures, the same keys sent to both: moves, the art, the peek, the focus, a fold
+# refused, compared as twins compares them. Then N, a key the Rust panel hands over to the bash
+# panel for that one action (REVIVE_PANEL_HANDOFF), backed out of with Esc: the rename box and
+# the notice after it are bash's on both sides, and B is the Rust panel again, with the same
+# pane selected.
+lv_cmd() { tmux -S "$1" display -p -t work:panel '#{pane_current_command}'; }
+# lv_bash SOCKET: its panel has a bash panel running for it (a hand-over)
+lv_bash() { ps -o args= --ppid "$(tmux -S "$1" display -p -t work:panel '#{pane_pid}')" 2>/dev/null | grep -q 'scripts/panel\.sh'; }
+live() {
+	build_b || return 1
+	echo "live (Phase 3): A ${GOLDEN_A}, B ${GOLDEN_B}"
+	local A=$T/lva.sock B=$T/lvb.sock step keys text i
+	twin_up "$T/lva" "$A" "$GOLDEN_A"
+	twin_up "$T/lvb" "$B" "$GOLDEN_B"
+	check "B is the Rust panel" "for _ in \$(seq 1 25); do [[ \$(lv_cmd $B) == tmux-revive-pan* ]] && break; sleep 0.2; done; [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
+	local -a steps=(
+		"|C O N T R O L"
+		"Down|QUESTION · asker"
+		"Down|odd-one"
+		"Up|QUESTION · asker"
+		"Up Up|odd-one"
+		"0|PEEK"
+		"p|ART · night city"
+		"a|ART · mountains"
+		"A|ART · deep space"
+		"P|PEEK"
+		"J|▸ PEEK"
+		"J|▸ MESSAGES"
+		"Up Up|▸ MESSAGES"
+		"K K|▸ PANES"
+		"f|be folded"
+		"x|be folded"
+		"Escape|▸ PANES"
+		"j|QUESTION · asker"
+		"N|New name for"
+		"Escape|rename cancelled"
+		"Escape|▸ PANES"
+	)
+	for step in "${steps[@]}"; do
+		keys=${step%%|*} text=${step#*|}
+		# shellcheck disable=SC2086 # one tmux key name each
+		[[ -n $keys ]] && for k in $keys; do tmux -S "$A" send-keys -t work:panel "$k"; tmux -S "$B" send-keys -t work:panel "$k"; sleep 0.15; done
+		settle "$A" "$text" && settle "$B" "$text"
+		for i in 1 2 3 4 5 6 7 8; do
+			shot "$A" >"$T/shot.a"
+			shot "$B" >"$T/shot.b"
+			cmp -s "$T/shot.a" "$T/shot.b" && break
+			sleep 0.2
+		done
+		check "after '${keys:-the start}': the same screen and cursor ($text)" "grep -aqF -- '$text' $T/shot.a && cmp -s $T/shot.a $T/shot.b"
+		cmp -s "$T/shot.a" "$T/shot.b" || diff "$T/shot.a" "$T/shot.b" | head -${GOLDEN_DIFF:-6} | sed 's/^/      /'
+		[[ $keys == N ]] && check "N went to the bash panel" "lv_bash $B"
+	done
+	check "and B is the Rust panel again" "! lv_bash $B && [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
+	check "with the same pane selected (asker)" "tmux -S $B capture-pane -p -t work:panel | grep -q '▶.*asker'"
+}
+
 case ${1:-all} in
 snaps) snaps ;;
 render) snaps >/dev/null; render ;;
 live-once) liveonce ;;
 twins) twins ;;
+live) live ;;
 all) snaps; render; twins ;;
-*) echo "usage: panel-golden.sh [snaps|render|live-once|twins]" >&2; exit 2 ;;
+*) echo "usage: panel-golden.sh [snaps|render|live-once|twins|live]" >&2; exit 2 ;;
 esac
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 ((fail == 0))
