@@ -421,7 +421,7 @@ help_frame() {
 	last=$((HELP_TOP + view < n ? HELP_TOP + view : n))
 	kcs ↑↓/j/k " scroll" PgUp/PgDn " page" i/c/p " install" Esc " close"
 	k=$KC
-	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
+	if [[ -n $FLASH ]] && ((${SNAP_SECS:-$SECONDS} - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	vlen "$k"
 	i="$GRY$((HELP_TOP + 1))-$last of $n$R"
 	((last < n)) && i+=" $BYEL▼$R"

@@ -2008,23 +2008,39 @@ peek_drop() {
 	PFETCH_PID[$k]="" PFETCH_T[$k]=""
 }
 remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or why it can't be shown
-	local h=${P_HOST[SEL]} id=${P_RID[SEL]:-} n=$1 f l
+	local h=${P_HOST[SEL]} id=${P_RID[SEL]:-} n=$1 l
 	L=("" "  on $h: no peek (update tmux-revive there)")
 	[[ ${P_STATE[SEL]:-} == unreachable ]] && L=("" "  on $h: can't be reached to peek")
 	[[ ${P_STATE[SEL]:-} == login ]] && L=("" "  on $h: needs login · press B to type its password")
 	[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $id =~ ^%[0-9]+$ ]] || return 0
 	((n > 60)) && n=60
-	f="$RDIR/$h.peek-${id#%}"
-	if ((ONCE)); then peek_fetch "$h" "$id" "$n" "$f" now; else peek_fetch "$h" "$id" "$n" "$f"; fi
-	if [[ -f $f ]] && young "$f"; then
+	# With a snapshot (REVIVE_PANEL_SNAP), what it holds for this pane, if anything.
+	if [[ -z $SNAP ]]; then peek_look "$h" "$id" "$n"
+	elif [[ $RPEEK_FOR != "$h $id" ]]; then RPEEK_AT="" RPEEK=(); fi
+	if [[ $RPEEK_AT == new ]]; then
 		# Untrusted like the rows: control characters out, and only so many lines, so wide.
 		L=()
-		while IFS= read -r l || [[ -n $l ]]; do
+		for l in "${RPEEK[@]}"; do
 			clean l
 			L+=("${l:0:500}")
-		done < <(tail -n "$n" "$f")
-	elif [[ ! -e $f.fail ]]; then
+		done
+	elif [[ $RPEEK_AT != fail ]]; then
 		L=("" "  on $h: asking for its screen...")
+	fi
+}
+# peek_look HOST %ID LINES -> RPEEK_AT, RPEEK: asks for that pane's screen, then says what there
+# is: new (RPEEK its last LINES lines as they came, within the last minute), fail (the last ask
+# failed) or nothing yet.
+RPEEK_FOR="" RPEEK_AT="" RPEEK=()
+peek_look() {
+	local f="$RDIR/$1.peek-${2#%}" l
+	if ((ONCE)); then peek_fetch "$1" "$2" "$3" "$f" now; else peek_fetch "$1" "$2" "$3" "$f"; fi
+	RPEEK_AT="" RPEEK=()
+	if [[ -f $f ]] && young "$f"; then
+		RPEEK_AT=new
+		while IFS= read -r l || [[ -n $l ]]; do RPEEK+=("$l"); done < <(tail -n "$3" "$f")
+	elif [[ -e $f.fail ]]; then
+		RPEEK_AT=fail
 	fi
 }
 remote_panes() {
@@ -2387,11 +2403,18 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 	esac
 }
 
+intros_look() { # -> INTROS: who waits for access (G), each introduction's sender as NAME@HOST
+	local d f
+	INTROS=()
+	for d in "$ASTATE"/intros/*/; do [[ -f $d/from ]] && read -r f <"$d/from" && INTROS+=("$f"); done
+}
+INTROS=()
 draw_panes() {
 	local i n=${#P_ID[@]} name key folder git cells mark wide=1 sw=2 NW=10 FW=10 GW v KW=3 pad UW=4 VW=3 AW=7 us=1 as=0 extra
 	# Who waits for access (G): each introduction's sender, as NAME@HOST.
-	local gw=" " st d f
-	for d in "$ASTATE"/intros/*/; do [[ -f $d/from ]] && read -r f <"$d/from" && gw+="$f "; done
+	local gw=" " st f
+	[[ -n $SNAP ]] || intros_look
+	for f in "${INTROS[@]}"; do gw+="$f "; done
 	local -a lab=() nm=() ver=() stc=() need=()
 	local -A ses=() many=() cnt=() needc=()
 	# An unnamed pane's NAME is a dim ---: the # column already says where it is. Unless its
@@ -2632,7 +2655,7 @@ TIP_SECS=${REVIVE_PANEL_TIP_SECS:-30}
 [[ $TIP_SECS =~ ^[1-9][0-9]{0,4}$ ]] || TIP_SECS=30
 tip_line() { # -> TIPL: this moment's tip, centered in the panel's width and coloured
 	local n=${#TIPS[@]} i j t c=""
-	i=$((SECONDS / TIP_SECS % n))
+	i=$((${SNAP_SECS:-$SECONDS} / TIP_SECS % n))
 	for ((j = 0; j < n; j++)); do t=${TIPS[(i + j) % n]}; ((${#t} <= IW - 2)) && break; done
 	((${#t} > IW - 2)) && t="[P]eek"
 	rep ' ' $(((IW - ${#t}) / 2))
@@ -2640,6 +2663,17 @@ tip_line() { # -> TIPL: this moment's tip, centered in the panel's width and col
 		c+="$CYN${BASH_REMATCH[1]}$BBLU[$B$BYEL${BASH_REMATCH[2]}$R$BBLU]$R" t=${BASH_REMATCH[3]}
 	done
 	TIPL="$REP$c$CYN$t$R"
+}
+# pane_screen ARRAY %ID [-e]: the pane's screen into ARRAY, a line each, as capture-pane gives
+# it (-e: with its colours). With a snapshot (REVIVE_PANEL_SNAP), the one it holds (SCREEN, or
+# SCREEN_E coloured) if it's of that pane (SCREEN_ID), else none.
+SCREEN_ID="" SCREEN=() SCREEN_E=()
+pane_screen() {
+	if [[ -z $SNAP ]]; then mapfile -t "$1" < <(tm capture-pane ${3:+"$3"} -p -t "$2" 2>/dev/null); return 0; fi
+	local -n _o=$1 _s=SCREEN${3:+_E}
+	_o=()
+	[[ $SCREEN_ID == "$2" ]] && _o=("${_s[@]}")
+	return 0
 }
 draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or the question it's asking
 	local -a L=()
@@ -2661,7 +2695,7 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 	if [[ -n ${P_HOST[SEL]:-} ]]; then
 		remote_peek 60 # all it may ask for, to scroll back through
 	elif [[ -n $id ]]; then
-		mapfile -t L < <(tm capture-pane -p -t "$id" 2>/dev/null)
+		pane_screen L "$id"
 		for i in "${!L[@]}"; do clean "L[$i]"; done # capture-pane passes C1 characters through
 	fi
 	peek_rows "$1" "$GRY" 0 "${WB[1]}"
@@ -2777,7 +2811,7 @@ draw_question() { # draw_question LINES
 	elif [[ -n ${P_HOST[SEL]:-} ]]; then
 		remote_peek 60
 	elif [[ -n $id ]]; then
-		mapfile -t L < <(tm capture-pane -p -t "$id" 2>/dev/null)
+		pane_screen L "$id"
 		for i in "${!L[@]}"; do clean "L[$i]"; done
 	fi
 	# The dialog sits at the bottom of the agent's screen, so show that bottom row for row,
@@ -2799,7 +2833,7 @@ qhi() {
 	QHI=()
 	for i in "${!L[@]}"; do [[ ${L[i]} =~ ^[[:space:]]*←.*→[[:space:]]*$ ]] && break; done
 	[[ ${L[i]:-} =~ ^[[:space:]]*←.*→[[:space:]]*$ ]] || return 0
-	mapfile -t E < <(tm capture-pane -e -p -t "$1" 2>/dev/null)
+	pane_screen E "$1" -e
 	for i in "${!L[@]}"; do
 		[[ ${L[i]} =~ ^[[:space:]]*←.*→[[:space:]]*$ ]] || continue
 		s=${E[i]:-} pos=0 st=-1 en=-1 on=0
@@ -3126,7 +3160,7 @@ draw() {
 	if ((ask)); then
 		MSG_OLD=1
 	else
-		((nav && !MSG_OLD)) || { messages; links_saves; MSG_OLD=0; }
+		((nav && !MSG_OLD)) || [[ -n $SNAP ]] || { messages; links_saves; MSG_OLD=0; }
 		# As tall as they are without the older messages kept above, and a quarter of the height
 		# at most (4 rows at least): MESSAGES and LINKS · SAVES scroll past that.
 		bottom=$((${#MSG[@]} - MOLD))
@@ -3267,13 +3301,13 @@ draw() {
 		if ((VLEN + 19 <= IW)); then k+="$GRY↑↓ PgUp PgDn scroll$R"
 		elif ((VLEN + 9 <= IW)); then k+="$GRY↑↓ scroll$R"; fi
 	elif ((VLEN + 15 <= IW)); then k+="$GRY↑↓ 0-9 select$R"; fi
-	if [[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
+	if [[ -n $FLASH ]] && ((${SNAP_SECS:-$SECONDS} - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	# While answering keys go to the agent, so the bar says that and how to stop.
 	if ((ANSWERING)); then
 		k="$e[45m$B$BWHT ANSWERING ${P_NAME[SEL]:-${P_LOC[SEL]:-}} $R  $BMAG keys go to its question ·$R "
 		k+="$B${BYEL}Esc$R$BMAG or $B${BYEL}Ctrl-]$R$BMAG leaves$R"
 		# A key the panel kept from the question (a letter before [E]nter) says why.
-		[[ -n $FLASH ]] && ((SECONDS - FLASH_T < 5)) && k="$BGBLU$B$BWHT $FLASH $R  $k"
+		[[ -n $FLASH ]] && ((${SNAP_SECS:-$SECONDS} - FLASH_T < 5)) && k="$BGBLU$B$BWHT $FLASH $R  $k"
 	fi
 	rep ═ $((W - 2))
 	line "$FRAME╠$REP╣$R"
@@ -4965,6 +4999,101 @@ lbox_draw() {
 	printf '%s' "$e[$((top + 7));$((left + 1))H$GRY$REP$R"
 }
 
+# ------------------------------------------------------------------ snapshots (tests)
+# REVIVE_PANEL_SNAP=save:FILE, with --once: after its two looks, FILE gets what draw reads that
+# something else wrote (SNAP_VARS), and what draw would read from outside, read then
+# (snap_look): the selected pane's screen, plain and coloured, or a linked one's peek, the
+# messages, links and saves, and who waits for access. Its frame is drawn from those too.
+# REVIVE_PANEL_SNAP=load:FILE draws from FILE alone, with no look at panes, files or other
+# computers: the same snapshot is the same frame every time (test/panel-golden.sh, and the
+# Rust panel's tests, which read the same file). The size is COLUMNS and LINES (100x40 without
+# them); REVIVE_PANEL_SIZES="80x24 100x40" draws it at each of those instead, each after a line
+# "--- 80x24".
+# FILE is NUL-separated records, NAME INDEX VALUE, so any bytes survive: a variable's INDEX is
+# empty, and an array has a record for each element. SNAP_VARS says which names are read back,
+# and which are arrays (a) or associative (A), never the file; an array with no records is
+# empty. SECONDS is draw's (SNAP_SECS, the tip and the flash's age), not the shell's.
+SNAP=${REVIVE_PANEL_SNAP:-} SNAP_SECS=""
+((ONCE)) && [[ $SNAP =~ ^(save|load):. ]] || SNAP=""
+SNAP_VARS=(
+	# What the looks gathered.
+	a:P_ID a:P_LOC a:P_NAME a:P_APP a:P_STATE a:P_DIR a:P_GIT a:P_CPU a:P_MEM a:P_CTX a:P_AGENT
+	a:P_SSH a:P_HOST a:P_RID a:P_WP a:P_USER a:P_INST a:P_ACCT a:P_SRV a:P_LIM a:P_LWHY s:P_GROUPS
+	a:W_SINCE a:W_FROM a:X_SSH a:X_WHERE A:RVER A:ROWNER A:FOLD a:CPU_HIST
+	s:VERSION s:HOST s:SCENE s:TICK s:SECONDS
+	# What draw reads from outside (snap_look).
+	a:MSG s:MOLD s:MWAIT s:INTRO_ON a:SIDE a:INTROS
+	s:SCREEN_ID a:SCREEN a:SCREEN_E s:RPEEK_FOR s:RPEEK_AT a:RPEEK
+	# Where you are: the selection, the windows, the peek, the ? page, a flash, a question.
+	s:SEL s:SEL_ID s:HSEL s:FOCUS a:WON s:PO s:PB s:PB_FOR s:MO s:SO s:MMAN
+	s:PEEK s:PEEK_SEL s:PEEK_ALL s:HELP s:HELP_TOP s:FLASH s:FLASH_T
+	s:ANSWERING a:ATOP s:ATOP_BH a:QL s:QFREE s:QFREEN s:QON s:QEMPTY s:QHAS
+)
+declare -A SNAP_T=()
+for v in "${SNAP_VARS[@]}"; do SNAP_T[${v#?:}]=${v%%:*}; done
+snap_look() { # what draw would read from outside, read now (see above)
+	local id=${P_ID[SEL]:-} h=${P_HOST[SEL]:-} rid=${P_RID[SEL]:-}
+	SCREEN_ID="" SCREEN=() SCREEN_E=() RPEEK_FOR="" RPEEK_AT="" RPEEK=()
+	if [[ -n $HSEL ]]; then
+		: # a heading: no peek
+	elif [[ -n $h ]]; then
+		[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $rid =~ ^%[0-9]+$ ]] && { RPEEK_FOR="$h $rid"; peek_look "$h" "$rid" 60; }
+	elif [[ -n $id ]]; then
+		SCREEN_ID=$id
+		mapfile -t SCREEN < <(tm capture-pane -p -t "$id" 2>/dev/null)
+		mapfile -t SCREEN_E < <(tm capture-pane -e -p -t "$id" 2>/dev/null)
+	fi
+	intros_look
+	messages
+	links_saves
+}
+snap_save() { # snap_save FILE: SNAP_VARS as they are now
+	local v n
+	for v in "${SNAP_VARS[@]}"; do
+		n=${v#?:}
+		case $v in
+		s:SECONDS) printf '%s\0\0%s\0' "$n" "$SNAP_SECS" ;;
+		s:*) printf '%s\0\0%s\0' "$n" "${!n-}" ;;
+		*) snap_put "$n" ;;
+		esac
+	done >"$1"
+}
+snap_put() { # snap_put ARRAY: a record for each element
+	local -n _a=$1
+	local k
+	for k in "${!_a[@]}"; do printf '%s\0%s\0%s\0' "$1" "$k" "${_a[$k]}"; done
+}
+snap_read() { # snap_read FILE -> SNAP_N, SNAP_K, SNAP_V: its records, for snap_apply
+	local n k v
+	SNAP_N=() SNAP_K=() SNAP_V=()
+	[[ -f $1 && -r $1 ]] || return 1
+	while IFS= read -r -d '' n && IFS= read -r -d '' k && IFS= read -r -d '' v; do
+		SNAP_N+=("$n") SNAP_K+=("$k") SNAP_V+=("$v")
+	done <"$1"
+}
+# snap_apply: SNAP_VARS as snap_read read them, every array emptied first. Before each frame:
+# draw changes some of them (CPU_HIST, PO, PB_FOR, WON, ATOP...). A record that isn't in
+# SNAP_VARS, or whose INDEX can't be that variable's, is passed over.
+snap_apply() {
+	local i n k t
+	for n in "${SNAP_VARS[@]}"; do [[ $n == s:* ]] || snap_set "${n#?:}"; done
+	for i in "${!SNAP_N[@]}"; do
+		n=${SNAP_N[i]} k=${SNAP_K[i]}
+		[[ $n =~ ^[A-Z][A-Z0-9_]*$ ]] || continue
+		t=${SNAP_T[$n]:-}
+		case $t in
+		s) [[ -z $k ]] || continue
+			if [[ $n == SECONDS ]]; then SNAP_SECS=${SNAP_V[i]}; else snap_set "$n" "" "${SNAP_V[i]}"; fi ;;
+		a) [[ $k =~ ^[0-9]{1,9}$ ]] && snap_set "$n" "$k" "${SNAP_V[i]}" ;;
+		A) [[ -n $k ]] && snap_set "$n" "$k" "${SNAP_V[i]}" ;;
+		esac
+	done
+}
+snap_set() { # snap_set ARRAY: empty it. snap_set NAME KEY VALUE: one element (KEY "": the variable)
+	local -n _t=$1
+	if (($# == 1)); then _t=(); elif [[ -z $2 ]]; then _t=$3; else _t[$2]=$3; fi
+}
+
 # ------------------------------------------------------------------ main
 if ((PEEKMODE)); then
 	# The pane's bottom rows exactly, blank ones included (a $( ) would drop those).
@@ -5105,6 +5234,21 @@ if ((ROWS)); then
 fi
 if ((ONCE)); then
 	TICK=${REVIVE_PANEL_TICK:-0} # tests draw particular frames of the artwork
+	if [[ $SNAP == load:* ]]; then
+		snap_read "${SNAP#load:}" || { echo "panel.sh: no snapshot to read at ${SNAP#load:}" >&2; exit 1; }
+		read -ra sizes <<<"${REVIVE_PANEL_SIZES:-}"
+		for s in "${sizes[@]}"; do
+			[[ $s =~ ^[1-9][0-9]{0,3}x[1-9][0-9]{0,3}$ ]] || { echo "panel.sh: REVIVE_PANEL_SIZES: $s isn't COLSxLINES" >&2; exit 2; }
+		done
+		((${#sizes[@]})) || sizes=("")
+		for s in "${sizes[@]}"; do
+			[[ -n $s ]] && { COLUMNS=${s%x*} LINES=${s#*x}; printf -- '--- %s\n' "$s"; }
+			snap_apply
+			TCOLS=${COLUMNS:-100} TLINES=${LINES:-40} # never tput: no look at the terminal either
+			draw
+		done
+		exit 0
+	fi
 	gather
 	sleep 0.5 # CPU is measured between two looks
 	gather
@@ -5112,6 +5256,11 @@ if ((ONCE)); then
 	for i in "${!P_ID[@]}"; do [[ -n ${REVIVE_PANEL_SEL:-} && ${P_ID[i]} == "$REVIVE_PANEL_SEL" ]] && SEL=$i; done
 	fold_load
 	sel_fix
+	if [[ $SNAP == save:* ]]; then
+		snap_look
+		SNAP_SECS=$SECONDS
+		snap_save "${SNAP#save:}" || exit 1
+	fi
 	draw
 	exit 0
 fi
