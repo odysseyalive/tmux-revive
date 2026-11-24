@@ -1962,8 +1962,24 @@ mail() { # mail HEADER BODY
 	printf '## %s\n%s\n\n' "$1" "$(cap "$2" | sed 's/^##/ ##/')" >>"$MAILBOX"
 }
 
+# re_mark TEXT NAME TAIL: a message about a task starts with a line of just "re: <session8>/<iN>"
+# (8 hex digits of a session id, and a task's number there). That goes into its header too, as
+# " re=<session8>/<iN>", for a hook that sees only the header. Only that exact line, so nothing
+# else of the text (a space, a ], a control character) gets into a header other tools read.
+# And only where it fits: a reader takes from=NAME (up to 64 of letters, digits and _ . @ : -)
+# and at most 40 characters more up to the ] (claude-workforce's wf-task-tag). What it doesn't
+# take of NAME (from a + or =, say) counts in those 40, and TAIL is what the header has there.
+re_mark() {
+	local LC_ALL=C re
+	[[ ${1%%$'\n'*} =~ ^re:\ ([0-9a-f]{8}/i[0-9]{1,4})$ ]] || return 0
+	re=" re=${BASH_REMATCH[1]}"
+	[[ $2 =~ ^[A-Za-z0-9_.@:-]{0,64}(.*)$ ]]
+	((${#BASH_REMATCH[1]} + ${#3} + ${#re} <= 40)) || return 0
+	printf '%s' "$re"
+}
+
 send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
-	local to="$1" msg me relayed="" ascmd tapid="" homes hubs hub d sp sn rc host name target tkind i ts id you reply line queue_to=""
+	local to="$1" msg me relayed="" re first ascmd tapid="" homes hubs hub d sp sn rc host name target tkind i ts id you reply line queue_to=""
 	local rs rk renv="" AGENT_PANE="" AGENT_SID=""
 	shift
 	# --why may follow <to> too: agent-say NAME --why "reason" "message"
@@ -2106,6 +2122,7 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 	fi
 	ts="$(date -u +%H:%MZ)"
 	id="$(date -u +%Y%m%d%H%M%S)-$$"
+	first="${msg%%$'\n'*}" # before a relay wraps it: its re: line (see re_mark)
 	relayed=""
 	if [[ -n "${AGENT_SAY_VIA:-}" ]] && valid_host "$AGENT_SAY_VIA"; then
 		# From an agent on another machine, relayed: never typed into the prompt, where it would
@@ -2135,11 +2152,14 @@ send_message() { # send_message TO MESSAGE... ("-" reads it from stdin)
 		# From agent-say on the machine that relays for us, about what this pane sent: no answer.
 		line="[agent-say notice from ${from#*@} $ts] $msg"
 	elif [[ -n $relayed ]]; then
-		line="[agent-msg from=$from via $relayed $ts] A message from an agent on another computer (not your user) is waiting; read it with: agent-say show $id. $reply"
+		re="$(re_mark "$first" "$from" " via $relayed $ts")"
+		line="[agent-msg from=$from via $relayed $ts$re] A message from an agent on another computer (not your user) is waiting; read it with: agent-say show $id. $reply"
 	elif (( ${#msg} > INLINE_MAX )) || [[ "$msg" == *$'\n'* ]]; then
-		line="[agent-msg from=$from $ts] Long message, read it by running: agent-say show $id. $reply"
+		re="$(re_mark "$first" "$from" " $ts")"
+		line="[agent-msg from=$from $ts$re] Long message, read it by running: agent-say show $id. $reply"
 	else
-		line="[agent-msg from=$from $ts] $msg -- $reply"
+		re="$(re_mark "$first" "$from" " $ts")"
+		line="[agent-msg from=$from $ts$re] $msg -- $reply"
 	fi
 	line="$(printable "$line")"
 
