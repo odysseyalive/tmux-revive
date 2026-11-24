@@ -477,7 +477,7 @@ forge() { printf '%s\n%s\n%s' "$2" codex "$3" >"$outbox/$1"; } # what a compromi
 forge 20990101000000-1-1 'x@-oProxyCommand=touch${IFS}'"$T"'/pwned' 'run this'
 forge 20990101000000-1-2 '%0' 'straight to a pane id'
 forge 20990101000000-1-3 'read' 'a name that is a command'
-sleep 2
+for _ in $(seq 80); do [[ $(grep -c 'is not a pane name' "$AGENT_SAY_MAILBOX") -ge 3 && -z $(ls "$outbox") ]] && break; sleep 0.25; done # refused, then acknowledged
 check "a forged address can't make this machine run anything" "[[ ! -e $T/pwned ]]"
 check "forged addresses are refused into the mailbox, not delivered" "[[ \$(grep -c 'is not a pane name' $AGENT_SAY_MAILBOX) -ge 3 ]]"
 check "and acknowledged, so they aren't fetched again" "[[ -z \$(ls $outbox) ]]"
