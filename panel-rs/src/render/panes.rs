@@ -315,7 +315,12 @@ impl Ctx {
         let (mut wide, mut nw, mut fw, mut kw, mut uw, mut vw, mut aw, mut us, mut as_) = (1i64, 10i64, 10i64, 3i64, 4i64, 3i64, 7i64, 1i64, 0i64);
         // Who waits for access (G): each introduction's sender, as NAME@HOST.
         let mut gw: Bytes = b" ".to_vec();
-        for f in self.p.list("INTROS") {
+        // [[ -n $SNAP ]] || intros_look
+        let intros = match self.live.as_mut() {
+            Some(l) => l.intros(),
+            None => self.p.list("INTROS"),
+        };
+        for f in intros {
             gw.extend_from_slice(&f);
             gw.push(b' ');
         }

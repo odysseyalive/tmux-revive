@@ -80,6 +80,22 @@ pub struct Ctx {
     pub art: art::Canvas,
     /// What a frame is drawn from (frame.rs): the snapshot and the panel's own variables
     pub p: State,
+    /// A --once with no snapshot (SNAP ""): the looks draw makes as it goes, in bash's order
+    /// (pane_screen's capture-pane, remote_peek's peek_look, intros_look, messages and
+    /// links_saves). None: everything from the snapshot, as under REVIVE_PANEL_SNAP.
+    pub live: Option<Box<dyn Live>>,
+}
+
+/// What draw looks at for itself when there is no snapshot (bash's `[[ -z $SNAP ]]` paths).
+pub trait Live {
+    /// pane_screen %ID [-e]: `tm capture-pane [-e] -p -t ID`'s lines
+    fn pane_screen(&mut self, id: &[u8], coloured: bool) -> Vec<Bytes>;
+    /// peek_look HOST %ID LINES -> (RPEEK_AT, RPEEK)
+    fn peek_look(&mut self, h: &[u8], id: &[u8], n: i64) -> (Bytes, Vec<Bytes>);
+    /// intros_look -> INTROS
+    fn intros(&mut self) -> Vec<Bytes>;
+    /// messages; links_saves -> MSG, MOLD, MWAIT, INTRO_ON, SIDE
+    fn messages(&mut self) -> (Vec<Bytes>, i64, i64, Bytes, Vec<Bytes>);
 }
 
 /// The variables draw reads and changes, as bash has them for one frame: loaded from a snapshot
@@ -203,6 +219,7 @@ impl Ctx {
             osp: banner::osp(),
             art: art::Canvas::default(),
             p: State::default(),
+            live: None,
         }
     }
 }

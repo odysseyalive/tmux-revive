@@ -8,6 +8,9 @@
 #                                      size alone as in one REVIVE_PANEL_SIZES run (tier 1's ground)
 #   bash test/panel-golden.sh render   every scenario at every size, panel A's frames against B's,
 #                                      byte for byte (tier 1)
+#   bash test/panel-golden.sh live-once  A and B each gathering for itself from one fixture
+#                                      (no snapshot to load): their saved snapshots record by record
+#                                      and their plain frames, CPU and memory masked (tier 2)
 #   bash test/panel-golden.sh twins    A and B live, each on a server of its own with the same
 #                                      fixtures, the same keys sent to both, their screens and
 #                                      cursors compared with CPU, memory and the cpu graph masked
@@ -445,6 +448,79 @@ render() {
 	check "every scenario, every size: A and B draw the same bytes" "((differ == 0 && frames > 0))"
 }
 
+# ------------------------------------------------------------------ live --once
+# snapdiff.py A B: two snapshots' records, NAME[INDEX], that differ, with what CPU and memory
+# measured over wall time (and SECONDS, SCENE's pick) taken out. Exit 1 when any differ.
+cat >"$T/snapdiff.py" <<'PY'
+import sys
+def recs(f):
+    d = open(f, "rb").read().split(b"\0")
+    r = {}
+    for i in range(0, len(d) - 2, 3):
+        n, k, v = d[i], d[i + 1], d[i + 2]
+        if n in (b"P_CPU", b"P_MEM", b"CPU_HIST", b"SECONDS"):
+            v = b"<masked>"
+        r[(n, k)] = v
+    return r
+a, b = recs(sys.argv[1]), recs(sys.argv[2])
+bad = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+for n, k in bad:
+    print("      %s[%s]: A %r, B %r" % (n.decode(), k.decode(errors="replace"), a.get((n, k)), b.get((n, k))))
+sys.exit(1 if bad else 0)
+PY
+# Tier 2: each panel's --once gathers for itself from one fixture (no snapshot to load), and the
+# two are compared: their snapshots (REVIVE_PANEL_SNAP=save:) record by record, and the frames
+# of a plain --once, with CPU, memory and the cpu graph masked (mask.py). The notice scenarios
+# aren't here: REVIVE_PANEL_NOTICE isn't gathered (Phase 2 leaves notices to the notice rework).
+# GOLDEN_ORDER=ba runs B before A in each scenario (they share the fixture's cache folder).
+liveonce() {
+	echo "live --once (tier 2): A ${GOLDEN_A}, B ${GOLDEN_B}"
+	build_b || { ((fail++)); return; }
+	mkdir -p "$T/lo"
+	local LS=$T/lo.sock sc name sel id x side sdiff=0 fdiff=0 n=0
+	fixtures "$T/lx" "$LS" links
+	env_for "$T/lx" "$LS"
+	sleep 1 # the panes draw their screens
+	# NAME SEL [ENV...], as save's
+	local -a scen=(
+		"shell 0" "shell-hidden 0 REVIVE_PANEL_PEEK=0" "outside 0 REVIVE_PANEL_PEEK=0 REVIVE_PANEL_OUTSIDE_SSH=1 REVIVE_PANEL_PROCS=ps PATH=$T/lx/fakeps:$PATH"
+		"question asker" "odd odd" "linked far-top@far.example" "linked-ask far-claude@far.example" "help 0 REVIVE_PANEL_HELP=1"
+		"tick7 0 REVIVE_PANEL_PEEK=0 REVIVE_PANEL_TICK=7 REVIVE_PANEL_ART=space"
+	)
+	for sc in "${scen[@]}"; do
+		read -ra x <<<"$sc"
+		name=${x[0]} sel=${x[1]} id=""
+		case $sel in
+		*@*) id=$sel ;;
+		?*) id=$(tmux -S "$LS" display -p -t "work:$sel" '#{pane_id}') ;;
+		esac
+		for side in $([[ ${GOLDEN_ORDER:-} == ba ]] && echo b a || echo a b); do
+			local cmd=$GOLDEN_A
+			[[ $side == b ]] && cmd=$GOLDEN_B
+			# shellcheck disable=SC2086 # the panel is a command line
+			env "${ENV[@]}" REVIVE_PANEL_NOW="$SNOW" REVIVE_PANEL_SEL="$id" COLUMNS=130 LINES=45 "${x[@]:2}" \
+				REVIVE_PANEL_SNAP="save:$T/lo/$name.$side.snap" timeout 120 $cmd --once </dev/null | python3 "$T/mask.py" >"$T/lo/$name.$side.saved"
+			# shellcheck disable=SC2086
+			env "${ENV[@]}" REVIVE_PANEL_NOW="$SNOW" REVIVE_PANEL_SEL="$id" COLUMNS=130 LINES=45 "${x[@]:2}" \
+				timeout 120 $cmd --once </dev/null | python3 "$T/mask.py" >"$T/lo/$name.$side"
+		done
+		n=$((n + 1))
+		if ! python3 "$T/snapdiff.py" "$T/lo/$name.a.snap" "$T/lo/$name.b.snap" >"$T/lo/$name.sdiff"; then
+			sdiff=$((sdiff + 1))
+			echo "    $name: snapshots differ in $(grep -c . "$T/lo/$name.sdiff") records:"
+			head -n "${GOLDEN_SHOW:-12}" "$T/lo/$name.sdiff"
+		fi
+		if ! cmp -s "$T/lo/$name.a" "$T/lo/$name.b"; then
+			fdiff=$((fdiff + 1))
+			echo "    $name: frames differ at: $(diff <(grep -an '' "$T/lo/$name.a") <(grep -an '' "$T/lo/$name.b") | head -1)"
+		fi
+	done
+	tmux -S "$LS" kill-server 2>/dev/null
+	echo "  $n scenarios: $sdiff with snapshots that differ, $fdiff with frames that differ"
+	check "every scenario: A and B gather the same snapshot (CPU and memory masked)" "((sdiff == 0 && n > 0))"
+	check "every scenario: a plain --once of A and of B draw the same frame (CPU and memory masked)" "((fdiff == 0 && n > 0))"
+}
+
 # ------------------------------------------------------------------ twins
 cat >"$T/mask.py" <<'PY'
 import re, sys
@@ -455,7 +531,8 @@ import re, sys
 esc = r"(?:\x1b\[[0-9;:]*m)*"
 cell = "[█▓▒░·]" + esc
 meter = re.compile(esc.join([cell] * 5) + esc + r" +[0-9]+%" + esc + r" +[0-9.]+[KMG]")
-for line in sys.stdin.read().split("\n"):
+sys.stdout.reconfigure(errors="surrogateescape")
+for line in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").split("\n"):
     plain = re.sub(r"\x1b\[[0-9;:]*m", "", line)
     if re.search(r"║ +cpu ", plain):
         print("<the cpu graph>"); continue
@@ -528,9 +605,10 @@ twins() {
 case ${1:-all} in
 snaps) snaps ;;
 render) snaps >/dev/null; render ;;
+live-once) liveonce ;;
 twins) twins ;;
 all) snaps; render; twins ;;
-*) echo "usage: panel-golden.sh [snaps|render|twins]" >&2; exit 2 ;;
+*) echo "usage: panel-golden.sh [snaps|render|live-once|twins]" >&2; exit 2 ;;
 esac
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 ((fail == 0))

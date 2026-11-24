@@ -61,7 +61,10 @@ impl Ctx {
 
     /// pane_screen %ID [-e]: the screen the snapshot holds (SCREEN, or SCREEN_E coloured) if
     /// it's of that pane (SCREEN_ID), else none
-    pub fn pane_screen(&self, id: &[u8], coloured: bool) -> Vec<Bytes> {
+    pub fn pane_screen(&mut self, id: &[u8], coloured: bool) -> Vec<Bytes> {
+        if let Some(l) = self.live.as_mut() {
+            return l.pane_screen(id, coloured);
+        }
         if self.p.screen_id == id {
             self.p.list(if coloured { "SCREEN_E" } else { "SCREEN" })
         } else {
@@ -85,8 +88,16 @@ impl Ctx {
         if !(re("^[A-Za-z0-9][A-Za-z0-9._-]*$").is_match(&h) && re("^%[0-9]+$").is_match(&id)) {
             return;
         }
-        // With a snapshot, what it holds for this pane, if anything.
-        let (at, rp) = if self.p.rpeek_for != cat(&[&h, b" ", &id]) { (Vec::new(), Vec::new()) } else { (self.p.rpeek_at.clone(), self.p.list("RPEEK")) };
+        // ((n > 60)) && n=60
+        let n = if _n > 60 { 60 } else { _n };
+        // With no snapshot, peek_look asks; with one, what it holds for this pane, if anything.
+        let (at, rp) = if let Some(l) = self.live.as_mut() {
+            l.peek_look(&h, &id, n)
+        } else if self.p.rpeek_for != cat(&[&h, b" ", &id]) {
+            (Vec::new(), Vec::new())
+        } else {
+            (self.p.rpeek_at.clone(), self.p.list("RPEEK"))
+        };
         if at == b"new" {
             self.p.l = rp.iter().map(|l| sub(&clean(l), 0, Some(500))).collect();
         } else if at != b"fail" {

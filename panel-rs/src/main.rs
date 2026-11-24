@@ -24,6 +24,30 @@ fn usage() -> ! {
     exit(2);
 }
 
+fn print_out(out: &[u8]) {
+    use std::io::Write;
+    let o = std::io::stdout();
+    let mut o = o.lock();
+    if o.write_all(out).and_then(|_| o.flush()).is_err() {
+        exit(1);
+    }
+}
+
+/// REVIVE_ROOT: the checkout or install this binary belongs to. The binary sits in
+/// panel-rs/target/*/ in a checkout, vendor/bin/ in an install (Phase 6): the folder above
+/// whichever holds scripts/panel.sh.
+fn root() -> Vec<u8> {
+    let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
+    let mut d = exe.as_deref().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+    while let Some(p) = d {
+        if p.join("scripts/panel.sh").is_file() {
+            return p.into_os_string().into_encoded_bytes();
+        }
+        d = p.parent().map(|x| x.to_path_buf());
+    }
+    std::env::current_dir().map(|p| p.into_os_string().into_encoded_bytes()).unwrap_or_default()
+}
+
 fn main() {
     compat::init_locale();
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
@@ -40,8 +64,17 @@ fn main() {
                 match s.strip_prefix(b"load:").filter(|f| !f.is_empty()) {
                     Some(f) => unsafe { std::ffi::OsString::from_encoded_bytes_unchecked(f.to_vec()) },
                     None => {
-                        eprintln!("tmux-revive-panel: --once draws from a snapshot only (REVIVE_PANEL_SNAP=load:FILE or --snapshot FILE) until it gathers (Phase 2)");
-                        exit(3);
+                        // No snapshot to load: gather, as bash's --once does (save:FILE too)
+                        match collect::once::run(&root()) {
+                            Ok(out) => print_out(&out),
+                            Err((st, m)) => {
+                                if !m.is_empty() {
+                                    eprintln!("{}", m);
+                                }
+                                exit(st);
+                            }
+                        }
+                        return;
                     }
                 }
             };
@@ -56,14 +89,7 @@ fn main() {
                 }
             };
             match render::frame::once(&snap) {
-                Ok(out) => {
-                    use std::io::Write;
-                    let o = std::io::stdout();
-                    let mut o = o.lock();
-                    if o.write_all(&out).and_then(|_| o.flush()).is_err() {
-                        exit(1);
-                    }
-                }
+                Ok(out) => print_out(&out),
                 Err(m) => {
                     eprintln!("{}", m);
                     exit(2);

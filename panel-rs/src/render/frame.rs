@@ -320,6 +320,19 @@ impl Ctx {
         let bh = self.p.bh;
         // The messages: with a snapshot, what they were when it was saved (MSG_INTRO).
         let mut bottom: i64 = -1;
+        // With no snapshot, messages and links_saves look now (if ((!nav || MSG_OLD)): a
+        // --once's one frame always does).
+        if !ask {
+            if let Some(l) = self.live.as_mut() {
+                let (msg, mold, mwait, on, side) = l.messages();
+                let to_map = |v: Vec<Bytes>| v.into_iter().enumerate().map(|(i, x)| (i as i64, x)).collect();
+                self.p.snap.arrays.insert("MSG", to_map(msg));
+                self.p.snap.arrays.insert("SIDE", to_map(side));
+                self.p.mold = mold;
+                self.p.mwait = mwait;
+                self.p.msg_intro = on;
+            }
+        }
         let msg = self.p.list("MSG");
         let side = self.p.list("SIDE");
         if !ask {
