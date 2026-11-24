@@ -61,6 +61,7 @@ sockets=()
 cleanup() {
 	local s
 	for s in "${sockets[@]}"; do tmux -S "$s" kill-server 2>/dev/null; done
+	[[ -n ${POLLER:-} ]] && kill "$POLLER" 2>/dev/null # live-once's stand-in for a link's poller
 	[[ -n ${KEEP:-} ]] || rm -rf "$T"
 }
 trap cleanup EXIT
@@ -599,6 +600,7 @@ liveonce() {
 	done
 	tmux -S "$LS" kill-server 2>/dev/null
 	kill "$POLLER" 2>/dev/null
+	POLLER=""
 	echo "  $n scenarios: $sdiff with snapshots that differ, $fdiff with frames that differ"
 	check "git_info ran no filter of a submodule's own config (neither panel)" "[[ ! -e $T/lx/submodule-filter-ran ]]"
 	check "every scenario: A and B gather the same snapshot (CPU and memory masked)" "((sdiff == 0 && n > 0))"

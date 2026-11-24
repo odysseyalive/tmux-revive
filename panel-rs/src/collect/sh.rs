@@ -373,6 +373,15 @@ static UMASK: OnceLock<libc::mode_t> = OnceLock::new();
 /// first when there is one (a private jq, and so on).
 pub fn init(root: &[u8]) {
     start();
+    // $RANDOM differs each run: agents_look's marker must too (a pane's text could otherwise
+    // forge it), and so must mktemp's names. rand() unseeded gives the same every run.
+    let mut b = [0u8; 4];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let _ = f.read_exact(&mut b);
+    }
+    let seed = u32::from_ne_bytes(b) ^ std::process::id() ^ (now_us() as u32);
+    unsafe { libc::srand(seed) };
     UMASK.get_or_init(|| unsafe {
         let u = libc::umask(0o077);
         libc::umask(0o077);
