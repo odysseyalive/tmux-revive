@@ -33,19 +33,30 @@ fn print_out(out: &[u8]) {
     }
 }
 
-/// REVIVE_ROOT: the checkout or install this binary belongs to. The binary sits in
-/// panel-rs/target/*/ in a checkout, vendor/bin/ in an install (Phase 6): the folder above
-/// whichever holds scripts/panel.sh.
-fn root() -> Vec<u8> {
-    let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
-    let mut d = exe.as_deref().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+/// REVIVE_ROOT: the checkout or install this binary belongs to, found from the binary's own
+/// path as bash finds its root from its own (common.sh), never from the working folder: the
+/// first folder above the canonical executable that holds scripts/panel.sh. The binary sits in
+/// panel-rs/target/*/ in a checkout (vendor/bin/ in an install, Phase 6). None: it isn't inside
+/// a tmux-revive tree, and nothing is run (agent-say, vendor/bin and VERSION all come from here).
+fn root_from(exe: &std::path::Path) -> Option<Vec<u8>> {
+    let mut d = exe.parent().map(|p| p.to_path_buf());
     while let Some(p) = d {
         if p.join("scripts/panel.sh").is_file() {
-            return p.into_os_string().into_encoded_bytes();
+            return Some(p.into_os_string().into_encoded_bytes());
         }
         d = p.parent().map(|x| x.to_path_buf());
     }
-    std::env::current_dir().map(|p| p.into_os_string().into_encoded_bytes()).unwrap_or_default()
+    None
+}
+fn root() -> Vec<u8> {
+    let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
+    match exe.as_deref().and_then(root_from) {
+        Some(r) => r,
+        None => {
+            eprintln!("tmux-revive-panel: this binary must sit inside a tmux-revive tree (a folder above it holding scripts/panel.sh)");
+            exit(1);
+        }
+    }
 }
 
 fn main() {
@@ -97,5 +108,17 @@ fn main() {
             }
         }
         _ => usage(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Outside a tmux-revive tree there is no root: never the working folder.
+    #[test]
+    fn root_only_from_the_binarys_own_tree() {
+        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/release/tmux-revive-panel");
+        assert!(super::root_from(&here).is_some());
+        assert_eq!(super::root_from(std::path::Path::new("/usr/bin/tmux-revive-panel")), None);
+        assert_eq!(super::root_from(std::path::Path::new("/tmp/x/tmux-revive-panel")), None);
     }
 }
