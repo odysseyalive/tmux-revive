@@ -292,7 +292,10 @@ monitor() { # monitor WORKING ASKING AGENTS -> MON[0..5]: a little CRT, its scre
 
 spark() { # spark WIDTH -> SPARK: CPU history as a ▁▂▃▅▇ graph, newest on the right
 	local w=$1 i v max=10 lvl out="" bars=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
-	local -a h=("${CPU_HIST[@]: -$w}")
+	# All of it while it's no wider than the graph: ${A[@]: -w} gives nothing at all until the
+	# history holds w, so the graph sat flat for minutes after the panel opened.
+	local -a h=("${CPU_HIST[@]}")
+	((${#h[@]} > w)) && h=("${CPU_HIST[@]: -$w}")
 	for v in "${h[@]}"; do ((v > max)) && max=$v; done
 	for ((i = ${#h[@]}; i < w; i++)); do out+="$GRY▁"; done
 	for v in "${h[@]}"; do

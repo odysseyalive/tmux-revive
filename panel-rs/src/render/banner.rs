@@ -159,11 +159,14 @@ impl Ctx {
     pub fn spark(&self, w: i64) -> Bytes {
         const BARS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
         let mut max: i64 = 10;
-        // local -a h=("${CPU_HIST[@]: -$w}"): "-$w" is arithmetic, so a negative WIDTH counts
-        // from the start; a negative offset is from one past the highest index, and one before
-        // the first index gives nothing at all.
+        // local -a h=("${CPU_HIST[@]}"), all of it while there are no more than w;
+        // ((${#h[@]} > w)) && h=("${CPU_HIST[@]: -$w}"): "-$w" is arithmetic, so a negative
+        // WIDTH counts from the start; a negative offset is from one past the highest index,
+        // and one before the first index gives nothing at all.
         let off = w.wrapping_neg();
-        let h: Vec<i64> = if off < 0 {
+        let h: Vec<i64> = if (self.cpu_hist.len() as i64) <= w {
+            self.cpu_hist.values().copied().collect()
+        } else if off < 0 {
             let top = self.cpu_hist.keys().next_back().map(|k| k + 1).unwrap_or(0);
             let start = top + off;
             if start < 0 {

@@ -145,9 +145,11 @@ def banner():
         v.append(call("set", "TICK", tick))
         for w, a, s in [("0", "0", "0"), ("3", "0", "5"), ("0", "2", "5"), ("12", "3", "15"), ("03", "0", "1"), ("100", "0", "100")]:
             v.append(call("monitor", w, a, s))
-    for hist in [[], [0], [3, 50, 7, 120, 0, 9], list(range(0, 400, 3)), [5, -3, 0, 70]]:
+    # A short history (a panel just opened) fills the right of the graph, padded on the left:
+    # 12 samples at widths under, at and over 12, and at the widths a frame gives the graph.
+    for hist in [[], [0], [3, 50, 7, 120, 0, 9], list(range(0, 400, 3)), [5, -3, 0, 70], list(range(10, 130, 10))]:
         v.append(call("hist", *hist))
-        for w in [0, 1, 5, 40, 120, -2]:
+        for w in [0, 1, 5, 11, 12, 13, 40, 52, 120, 172, -2]:
             v.append(call("spark", w))
     return v
 
