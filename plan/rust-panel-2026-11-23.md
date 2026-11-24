@@ -599,7 +599,7 @@ The user decided that every panel change lands in bash and Rust in the same comm
 
 ### Making it cheaper
 
-- **(a) Cache bash's tier-1 outputs.** `test/panel-golden.sh` keys the cache on the sha256 of `scripts/panel.sh`, `scripts/help.sh`, `scripts/help.txt`, `scripts/common.sh` (sourced by the panel), `VERSION` (read by the panel, `:61`, unless the snapshot carries it), the scenario snapshot files and the golden script itself, and regenerates bash's frames only when that key changes. A Rust-only commit then costs only Rust renders. Without the snapshot files and `common.sh` in the key, a changed fixture would pass against stale goldens.
+- **(a) Cache bash's tier-1 outputs.** `test/panel-golden.sh` keys the cache on the sha256 of `scripts/panel.sh`, `scripts/help.sh`, `scripts/help.txt`, `scripts/common.sh` (sourced by the panel), `VERSION` (read by the panel, `:61`, unless the snapshot carries it), the scenario snapshot files (as `snapfix` leaves them, after they are made from the fixtures) and the golden script itself, and regenerates bash's frames only when that key changes. A Rust-only commit then costs only Rust renders. Without the snapshot files and `common.sh` in the key, a changed fixture would pass against stale goldens.
 - **(b) Render every size in one bash process.** `REVIVE_PANEL_SIZES` (0.1) renders a loaded snapshot at every size in one `--once` run, re-loading the snapshot before each size because `draw` changes state (`CPU_HIST`, `PB_FOR` `:3060`). About 30 bash starts instead of about 1,900.
 - **(c) Dual landing starts in Phase 1, per function.** From the commit that ports a function, a change to it lands in both. At the end of each phase, `git log 475f43a.. -- scripts/panel.sh scripts/help.sh scripts/help.txt` lists the bash commits made during the port (none yet: `git log --oneline 475f43a.. -- scripts/panel.sh | wc -l` prints `0`). Each is checked against the functions ported so far and against the phase about to start; any that touched a ported function and didn't land in Rust is ported before the phase closes. So drift is caught phase by phase, not at parity.
 
@@ -624,7 +624,7 @@ The file is 2967 lines (`wc -l test/panel.sh`) and calls `panel.sh` 90 times (`g
   - `panel-rs/Cargo.toml`, `panel-rs/Cargo.lock`;
   - `panel-rs/src/**`: `main.rs`, `compat.rs`, `snapshot.rs`, `render/*`, `collect/{procs,tmux,agents,git,links,peek,mail,upd}.rs`, `ui/{loop,keys,modal,pick,ask,note,editbox,answer,flow,help}.rs`, `writer.rs`;
   - `panel-rs/tests/*`;
-  - `test/panel-golden.sh`, and its scenario snapshots under `test/golden/`.
+  - `test/panel-golden.sh` (it builds its scenario snapshots from fixtures on every run; see 0.3's as-built note: none are committed under `test/golden/`).
 - **`scripts/panel.sh`:** the test hooks of 0.1 (`REVIVE_PANEL_SNAP` covering draw-time I/O and UI state, `REVIVE_PANEL_SIZES`, `REVIVE_PANEL_NOW` including the live panel), and the `X_SSH`/`X_WHERE` sort. After that, every panel change, as the keep-in-step rule says.
 - **`test/panel.sh`:** the `PANEL` variable at its call sites (0.2), `REVIVE_PANEL_PROCS=ps` with the `ps` stubs, and the new answering checks (5.3).
 - **`test/all.sh`:** add `panel-golden`.
