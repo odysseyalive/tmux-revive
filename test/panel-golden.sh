@@ -700,12 +700,38 @@ twins() {
 lv_cmd() { tmux -S "$1" display -p -t work:panel '#{pane_current_command}'; }
 # lv_bash SOCKET: its panel has a bash panel running for it (a hand-over)
 lv_bash() { ps -o args= --ppid "$(tmux -S "$1" display -p -t work:panel '#{pane_pid}')" 2>/dev/null | grep -q 'scripts/panel\.sh'; }
+# lv_shim DIR: a bash on the Rust panel's PATH that notes in DIR/handoffs each hand-over's key
+# (a bash panel run for it), then runs the real bash
+lv_shim() {
+	mkdir -p "$1"
+	printf '#!%s\n[[ $* == *scripts/panel.sh* ]] && echo "${REVIVE_PANEL_HANDOFF:-?}" >>%q\nexec %q "$@"\n' \
+		"$(command -v bash)" "$1/handoffs" "$(command -v bash)" >"$1/bash"
+	chmod +x "$1/bash"
+	: >"$1/handoffs"
+}
+# lv_step SA SB KEYS TEXT LABEL: KEYS sent to both panels, then the same screen and cursor, TEXT on it
+lv_step() {
+	local k i
+	# shellcheck disable=SC2086 # one tmux key name each
+	[[ -n $3 ]] && for k in $3; do tmux -S "$1" send-keys -t work:panel "$k"; tmux -S "$2" send-keys -t work:panel "$k"; sleep 0.15; done
+	settle "$1" "$4" && settle "$2" "$4"
+	for i in 1 2 3 4 5 6 7 8; do
+		shot "$1" >"$T/shot.a"
+		shot "$2" >"$T/shot.b"
+		cmp -s "$T/shot.a" "$T/shot.b" && break
+		sleep 0.2
+	done
+	check "$5after '$3': the same screen and cursor ($4)" "grep -aqF -- '$4' $T/shot.a && cmp -s $T/shot.a $T/shot.b"
+	[[ -n ${GOLDEN_DEBUG:-} ]] && plain <"$T/shot.a" | grep -E '▶|▓▒░ [A-Z]|^║ \[' | cut -c1-80 && plain <"$T/shot.b" | grep -aF ' $ ' | head -3
+	cmp -s "$T/shot.a" "$T/shot.b" || diff "$T/shot.a" "$T/shot.b" | head -${GOLDEN_DIFF:-6} | sed 's/^/      /'
+}
 live() {
 	build_b || return 1
 	echo "live (Phase 3): A ${GOLDEN_A}, B ${GOLDEN_B}"
 	local A=$T/lva.sock B=$T/lvb.sock step keys text i
 	twin_up "$T/lva" "$A" "$GOLDEN_A"
-	twin_up "$T/lvb" "$B" "$GOLDEN_B"
+	lv_shim "$T/lvb-shim"
+	twin_up "$T/lvb" "$B" "env PATH=$T/lvb-shim:$PATH $GOLDEN_B"
 	check "B is the Rust panel" "for _ in \$(seq 1 25); do [[ \$(lv_cmd $B) == tmux-revive-pan* ]] && break; sleep 0.2; done; [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
 	local -a steps=(
 		"|C O N T R O L"
@@ -748,6 +774,38 @@ live() {
 	done
 	check "and B is the Rust panel again" "! lv_bash $B && [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
 	check "with the same pane selected (asker)" "tmux -S $B capture-pane -p -t work:panel | grep -q '▶.*asker'"
+	check "the hand-overs were N's and Enter's, no other" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter' ]]"
+	# O on a pane here: the Rust panel opens it itself, as bash does. A client attached to each
+	# server (from a tmux of their own, at a size the panels' windows ignore) is switched to it.
+	local K=$T/lvk.sock
+	sockets+=("$K")
+	tmux -S "$K" -f /dev/null new-session -d -s k -x 100 -y 30 "env -u TMUX -u TMUX_PANE tmux -S $A attach -f ignore-size -t work"
+	tmux -S "$K" new-window -d -t k "env -u TMUX -u TMUX_PANE tmux -S $B attach -f ignore-size -t work"
+	for _ in $(seq 1 25); do [[ -n $(tmux -S "$A" list-clients) && -n $(tmux -S "$B" list-clients) ]] && break; sleep 0.2; done
+	lv_step "$A" "$B" O "▸ PANES" ""
+	check "O: tmux's client went to the pane on both (asker)" "[[ \$(tmux -S $A list-clients -F '#{window_name}') == asker && \$(tmux -S $B list-clients -F '#{window_name}') == asker ]]"
+	check "O did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter' ]]"
+	tmux -S "$K" kill-server 2>/dev/null
+	# REVIVE_PANEL_POPUP: the panel closes once O has opened the pane (bash's exit 0).
+	local s
+	for s in "$A" "$B"; do
+		tmux -S "$s" select-window -t work:odd
+		local cmd=$GOLDEN_A
+		[[ $s == "$B" ]] && cmd="env PATH=$T/lvb-shim:$PATH $GOLDEN_B"
+		env_for "${s%.sock}" "$s"
+		# shellcheck disable=SC2145
+		tmux -S "$s" new-window -d -t work -n pop "env ${ENV[*]} REVIVE_PANEL_REFRESH=60 REVIVE_PANEL_NOW=$RNOW AGENT_SAY_SSH=false REVIVE_PANEL_POPUP=1 $cmd"
+	done
+	for s in "$A" "$B"; do
+		for _ in $(seq 1 40); do tmux -S "$s" capture-pane -p -t work:pop 2>/dev/null | grep -q '▶' && break; sleep 0.2; done
+		tmux -S "$s" send-keys -t work:pop O
+	done
+	for s in "$A" "$B"; do
+		local who=A
+		[[ $s == "$B" ]] && who=B
+		check "$who with REVIVE_PANEL_POPUP: O opens the pane and the panel closes" "for _ in \$(seq 1 25); do tmux -S $s list-windows -F '#W' | grep -qx pop || break; sleep 0.2; done; ! tmux -S $s list-windows -F '#W' | grep -qx pop && [[ \$(tmux -S $s display -p -t work '#I') == 0 ]]"
+	done
+	check "O in the popup did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter' ]]"
 	# A pane appearing between the pane list and the agents' look: a tmux on the Rust panel's
 	# PATH opens a window ahead of every other just before the batched look at the agents'
 	# screens. The asking agent's state stays on its own row, never the newcomer's.
@@ -770,7 +828,7 @@ live() {
 		fixtures "$T/$d" "$T/$d.sock" links
 		env_for "$T/$d" "$T/$d.sock"
 		local cmd=$GOLDEN_A
-		[[ $d == lve ]] && cmd=$GOLDEN_B
+		[[ $d == lve ]] && lv_shim "$T/lve-shim" && cmd="env PATH=$T/lve-shim:$PATH $GOLDEN_B"
 		# shellcheck disable=SC2145
 		tmux -S "$T/$d.sock" new-window -d -t work -n panel "env ${ENV[*]} REVIVE_PANEL_REFRESH=60 REVIVE_PANEL_NOW=$RNOW REVIVE_PANEL_PEEK=0 AGENT_SAY_KEYSCAN=false AGENT_SAY_KNOWN_HOSTS=$T/$d/kh AGENT_SAY_TEST_NO_LINK_KEY=1 $cmd"
 	done
@@ -791,6 +849,23 @@ live() {
 		[[ -n ${GOLDEN_DEBUG:-} ]] && plain <"$T/shot.b" | grep -E '▶|▓▒░ [A-Z]' | cut -c1-70
 		cmp -s "$T/shot.a" "$T/shot.b" || diff "$T/shot.a" "$T/shot.b" | head -${GOLDEN_DIFF:-6} | sed 's/^/      /'
 	done
+	# Keys the key bar fades say why, from the Rust panel itself (no hand-over, so no gather
+	# first): O on a linked computer's pane, N on one whose rows haven't come (no P_RID), and
+	# O and M on a heading.
+	# End: fold-sh, on folded.example (opened by F), its rows in. Up three times: far.example's
+	# two panes, then Zed.example's last, a name only (the link unreachable: no rows, no
+	# P_RID). f there folds Zed.example to its heading, selected; f again opens it.
+	lv_step "$D" "$E" End "fold-sh" "linked: "
+	lv_step "$D" "$E" O "O opens panes on this computer only" "linked: "
+	lv_step "$D" "$E" "Up Up Up" "zed-b" "linked: "
+	lv_step "$D" "$E" N "on Zed.example: can" "linked: "
+	lv_step "$D" "$E" O "O opens panes on this computer only" "linked: "
+	lv_step "$D" "$E" f "ZED.EXAMPLE" "linked: "
+	lv_step "$D" "$E" O "select one of Zed.example" "linked: "
+	lv_step "$D" "$E" M "select one of Zed.example" "linked: "
+	lv_step "$D" "$E" N "select one of Zed.example" "linked: "
+	lv_step "$D" "$E" f "zed-a" "linked: "
+	check "linked: none of these keys went to the bash panel" "[[ -e $T/lve-shim/handoffs && ! -s $T/lve-shim/handoffs ]]"
 }
 
 case ${1:-all} in
