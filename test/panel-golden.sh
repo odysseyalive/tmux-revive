@@ -351,7 +351,9 @@ render() {
 cat >"$T/mask.py" <<'PY'
 import re, sys
 # mask.py < CAPTURE (capture-pane -e): what may differ between two panels measuring their own
-# machine taken out: each row's CPU meter, percent and memory, and the cpu graph's row.
+# machine taken out: each row's CPU meter, percent and memory, and the cpu graph's row. And the
+# banner's CRT cursor, which blinks with TICK: the ? page moves TICK on every two seconds, by
+# each panel's own clock, so after it the two can be a tick apart.
 esc = r"(?:\x1b\[[0-9;:]*m)*"
 cell = "[█▓▒░·]" + esc
 meter = re.compile(esc.join([cell] * 5) + esc + r" +[0-9]+%" + esc + r" +[0-9.]+[KMG]")
@@ -359,6 +361,8 @@ for line in sys.stdin.read().split("\n"):
     plain = re.sub(r"\x1b\[[0-9;:]*m", "", line)
     if re.search(r"║ cpu ", plain):
         print("<the cpu graph>"); continue
+    if "C O N T R O L" in plain:
+        line = re.sub(r"(\$" + esc + " " + esc + r")[█ ]", r"\1<cursor>", line, count=1)
     print(meter.sub("<cpu mem>", line))
 PY
 twin_up() { # twin_up DIR SOCKET PANEL: the fixture, and PANEL live in a window of its own
