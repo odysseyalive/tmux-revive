@@ -4,6 +4,8 @@
 //!   tmux-revive-panel --once --snapshot FILE   the frame a bash --once draws from that snapshot
 //!   tmux-revive-panel --once                   the same, from REVIVE_PANEL_SNAP=load:FILE as bash
 //!                                              takes it; REVIVE_PANEL_SIZES as bash's
+//!   tmux-revive-panel                          the live panel (Phase 3; keys not ported yet are
+//!                                              handed over to the bash panel, ui/handoff.rs)
 //!   tmux-revive-panel --probe                  "ok VERSION": the install-time check (Phase 6.2)
 
 // The port is under way: colours, helpers and snapshot fields the later steps use are here already.
@@ -13,6 +15,7 @@ mod collect;
 mod compat;
 mod render;
 mod snapshot;
+mod ui;
 
 use std::process::exit;
 
@@ -20,7 +23,7 @@ use std::process::exit;
 const VERSION: &str = include_str!("../../VERSION");
 
 fn usage() -> ! {
-    eprintln!("usage: tmux-revive-panel --once [--snapshot FILE] | --probe");
+    eprintln!("usage: tmux-revive-panel [--once [--snapshot FILE] | --probe]");
     exit(2);
 }
 
@@ -64,6 +67,7 @@ fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let a: Vec<&str> = args.iter().map(|s| s.to_str().unwrap_or("")).collect();
     match a.as_slice() {
+        [] => ui::run(&root()),
         ["--probe"] => println!("ok {}", VERSION.trim()),
         ["--once", "--snapshot", _] | ["--snapshot", _, "--once"] | ["--once"] => {
             // --snapshot F, or as bash takes it: REVIVE_PANEL_SNAP=load:F (save: needs the looks,
