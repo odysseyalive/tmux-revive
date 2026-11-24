@@ -3160,7 +3160,11 @@ draw() {
 	if ((ask)); then
 		MSG_OLD=1
 	else
-		((nav && !MSG_OLD)) || [[ -n $SNAP ]] || { messages; links_saves; MSG_OLD=0; }
+		# With a snapshot, what they were when it was saved (snap_look), G's key with them.
+		if ((!nav || MSG_OLD)); then
+			if [[ -n $SNAP ]]; then INTRO_ON=$MSG_INTRO; else messages; links_saves; fi
+			MSG_OLD=0
+		fi
 		# As tall as they are without the older messages kept above, and a quarter of the height
 		# at most (4 rows at least): MESSAGES and LINKS · SAVES scroll past that.
 		bottom=$((${#MSG[@]} - MOLD))
@@ -5013,7 +5017,7 @@ lbox_draw() {
 # empty, and an array has a record for each element. SNAP_VARS says which names are read back,
 # and which are arrays (a) or associative (A), never the file; an array with no records is
 # empty. SECONDS is draw's (SNAP_SECS, the tip and the flash's age), not the shell's.
-SNAP=${REVIVE_PANEL_SNAP:-} SNAP_SECS=""
+SNAP=${REVIVE_PANEL_SNAP:-} SNAP_SECS="" MSG_INTRO=0
 ((ONCE)) && [[ $SNAP =~ ^(save|load):. ]] || SNAP=""
 SNAP_VARS=(
 	# What the looks gathered.
@@ -5022,7 +5026,7 @@ SNAP_VARS=(
 	a:W_SINCE a:W_FROM a:X_SSH a:X_WHERE A:RVER A:ROWNER A:FOLD a:CPU_HIST
 	s:VERSION s:HOST s:SCENE s:TICK s:SECONDS
 	# What draw reads from outside (snap_look).
-	a:MSG s:MOLD s:MWAIT s:INTRO_ON a:SIDE a:INTROS
+	a:MSG s:MOLD s:MWAIT s:MSG_INTRO s:INTRO_ON a:SIDE a:INTROS
 	s:SCREEN_ID a:SCREEN a:SCREEN_E s:RPEEK_FOR s:RPEEK_AT a:RPEEK
 	# Where you are: the selection, the windows, the peek, the ? page, a flash, a question.
 	s:SEL s:SEL_ID s:HSEL s:FOCUS a:WON s:PO s:PB s:PB_FOR s:MO s:SO s:MMAN
@@ -5044,8 +5048,12 @@ snap_look() { # what draw would read from outside, read now (see above)
 		mapfile -t SCREEN_E < <(tm capture-pane -e -p -t "$id" 2>/dev/null)
 	fi
 	intros_look
+	# INTRO_ON (G on the key bar) is messages's when draw looks at the messages; while a
+	# question hides them it is what it was, so it's kept as it was, and messages's as MSG_INTRO.
+	local on=${INTRO_ON:-}
 	messages
 	links_saves
+	MSG_INTRO=$INTRO_ON INTRO_ON=$on
 }
 snap_save() { # snap_save FILE: SNAP_VARS as they are now
 	local v n
