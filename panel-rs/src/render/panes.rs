@@ -417,9 +417,8 @@ impl Ctx {
             let key: Bytes = if h.is_empty() { b".".to_vec() } else { h.clone() };
             *cnt.entry(key.clone()).or_insert(0) += 1;
             need.insert(i, 0);
-            // `$v == "[U]"`, but v was set to ${P_ACCT[i]:-} above it: the ACCOUNT is tested, so a
-            // [U] row doesn't count as needing you (bash's; kept, as it is what bash draws)
-            if st == b"asking" || st == b"grant" || st == b"ready" || acct == b"[U]" {
+            // draw_panes: `${ver[i]} == "[U]"`, a row whose user has no tmux-revive needs you too
+            if st == b"asking" || st == b"grant" || st == b"ready" || ver.get(&i).map_or(false, |x| x.as_slice() == b"[U]") {
                 need.insert(i, 1);
                 *needc.entry(key).or_insert(0) += 1;
             }

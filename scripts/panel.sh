@@ -2470,7 +2470,7 @@ draw_panes() {
 		# computer do, for its heading.
 		stc[i]=$st need[i]=0 key=${P_HOST[i]:-.}
 		cnt[$key]=$((${cnt[$key]:-0} + 1))
-		[[ $st == asking || $st == grant || $st == ready || $v == "[U]" ]] && need[i]=1 needc[$key]=$((${needc[$key]:-0} + 1))
+		[[ $st == asking || $st == grant || $st == ready || ${ver[i]} == "[U]" ]] && need[i]=1 needc[$key]=$((${needc[$key]:-0} + 1))
 	done
 	((NW > 29)) && NW=29
 	((FW > 35)) && FW=35
