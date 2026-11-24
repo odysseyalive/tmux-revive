@@ -7,7 +7,7 @@ on stdout in their format (ARGC\\0 NAME\\0 ARG\\0 ...). The same every run (a fi
   banner   banner_rows, big_banner, monitor, spark
   art      every scene at TICK 0, 1 and 7, at each WxH in SIZES ("76x10 196x27 ..."), beside the
            banner (still) and at a few small sizes; with no SIZES, a short list of its own.
-           "art SIZES memo": the same through bash's memo (art_memo), which must draw the same
+  memo, fresh SIZES   each scene and size at TICK 1 then 7, through bash's memo (art_memo) or not
   locale   strftime and globdirs DIR (run under the locale and TZ being compared)
 """
 import random
@@ -60,7 +60,7 @@ def prims():
     for ch in ["═", " ", "ab", "─"]:
         for n in [0, 1, 5, -3]:
             v.append(call("rep", ch, n))
-    for t in TEXT:
+    for t in texts:
         for w in [0, 1, 5, 11, 40]:
             v.append(call("fld", t, w))
     for t in texts:
@@ -188,7 +188,18 @@ def main():
         v = banner()
     elif g == "art":
         sizes = sys.argv[2].split() if len(sys.argv) > 2 and sys.argv[2].strip() else ["76x10", "40x3", "31x6"]
-        v = art(sizes, "art_memo" if sys.argv[3:] == ["memo"] else "art")
+        v = art(sizes)
+    elif g in ("memo", "fresh"):
+        # Each scene and size at TICK 1 and straight after at 7, which bash's memo serves from 1's
+        # frame for the scenes that only blink: through the memo, then each drawn afresh.
+        v = []
+        for s in range(5):
+            v.append(call("set", "SCENE", s))
+            for wh in sys.argv[2].split():
+                w, h = wh.split("x")
+                for t in [1, 7]:
+                    v.append(call("set", "TICK", t))
+                    v.append(call("art_memo" if g == "memo" else "art", w, h))
     elif g == "locale":
         v = locale(sys.argv[2].encode("utf-8", "surrogateescape"))
     else:

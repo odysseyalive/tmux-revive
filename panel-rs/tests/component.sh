@@ -65,7 +65,12 @@ call() {
 	# Always drawn afresh: from the memo, a frame of the animation would be one drawn before.
 	art) ART_MEMO=() ART_ROWS=(); art "$@"; o "${ART[@]}" ;;
 	# With the memo, as the panel draws (the same frame as afresh, or the memo is visible).
-	art_memo) art "$@"; o "${ART[@]}" ;;
+	# COMPONENT_MEMO_LOG: a line for each frame served from the memo.
+	art_memo)
+		v=$TICK
+		((ART_LOOP[SCENE])) && v=$((TICK % ART_LOOP[SCENE]))
+		[[ -n ${ART_MEMO["$SCENE $1 $2 $v"]+set} && -n ${COMPONENT_MEMO_LOG:-} ]] && echo hit >>"$COMPONENT_MEMO_LOG"
+		art "$@"; o "${ART[@]}" ;;
 	*) echo "component.sh: no such call $f" >&2; exit 2 ;;
 	esac
 }

@@ -377,10 +377,15 @@ components() {
 		check "$g: $n calls, bash's and Rust's results the same bytes" "((n > 0)) && cmp -s $d/$g.a $d/$g.b"
 		cmp -s "$d/$g.a" "$d/$g.b" || echo "    $(diff <(grep -an '' "$d/$g.a") <(grep -an '' "$d/$g.b") | grep -ac '^<') calls differ; the first at line $(cmp "$d/$g.a" "$d/$g.b" | awk '{print $NF}')"
 	done
-	# Fresh frames are compared, never bash's memo of them: the memo must draw the same.
-	python3 -I "$py" art "$sizes" memo >"$d/memo.in"
-	bashrun memo
-	check "art: bash's frames from its memo are the ones it draws afresh" "cmp -s $d/art.a $d/memo.a"
+	# Fresh frames are compared, never bash's memo of them: the memo must draw the same. Each scene
+	# and size at TICK 1 then 7, so the scenes that only blink serve 7 from 1's memo.
+	python3 -I "$py" memo "$sizes" >"$d/memo.in"
+	python3 -I "$py" fresh "$sizes" >"$d/fresh.in"
+	: >"$d/hits"
+	COMPONENT_MEMO_LOG=$d/hits LC_ALL=C.UTF-8 TZ=UTC bash "$cs" <"$d/memo.in" >"$d/memo.a"
+	bashrun fresh
+	n=$(grep -c hit "$d/hits")
+	check "art: bash's frames from its memo ($n served from it) are the ones it draws afresh" "((n > 0)) && cmp -s $d/memo.a $d/fresh.a"
 	# The clock and the */ globs' order, under each locale and zone.
 	mkdir -p "$d/globs"/{B,a,_c,Zed.example,far.example,.hidden,é,"x y"} "$d/globs/"$'caf\xe9'
 	python3 -I "$py" locale "$d/globs" >"$d/locale.in"

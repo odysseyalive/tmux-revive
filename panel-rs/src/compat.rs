@@ -687,6 +687,47 @@ for s; do printf '%s\0' "${s//[[:cntrl:]]/}" "${s//[$C1]/}" "${s//[$ZW]/}"; done
         }
     }
 
+    /// Every regex constant in panel.sh, as bash's own assignment gives it, compiled here and
+    /// matched against a table of lines, with and without nocasematch, as `[[ =~ ]]` matches them.
+    /// (The Rust constants themselves come with the code that uses them, Phase 2 to 5.)
+    #[test]
+    fn panel_regex_constants_as_bash() {
+        setup();
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/panel.sh")).unwrap();
+        let names = ["VER_RE", "Q_RE", "W_RE", "UUID_RE", "LIM_RE", "STAT_RE", "USER_RE", "PW_STUB", "EB_RE", "KEY_RE"];
+        let lines: Vec<&[u8]> = vec![
+            b"1.2.56", b"1.2", b"01.002.3", b"Do you want to proceed?", b"Allow once", b"(Y/n)", b" Enter to select \xc2\xb7 Esc to cancel",
+            b"enter select \xc2\xb7 esc back", b"Enter confirm, Esc close", b"3. Submit answers", b"esc to interrupt", b"Ctrl+C to interrupt",
+            b"/tmp/claude-1000/x/0123abcd-0123-4567-89ab-0123456789ab/y", b"resets 3pm (Europe/Berlin)", b"Try again at Jan 5th, 2027 11:30 PM",
+            b"1234 (bash) S 1 1234 1234 0 -1 4194560 100 0 0 0 12 34 5 6", b"root", b"_svc.x-1", b"9user",
+            "  \u{2500}\u{2500}\u{256d}\u{256e} ".as_bytes(), b"\xe2\x94\x80x", b"", b"see /fix-this and @shop or `code` at https://x.example/a",
+            b"Up", b"C-c", b"C-C", b"Enter ", b"x\xffy esc to interrupt", "漢字 do you want to".as_bytes(),
+        ];
+        for n in names {
+            let line = src.lines().find(|l| l.starts_with(&format!("{}=", n))).unwrap_or_else(|| panic!("{} in panel.sh", n));
+            for icase in [false, true] {
+                let script = format!(
+                    "{}\nprintf '%s\\0' \"${}\"; {}; for s in \"$@\"; do [[ $s =~ ${} ]] && printf '1\\0' || printf '0\\0'; done",
+                    line, n, if icase { "shopt -s nocasematch" } else { ":" }, n
+                );
+                let out = bash(&script, &lines);
+                let mut o = out.split(|&c| c == 0);
+                let re = o.next().unwrap().to_vec();
+                let e = Ere::new(&re, icase).unwrap_or_else(|| panic!("{} compiles", n));
+                for l in &lines {
+                    let b = o.next().unwrap();
+                    assert_eq!(if e.is_match(l) { &b"1"[..] } else { &b"0"[..] }, b, "{} (icase {}) on {:?}", n, icase, String::from_utf8_lossy(l));
+                }
+            }
+        }
+    }
+
+    /// regex_t is mirrored here (re_nsub is private in the libc crate): it must be the same size.
+    #[test]
+    fn regex_t_layout() {
+        assert_eq!(std::mem::size_of::<RegexT>(), std::mem::size_of::<libc::regex_t>());
+    }
+
     #[test]
     fn strftime_as_bash_in_utc() {
         setup();
