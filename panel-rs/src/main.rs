@@ -1,8 +1,9 @@
 //! tmux-revive-panel: the control panel of scripts/panel.sh, ported to Rust with its screen kept
 //! byte for byte (plan/rust-panel-2026-11-23.md).
 //!
-//!   tmux-revive-panel --once --snapshot FILE   one frame from a bash --once's REVIVE_PANEL_SNAP
-//!                                              (Phase 1: not drawn yet, see below)
+//!   tmux-revive-panel --once --snapshot FILE   the frame a bash --once draws from that snapshot
+//!   tmux-revive-panel --once                   the same, from REVIVE_PANEL_SNAP=load:FILE as bash
+//!                                              takes it; REVIVE_PANEL_SIZES as bash's
 //!   tmux-revive-panel --probe                  "ok VERSION": the install-time check (Phase 6.2)
 //!   tmux-revive-panel --component              test-only: builders one call at a time (component.rs)
 
@@ -20,7 +21,7 @@ use std::process::exit;
 const VERSION: &str = include_str!("../../VERSION");
 
 fn usage() -> ! {
-    eprintln!("usage: tmux-revive-panel --once --snapshot FILE | --probe");
+    eprintln!("usage: tmux-revive-panel --once [--snapshot FILE] | --probe");
     exit(2);
 }
 
@@ -36,19 +37,45 @@ fn main() {
                 exit(1);
             }
         }
-        ["--once", "--snapshot", _] | ["--snapshot", _, "--once"] => {
-            let f = if a[0] == "--once" { &args[2] } else { &args[1] };
-            if let Err(e) = snapshot::Snapshot::read(std::path::Path::new(f)) {
-                match e {
-                    snapshot::Error::NoFile => eprintln!("tmux-revive-panel: no snapshot to read at {}", f.to_string_lossy()),
-                    snapshot::Error::BadIndex(m) => eprintln!("tmux-revive-panel: {}", m),
+        ["--once", "--snapshot", _] | ["--snapshot", _, "--once"] | ["--once"] => {
+            // --snapshot F, or as bash takes it: REVIVE_PANEL_SNAP=load:F (save: needs the looks,
+            // which come with Phase 2)
+            let f: std::ffi::OsString = if a.len() == 3 {
+                if a[0] == "--once" { args[2].clone() } else { args[1].clone() }
+            } else {
+                let s = std::env::var_os("REVIVE_PANEL_SNAP").map(|v| v.into_encoded_bytes()).unwrap_or_default();
+                match s.strip_prefix(b"load:").filter(|f| !f.is_empty()) {
+                    Some(f) => unsafe { std::ffi::OsString::from_encoded_bytes_unchecked(f.to_vec()) },
+                    None => {
+                        eprintln!("tmux-revive-panel: --once draws from a snapshot only (REVIVE_PANEL_SNAP=load:FILE or --snapshot FILE) until it gathers (Phase 2)");
+                        exit(3);
+                    }
                 }
-                exit(1);
+            };
+            let snap = match snapshot::Snapshot::read(std::path::Path::new(&f)) {
+                Ok(s) => s,
+                Err(e) => {
+                    match e {
+                        snapshot::Error::NoFile => eprintln!("tmux-revive-panel: no snapshot to read at {}", f.to_string_lossy()),
+                        snapshot::Error::BadIndex(m) => eprintln!("tmux-revive-panel: {}", m),
+                    }
+                    exit(1);
+                }
+            };
+            match render::frame::once(&snap) {
+                Ok(out) => {
+                    use std::io::Write;
+                    let o = std::io::stdout();
+                    let mut o = o.lock();
+                    if o.write_all(&out).and_then(|_| o.flush()).is_err() {
+                        exit(1);
+                    }
+                }
+                Err(m) => {
+                    eprintln!("{}", m);
+                    exit(2);
+                }
             }
-            // Phase 1.3 has ported the primitives, the banner and the art so far; the frame
-            // (draw_top, draw_panes, ...) comes with steps 4 to 9.
-            eprintln!("tmux-revive-panel: the frame isn't ported yet");
-            exit(3);
         }
         _ => usage(),
     }

@@ -40,6 +40,10 @@ struct RegexT {
 extern "C" {
     fn mbrtowc(pwc: *mut libc::wchar_t, s: *const libc::c_char, n: libc::size_t, ps: *mut MbState) -> libc::size_t;
     fn iswcntrl(wc: libc::c_uint) -> libc::c_int;
+    fn iswspace(wc: libc::c_uint) -> libc::c_int;
+    fn towupper(wc: libc::c_uint) -> libc::c_uint;
+    fn towlower(wc: libc::c_uint) -> libc::c_uint;
+    fn wcrtomb(s: *mut libc::c_char, wc: libc::wchar_t, ps: *mut MbState) -> libc::size_t;
     fn tzset();
     fn regcomp(re: *mut RegexT, pat: *const libc::c_char, flags: libc::c_int) -> libc::c_int;
     fn regexec(re: *const RegexT, s: *const libc::c_char, n: libc::size_t, m: *mut libc::regmatch_t, flags: libc::c_int) -> libc::c_int;
@@ -118,6 +122,13 @@ fn decode(s: &[u8]) -> (usize, Option<u32>) {
     } else {
         (r, Some(wc as u32))
     }
+}
+
+/// Whether `s`, all of it, is the start of a character cut short (mbrtowc gives -2).
+fn incomplete(s: &[u8]) -> bool {
+    let mut st = MbState([0; 128]);
+    let mut wc: libc::wchar_t = 0;
+    unsafe { mbrtowc(&mut wc, s.as_ptr() as *const libc::c_char, s.len(), &mut st) == usize::MAX - 1 }
 }
 
 /// Characters of `s`, as bash splits them.
@@ -208,6 +219,9 @@ pub enum Set<'a> {
     Cntrl,
     /// `[CHARS]`, CHARS the bracket's contents as written (valid UTF-8, nothing special in it)
     Of(&'a [u8]),
+    /// `[[:space:]CHARS]`: isspace or one of CHARS byte by byte, iswspace or one of CHARS by
+    /// character (blank_tail's `[[:space:]]`, peek_wrap's `[[:space:]│]`)
+    SpaceOr(&'a [u8]),
 }
 
 /// `${s//[SET]/}`, as bash does it. Bash looks for the next match in what is left after the last
@@ -221,10 +235,10 @@ pub fn remove_all(s: &[u8], set: Set) -> Bytes {
     let mut rest = s;
     let set_mb = match set {
         Set::Cntrl => false,
-        Set::Of(b) => !b.is_ascii(),
+        Set::Of(b) | Set::SpaceOr(b) => !b.is_ascii(),
     };
     let set_chars: Vec<u32> = match set {
-        Set::Of(b) => chars(b).map(|c| decode(c).1.unwrap_or(c[0] as u32)).collect(),
+        Set::Of(b) | Set::SpaceOr(b) => chars(b).map(|c| decode(c).1.unwrap_or(c[0] as u32)).collect(),
         Set::Cntrl => Vec::new(),
     };
     loop {
@@ -233,6 +247,7 @@ pub fn remove_all(s: &[u8], set: Set) -> Bytes {
             rest.iter().position(|&b| match set {
                 Set::Cntrl => unsafe { libc::iscntrl(b as libc::c_int) != 0 },
                 Set::Of(bs) => bs.contains(&b),
+                Set::SpaceOr(bs) => (unsafe { libc::isspace(b as libc::c_int) != 0 }) || bs.contains(&b),
             })
             .map(|i| (i, i + 1))
         } else {
@@ -244,6 +259,7 @@ pub fn remove_all(s: &[u8], set: Set) -> Bytes {
                 let m = match set {
                     Set::Cntrl => unsafe { iswcntrl(wc as libc::c_uint) != 0 },
                     Set::Of(_) => set_chars.contains(&wc),
+                    Set::SpaceOr(_) => (unsafe { iswspace(wc as libc::c_uint) != 0 }) || set_chars.contains(&wc),
                 };
                 if m {
                     hit = Some((i, i + n));
@@ -291,6 +307,112 @@ pub fn clean(s: &[u8]) -> Bytes {
     let a = remove_all(s, Set::Cntrl);
     let b = remove_all(&a, Set::Of(&c1_set()));
     remove_all(&b, Set::Of(&zw_set()))
+}
+
+/// `${s^^}` (upper) or `${s,,}`: each character bash decodes through towupper or towlower and
+/// back through wcrtomb; a byte that doesn't decode is kept as it is (bash's sh_modcase).
+pub fn case_map(s: &[u8], upper: bool) -> Bytes {
+    let mut out = Vec::with_capacity(s.len());
+    let mut r = s;
+    while !r.is_empty() {
+        if r[0] < 0x80 {
+            out.push(if upper { r[0].to_ascii_uppercase() } else { r[0].to_ascii_lowercase() });
+            r = &r[1..];
+            continue;
+        }
+        // A sequence cut short by the end of the string (mbrtowc's -2) one byte before its end:
+        // bash 5.3 writes its k >= 2 bytes as s[0], s[0..k], s[1..k] (e2 82 -> e2 e2 82 82,
+        // f0 9f 98 -> f0 f0 9f 98 9f 98); shorter ones (f0 90, a lone c3) as they are. Found
+        // by trying bytes on bash, not from its source. Not fixed: it is what bash prints.
+        if incomplete(r) {
+            let want = match r[0] {
+                0xc0..=0xdf => 2,
+                0xe0..=0xef => 3,
+                0xf0..=0xf7 => 4,
+                0xf8..=0xfb => 5,
+                _ => 6,
+            };
+            // an overlong (e0 80, f0 80) or surrogate (ed a0) start is left alone; f4 90 80 isn't
+            let odd = r.len() >= 2 && ((r[0] == 0xe0 && r[1] < 0xa0) || (r[0] == 0xed && r[1] >= 0xa0) || (r[0] == 0xf0 && r[1] < 0x90));
+            if r.len() >= 2 && r.len() + 1 == want && !odd {
+                out.push(r[0]);
+                out.extend_from_slice(r);
+                out.extend_from_slice(&r[1..]);
+            } else {
+                out.extend_from_slice(r);
+            }
+            break;
+        }
+        let (n, wc) = decode(r);
+        match wc {
+            None => out.extend_from_slice(&r[..n]),
+            Some(wc) => {
+                let m = unsafe { if upper { towupper(wc) } else { towlower(wc) } };
+                let mut buf = [0u8; 16];
+                let mut st = MbState([0; 128]);
+                let k = unsafe { wcrtomb(buf.as_mut_ptr() as *mut libc::c_char, m as libc::wchar_t, &mut st) };
+                if k == usize::MAX {
+                    out.extend_from_slice(&r[..n]);
+                } else {
+                    out.extend_from_slice(&buf[..k]);
+                }
+            }
+        }
+        r = &r[n..];
+    }
+    out
+}
+
+/// `${s/#PAT/REP}` with PAT a glob (unquoted, as `${P_DIR[i]/#$HOME/\~}` has it): the longest
+/// prefix PAT matches, replaced. A PAT with nothing special in it is a plain prefix; one with
+/// `*?[\` goes through libc's fnmatch over each prefix, longest first. An empty PAT matches the
+/// empty prefix, so REP goes in front.
+pub fn sub_prefix(s: &[u8], pat: &[u8], rep: &[u8]) -> Bytes {
+    if !pat.iter().any(|c| b"*?[\\".contains(c)) {
+        if s.starts_with(pat) {
+            return [rep, &s[pat.len()..]].concat();
+        }
+        return s.to_vec();
+    }
+    let Ok(p) = CString::new(pat) else { return s.to_vec() };
+    let mut ends: Vec<usize> = vec![0];
+    let mut i = 0;
+    for c in chars(s) {
+        i += c.len();
+        ends.push(i);
+    }
+    for &e in ends.iter().rev() {
+        let Ok(t) = CString::new(&s[..e]) else { continue };
+        if unsafe { libc::fnmatch(p.as_ptr(), t.as_ptr(), 0) } == 0 {
+            return [rep, &s[e..]].concat();
+        }
+    }
+    s.to_vec()
+}
+
+/// `IFS=C read -ra A <<<"$s"`, C one byte that isn't white space: the fields between each C,
+/// an empty one kept, except one left empty at the very end (bash's read drops it).
+pub fn read_split(s: &[u8], c: u8) -> Vec<Bytes> {
+    let mut v: Vec<Bytes> = s.split(|&b| b == c).map(|f| f.to_vec()).collect();
+    if v.last().is_some_and(|f| f.is_empty()) {
+        v.pop();
+    }
+    v
+}
+
+/// The ERE PAT compiled once and kept (each `=~` the frame runs, compiled as bash compiles it).
+pub fn re(pat: &str) -> &'static Ere {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<String, &'static Ere>>> = std::sync::OnceLock::new();
+    let m = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut g = m.lock().unwrap();
+    if let Some(e) = g.get(pat) {
+        return e;
+    }
+    let e: &'static Ere = Box::leak(Box::new(Ere::new(pat.as_bytes(), false).unwrap_or_else(|| panic!("regcomp {}", pat))));
+    g.insert(pat.to_string(), e);
+    e
 }
 
 // ------------------------------------------------------------------ arithmetic
@@ -738,6 +860,45 @@ for s; do printf '%s\0' "${s//[[:cntrl:]]/}" "${s//[$C1]/}" "${s//[$ZW]/}"; done
                 // UTC here (setup); other zones are compared through the binary (tests/components.rs).
                 assert_eq!(strftime(f, t), out, "%({:?})T {}", f, t);
             }
+        }
+    }
+
+    /// The frame's other expansions: `${s^^}`, `${s,,}`, `${s/#$HOME/\~}` (HOME a glob),
+    /// `IFS=';' read -ra`, and the `[[:space:]]` and `[[:space:]│]` removals (blank_tail,
+    /// peek_wrap), over the same inputs.
+    fn num_of(b: &[u8]) -> usize {
+        std::str::from_utf8(b).unwrap().parse().unwrap()
+    }
+    #[test]
+    fn frame_expansions_as_bash() {
+        setup();
+        let mut ins = inputs();
+        ins.extend([&b"/tmp/golden/home/work"[..], b"/tmp/golden/homework", b"/tmp/gold*/x", b" \t \xe2\x94\x82 ", "│ │".as_bytes(), b"1;;2;", b";", b"a b\xe2\x94\x82", b"\xe2\x94 ", b"\xe2\x82\xe2\x82", b"a\xe2\x82", b"\xf0\x9f\x98", b"x\xc3", b"\xc3", b"\xe0\xa0", b"\xe0\x80", b"\xed\xa0", b"\xed\x9f", b"\xf0\x90", b"\xf0\x90\x80", b"\xf4\x90\x80", b"\xfc\x8f", b"\xf0\x80\x80", b"\xf1\x80\x80", b"\xf5\x80\x80", b"\xf8\x88\x80\x80", b"\xe1\x80"].iter().map(|v| v.to_vec()));
+        let args: Vec<&[u8]> = ins.iter().map(|v| v.as_slice()).collect();
+        let out = nul_split(&bash(
+            r#"for s; do printf '%s\0' "${s^^}" "${s,,}"; for HOME in /tmp/golden/home '/tmp/g*' ''; do printf '%s\0' "${s/#$HOME/\~}"; done
+IFS=';' read -ra P <<<"$s"; printf '%s\0' "${#P[@]}" "${P[@]}"; printf '%s\0' "${s//[[:space:]]/}" "${s//[[:space:]│]/}"; done"#,
+            &args,
+        ));
+        let mut o = out.into_iter();
+        for s in &ins {
+            assert_eq!(case_map(s, true), o.next().unwrap(), "^^ {:?}", s);
+            assert_eq!(case_map(s, false), o.next().unwrap(), ",, {:?}", s);
+            for h in [&b"/tmp/golden/home"[..], b"/tmp/g*", b""] {
+                assert_eq!(sub_prefix(s, h, b"~"), o.next().unwrap(), "/#{:?} {:?}", h, s);
+            }
+            // read stops at a newline: the inputs here have none past their first line's use
+            // (read drops \x01 and \x7f, bash's own quoting bytes; read_split is given only
+            // SGR parameters, [0-9;:], so those inputs are only read past here)
+            let first = s.split(|&c| c == b'\n').next().unwrap();
+            let p = read_split(first, b';');
+            let n = o.next().unwrap();
+            let theirs: Vec<Bytes> = (0..num_of(&n)).map(|_| o.next().unwrap()).collect();
+            if !first.contains(&1) && !first.contains(&0x7f) {
+                assert_eq!(p, theirs, "read -ra {:?}", s);
+            }
+            assert_eq!(remove_all(s, Set::SpaceOr(b"")), o.next().unwrap(), "[[:space:]] {:?}", s);
+            assert_eq!(remove_all(s, Set::SpaceOr("│".as_bytes())), o.next().unwrap(), "[[:space:]│] {:?}", s);
         }
     }
 }
