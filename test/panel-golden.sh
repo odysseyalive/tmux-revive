@@ -720,7 +720,7 @@ lv_step() {
 		sleep 0.2
 	done
 	check "$5after '$3': the same screen and cursor ($4)" "grep -aqF -- '$4' $T/shot.a && cmp -s $T/shot.a $T/shot.b"
-	[[ -n ${GOLDEN_DEBUG:-} ]] && plain <"$T/shot.a" | grep -E '▶|▓▒░ [A-Z]|^║ \[' | cut -c1-80 && plain <"$T/shot.b" | grep -aF ' $ ' | head -3
+	[[ -n ${GOLDEN_DEBUG:-} ]] && plain <"$T/shot.a" | grep -E '▶|▓▒░ [A-Z]|^║ \[' | cut -c1-80
 	cmp -s "$T/shot.a" "$T/shot.b" || diff "$T/shot.a" "$T/shot.b" | head -${GOLDEN_DIFF:-6} | sed 's/^/      /'
 }
 live() {
@@ -804,6 +804,33 @@ live() {
 		check "$who with REVIVE_PANEL_POPUP: O opens the pane and the panel closes" "for _ in \$(seq 1 25); do tmux -S $s list-windows -F '#W' | grep -qx pop || break; sleep 0.2; done; ! tmux -S $s list-windows -F '#W' | grep -qx pop && [[ \$(tmux -S $s display -p -t work '#I') == 0 ]]"
 	done
 	check "O in the popup did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter' ]]"
+	# Outside tmux (no TMUX): O selects the pane, puts the terminal back and becomes `tmux attach
+	# -t SESSION`. A tmux on PATH notes an attach and ends there (never your server); the rest
+	# go to the real one.
+	local at=$T/lv-attach
+	mkdir -p "$at"
+	printf '#!%s\nif [[ $1 == attach ]]; then echo "$*" >%q/attach.last.$REVIVE_NAME; exit 0; fi\nexec %q "$@"\n' \
+		"$(command -v bash)" "$at" "$(command -v tmux)" >"$at/tmux"
+	chmod +x "$at/tmux"
+	for s in "$A" "$B"; do
+		tmux -S "$s" select-window -t work:odd
+		local cmd=$GOLDEN_A who=A
+		[[ $s == "$B" ]] && cmd="env PATH=$at:$T/lvb-shim:$PATH $GOLDEN_B" who=B
+		env_for "${s%.sock}" "$s"
+		# TMUX_TMPDIR: a tmux with no -S that slipped past the stand-in finds no server, not yours
+		# shellcheck disable=SC2145
+		tmux -S "$s" new-window -d -t work -n out "env -u TMUX -u TMUX_PANE TMUX_TMPDIR=$at PATH=$at:$PATH REVIVE_NAME=$who ${ENV[*]} REVIVE_PANEL_REFRESH=60 REVIVE_PANEL_NOW=$RNOW AGENT_SAY_SSH=false $cmd"
+	done
+	for s in "$A" "$B"; do
+		for _ in $(seq 1 40); do tmux -S "$s" capture-pane -p -t work:out 2>/dev/null | grep -q '▶' && break; sleep 0.2; done
+		tmux -S "$s" send-keys -t work:out O
+	done
+	for who in A B; do
+		s=$A
+		[[ $who == B ]] && s=$B
+		check "$who outside tmux: O selects the pane and becomes tmux attach -t work" "for _ in \$(seq 1 25); do tmux -S $s list-windows -F '#W' | grep -qx out || break; sleep 0.2; done; ! tmux -S $s list-windows -F '#W' | grep -qx out && [[ \$(tmux -S $s display -p -t work '#I') == 0 && \$(cat $at/attach.last.$who 2>/dev/null) == 'attach -t work' ]]"
+	done
+	check "O outside tmux did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter' ]]"
 	# A pane appearing between the pane list and the agents' look: a tmux on the Rust panel's
 	# PATH opens a window ahead of every other just before the batched look at the agents'
 	# screens. The asking agent's state stays on its own row, never the newcomer's.
