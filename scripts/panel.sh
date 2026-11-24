@@ -5442,6 +5442,7 @@ if [[ -n $HANDOFF ]]; then
 	HSEL=${REVIVE_PANEL_HSEL:-}
 	sel_fix
 	LOAD_AT=""
+	messages # G on the key bar: draw doesn't look at the messages while the pane asks
 	draw
 	act "$HANDOFF"
 	((UPD_N)) && upd_running || handback
