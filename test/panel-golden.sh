@@ -449,6 +449,22 @@ render() {
 }
 
 # ------------------------------------------------------------------ live --once
+# mail_addon DIR (tier 2 only): more for MESSAGES and LINKS · SAVES: approvals, a queue, more access requests
+# than are shown, a peer checking in, a read-only link limited to two names, and a link whose
+# poller runs (a process named as agent-say's)
+mail_addon() {
+	local d=$1 st=$1/state now i
+	now=$(date +%s)
+	printf 'allow a b c d %s\nallow a b c d 5\ndeny a b c d %s\nallow x\n' "$now" "$now" >"$st/grants"
+	mkdir -p "$st/queue" && : >"$st/queue/msg.1" && : >"$st/queue/msg.2" && : >"$st/queue/msg.3.err"
+	for i in 2 3 4; do mkdir -p "$st/intros/i$i"; echo "p$i@far.example" >"$st/intros/i$i/from"; echo asker@golden >"$st/intros/i$i/to"; echo $((1795000000 + i * 60)) >"$st/intros/i$i/created"; done
+	printf 'no newline' >"$st/intros/i4/from"
+	mkdir -p "$st/peers/peer.example" && : >"$st/peers/peer.example/alive"
+	: >"$st/links/folded.example/read-only"; printf 'fold-sh\nother\n' >"$st/links/folded.example/allow"
+	bash -c 'exec -a "agent-say _poll far.example" sleep 100000' </dev/null >/dev/null 2>&1 &
+	POLLER=$!
+	echo "$POLLER" >"$st/links/far.example/pid"
+}
 # agents_addon DIR SOCKET: stand-in Claude Codes and a Codex in a window each, with the files the
 # panel reads for them under DIR/home (their HOME too): session records, transcripts (context
 # used, the last prompt, a usage limit), an account and plan, a Codex rollout. Tier 2 only: the
@@ -544,6 +560,7 @@ liveonce() {
 	local LS=$T/lo.sock sc name sel id x side sdiff=0 fdiff=0 n=0
 	fixtures "$T/lx" "$LS" links
 	agents_addon "$T/lx" "$LS"
+	mail_addon "$T/lx"
 	env_for "$T/lx" "$LS"
 	sleep 2 # the panes draw their screens, the agents write their records
 	# NAME SEL [ENV...], as save's
@@ -581,6 +598,7 @@ liveonce() {
 		fi
 	done
 	tmux -S "$LS" kill-server 2>/dev/null
+	kill "$POLLER" 2>/dev/null
 	echo "  $n scenarios: $sdiff with snapshots that differ, $fdiff with frames that differ"
 	check "git_info ran no filter of a submodule's own config (neither panel)" "[[ ! -e $T/lx/submodule-filter-ran ]]"
 	check "every scenario: A and B gather the same snapshot (CPU and memory masked)" "((sdiff == 0 && n > 0))"
