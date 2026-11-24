@@ -40,6 +40,7 @@ struct RegexT {
 extern "C" {
     fn mbrtowc(pwc: *mut libc::wchar_t, s: *const libc::c_char, n: libc::size_t, ps: *mut MbState) -> libc::size_t;
     fn iswcntrl(wc: libc::c_uint) -> libc::c_int;
+    fn iswprint(wc: libc::c_uint) -> libc::c_int;
     fn iswspace(wc: libc::c_uint) -> libc::c_int;
     fn towupper(wc: libc::c_uint) -> libc::c_uint;
     fn towlower(wc: libc::c_uint) -> libc::c_uint;
@@ -48,6 +49,26 @@ extern "C" {
     fn regcomp(re: *mut RegexT, pat: *const libc::c_char, flags: libc::c_int) -> libc::c_int;
     fn regexec(re: *const RegexT, s: *const libc::c_char, n: libc::size_t, m: *mut libc::regmatch_t, flags: libc::c_int) -> libc::c_int;
     fn regfree(re: *mut RegexT);
+}
+
+/// The character mbrtowc decodes at the start of S, and its length in bytes; None for a byte
+/// that doesn't decode (or an empty S, or a NUL).
+pub fn mb_decode(s: &[u8]) -> Option<(libc::wchar_t, usize)> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut wc: libc::wchar_t = 0;
+    let mut st = MbState([0; 128]);
+    let n = unsafe { mbrtowc(&mut wc, s.as_ptr() as *const libc::c_char, s.len(), &mut st) };
+    if n == 0 || n >= usize::MAX - 1 {
+        None
+    } else {
+        Some((wc, n))
+    }
+}
+/// iswprint, under the panel's locale
+pub fn wprint(wc: libc::wchar_t) -> bool {
+    unsafe { iswprint(wc as libc::c_uint) != 0 }
 }
 
 // ------------------------------------------------------------------ the locale

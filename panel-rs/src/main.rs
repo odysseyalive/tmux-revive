@@ -9,6 +9,7 @@
 // The port is under way: colours, helpers and snapshot fields the later steps use are here already.
 #![allow(dead_code)]
 
+mod collect;
 mod compat;
 mod render;
 mod snapshot;
