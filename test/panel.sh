@@ -750,7 +750,7 @@ printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\
 cxwait c5
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"error","message":"%s"}}\n' "$(cxnow)" "$(cxmsg "$lim")" >>"$cxa"
 out=$(cframe 160)
-check "a usage limit outranks a wait on its agents still unanswered" "grep -qF 'codex     ◷ BACK' <<<\"\$out\" && ! grep -q 'codex *. WORKING ' <<<\"\$out\""
+check "a usage limit outranks a wait on its agents still unanswered" "grep -qF 'codex     $(limlabel "$lim")' <<<\"\$out\" && ! grep -q 'codex *. WORKING ' <<<\"\$out\""
 # Its message's time only (no token counts), written three hours ago for two hours ago: the time
 # is the next one after the message, not after now, so it has lifted.
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
@@ -763,7 +763,7 @@ printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\
 cxlimit "$lim"
 printf '{"auth_mode":"chatgpt","tokens":{"id_token":"%s.%s.sig"}}\n' "$(b64u '{"alg":"RS256"}')" "$(b64u '{"email":"codex.fixture@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"plus"}}')" >"$CX/auth.json"
 out=$(cframe 160)
-check "the same plan in its sign-in: still LIMIT" "grep -qF 'codex     ◷ BACK' <<<\"\$out\""
+check "the same plan in its sign-in: still LIMIT" "grep -qF 'codex     $(limlabel "$lim")' <<<\"\$out\""
 printf '{"auth_mode":"chatgpt","tokens":{"id_token":"%s.%s.sig"}}\n' "$(b64u '{"alg":"RS256"}')" "$(b64u '{"email":"codex.fixture@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"pro"}}')" >"$CX/auth.json"
 out=$(cframe 160)
 check "its plan changed since (plus to pro): READY · NEW PLAN" "grep -q 'codex *◆ READY · NEW PLAN' <<<\"\$out\""
