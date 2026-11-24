@@ -204,6 +204,24 @@ impl State {
     pub fn assoc(&self, name: &str, k: &[u8]) -> &[u8] {
         self.snap.assoc.get(name).and_then(|m| m.get(k)).map(|v| v.as_slice()).unwrap_or(b"")
     }
+    /// The key bar's off: the keys that can't act on the selection, faded (" O M N "). On a
+    /// heading, none of the pane's own keys. On a linked computer's pane never O, N only when
+    /// its rows say which pane it is (P_RID), M only when it has a name.
+    pub fn keys_off(&self) -> Bytes {
+        let mut off: Bytes = b" ".to_vec();
+        if !self.hsel.is_empty() {
+            off.extend_from_slice(b"O M N ");
+        } else if !self.a("P_HOST", self.sel).is_empty() {
+            if self.a("P_RID", self.sel).is_empty() {
+                off.extend_from_slice(b"N ");
+            }
+            if self.a("P_NAME", self.sel).is_empty() {
+                off.extend_from_slice(b"M ");
+            }
+            off.extend_from_slice(b"O ");
+        }
+        off
+    }
 }
 
 impl Ctx {

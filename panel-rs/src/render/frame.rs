@@ -521,19 +521,8 @@ impl Ctx {
             k = cat(&[B, BMAG, b"[Enter]", R, B, BWHT, b" answer", R, b"  "]);
         }
         // Keys that can't act on the selected pane are faded.
-        let mut off: Bytes = b" ".to_vec();
+        let off = self.p.keys_off();
         let rh = self.p.a("P_HOST", sel).to_vec();
-        if !self.p.hsel.is_empty() {
-            off.extend_from_slice(b"O M N ");
-        } else if !rh.is_empty() {
-            if self.p.a("P_RID", sel).is_empty() {
-                off.extend_from_slice(b"N ");
-            }
-            if self.p.a("P_NAME", sel).is_empty() {
-                off.extend_from_slice(b"M ");
-            }
-            off.extend_from_slice(b"O ");
-        }
         let mut cs: Vec<&[u8]> = vec![b"O:pen", b"M:essage", b"N:ame", b"B:ridge", b"U:pdate"];
         let fh: Bytes = if !self.p.hsel.is_empty() { self.p.hsel.clone() } else { rh.clone() };
         if !fh.is_empty() {

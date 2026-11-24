@@ -1,8 +1,9 @@
 //! The live panel (plan Phase 3): scripts/panel.sh's main loop, keys() and the act() keys that
 //! move, scroll, fold, peek and change the art, on a UI thread that never waits on a collector.
 //! Every frame is render::Ctx::draw's, the same builders --once draws with; the writer sends the
-//! lines that changed inside ?2026. Keys whose act() branch isn't ported yet (O M N B U G I S D
-//! ?, Enter on a question) are handed over to the bash panel for that one action (handoff.rs).
+//! lines that changed inside ?2026. O, and O M N where the key bar fades them, are here too.
+//! Keys whose act() branch isn't ported yet (M N B U G I S D ?, Enter on a question) are
+//! handed over to the bash panel for that one action (handoff.rs).
 //!
 //! What runs where:
 //! - UI thread (here): input, the act() keys above, the flash, the loading screen,
@@ -51,6 +52,42 @@ fn swap_gen(s: &mut Snapshot, g: &Snapshot) {
     }
     for k in ["RVER", "ROWNER"] {
         s.assoc.insert(k, g.assoc.get(k).cloned().unwrap_or_default());
+    }
+}
+
+/// act()'s early returns for O, M and N, the ones that need nothing but the selection: every
+/// key the key bar fades (State::keys_off) is one of them. Some(Some(TEXT)): notice TEXT and
+/// return; Some(None): return, saying nothing; None: the key acts (O opens, M and N go on to
+/// their box).
+fn pane_key_early(p: &crate::render::State, key: &[u8]) -> Option<Option<Bytes>> {
+    use crate::render::cat;
+    if !matches!(key, b"o" | b"O" | b"m" | b"M" | b"n" | b"N") {
+        return None;
+    }
+    // A heading selected: the keys for a pane wait for one.
+    if !p.hsel.is_empty() {
+        return Some(Some(cat(&[b"select one of ", &p.hsel, b"'s panes for that"])));
+    }
+    let id = p.a("P_ID", p.sel);
+    let h = p.a("P_HOST", p.sel);
+    match key {
+        // Panes on this computer only: focus moves only where you press O.
+        b"o" | b"O" if !h.is_empty() => Some(Some(b"O opens panes on this computer only".to_vec())),
+        b"o" | b"O" if id.is_empty() => Some(None),
+        b"m" | b"M" if id.is_empty() => {
+            Some(if h.is_empty() { None } else { Some(cat(&[b"that pane has no name; name it on ", h, b" to message it"])) })
+        }
+        b"n" | b"N" if !h.is_empty() => {
+            if !m(HOST_RE, h) {
+                Some(None)
+            } else if !m("^%[0-9]+$", p.a("P_RID", p.sel)) {
+                Some(Some(cat(&[b"on ", h, b": can't tell which pane that is (update tmux-revive there)"])))
+            } else {
+                None
+            }
+        }
+        b"n" | b"N" if id.is_empty() => Some(None),
+        _ => None,
     }
 }
 
@@ -280,15 +317,19 @@ impl Ui {
             self.prev.clear();
         }
         let sel = self.c.p.sel;
-        // A heading selected: the keys for a pane wait for one.
-        if !self.c.p.hsel.is_empty() && matches!(key, b"o" | b"O" | b"m" | b"M" | b"n" | b"N") {
-            let t = crate::render::cat(&[b"select one of ", &self.c.p.hsel, b"'s panes for that"]);
-            self.notice(&t);
+        // O M N where they can't act (a heading, a linked computer's pane: faded on the key bar)
+        // say why here, as act()'s early returns do, with no hand-over.
+        if let Some(said) = pane_key_early(&self.c.p, key) {
+            if let Some(t) = said {
+                self.notice(&t);
+            }
             return;
         }
         match key {
-            b"o" | b"O" | b"m" | b"M" | b"n" | b"N" | b"b" | b"B" | b"u" | b"U" | b"g" | b"G" | b"i" | b"I" | b"s" | b"S" | b"d" | b"D"
-            | b"?" => self.handoff(key),
+            b"o" | b"O" => self.open(),
+            b"m" | b"M" | b"n" | b"N" | b"b" | b"B" | b"u" | b"U" | b"g" | b"G" | b"i" | b"I" | b"s" | b"S" | b"d" | b"D" | b"?" => {
+                self.handoff(key)
+            }
             b"p" | b"P" => {
                 self.c.p.peek = (self.c.p.peek == 0) as i64;
                 self.c.p.peek_sel = self.pa("P_ID", sel);
@@ -372,6 +413,38 @@ impl Ui {
             _ => {}
         }
         self.c.p.sel_id = self.pa("P_ID", self.c.p.sel);
+    }
+
+    /// act's O on a pane here (pane_key_early has said no to the rest): inside tmux the client
+    /// goes to it (and a popup panel closes); outside, tmux is attached there in its place.
+    fn open(&mut self) {
+        let sel = self.c.p.sel;
+        let id = self.pa("P_ID", sel);
+        if !sh::env("TMUX").unwrap_or_default().is_empty() {
+            sh::tm(&[b"switch-client", b"-t", &id]);
+            sh::tm(&[b"select-window", b"-t", &id]);
+            sh::tm(&[b"select-pane", b"-t", &id]);
+            if !sh::env("REVIVE_PANEL_POPUP").unwrap_or_default().is_empty() {
+                self.quit(0);
+            }
+        } else {
+            sh::tm(&[b"select-window", b"-t", &id]);
+            sh::tm(&[b"select-pane", b"-t", &id]);
+            let loc = self.pa("P_LOC", sel);
+            let session = loc.split(|&c| c == b':').next().unwrap_or(b"").to_vec();
+            self.cleanup();
+            term::restore(&self.saved);
+            // exec tmux attach -t SESSION 2>&1: its messages on the screen again
+            use std::os::fd::AsFd;
+            use std::os::unix::process::CommandExt;
+            let mut c = std::process::Command::new("tmux");
+            c.arg("attach").arg("-t").arg(sh::os(&session));
+            if let Ok(fd) = std::io::stdout().as_fd().try_clone_to_owned() {
+                c.stderr(fd);
+            }
+            let e = c.exec();
+            std::process::exit(if e.kind() == std::io::ErrorKind::NotFound { 127 } else { 126 });
+        }
     }
 
     // ------------------------------------------------------------------ keys
@@ -780,6 +853,94 @@ mod tests {
         assert_eq!(s.list("MSG"), vec![b"kept".to_vec()], "the panel's own arrays stay");
         assert_eq!(s.assoc["FOLD"].get(&b"far"[..]).map(|v| v.as_slice()), Some(&b"1"[..]));
         assert_eq!(s.assoc["RVER"].get(&b"h"[..]).map(|v| v.as_slice()), Some(&b"1.0.0"[..]));
+    }
+
+    /// State with these panes' rows, pane SEL selected, heading HSEL
+    fn state(recs: &[(&str, &str, &str)], sel: i64, hsel: &str) -> crate::render::State {
+        let mut p = crate::render::State::default();
+        p.snap = snap(recs);
+        p.sel = sel;
+        p.hsel = hsel.as_bytes().to_vec();
+        p
+    }
+    // Row 0 a pane here; 1 on far.example with its rows (P_RID) and a name; 2 there with rows
+    // but no name (no P_ID either: the gather's ${name:+$name@$h}); 3 a name only (a link
+    // whose rows haven't come: no P_RID).
+    const ROWS: &[(&str, &str, &str)] = &[
+        ("P_ID", "0", "%1"),
+        ("P_NAME", "0", "shop"),
+        ("P_LOC", "0", "work:0.0"),
+        ("P_HOST", "0", ""),
+        ("P_RID", "0", ""),
+        ("P_ID", "1", "far-top@far.example"),
+        ("P_NAME", "1", "far-top"),
+        ("P_HOST", "1", "far.example"),
+        ("P_RID", "1", "%1"),
+        ("P_ID", "2", ""),
+        ("P_NAME", "2", ""),
+        ("P_HOST", "2", "far.example"),
+        ("P_RID", "2", "%7"),
+        ("P_ID", "3", "zed-a@Zed.example"),
+        ("P_NAME", "3", "zed-a"),
+        ("P_HOST", "3", "Zed.example"),
+        ("P_RID", "3", ""),
+    ];
+
+    #[test]
+    fn the_key_bar_fades_what_cant_act() {
+        assert_eq!(state(ROWS, 0, "far.example").keys_off(), b" O M N ", "a heading: none of a pane's keys");
+        assert_eq!(state(ROWS, 0, "").keys_off(), b" ", "a pane here: all of them");
+        assert_eq!(state(ROWS, 1, "").keys_off(), b" O ", "linked, rows and a name: never O");
+        assert_eq!(state(ROWS, 2, "").keys_off(), b" M O ", "linked, no name: no M");
+        assert_eq!(state(ROWS, 3, "").keys_off(), b" N O ", "linked, no P_RID: no N");
+        let none = [("P_ID", "0", ""), ("P_HOST", "0", "h"), ("P_RID", "0", ""), ("P_NAME", "0", "")];
+        assert_eq!(state(&none, 0, "").keys_off(), b" N M O ");
+    }
+
+    /// Every key the bar fades is said here, with bash act()'s words, and never handed over
+    #[test]
+    fn a_faded_key_says_why_and_goes_nowhere() {
+        use super::pane_key_early as early;
+        let said = |t: &str| Some(Some(t.as_bytes().to_vec()));
+        for k in ["o", "O", "m", "M", "n", "N"] {
+            assert_eq!(early(&state(ROWS, 0, "far.example"), k.as_bytes()), said("select one of far.example's panes for that"), "{}", k);
+        }
+        for (row, k, want) in [
+            (1, "O", said("O opens panes on this computer only")),
+            (1, "o", said("O opens panes on this computer only")),
+            (2, "O", said("O opens panes on this computer only")),
+            (3, "O", said("O opens panes on this computer only")),
+            (2, "M", said("that pane has no name; name it on far.example to message it")),
+            (2, "m", said("that pane has no name; name it on far.example to message it")),
+            (3, "N", said("on Zed.example: can't tell which pane that is (update tmux-revive there)")),
+            (3, "n", said("on Zed.example: can't tell which pane that is (update tmux-revive there)")),
+            // what can act, acts: O here opens, M and N go on to their box (the hand-over)
+            (0, "O", None),
+            (0, "M", None),
+            (0, "N", None),
+            (1, "M", None),
+            (1, "N", None),
+            (2, "N", None),
+            (3, "M", None),
+        ] {
+            assert_eq!(early(&state(ROWS, row, ""), k.as_bytes()), want, "row {} {}", row, k);
+        }
+        // the key bar's off and these agree: a faded key never acts
+        for row in 0..4 {
+            let p = state(ROWS, row, "");
+            for k in ["O", "M", "N"] {
+                let faded = p.keys_off().windows(3).any(|w| w == format!(" {} ", k).as_bytes());
+                assert_eq!(faded, early(&p, k.as_bytes()).is_some(), "row {} {}", row, k);
+            }
+        }
+        // act()'s other early returns: a pane with no id here, a host that can't be one
+        let bare = [("P_ID", "0", ""), ("P_HOST", "0", "")];
+        for k in ["O", "M", "N"] {
+            assert_eq!(early(&state(&bare, 0, ""), k.as_bytes()), Some(None), "{}", k);
+        }
+        let odd = [("P_ID", "0", "x@-bad"), ("P_NAME", "0", "x"), ("P_HOST", "0", "-bad"), ("P_RID", "0", "%1")];
+        assert_eq!(early(&state(&odd, 0, ""), b"N"), Some(None));
+        assert_eq!(early(&state(ROWS, 0, ""), b"x"), None);
     }
 
     #[test]

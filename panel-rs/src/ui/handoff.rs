@@ -4,8 +4,8 @@
 //! pane's id (REVIVE_PANEL_HSEL its heading): it gathers for itself, selects that pane, draws,
 //! acts on the key with every pick, ask, note, edit_box and answer() loop it opens, and exits
 //! 100 when done, leaving its flash (since 1.2.57, what a key did) in REVIVE_PANEL_HANDBACK.
-//! 100: this panel takes the terminal back, the same pane selected, and paints all of it. Any other end (Q, O's
-//! `exec tmux attach` or a popup's exit, Ctrl-C) ends this panel too, as it would have bash's.
+//! 100: this panel takes the terminal back, the same pane selected, and paints all of it. Any other end (Q, a
+//! popup's exit, Ctrl-C) ends this panel too, as it would have bash's.
 
 use super::{term, Ui};
 use crate::collect::sh;
