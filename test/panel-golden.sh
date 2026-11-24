@@ -16,8 +16,10 @@
 #                                      cursors compared with CPU, memory and the cpu graph masked
 #                                      (tier 3)
 #
-# GOLDEN_A and GOLDEN_B: the two panels, as commands (both "bash scripts/panel.sh" until the Rust
-# one draws; then GOLDEN_B=panel-rs/target/release/tmux-revive-panel). A's frames are kept in
+# GOLDEN_A and GOLDEN_B: the two panels, as commands: A bash scripts/panel.sh, B the Rust one,
+# panel-rs/target/release/tmux-revive-panel (built here with cargo unless GOLDEN_B is given). The
+# twins are B only once the Rust panel runs live (Phase 3): until then GOLDEN_TWINS_B, bash by
+# default, stands in for it there. A's frames are kept in
 # GOLDEN_CACHE (~/.cache/tmux-revive/golden), under the sha256 of the panel's scripts, VERSION,
 # this file and the scenario's snapshot, so a change that touches only B renders only B. With
 # the same command on both sides, B renders afresh and A comes from the cache when it can: run
@@ -28,7 +30,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 T=$(mktemp -d "${TMPDIR:-/tmp}/panel-golden.XXXXXX")
 unset TMUX TMUX_PANE XDG_STATE_HOME # never your tmux, nor your state dir
 GOLDEN_A=${GOLDEN_A:-bash $ROOT/scripts/panel.sh}
-GOLDEN_B=${GOLDEN_B:-bash $ROOT/scripts/panel.sh}
+RS_BIN=$ROOT/panel-rs/target/release/tmux-revive-panel
+GOLDEN_B=${GOLDEN_B:-$RS_BIN}
+GOLDEN_TWINS_B=${GOLDEN_TWINS_B:-bash $ROOT/scripts/panel.sh}
+# The Rust panel, built when it is the one B runs.
+build_b() {
+	[[ $GOLDEN_B == "$RS_BIN" ]] || return 0
+	command -v cargo >/dev/null || { echo "  no cargo to build panel-rs with (or set GOLDEN_B)" >&2; return 1; }
+	cargo build --release --locked --quiet --manifest-path "$ROOT/panel-rs/Cargo.toml"
+}
 CACHE=${GOLDEN_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/tmux-revive/golden}
 # The clock: the save runs' is now (a linked computer's rows have to be fresh), and every frame
 # drawn from a snapshot is drawn at RNOW, the times in it moved along to match.
@@ -202,6 +212,26 @@ snapedit() {
 	SN=("${SN[@]}") SK=("${SK[@]}") SV=("${SV[@]}")
 	snap_put_all "$out"
 }
+# snapclone IN OUT FROM N: IN with N more panes, each a copy of pane FROM's P_* records, put after
+# the last, named clone-1 .. clone-N (PANES with more rows than it has room for).
+snapclone() {
+	local in=$1 out=$2 from=$3 n=$4 i j top=-1
+	snap_get "$in"
+	for i in "${!SN[@]}"; do [[ ${SN[i]} == P_ID ]] && ((SK[i] > top)) && top=${SK[i]}; done
+	for i in "${!SN[@]}"; do
+		[[ ${SN[i]} == P_* && ${SK[i]} == "$from" ]] || continue
+		for ((j = 1; j <= n; j++)); do
+			SN+=("${SN[i]}") SK+=($((top + j)))
+			case ${SN[i]} in
+			P_ID) SV+=("%9$j") ;;
+			P_NAME) SV+=("clone-$j") ;;
+			P_WP) SV+=("9.$j") ;;
+			*) SV+=("${SV[i]}") ;;
+			esac
+		done
+	done
+	snap_put_all "$out"
+}
 # snapfix IN OUT DIR: a saved snapshot made the same from one run to the next, so A's cached frames
 # hold: the fixture's folder becomes /tmp/golden, this computer and you "golden", CPU and memory
 # fixed figures, and the times it measured moved from the save's clock to RNOW.
@@ -293,6 +323,43 @@ snaps() {
 	snapedit "$T/snap/help" "$T/snap/help-notice" "NOTICES+=open this in your browser: https://example.com/tmux-revive/help"
 	snapedit "$T/snap/answering" "$T/snap/answering-notice" "NOTICES+=saved"
 	snapedit "$T/snap/notice" "$T/snap/notice-queued" "NOTICES+=a second notice, shown after the first"
+	# The rows' other states (the fixture's panes are 0 shell, 1 asker, 2 odd-one, 3-4 on
+	# Zed.example, 5-6 on far.example, 7 on folded.example): a usage limit that lifts today and
+	# one another day, ready (after a limit, and on a new plan), waiting on you by age and by
+	# who began the turn, idle, a server still running, busy in the background, a login, the
+	# panel itself; an ACCOUNT, an old VER and [U], context running low. Selected, the limited
+	# pane, the planned one and the server's give the peek's other titles.
+	local -a st=(
+		P_STATE[0]=limit "P_LIM[0]=$((RNOW + 3600))" P_STATE[2]=waiting "W_SINCE[2]=$((RNOW - 120))" W_FROM[2]=u
+		P_STATE[3]=waiting "W_SINCE[3]=$((RNOW - 1200))" W_FROM[3]=a P_STATE[4]=ready P_LWHY[4]=plan
+		P_STATE[5]=waiting "W_SINCE[5]=$((RNOW - 9000))" W_FROM[5]=u P_SRV[5]=1 P_STATE[6]=agents P_STATE[7]=login
+		"P_ACCT[1]=me@example.com" P_USER[3]=root P_INST[3]=1.0.0 P_USER[4]=deploy
+		P_CTX[0]=10 P_AGENT[0]=1 P_CTX[2]=30 P_AGENT[2]=1 P_CTX[6]=90
+	)
+	snapedit "$T/snap/shell" "$T/snap/states" "${st[@]}"
+	snapedit "$T/snap/states" "$T/snap/states-plan" SEL=4 SEL_ID=
+	st=(
+		P_STATE[0]=limit "P_LIM[0]=$((RNOW + 2 * 86400 + 240))" P_STATE[2]=waiting "W_SINCE[2]=$((RNOW - 1500))" W_FROM[2]=u
+		P_STATE[3]=waiting "W_SINCE[3]=$((RNOW - 3000))" W_FROM[3]=u P_STATE[4]=ready P_STATE[5]=waiting
+		"W_SINCE[5]=$((RNOW - 60))" W_FROM[5]=u P_SRV[5]=1 P_STATE[6]=working P_STATE[7]=self P_STATE[1]=limit
+		"FOLD[folded.example]="
+	)
+	snapedit "$T/snap/shell" "$T/snap/states2" "${st[@]}"
+	snapedit "$T/snap/states2" "$T/snap/states2-server" SEL=5 SEL_ID=
+	snapedit "$T/snap/states2" "$T/snap/states2-agents" SEL=6 SEL_ID= P_STATE[6]=agents
+	# More panes than PANES has room for: it scrolls, the selection kept in view, the arrows lit
+	# for rows that need you above and below it.
+	snapclone "$T/snap/shell" "$T/snap/many0" 0 25
+	snapedit "$T/snap/many0" "$T/snap/many" P_STATE[9]=asking P_STATE[30]=asking SEL=20 SEL_ID=%920
+	snapedit "$T/snap/many0" "$T/snap/many-top" P_STATE[30]=asking
+	rm -f "$T/snap/many0"
+	# The cpu graph with history: a few samples (a panel just opened) and more than it keeps.
+	local -a hist=()
+	for n in $(seq 0 11); do hist+=("CPU_HIST[$n]=$((n * 9 % 40))"); done
+	snapedit "$T/snap/shell-hidden" "$T/snap/spark-short" "${hist[@]}"
+	hist=()
+	for n in $(seq 0 229); do hist+=("CPU_HIST[$n]=$((n * 37 % 101))"); done
+	snapedit "$T/snap/shell-hidden" "$T/snap/spark-long" "${hist[@]}"
 	for s in 0 1 2 3 4; do
 		for n in 0 1 7; do snapedit "$T/snap/shell-hidden" "$T/snap/scene$s-tick$n" SCENE=$s TICK=$n; done
 	done
@@ -398,43 +465,47 @@ components() {
 		done
 	done
 	check "strftime and the */ glob's order, under three locales and three zones" "((ok))"
-	# Every scenario's snapshot reads (the frame itself isn't drawn yet: exit 3 says so).
+	# Every scenario's snapshot reads and draws (render compares what it draws).
 	ok=1
 	for f in "$T"/snap/*; do
 		[[ ${f##*/} == *.* ]] && continue
-		env "${RENV[@]}" "$rs" --once --snapshot "$f" </dev/null 2>/dev/null; [[ $? == 3 ]] || { ok=0; echo "    ${f##*/} doesn't read"; }
+		env "${RENV[@]}" "$rs" --once --snapshot "$f" </dev/null >/dev/null 2>&1 || { ok=0; echo "    ${f##*/} doesn't draw"; }
 	done
-	check "every scenario's snapshot reads" "((ok))"
+	check "every scenario's snapshot reads and draws" "((ok))"
 }
 
 # ------------------------------------------------------------------ render
 render() {
 	echo "render (tier 1): A ${GOLDEN_A}, B ${GOLDEN_B}"
 	[[ -d $T/snap ]] || { echo "  no snapshots: run with snaps first (or no argument)" >&2; ((fail++)); return; }
-	local f n key base frames=0 differ=0 hit=0
+	build_b || { ((fail++)); return; }
+	local f n key base grid frames=0 differ=0 hit=0 scen=0
 	base=$(cat "$ROOT/scripts/panel.sh" "$ROOT/scripts/help.sh" "$ROOT/scripts/help.txt" "$ROOT/scripts/common.sh" \
 		"$ROOT/VERSION" "$ROOT/test/panel-golden.sh" | sha256sum)
 	mkdir -p "$CACHE" "$T/out"
 	for f in "$T"/snap/*; do
 		n=${f##*/}
 		[[ $n == *.* ]] && continue
-		key=$({ echo "$base $GOLDEN_A $GRID $RNOW"; cat "$f"; } | sha256sum | cut -c1-64)
+		# The ? page is also drawn 160 wide: two boxes side by side, the pictures beside the words.
+		grid=$GRID
+		[[ $n == help* ]] && grid+=" 160x24 160x40 160x60"
+		key=$({ echo "$base $GOLDEN_A $grid $RNOW"; cat "$f"; } | sha256sum | cut -c1-64)
 		if [[ ${GOLDEN_NOCACHE:-} != 1 && -s $CACHE/$key ]]; then
 			cp "$CACHE/$key" "$T/out/$n.a"; ((hit++))
 		else
 			# shellcheck disable=SC2086 # GOLDEN_A is a command line
-			env "${RENV[@]}" REVIVE_PANEL_SIZES="$GRID" REVIVE_PANEL_SNAP="load:$f" $GOLDEN_A --once >"$T/out/$n.a" </dev/null
+			env "${RENV[@]}" REVIVE_PANEL_SIZES="$grid" REVIVE_PANEL_SNAP="load:$f" $GOLDEN_A --once >"$T/out/$n.a" </dev/null
 			[[ ${GOLDEN_NOCACHE:-} == 1 ]] || cp "$T/out/$n.a" "$CACHE/$key"
 		fi
 		# shellcheck disable=SC2086
-		env "${RENV[@]}" REVIVE_PANEL_SIZES="$GRID" REVIVE_PANEL_SNAP="load:$f" $GOLDEN_B --once >"$T/out/$n.b" </dev/null
-		frames=$((frames + $(grep -ac '^--- ' "$T/out/$n.a")))
+		env "${RENV[@]}" REVIVE_PANEL_SIZES="$grid" REVIVE_PANEL_SNAP="load:$f" $GOLDEN_B --once >"$T/out/$n.b" </dev/null
+		frames=$((frames + $(grep -ac '^--- ' "$T/out/$n.a"))) scen=$((scen + 1))
 		if ! cmp -s "$T/out/$n.a" "$T/out/$n.b"; then
 			((differ++))
 			echo "    $n differs at: $(diff <(grep -an '' "$T/out/$n.a") <(grep -an '' "$T/out/$n.b") | head -1)"
 		fi
 	done
-	echo "  $frames frames, $(ls "$T"/snap | grep -vc '\.') scenarios, $hit from the cache"
+	echo "  $frames frames, $scen scenarios, $hit from the cache, $differ scenarios differ"
 	check "every scenario, every size: A and B draw the same bytes" "((differ == 0 && frames > 0))"
 }
 
@@ -477,10 +548,10 @@ settle() { # settle SOCKET TEXT: until its panel shows TEXT and holds still for 
 	return 1
 }
 twins() {
-	echo "twins (tier 3): A ${GOLDEN_A}, B ${GOLDEN_B}"
+	echo "twins (tier 3): A ${GOLDEN_A}, B ${GOLDEN_TWINS_B}"
 	local A=$T/twa.sock B=$T/twb.sock step keys text
 	twin_up "$T/twa" "$A" "$GOLDEN_A"
-	twin_up "$T/twb" "$B" "$GOLDEN_B"
+	twin_up "$T/twb" "$B" "$GOLDEN_TWINS_B"
 	# Each step: the keys sent to both (tmux send-keys names), and what the screen then shows.
 	local -a steps=(
 		"|C O N T R O L"
