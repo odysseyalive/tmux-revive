@@ -233,6 +233,9 @@ save() {
 	esac
 	env "${ENV[@]}" REVIVE_PANEL_NOW="$SNOW" REVIVE_PANEL_SEL="$id" COLUMNS=130 LINES=45 "$@" \
 		REVIVE_PANEL_SNAP="save:$T/snap/$name.raw" timeout 120 bash "$ROOT/scripts/panel.sh" --once >"$T/snap/$name.direct" </dev/null
+	# And a --once with no snapshot at all, which draws from its own looks as it goes.
+	env "${ENV[@]}" REVIVE_PANEL_NOW="$SNOW" REVIVE_PANEL_SEL="$id" COLUMNS=130 LINES=45 "$@" \
+		timeout 120 bash "$ROOT/scripts/panel.sh" --once </dev/null | python3 "$T/mask.py" >"$T/snap/$name.plain"
 	SAVED+=("$name")
 }
 snaps() {
@@ -258,6 +261,8 @@ snaps() {
 		env "${ENV[@]}" REVIVE_PANEL_NOW="$SNOW" COLUMNS=130 LINES=45 REVIVE_SOCKET="$T/no-such-socket" \
 			REVIVE_PANEL_SNAP="load:$T/snap/$n.raw" bash "$ROOT/scripts/panel.sh" --once >"$T/snap/$n.load" </dev/null
 		check "$n: saved, then loaded, it draws the frame the save drew" "[[ -s $T/snap/$n.direct ]] && cmp -s $T/snap/$n.direct $T/snap/$n.load"
+		# The snapshot's frame is a plain --once's: what snap_look read for it is what draw reads.
+		check "$n: and that is the frame a --once with no snapshot draws (CPU and memory masked)" "python3 $T/mask.py <$T/snap/$n.direct | cmp -s - $T/snap/$n.plain"
 		snapfix "$T/snap/$n.raw" "$T/snap/$n" "$T/fx"
 	done
 	# Where you are in the panel can't be set from outside for a --once: these change it in a
