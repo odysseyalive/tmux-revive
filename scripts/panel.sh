@@ -53,6 +53,20 @@ AMAIL="${AGENT_SAY_MAILBOX:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-say/mail
 ASTATE=$(dirname "$AMAIL")
 DIR=$(revive_dir)
 REFRESH=${REVIVE_PANEL_REFRESH:-2}
+# REVIVE_PANEL_NOW=EPOCH: the clock stands still there, for this panel (and --once) only, so a
+# test's frames are the same every time: the banner's time, how long a pane has waited, when a
+# limit lifts. Never for what other computers and the daemon ask of this one.
+NOW_PIN=${REVIVE_PANEL_NOW:-}
+[[ $NOW_PIN =~ ^[0-9]{1,12}$ ]] || NOW_PIN=""
+((ROWS || PEEKMODE || KEYSMODE || PASTEMODE || SHOWMODE || ASKMODE || RUNMODE)) && NOW_PIN=""
+now_s() { NOW=${NOW_PIN:-${EPOCHSECONDS:-$(date +%s)}}; } # now_s -> NOW: the time, in seconds
+young() { # young FILE: changed under a minute ago, as find -mmin -1 says (by NOW_PIN's clock when set)
+	[[ -n $NOW_PIN ]] || { [[ -n $(find "$1" -mmin -1 2>/dev/null) ]]; return; }
+	local m
+	m=$(stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1" 2>/dev/null) || return 1
+	now_s
+	((NOW - m < 60))
+}
 CLK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 HOST=$(hostname -s 2>/dev/null || uname -n)
 # This tmux-revive's version (the installer puts VERSION next to it), or nothing if unknown.
@@ -909,7 +923,8 @@ claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting
 	while read -r t; do
 		[[ $t =~ ^[0-9]+$ ]] && ((t > m)) && m=$t
 	done < <(stat -L -c %Y "${f[@]}" 2>/dev/null || stat -L -f %m "${f[@]}" 2>/dev/null)
-	((m && ${EPOCHSECONDS:-$(date +%s)} - m <= BG_SECS)) && CBG=1 CSRV=0
+	now_s
+	((m && NOW - m <= BG_SECS)) && CBG=1 CSRV=0
 	return 0
 }
 
@@ -978,7 +993,9 @@ mail_times() {
 # it (not known for one already waiting when it first looked), and from the mailbox whether a
 # message reached it since it last began to work.
 wait_watch() {
-	local i k st now=${EPOCHSECONDS:-$(date +%s)} t w
+	local i k st now t w
+	now_s
+	now=$NOW
 	local -A ost=() ot0=() ow0=()
 	for k in "${!WW_ST[@]}"; do ost[$k]=${WW_ST[$k]} ot0[$k]=${WW_T0[$k]:-} ow0[$k]=${WW_W0[$k]:-}; done
 	WW_ST=() WW_T0=() WW_W0=()
@@ -1021,7 +1038,8 @@ wait_colour() {
 	WCOL=$BGRN WIDLE=0 WAGENT=0 WUNK=0
 	[[ ${1:-} =~ ^[0-9]+$ ]] && s=${W_SINCE[$1]:-}
 	[[ -n $s ]] || { WUNK=1; return 0; }
-	a=$((${EPOCHSECONDS:-$(date +%s)} - s))
+	now_s
+	a=$((NOW - s))
 	((a >= 5400)) && { WIDLE=1; return 0; }
 	[[ ${W_FROM[$1]:-} == a ]] && { WAGENT=1; return 0; }
 	[[ ${W_FROM[$1]:-} == u ]] || return 0
@@ -1161,7 +1179,8 @@ proc_start() { # proc_start PID -> PSTART: when it started, in seconds since the
 	e=$(ps -o etime= -p "$1" 2>/dev/null)
 	e=${e//[[:space:]]/}
 	[[ $e =~ ^(([0-9]+)-)?(([0-9]+):)?([0-9]+):([0-9]+)$ ]] || return 0
-	PSTART=$((${EPOCHSECONDS:-$(date +%s)} - 10#${BASH_REMATCH[2]:-0} * 86400 - 10#${BASH_REMATCH[4]:-0} * 3600 - 10#${BASH_REMATCH[5]} * 60 - 10#${BASH_REMATCH[6]}))
+	now_s
+	PSTART=$((NOW - 10#${BASH_REMATCH[2]:-0} * 86400 - 10#${BASH_REMATCH[4]:-0} * 3600 - 10#${BASH_REMATCH[5]} * 60 - 10#${BASH_REMATCH[6]}))
 	CX_START[$1]=$PSTART
 }
 # An agent a codex started (a subagent) has a rollout of its own, for the same folder and
@@ -1214,7 +1233,8 @@ codex_rollout() { # codex_rollout PID -> ROLLOUT, or nothing
 		proc_start "$p"
 		[[ -n $PSTART ]] && peers+=("$p") pst[$p]=$PSTART
 	done
-	now=${EPOCHSECONDS:-$(date +%s)}
+	now_s
+	now=$NOW
 	mapfile -t files < <(find "$d/sessions" -type f -name 'rollout-*.jsonl' -mmin -$(((now - st) / 60 + 2)) 2>/dev/null)
 	((${#files[@]})) && codex_meta "${files[@]}"
 	for f in "${files[@]}"; do
@@ -1254,7 +1274,8 @@ ctx_reported() {
 	read -r id sid pct at pid _ 2>/dev/null <"$f" || return 0
 	[[ $id == "$1" && $pid == "$2" && $pct =~ ^[0-9]{1,3}$ && $at =~ ^[0-9]+$ ]] && ((pct <= 100)) || return 0
 	[[ -z ${3:-} || $sid == "$3" ]] || return 0
-	((${EPOCHSECONDS:-$(date +%s)} - at <= ${REVIVE_CTX_TTL:-600})) && CTX=$pct
+	now_s
+	((NOW - at <= ${REVIVE_CTX_TTL:-600})) && CTX=$pct
 	return 0
 }
 # claude_tfile PID SID -> TFILE: its session's transcript (SID from its record), or nothing.
@@ -1477,10 +1498,11 @@ limit_look() {
 	[[ $r == - ]] || P_LIM[i]=$r
 	# A Codex's sign-in says its plan as its rollout does, but only one written since the limit
 	# is taken to say it changed (an older one may just name it otherwise).
+	now_s
 	if [[ -n $base && -n $PLAN && $base != "$PLAN" ]] &&
 		{ [[ $kind != codex ]] || (($(stat -c %Y "${CX_CDIR[$apid]}/auth.json" 2>/dev/null || stat -f %m "${CX_CDIR[$apid]}/auth.json" 2>/dev/null || echo 0) >= at)); }; then
 		P_LWHY[i]=plan LST=ready
-	elif [[ $r != - ]] && ((${EPOCHSECONDS:-$(date +%s)} >= r)); then LST=ready
+	elif [[ $r != - ]] && ((NOW >= r)); then LST=ready
 	else LST=limit; fi
 	return 0
 }
@@ -1491,7 +1513,8 @@ lim_when() {
 	LWHEN=""
 	[[ $1 =~ ^[0-9]+$ ]] || return 0
 	printf -v d '%(%Y%m%d)T' "$1"
-	printf -v n '%(%Y%m%d)T' -1
+	now_s
+	printf -v n '%(%Y%m%d)T' "$NOW"
 	printf -v t '%(%I:%M%p)T' "$1"
 	t=${t#0} t=${t,,} t=${t/:00/}
 	if [[ $d == "$n" ]]; then LWHEN=$t
@@ -1993,7 +2016,7 @@ remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or 
 	((n > 60)) && n=60
 	f="$RDIR/$h.peek-${id#%}"
 	if ((ONCE)); then peek_fetch "$h" "$id" "$n" "$f" now; else peek_fetch "$h" "$id" "$n" "$f"; fi
-	if [[ -f $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
+	if [[ -f $f ]] && young "$f"; then
 		# Untrusted like the rows: control characters out, and only so many lines, so wide.
 		L=()
 		while IFS= read -r l || [[ -n $l ]]; do
@@ -2021,7 +2044,7 @@ remote_panes() {
 		if ((lg)); then :; elif ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
 		f="$RDIR/$h.rows" got=0 RVER[$h]="" ROWNER[$h]="" rctx=() rbg=() rsrv=() ruser=() rinst=() rwait=() racct=() rlim=() ft=""
 		# Rows a minute old or newer; older means that computer stopped answering.
-		if ((!lg)) && [[ -s $f && -n $(find "$f" -mmin -1 2>/dev/null) ]]; then
+		if ((!lg)) && [[ -s $f ]] && young "$f"; then
 			while IFS=$S read -r id loc name app st folder git cpu mem agent; do
 				# Its version, on a line of its own (an older panel's check below skips it).
 				if [[ ${id:0:40} =~ ^\#version\ (.*)$ && -z $loc ]]; then
@@ -2090,10 +2113,11 @@ remote_panes() {
 				if [[ $st == waiting && -n ${rlim[$id]:-} ]]; then
 					v=${rlim[$id]% *}
 					[[ -n $ft ]] || ft=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)
-					[[ $v == - ]] && v="" || v=$((${ft:-${EPOCHSECONDS:-$(date +%s)}} + v))
+					now_s
+					[[ $v == - ]] && v="" || v=$((${ft:-$NOW} + v))
 					st=limit
 					[[ ${rlim[$id]#* } == 1 ]] && st=ready
-					[[ -n $v ]] && ((${EPOCHSECONDS:-$(date +%s)} >= v)) && st=ready
+					[[ -n $v ]] && ((NOW >= v)) && st=ready
 				fi
 				[[ $cpu =~ ^[0-9]{1,4}$ ]] || cpu=0
 				[[ $mem =~ ^[0-9]{1,10}$ ]] || mem=0
@@ -2109,7 +2133,8 @@ remote_panes() {
 				[[ $st == limit || $st == ready ]] && P_LIM[${#P_ID[@]} - 1]=$v
 				[[ $st == ready && ${rlim[$id]#* } == 1 ]] && P_LWHY[${#P_ID[@]} - 1]=plan
 				if [[ $st == waiting && -n ${rwait[$id]:-} ]]; then
-					W_SINCE[${#P_ID[@]} - 1]=$((${EPOCHSECONDS:-$(date +%s)} - ${rwait[$id]% *})) W_FROM[${#P_ID[@]} - 1]=${rwait[$id]#* }
+					now_s
+					W_SINCE[${#P_ID[@]} - 1]=$((NOW - ${rwait[$id]% *})) W_FROM[${#P_ID[@]} - 1]=${rwait[$id]#* }
 				fi
 				got=1
 			done < <(head -n 200 "$f")
@@ -2905,7 +2930,8 @@ messages() { # -> MSG lines for the message center; INTRO_ON
 	# Approved: allow lines within their day (agent-say culls the rest when G is pressed).
 	local ttl=${AGENT_SAY_SESSION_TTL:-86400}
 	[[ $ttl =~ ^[1-9][0-9]{0,9}$ ]] || ttl=86400
-	printf -v now '%(%s)T' -1
+	now_s
+	now=$NOW
 	gn=$(awk -v c="$((now - ttl))" '$1 == "allow" && $6 ~ /^[0-9]+$/ && $6 > c {n++} END {print n + 0}' "$ASTATE/grants" 2>/dev/null)
 	((gn)) && INTRO_ON=1 && MSG+=("$BGRN✓$R $GRY$gn approved · $R$BBLU[$B${BYEL}G$R$BBLU]$R$GRY to see$R")
 	qn=$(find "$ASTATE/queue" -maxdepth 1 -name 'msg.*' ! -name '*.err' 2>/dev/null | wc -l)
@@ -2959,7 +2985,7 @@ links_saves() { # -> SIDE lines: saves, then links
 		[[ -d $d ]] || continue
 		h=$(basename "$d")
 		clean h
-		if [[ -n $(find "$d/alive" -mmin -1 2>/dev/null) ]]; then SIDE+=("$BGRN◌$R $BWHT$h$R $GRY· checks in here$R"); fi
+		if young "$d/alive"; then SIDE+=("$BGRN◌$R $BWHT$h$R $GRY· checks in here$R"); fi
 	done
 	# Access waiting and approved shows in MESSAGES (messages()), not here.
 	# ssh connections in panes that aren't linked yet: offered for linking with B.
@@ -2998,7 +3024,8 @@ draw_top() {
 		BH=6
 		monitor "$w" "$a" "$s"
 		rep ─ 25
-		printf -v now '%(%a %H:%M:%S)T' -1
+		now_s
+		printf -v now '%(%a %H:%M:%S)T' "$NOW"
 		local tag=("$BBLU░▒▓$R$B$BWHT T M U X $R$BBLU▓▒░$R" "$B${BCYN}C O N T R O L   P A N E L$R"
 			"$GRY$REP$R" "$GRY node   $BWHT$HOST$R" "$GRY time   $BWHT$now$R"
 			"$GRY sysop  $BWHT${USER:-you}$GRY · $n panes · $s agents$R")
@@ -3007,7 +3034,8 @@ draw_top() {
 			if ((IW >= 100)); then BAN[i]=" ${BIG_ROWS[i]}  ${MON[i]}   $PADV"; else BAN[i]=" ${BIG_ROWS[i]}  $PADV"; fi
 		done
 	else
-		printf -v now '%(%H:%M:%S)T' -1
+		now_s
+		printf -v now '%(%H:%M:%S)T' "$NOW"
 		local tag=("$BBLU░▒▓$R$B$BWHT T M U X $R$BBLU▓▒░$R" "$B${BCYN}C O N T R O L   P A N E L$R" "$GRY node $BWHT$HOST$GRY · $now · $n panes · $s agents$R")
 		local shade=("$BCYN" "$CYN" "$BBLU")
 		for i in 0 1 2; do padv "${tag[i]}" 60; BAN[i]="  ${shade[i]}$B${BANNER[i]}$R   $PADV"; done
@@ -4592,7 +4620,8 @@ act() {
 		local ids=() labels=() d f t txt g a b w ttl now
 		ttl=$(timeout 10 "$ASAY" _cull 2>/dev/null)
 		[[ $ttl =~ ^[1-9][0-9]{0,9}$ ]] || ttl=86400
-		printf -v now '%(%s)T' -1
+		now_s
+		now=$NOW
 		for d in "$ASTATE"/intros/*/; do
 			[[ -f $d/from ]] || continue
 			f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to")
@@ -4876,7 +4905,8 @@ lbox_check() {
 		1) ;;
 		*)
 			up=$(tm display-message -p '#{start_time}' 2>/dev/null)
-			[[ $up =~ ^[0-9]+$ ]] && ((${EPOCHSECONDS:-$(date +%s)} - up <= 180)) || return 0 ;;
+			now_s
+			[[ $up =~ ^[0-9]+$ ]] && ((NOW - up <= 180)) || return 0 ;;
 		esac
 		lbox_count
 		((LB_DONE < LB_TOT)) && LBOX=1
