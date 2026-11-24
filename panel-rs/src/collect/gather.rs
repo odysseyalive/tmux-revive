@@ -385,3 +385,73 @@ pub mod tests {
         }
     }
 }
+
+impl G {
+    /// outside_ssh: your own interactive ssh sessions outside tmux -> X_SSH, X_WHERE (hosts that
+    /// could be linked, and where each runs), sorted as xssh_sort sorts them
+    pub fn outside_ssh(&mut self) {
+        self.x_ssh.clear();
+        self.x_where.clear();
+        if sh::env("REVIVE_PANEL_OUTSIDE_SSH").as_deref() == Some(b"0") {
+            return;
+        }
+        let first_word = |s: &[u8]| -> Bytes {
+            // c=${c%% *} c=${c##*/}
+            let c = match s.iter().position(|&x| x == b' ') {
+                Some(i) => &s[..i],
+                None => s,
+            };
+            sh::basename(c).to_vec()
+        };
+        let par = |t: &procs::Table, p: &[u8]| -> Bytes { t.par.get(p).filter(|v| !v.is_empty()).cloned().unwrap_or_else(|| b"0".to_vec()) };
+        // ${!PARGS[@]}: an order of its own, made up for by the sort below
+        let pids: Vec<Bytes> = self.t.args.keys().cloned().collect();
+        for pid in pids {
+            if self.inpane.contains(&pid) || self.t.uid.get(&pid).map(|v| v.as_slice()).unwrap_or(b"") != self.uid.as_slice() {
+                continue;
+            }
+            let a = self.t.args_of(&pid).to_vec();
+            if !sh::has(&a, "ssh") {
+                continue;
+            }
+            let h = ssh_dest(&a);
+            if h.is_empty() {
+                continue;
+            }
+            if ["BatchMode=yes", "agent-say", "git-upload-pack", "git-receive-pack", "rsync --server", " -s ", "sftp"].iter().any(|x| sh::has(&a, x)) {
+                continue;
+            }
+            let c = first_word(self.t.args_of(&par(&self.t, &pid)));
+            if [&b"git"[..], b"scp", b"sftp", b"rsync"].contains(&c.as_slice()) {
+                continue;
+            }
+            // Where it runs: the first ancestor that isn't a shell (kitty, alacritty, sshd...).
+            let mut up = par(&self.t, &pid);
+            let mut wh: Bytes = Vec::new();
+            while n(&up) > 1 {
+                let c = first_word(self.t.args_of(&up));
+                let c = strip_dash(&c).to_vec();
+                if !sh::contains(super::SHELLS, &sh::path(&[b" ", &c, b" "])) {
+                    wh = c;
+                    break;
+                }
+                up = par(&self.t, &up);
+            }
+            let wh = crate::compat::clean(&wh);
+            self.x_ssh.push(h);
+            self.x_where.push(if wh.is_empty() { b"a terminal".to_vec() } else { wh });
+        }
+        if self.x_ssh.len() > 1 {
+            // xssh_sort: as pairs, by host\x1fwhere, byte by byte
+            let mut s: Vec<Bytes> = self.x_ssh.iter().zip(&self.x_where).map(|(h, w)| sh::path(&[h, b"\x1f", w])).collect();
+            s.sort();
+            self.x_ssh.clear();
+            self.x_where.clear();
+            for k in s {
+                let i = k.iter().position(|&c| c == 0x1f).unwrap();
+                self.x_ssh.push(k[..i].to_vec());
+                self.x_where.push(k[i + 1..].to_vec());
+            }
+        }
+    }
+}

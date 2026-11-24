@@ -5,10 +5,6 @@ use super::sh::Bytes;
 use super::G;
 
 impl G {
-    pub fn outside_ssh(&mut self) {
-        self.x_ssh.clear();
-        self.x_where.clear();
-    }
     pub fn remote_panes(&mut self) {
         self.p_groups = 0;
     }
