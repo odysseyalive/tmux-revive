@@ -4240,14 +4240,15 @@ user_note() {
 	tm set-buffer -w -- "$cmd" 2>/dev/null || tm set-buffer -- "$cmd" 2>/dev/null
 	note "$1 for $u" "Run this in $who:" "" "$cmd" "" "Copied. Paste it there, or press prefix ]."
 }
-# unlink_host HOST: agent-say unlink, and what it said, in a notice.
+# unlink_host HOST: agent-say unlink. Gone from LINKS, it says nothing more; still there, what
+# agent-say said, on the bar.
 unlink_host() {
 	local out
 	flash "unlinking $1…"; draw
 	out=$(timeout 30 "$ASAY" unlink "$1" 2>&1 | tail -n 1)
 	clean out
-	[[ -d $ASTATE/links/$1 ]] || rm -f "$RDIR/$1.rows" # what it kept of that computer
-	notice "${out#agent-say: }"
+	if [[ -d $ASTATE/links/$1 ]]; then flash "${out#agent-say: }"
+	else FLASH=""; rm -f "$RDIR/$1.rows"; fi # what it kept of that computer
 }
 
 # U: tmux-revive updated everywhere it can be, all at once, in a popup that shows each line
@@ -4451,16 +4452,10 @@ note_box() {
 	NB+="$e[$((top + 4 + ${#ls[@]}));$((left + 1))H$GRY$REP$R"
 	((${NB_ONLY:-0})) || printf '%s' "$NB"
 }
-# notice TEXT: what a key just did, or why it couldn't, or news from the background (a new ssh,
-# a dropped login): in a box over the panel that stays until Esc, not on the key bar where it
-# goes by. Kept in NOTICES, and shown one at a time over the panel, which goes on refreshing.
+# notice TEXT: what a key just did, or why it couldn't: on the key bar, as flash says it. No
+# box to Esc: the panel's own sections show how things stand.
 NOTICES=()
-notice() {
-	local t=$1
-	clean t # agent-say's reply can quote anything
-	NOTICES+=("$t")
-	[[ $FLASH == *… ]] && FLASH="" # the "…" that led up to it, done
-}
+notice() { flash "$1"; }
 # notice_up: a notice shows, over the panel drawn as usual under it (draw paints it last): one
 # is waiting, and nothing else has the screen (the loading box, a question being answered).
 notice_up() { ((${#NOTICES[@]} && !LBOX && !ANSWERING)); }
@@ -4590,19 +4585,20 @@ act() {
 		done
 		hosts+=("") labels+=("other host… (type its name)")
 		[[ $kr != " " ]] && hint="↑↓ choose · Enter picks · U unlinks · Esc closes"
-		PKEYS=u PKROWS=$kr PHINT=$hint pick "ATTACH SERVERS" "${labels[@]}" || { notice "link cancelled"; return; }
+		PKEYS=u PKROWS=$kr PHINT=$hint pick "ATTACH SERVERS" "${labels[@]}" || return
 		h=${hosts[PICKED]}
 		[[ $PKEY == u ]] && { unlink_host "$h"; return; }
 		if [[ -z $h ]]; then
-			ask "Host to link (as you'd type after ssh):" || { notice "link cancelled"; return; }
+			ask "Host to link (as you'd type after ssh):" || return
 			h=$REPLY
-			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { notice "not a host name: $h"; return; }
+			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { flash "not a host name: $h"; return; }
 		fi
 		# A link whose login dropped: its key was confirmed when it was linked (and the link
-		# checks it still), so only the login is asked for.
+		# checks it still), so only the login is asked for. LINKS then shows how it went.
 		if linked "$h" && [[ -f $ASTATE/links/$h/login ]]; then
 			flash "logging in to $h…"; draw
-			if login_window "$h"; then notice "logged in to $h; its link picks up again"; else notice "not logged in to $h"; fi
+			login_window "$h"
+			FLASH=""
 			return
 		fi
 		# A link there already (working or not): link it again, fresh, with the key ssh uses for it
@@ -4619,7 +4615,7 @@ act() {
 			lopts=("No, leave it as is" "Yes, link $h again" "Unlink $h")
 			[[ -f $ASTATE/links/$h/linkkey ]] || lopts+=("Use the link key for $h")
 			pick "LINK $h AGAIN?" "${NOTE}It unlinks, then links again with the key ssh uses now." "${lopts[@]}" &&
-				((PICKED > 1)) || { notice "link cancelled"; return; }
+				((PICKED > 1)) || return
 			((PICKED == 3)) && { unlink_host "$h"; return; }
 			if ((PICKED == 4)); then usekey=1; flash "moving $h to the link key…"; draw
 			else again=1 was=$(cat "$ASTATE/links/$h/fingerprint" 2>/dev/null); fi
@@ -4658,9 +4654,9 @@ act() {
 			if ((${#keys[@]})); then note+=": ${keys[0]}"; else note="no key found (not in known_hosts, no answer to ssh-keyscan)" first=""; fi
 			notes=("$NOTE$note")
 			[[ -n $first ]] && notes+=("${NOTE}First time we see this key, so check it matches your server.")
-			pick "$title" "${notes[@]}" "${yn[@]}" || { notice "link cancelled"; return; }
+			pick "$title" "${notes[@]}" "${yn[@]}" || { FLASH=""; return; }
 			PICKED=$((PICKED - ${#notes[@]} + 1))
-			[[ ${yn[PICKED - 1]} == Yes* ]] || { notice "link cancelled"; return; }
+			[[ ${yn[PICKED - 1]} == Yes* ]] || { FLASH=""; return; }
 			if [[ $KEY_STATE == trusted ]]; then
 				for k in "${keys[@]}"; do largs+=(--fingerprint "$k"); done
 				linked_msg="linked to $h with the key from your known_hosts: ${keys[0]}"
@@ -4689,9 +4685,9 @@ act() {
 		if [[ $LOUT == *"check it, then link again and confirm the new key"* ]]; then
 			read_host_keys "$h" --new
 			keys=("${KEYS[@]}")
-			((${#keys[@]})) || { notice "$h's host key isn't the one you confirmed, and ssh-keyscan shows no other, so it's not linked"; return; }
+			((${#keys[@]})) || { flash "$h's host key isn't the one you confirmed, and ssh-keyscan shows no other, so it's not linked"; return; }
 			pick "WARNING: $h's HOST KEY CHANGED since you linked it" "${NOTE}its key now: ${keys[0]}" "No, don't link $h" "Yes, link $h" &&
-				((PICKED == 2)) || { notice "link cancelled"; return; }
+				((PICKED == 2)) || { FLASH=""; return; }
 			keys=("${keys[0]}") KEY_STATE=changed linked_msg=""
 			largs=(--yes --fingerprint "${keys[0]}")
 			flash "linking $h…"; draw
@@ -4702,10 +4698,10 @@ act() {
 		# (agent-say's login checks it strictly before ssh asks), so none confirmed, no login.
 		# Relinked, it is the key the link recorded (login_window with none given takes that).
 		if [[ $out == *"$h needs a login"* ]]; then
-			((${#keys[@]})) || { notice "no host key of $h to confirm, so no password is sent to it; not linked"; return; }
+			((${#keys[@]})) || { flash "no host key of $h to confirm, so no password is sent to it; not linked"; return; }
 			[[ $KEY_STATE == recorded ]] && keys=()
 			flash "logging in to $h…"; draw
-			login_window "$h" "${keys[@]}" || { notice "not logged in to $h; not linked"; return; }
+			login_window "$h" "${keys[@]}" || { flash "not logged in to $h; not linked"; return; }
 			flash "linking $h…"; draw
 			link_out "${largs[@]}"
 		fi
@@ -4723,13 +4719,10 @@ act() {
 			while [[ -n $kline ]]; do kn+=("$NOTE${kline:0:70}"); kline=${kline:70}; done
 			pick "LINK KEY FOR $h" "${kn[@]}" "OK" || true
 		fi
-		# Tried once and failed: why, in a few words, as LINKS shows it.
-		if [[ $out != "linked to "* && -f $ASTATE/links/$h/paused ]]; then
-			out=$(head -n 1 "$ASTATE/links/$h/error" 2>/dev/null)
-			clean out
-			out="$h: $out"
-		fi
-		notice "${out#agent-say: }" ;;
+		# Linked, LINKS shows it; tried once and failed, LINKS shows why. Anything else (a link
+		# that never got made, what came of the link key) is said on the bar.
+		if [[ $out == "linked to "* || ( -n $linked_msg && $out == "$linked_msg" ) || -f $ASTATE/links/$h/paused ]]; then FLASH=""
+		else flash "${out#agent-say: }"; fi ;;
 	u | U) upd_show ;;
 	g | G | i | I) # I: the key it had before, kept so it still works
 		# Access: agents on two linked computers asking to talk through this one (waiting), and
@@ -4756,12 +4749,12 @@ act() {
 			((${#ids[@]} > nw)) || ids+=("") labels+=("${NOTE}APPROVED")
 			ids+=("g $a $b") labels+=("${f:0:30} → ${t:0:30} · $((w / 3600))h $((w % 3600 / 60))m left")
 		done < <(cat "$ASTATE/grants" 2>/dev/null)
-		((${#ids[@]})) || { notice "nothing waiting or approved"; return; }
+		((${#ids[@]})) || return
 		pick "LINK AGENTS TOGETHER" "${labels[@]}" || return
 		read -r g a b <<<"${ids[PICKED]}"
 		if [[ $g == i ]]; then
 			d="$ASTATE/intros/$a"
-			[[ $a =~ ^[0-9a-f]{32}$ && -f $d/from ]] || { notice "that request is gone"; return; }
+			[[ $a =~ ^[0-9a-f]{32}$ && -f $d/from ]] || return
 			f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to") txt=$(head -c 180 "$d/intro")
 			clean f t txt
 			# Its words (three lines at most), then the two choices. Approving takes a code typed
@@ -4826,8 +4819,7 @@ act() {
 			out=${out##*$'\n'}
 		fi
 		PREV=() # the boxes drawn over, all of it again
-		clean out
-		notice "${out#agent-say: }" ;;
+		flash "${out#agent-say: }" ;;
 	p | P) PEEK=$((!PEEK)) PEEK_SEL=${P_ID[SEL]:-} PEEK_ALL=0 ;;
 	# Enter: on a linked computer's heading, fold it to that line (or open it again); on a pane
 	# asking a question, answer it.
@@ -4838,7 +4830,7 @@ act() {
 	# (on a folded heading, open it again, as Enter does).
 	f)
 		if [[ -n $HSEL ]]; then act enter; return
-		elif [[ -z ${P_HOST[SEL]:-} ]]; then notice "this computer can't be folded"; return; fi
+		elif [[ -z ${P_HOST[SEL]:-} ]]; then return; fi
 		fold_toggle "${P_HOST[SEL]}" && HSEL=${P_HOST[SEL]} ;;
 	# F, a shortcut the help page tells of, not the bar: fold every linked computer (never
 	# this one), or, with all of them folded already, open them all. A selection inside one folded moves to its heading.
@@ -4846,7 +4838,7 @@ act() {
 		local -A seen=()
 		local h all=1
 		for h in "${P_HOST[@]}"; do [[ -n $h ]] && seen[$h]=1; done
-		((${#seen[@]})) || { notice "nothing is bridged"; return; }
+		((${#seen[@]})) || return
 		for h in "${!seen[@]}"; do [[ -n ${FOLD[$h]:-} ]] || all=0; done
 		for h in "${!seen[@]}"; do ((all)) || [[ -z ${FOLD[$h]:-} ]] && fold_toggle "$h"; done
 		if ((all)); then HSEL=""
@@ -5369,11 +5361,7 @@ esac
 loading
 PREV=() # after the splash: paint the whole panel
 
-declare -A SSH_SEEN=() LOGIN_SEEN=()
-# A link needing its login is said once each time it comes to need one. Which have been said
-# is kept on disk, as the folds are, so the panel started again doesn't say it again.
-LOGINDIR="$DIR/panel/login-said"
-for f in "$LOGINDIR"/*; do [[ -f $f ]] && LOGIN_SEEN[${f##*/}]=1; done
+rm -rf "$DIR/panel/login-said" # (what an older panel kept here)
 fold_load
 # keys KEY: act on KEY and on any keys already waiting behind it (a held arrow), so that they
 # are drawn once. Keys that only move the selection set nav.
@@ -5423,17 +5411,12 @@ keys() {
 # REVIVE_PANEL_HANDOFF is the key, as keys() names it, and REVIVE_PANEL_SEL the pane it had
 # selected (REVIVE_PANEL_HSEL its heading). That one key is acted on here, every box it opens
 # and a question's answering with it; then this panel exits 100 for the Rust one to carry on,
-# its notices and flash left in REVIVE_PANEL_HANDBACK. An update U started keeps it here, the
+# its flash (what the key did) left in REVIVE_PANEL_HANDBACK. An update U started keeps it here, the
 # panel as usual, until the update is done.
 HANDOFF=${REVIVE_PANEL_HANDOFF:-}
 handback() {
-	local i f=${REVIVE_PANEL_HANDBACK:-}
-	if [[ -n $f ]]; then
-		{
-			for i in "${!NOTICES[@]}"; do printf 'NOTICES\0%s\0%s\0' "$i" "${NOTICES[i]}"; done
-			[[ -n $FLASH ]] && printf 'FLASH\0\0%s\0FLASH_AGE\0\0%s\0' "$FLASH" $((SECONDS - FLASH_T))
-		} >"$f"
-	fi
+	local f=${REVIVE_PANEL_HANDBACK:-}
+	[[ -n $f && -n $FLASH ]] && printf 'FLASH\0\0%s\0FLASH_AGE\0\0%s\0' "$FLASH" $((SECONDS - FLASH_T)) >"$f"
 	exit 100
 }
 if [[ -n $HANDOFF ]]; then
@@ -5447,38 +5430,12 @@ if [[ -n $HANDOFF ]]; then
 	act "$HANDOFF"
 	((UPD_N)) && upd_running || handback
 fi
-held=0 SSH_FIRST=1 FULL_T=$SECONDS
+held=0 FULL_T=$SECONDS
 while :; do
 	# Moving the selection only redraws from what was gathered last; everything is looked at
 	# again on the next refresh or any other key, so the arrows stay quick.
 	if ((!nav)); then
 		gather
-		for h in "${P_SSH[@]}" "${X_SSH[@]}"; do
-			[[ -n $h && -z ${SSH_SEEN[$h]:-} ]] || continue
-			SSH_SEEN[$h]=1
-			# Only one opened since the panel started: those open before are in LINKS already
-			# ([B]ridge?), and a notice for each would be a box to close for each as it opens.
-			((SSH_FIRST)) || linked "$h" || notice "new ssh: $h · B bridges it"
-		done
-		SSH_FIRST=0
-		# A link whose login dropped (a reboot over there, the network gone): said once, until
-		# it's logged in again (or gone) and drops once more.
-		for h in "${!LOGIN_SEEN[@]}"; do
-			[[ -n ${LOGIN_SEEN[$h]} && ! -d $ASTATE/links/$h ]] && { LOGIN_SEEN[$h]=""; rm -f "$LOGINDIR/$h"; }
-		done
-		for d in "$ASTATE"/links/*/; do
-			h=$(basename "$d")
-			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
-			if [[ -f $d/on && -f $d/login ]]; then
-				[[ -n ${LOGIN_SEEN[$h]:-} ]] && continue
-				notice "$h needs login · B to type its password"
-				LOGIN_SEEN[$h]=1
-				mkdir -p "$LOGINDIR" && : >"$LOGINDIR/$h"
-			elif [[ -n ${LOGIN_SEEN[$h]:-} ]]; then
-				LOGIN_SEEN[$h]=""
-				rm -f "$LOGINDIR/$h"
-			fi
-		done
 		TCOLS="" MSG_OLD=1 # looked at again along with the panes
 		LOAD_AT="" # the first look is in: no more loading bar
 		lbox_check
