@@ -608,7 +608,13 @@ impl Ui {
         let files = self.hub.peek_files.lock().map(|f| f.clone()).unwrap_or_default();
         for f in files {
             let _ = std::fs::remove_file(sh::os(&f));
-            let _ = std::fs::remove_file(sh::os(&sh::path(&[&f, b".fail"])));
+            // FILE.fail, and a screen still being asked for (FILE.XXXXXX): bash's fetch, hung up
+            // on, throws it away; here the fetch's thread ends with the panel, so it goes now
+            let dir = crate::collect::dirname(&f);
+            let pre = sh::path(&[sh::basename(&f), b"."]);
+            for t in sh::glob(&dir, &pre, b"", false) {
+                let _ = std::fs::remove_file(sh::os(&t));
+            }
         }
     }
 
