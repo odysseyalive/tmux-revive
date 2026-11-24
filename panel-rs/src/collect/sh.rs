@@ -57,13 +57,19 @@ pub fn read_ws(line: &[u8], n: usize, ifs: &[u8]) -> Vec<Bytes> {
 }
 
 /// `IFS=<one character that isn't whitespace> read -r A B ...`: each one a field, empty ones
-/// too; the last name takes the rest of the line as it is, delimiters and all.
+/// too; the last name takes the rest of the line, delimiters and all, except that a rest that is
+/// one field and a delimiter loses the delimiter (bash: `IFS=: read a b <<<x:y:` gives b=y, but
+/// `x:y::` b=y:: and `x:y:z:` b=y:z:).
 pub fn read_delim(line: &[u8], n: usize, d: u8) -> Vec<Bytes> {
     let mut out = Vec::with_capacity(n);
     let mut rest = line;
     for k in 0..n {
         if k + 1 == n {
-            out.push(rest.to_vec());
+            let r = match rest.split_last() {
+                Some((&l, head)) if l == d && !head.contains(&d) => head,
+                _ => rest,
+            };
+            out.push(r.to_vec());
             break;
         }
         match rest.iter().position(|&c| c == d) {
@@ -503,7 +509,7 @@ mod tests {
 
     #[test]
     fn read_splits_as_bash() {
-        let cases: &[&[u8]] = &[b"\tx\t\ty\t", b"a\tb\t\tc\t", b"", b"\t\t", b"one", b"a\t\t\tb", b" sp ace\tb  \t c "];
+        let cases: &[&[u8]] = &[b"\tx\t\ty\t", b"a\tb\t\tc\t", b"", b"\t\t", b"one", b"a\t\t\tb", b" sp ace\tb  \t c ", b"x\ty\t", b"x\ty\t\t", b"a\t\tb\t", b"\t"];
         for c in cases {
             for n in 1..4 {
                 let names: Vec<String> = (0..n).map(|i| format!("v{}", i)).collect();
