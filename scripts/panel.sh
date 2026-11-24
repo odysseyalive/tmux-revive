@@ -3252,6 +3252,8 @@ draw() {
 		done
 		((${#OUT[@]} < ${#PREV[@]})) && buf+="$e[$((${#OUT[@]} + 1));1H$e[J"
 		PREV=("${OUT[@]}")
+		# A notice over it all, painted again with every frame: the rows under it may have changed.
+		notice_up && { notice_box; buf+=$NB; }
 		[[ -n $buf ]] && printf '%s' "$e[?2026h$buf$e[H$e[?2026l"
 	fi
 }
@@ -4320,12 +4322,15 @@ note() {
 	read -rsn4 -t 0.02 _ || true
 	trap 'exit 0' INT
 }
-# note_box TITLE HINT LINE...: note's box, drawn and left there. No TITLE, no title tab.
+# note_box TITLE HINT LINE...: note's box, drawn and left there. No TITLE, no title tab. Set
+# for one call, NB_ONLY=1: only made (-> NB), at the panel's size, for draw to paint.
 note_box() {
 	local title=$1 hint=$2 rows cols w top left i l
 	shift 2
 	local -a ls=("$@")
-	rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80)
+	if ((${NB_ONLY:-0})); then rows=${TLINES:-40} cols=${TCOLS:-80}
+	else rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80); fi
+	NB=""
 	w=$((${#hint} + 6))
 	for l in "${ls[@]}"; do ((${#l} + 6 > w)) && w=$((${#l} + 6)); done
 	((${#title} + 12 > w)) && w=$((${#title} + 12))
@@ -4335,27 +4340,28 @@ note_box() {
 	((left < 1)) && left=1
 	if [[ -n $title ]]; then
 		rep ═ $((w - ${#title} - 11))
-		printf '%s' "$e[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
+		NB+="$e[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
 	else
 		rep ═ $((w - 2))
-		printf '%s' "$e[$top;${left}H$BGBLU$BWHT╔$REP╗$R"
+		NB+="$e[$top;${left}H$BGBLU$BWHT╔$REP╗$R"
 	fi
 	rep ' ' $((w - 2))
-	printf '%s' "$e[$((top + 1));${left}H$BGBLU$BWHT║$REP║$R$GRY░$R"
+	NB+="$e[$((top + 1));${left}H$BGBLU$BWHT║$REP║$R$GRY░$R"
 	for ((i = 0; i < ${#ls[@]}; i++)); do
 		fld "${ls[i]}" $((w - 4))
-		printf '%s' "$e[$((top + 2 + i));${left}H$BGBLU$BWHT║ $B$FLD$R$BGBLU$BWHT ║$R$GRY░$R"
+		NB+="$e[$((top + 2 + i));${left}H$BGBLU$BWHT║ $B$FLD$R$BGBLU$BWHT ║$R$GRY░$R"
 	done
 	fld "$hint" $((w - 4))
-	printf '%s' "$e[$((top + 2 + ${#ls[@]}));${left}H$BGBLU$BWHT║ $BCYN$FLD$BWHT ║$R$GRY░$R"
+	NB+="$e[$((top + 2 + ${#ls[@]}));${left}H$BGBLU$BWHT║ $BCYN$FLD$BWHT ║$R$GRY░$R"
 	rep ═ $((w - 2))
-	printf '%s' "$e[$((top + 3 + ${#ls[@]}));${left}H$BGBLU$BWHT╚$REP╝$R$GRY░$R"
+	NB+="$e[$((top + 3 + ${#ls[@]}));${left}H$BGBLU$BWHT╚$REP╝$R$GRY░$R"
 	rep ░ "$w"
-	printf '%s' "$e[$((top + 4 + ${#ls[@]}));$((left + 1))H$GRY$REP$R"
+	NB+="$e[$((top + 4 + ${#ls[@]}));$((left + 1))H$GRY$REP$R"
+	((${NB_ONLY:-0})) || printf '%s' "$NB"
 }
 # notice TEXT: what a key just did, or why it couldn't, or news from the background (a new ssh,
 # a dropped login): in a box over the panel that stays until Esc, not on the key bar where it
-# goes by. Kept in NOTICES and shown by notices once the panel is drawn, one at a time.
+# goes by. Kept in NOTICES, and shown one at a time over the panel, which goes on refreshing.
 NOTICES=()
 notice() {
 	local t=$1
@@ -4363,35 +4369,33 @@ notice() {
 	NOTICES+=("$t")
 	[[ $FLASH == *… ]] && FLASH="" # the "…" that led up to it, done
 }
-# notices: each notice waiting, in turn. Only a lone Esc closes one; any other key, an arrow's
-# sequence too, is ignored. Ctrl-C quits the panel, as it does under the box. A resize draws
-# the panel and the box again.
-notices() {
-	local k rest ww
+# notice_up: a notice shows, over the panel drawn as usual under it (draw paints it last): one
+# is waiting, and nothing else has the screen (the loading box, a question being answered).
+notice_up() { ((${#NOTICES[@]} && !LBOX && !ANSWERING)); }
+# notice_box -> NB: the first notice's box, to paint over the frame. Wrapped to fit, at 70
+# columns at most, as many lines as the terminal holds; made again only when the notice or
+# the terminal's size changes.
+notice_box() {
+	local key="${TCOLS:-80} ${TLINES:-40} ${NOTICES[0]}" ww
 	local -a WRAP
-	while ((${#NOTICES[@]})); do
-		# Wrapped to fit the box, at 70 columns at most; as many lines as the terminal holds.
-		ww=$((${TCOLS:-80} - 10))
-		((ww > 70)) && ww=70
-		((ww < 20)) && ww=20
-		help_wrap "${NOTICES[0]//\`/"'"}" "$ww" # help_wrap gives a backtick no room; here it takes one
-		WRAP=("${WRAP[@]:0:${TLINES:-40} - 6}")
-		note_box "" "Esc closes" "${WRAP[@]}"
-		while :; do
-			k=""
-			until IFS= read -rsn1 -t 0.2 k; do
-				(($? <= 128)) && { NOTICES=(); return 0; } # the input closed
-				[[ -z $TCOLS ]] && { draw; continue 3; } # resized
-			done
-			[[ $k == "$e" ]] || continue
-			rest=""
-			IFS= read -rsn1 -t 0.05 rest || true
-			[[ -z $rest ]] && break
-			IFS= read -rsn4 -t 0.02 _ || true # the rest of an arrow's sequence
-		done
-		NOTICES=("${NOTICES[@]:1}")
-		PREV=(); draw
-	done
+	[[ $key == "${NB_KEY:-}" ]] && return
+	ww=$((${TCOLS:-80} - 10))
+	((ww > 70)) && ww=70
+	((ww < 20)) && ww=20
+	help_wrap "${NOTICES[0]//\`/"'"}" "$ww" # help_wrap gives a backtick no room; here it takes one
+	WRAP=("${WRAP[@]:0:${TLINES:-40} - 6}")
+	NB_ONLY=1 note_box "" "Esc closes" "${WRAP[@]}"
+	NB_KEY=$key
+}
+# notice_key KEY: a key while a notice shows. Only a lone Esc closes it (the next one, if any,
+# shows then); any other key, an arrow's sequence too, is ignored. Ctrl-C quits the panel, as
+# it does under the box.
+notice_key() {
+	local rest=""
+	[[ $1 == "$e" ]] || return 0
+	IFS= read -rsn1 -t 0.05 rest || true
+	if [[ -z $rest ]]; then NOTICES=("${NOTICES[@]:1}") PREV=() # the panel under it, whole again
+	else IFS= read -rsn4 -t 0.02 _ || true; fi # the rest of the sequence
 }
 act() {
 	# A key may draw over the panel (popup, prompt) and return early: repaint it whole. Keys
@@ -4413,7 +4417,6 @@ act() {
 			tm select-window -t "$id" 2>/dev/null
 			tm select-pane -t "$id" 2>/dev/null
 			[[ -n ${REVIVE_PANEL_POPUP:-} ]] && exit 0
-			notice "opened $name"
 		else
 			tm select-window -t "$id" 2>/dev/null
 			tm select-pane -t "$id" 2>/dev/null
@@ -4756,8 +4759,7 @@ act() {
 		if ((all)); then HSEL=""
 		elif [[ -n ${P_HOST[SEL]:-} ]]; then HSEL=${P_HOST[SEL]}; fi ;;
 	a | A)
-		SCENE=$(((SCENE + 1) % ${#SCENES[@]}))
-		notice "art: ${TITLES[SCENE]}" ;;
+		SCENE=$(((SCENE + 1) % ${#SCENES[@]})) ;; # ART's title names it
 	s | S)
 		if "$BASH" "$REVIVE_ROOT/scripts/save.sh" manual >/dev/null 2>&1; then notice "saved"; else notice "save failed (see: tmux-revive log)"; fi ;;
 	# D: detach this tmux (the client looking at the panel), once you've said yes. Everything
@@ -5149,6 +5151,10 @@ loading
 PREV=() # after the splash: paint the whole panel
 
 declare -A SSH_SEEN=() LOGIN_SEEN=()
+# A link needing its login is said once each time it comes to need one. Which have been said
+# is kept on disk, as the folds are, so the panel started again doesn't say it again.
+LOGINDIR="$DIR/panel/login-said"
+for f in "$LOGINDIR"/*; do [[ -f $f ]] && LOGIN_SEEN[${f##*/}]=1; done
 fold_load
 # keys KEY: act on KEY and on any keys already waiting behind it (a held arrow), so that they
 # are drawn once. Keys that only move the selection set nav.
@@ -5160,6 +5166,9 @@ keys() {
 		while read -t 0 && IFS= read -rsn1 _; do :; done
 		return 0
 	fi
+	# While a notice shows, keys are its: Esc closes it, the rest are ignored. Nothing to look
+	# at again for that, only to draw.
+	notice_up && { notice_key "$key"; nav=1; return 0; }
 	while :; do
 		[[ -z $key || $key == $'\r' ]] && key=enter # read stops at the newline Enter sends
 		if [[ $key == "$e" ]]; then
@@ -5205,15 +5214,22 @@ while :; do
 			((SSH_FIRST)) || linked "$h" || notice "new ssh: $h · B bridges it"
 		done
 		SSH_FIRST=0
-		# A link whose login dropped (a reboot over there, the network gone): said once.
+		# A link whose login dropped (a reboot over there, the network gone): said once, until
+		# it's logged in again (or gone) and drops once more.
+		for h in "${!LOGIN_SEEN[@]}"; do
+			[[ -n ${LOGIN_SEEN[$h]} && ! -d $ASTATE/links/$h ]] && { LOGIN_SEEN[$h]=""; rm -f "$LOGINDIR/$h"; }
+		done
 		for d in "$ASTATE"/links/*/; do
 			h=$(basename "$d")
 			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
 			if [[ -f $d/on && -f $d/login ]]; then
-				[[ -n ${LOGIN_SEEN[$h]:-} ]] || notice "$h needs login · B to type its password"
+				[[ -n ${LOGIN_SEEN[$h]:-} ]] && continue
+				notice "$h needs login · B to type its password"
 				LOGIN_SEEN[$h]=1
-			else
+				mkdir -p "$LOGINDIR" && : >"$LOGINDIR/$h"
+			elif [[ -n ${LOGIN_SEEN[$h]:-} ]]; then
 				LOGIN_SEEN[$h]=""
+				rm -f "$LOGINDIR/$h"
 			fi
 		done
 		TCOLS="" MSG_OLD=1 # looked at again along with the panes
@@ -5229,7 +5245,7 @@ while :; do
 	sel_fix
 	# A key pressed while it gathered is taken first, so one draw shows both. Not twice running,
 	# so keys arriving all the time can't keep the panel from drawing.
-	# A notice waiting is drawn first, so the key goes to its box.
+	# A notice waiting is drawn first, so the key goes to its box once it's seen.
 	if ((!nav && !held && ${#PREV[@]} && !${#NOTICES[@]})) && read -t 0; then
 		held=1 key=""
 		IFS= read -rsn1 key
@@ -5242,9 +5258,6 @@ while :; do
 	((SECONDS - FULL_T >= 15)) && PREV=() FULL_T=$SECONDS
 	draw
 	((LBOX)) && lbox_draw
-	# Notices, once nothing else is over the panel: the loading box waits for no key, and
-	# while a question is answered (answer has its own loop) they wait until it's left.
-	((LBOX || ANSWERING || !${#NOTICES[@]})) || notices
 	nav=0
 	key=""
 	if ! IFS= read -rsn1 -t "$REFRESH" key; then

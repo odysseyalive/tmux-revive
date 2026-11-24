@@ -290,8 +290,7 @@ tm send-keys -t work:panel -l 'top-watch'; tm send-keys -t work:panel Enter
 named top-watch >/dev/null; wait_screen '▶ top-watch' >/dev/null; unbox screen tm send-keys -t work:panel >/dev/null
 # O opens: the selected pane becomes tmux's active one.
 tm send-keys -t work:panel O
-check "O opens the selected pane" "boxed screen 'opened top-watch' && [[ \$(tm display -p -t work:0 '#{pane_index}') == 1 ]]"
-unbox screen tm send-keys -t work:panel >/dev/null
+check "O opens the selected pane, and says nothing: you're taken there" "for _ in \$(seq 1 30); do [[ \$(tm display -p -t work:0 '#{pane_index}') == 1 ]] && break; sleep 0.2; done; [[ \$(tm display -p -t work:0 '#{pane_index}') == 1 ]] && sleep 1.5 && nobox screen"
 tm select-pane -t work:0.0
 tm send-keys -t work:panel s
 check "S saves" "wait_screen '(manual)'"
@@ -302,6 +301,10 @@ check "the box's foot says Esc closes it, and nothing more" "screen | grep -cE '
 selb=$(screen | grep -o '\[[0-9.]*\] ▶')
 tm send-keys -t work:panel q x Down Up Down; sleep 1.5
 check "q, another key or an arrow leave it up: the panel stays, the selection too ($selb)" "tm list-windows -F '#{window_name}' | grep -qx panel && boxed screen saved && [[ \$(screen | grep -o '\[[0-9.]*\] ▶') == '$selb' ]]"
+# The panel goes on under it: its clock moves, the box still over it.
+clock() { screen | grep -o '[0-9][0-9]:[0-9][0-9]:[0-9][0-9]' | head -1; }
+c0=$(clock); sleep 2.5
+check "the panel keeps refreshing under the box: its clock moves on ($c0)" "[[ -n '$c0' && \$(clock) != '$c0' ]] && boxed screen saved"
 tm send-keys -t work:panel Escape
 check "Esc closes it, the panel whole under it" "nobox screen && wait_screen 'C O N T R O L' && screen | head -1 | grep -q '^╔'"
 check "the peek box shows the selected pane" "screen | grep -q 'PEEK · top-watch'"
@@ -361,8 +364,7 @@ wait_screen 'C O N T R O L' >/dev/null
 before=$(screen | grep -o 'ART · [a-z ]*' | head -1)
 tm send-keys -t work:panel a
 check "A switches the artwork ($before)" "for _ in \$(seq 1 20); do after=\$(screen | grep -o 'ART · [a-z ]*' | head -1); [[ -n \$after && \$after != '$before' ]] && break; sleep 0.2; done; [[ \$after != '$before' ]]"
-check "and names it in a box" "boxed screen 'art: '"
-unbox screen tm send-keys -t work:panel >/dev/null
+check "and says nothing more: ART's title names it" "sleep 1.5 && nobox screen"
 # At 80 columns a long notice wraps inside its box: every row of it whole, its edges on screen.
 tm resize-window -t work:panel -x 80 -y 30; sleep 1.5
 tm send-keys -t work:panel B; wait_screen 'other host' >/dev/null; tm send-keys -t work:panel Enter; wait_screen 'Host to link' >/dev/null
@@ -2573,6 +2575,11 @@ check "LINKS shows it linked" "wait_pw 'pw.example · linked' 50"
 rm -f "$T/pw.master" # the login dropped: a reboot over there, or the network gone a while
 check "a dropped login shows as needing one, and a box says so" "wait_pw 'pw.example · needs login · [B] log in' 75 && boxed pws 'pw.example needs login · B to type its password'"
 unbox pws tm send-keys -t work:pwpanel >/dev/null
+# Said once for the drop, not again by a panel started anew while it still needs one.
+tm new-window -d -t work -n pw2 "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+pw2() { tm capture-pane -p -t work:pw2; }
+check "a panel started again doesn't say it again" "for _ in \$(seq 1 40); do pw2 | grep -q 'pw.example · needs login' && break; sleep 0.2; done; pw2 | grep -q 'pw.example · needs login' && sleep 2.5 && nobox pw2 && [[ -e $REVIVE_DIR/panel/login-said/pw.example ]]"
+tm kill-window -t work:pw2
 check "its panes too, not as unreachable" "wait_pw 'needs login · B' 50 && ! pws | grep -q 'unreachable'"
 pw_tries() { grep -c 'BatchMode=yes.* pw.example ' "$T/pwssh.log"; }
 n=$(pw_tries); sleep 3
@@ -2582,6 +2589,7 @@ check "B offers it first, to log in again" "pws | grep -q '1 *pw.example  · nee
 tm send-keys -t work:pwpanel Enter
 check "and picking it opens the login again" "login_typed hunter2"
 check "after which the link picks up by itself" "boxed pws 'logged in to pw.example; its link picks up again' && unbox pws tm send-keys -t work:pwpanel && for _ in \$(seq 1 50); do [[ ! -e $pwl/login ]] && break; sleep 0.2; done; [[ ! -e $pwl/login ]] && wait_pw 'pw.example · linked' 75"
+check "logged in, what was said is forgotten, so the next drop is said again" "for _ in \$(seq 1 30); do [[ -e $REVIVE_DIR/panel/login-said/pw.example ]] || break; sleep 0.2; done; [[ ! -e $REVIVE_DIR/panel/login-said/pw.example ]]"
 check "a host with a key (far.example) never got a login" "! grep 'ControlMaster=yes' $T/pwssh.log | grep -vq ' pw.example' && [[ ! -e $st/links/far.example/login ]]"
 # Another computer answers to pw.example, with a key of its own: a key problem, not a login.
 ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey9"

@@ -447,6 +447,7 @@ help_frame() {
 	done
 	((${#OUT[@]} < ${#PREV[@]})) && buf+="$e[$((${#OUT[@]} + 1));1H$e[J"
 	PREV=("${OUT[@]}")
+	notice_up && { notice_box; buf+=$NB; } # a notice over the page, as over the panel
 	[[ -n $buf ]] && printf '%s' "$e[?2026h$buf$e[?2026l"
 }
 
@@ -460,7 +461,6 @@ help_view() {
 	trap 'INTR=1' INT
 	while :; do
 		draw
-		((${#NOTICES[@]})) && notices # what an install or link button did
 		k=""
 		IFS= read -rsn1 -t 1 k
 		st=$?
@@ -468,6 +468,8 @@ help_view() {
 		# Over 128: the second is up. The panel's clock moves on every other one (its REFRESH,
 		# 2s), so the page's beacons blink as they would on the panel.
 		if ((st)); then ((st > 128)) && { ((++hsec % 2)) || ((TICK++)); continue; }; break; fi
+		# What an install or link button did shows in a box over the page; keys are its till Esc.
+		notice_up && { notice_key "$k"; continue; }
 		case $k in
 		x | X | q | Q | '?') break ;;
 		' ') HELP_TOP=$((HELP_TOP + HELP_VIEW - 1)) ;;
