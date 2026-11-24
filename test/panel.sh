@@ -11,9 +11,8 @@ export AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false
 # Links made here go the way they did before the link key (its own checks are in agent-say.sh;
 # the panel's requests over a link on the key are checked under "other computers").
 export AGENT_SAY_TEST_NO_LINK_KEY=1
-# Nor the ssh sessions open in your own terminals: they'd be offered in LINKS · SAVES and
-# announced on the key bar, taking rows and room the checks count on. The checks of that look
-# turn it back on.
+# Nor the ssh sessions open in your own terminals: they'd be offered in LINKS · SAVES, taking rows
+# and room the checks count on. The checks of that look turn it back on.
 export REVIVE_PANEL_OUTSIDE_SSH=0
 # The peek starts hidden (P shows it); most checks look at it, so here it starts shown. The
 # check of the default unsets this.
@@ -57,16 +56,14 @@ screen() { tm capture-pane -p -t work:panel; }
 wait_screen() { for _ in $(seq 1 30); do screen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 # wait_ok CHECK: CHECK (eval'd) comes true within 6 seconds.
 wait_ok() { for _ in $(seq 1 30); do eval "$1" && return 0; sleep 0.2; done; return 1; }
-# A notice: what a key did, or why it couldn't, in a box over the panel that only Esc
-# closes, as its foot says. notice_text SCREEN: the words in the one SCREEN (a function printing
-# a panel's screen) shows, its lines joined. boxed SCREEN TEXT: one up there holds TEXT, within
-# 6 seconds. nobox SCREEN: none is, within 6 seconds. unbox SCREEN KEYS...: once one is up, Esc
-# (KEYS... sends it), and it's gone.
+# What a key did, or why it couldn't, flashes on the key bar; no box comes up over the panel
+# for it. barred SCREEN TEXT: the key bar of SCREEN (a function printing a panel's screen) says
+# TEXT, within 6 seconds. nobox SCREEN: no such box (its foot "Esc closes") is up, within 6.
 NOTE_RE='║ Esc closes +║░'
-notice_text() { "$1" | grep -cE "$NOTE_RE" >/dev/null && "$1" | sed -n 's/.*║ \(.*\) ║░.*/\1/p' | sed 's/ *$//' | grep -v '^Esc closes$' | grep . | paste -sd ' '; }
-boxed() { local _; for _ in $(seq 1 30); do notice_text "$1" | grep -cF -- "$2" >/dev/null && return 0; sleep 0.2; done; return 1; }
+barred() { local _; for _ in $(seq 1 30); do "$1" | tail -3 | grep -cF -- "$2" >/dev/null && return 0; sleep 0.2; done; return 1; }
+# unbarred SCREEN TEXT: its key bar no longer says TEXT (a flash lasts 5 seconds), within 7.
+unbarred() { local _; for _ in $(seq 1 35); do "$1" | tail -3 | grep -cF -- "$2" >/dev/null || return 0; sleep 0.2; done; return 1; }
 nobox() { local _; for _ in $(seq 1 30); do "$1" | grep -cE "$NOTE_RE" >/dev/null || return 0; sleep 0.2; done; return 1; }
-unbox() { local s=$1 _; shift; for _ in $(seq 1 30); do "$s" | grep -cE "$NOTE_RE" >/dev/null && break; sleep 0.2; done; "$@" Escape; nobox "$s"; }
 # wcols TITLE < CAPTURE (capture-pane -e): the colours of the window titled TITLE's left and
 # right edges, on its title line and its rows down to the next divider, one "LEFT RIGHT" for
 # each different pair (34 the frame's blue, 96 bright cyan, 95 bright magenta). A capture only
@@ -278,35 +275,21 @@ tm send-keys -t work:panel Down; wait_screen '[0.1] ▶' >/dev/null
 tm send-keys -t work:panel n; sleep 0.5
 tm send-keys -t work:panel 'top-watch' Enter
 named() { for _ in $(seq 1 30); do tm list-panes -a -F '#{@agent}' | grep -cx "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
-check "N renames the selected pane, and says so in a box" "named top-watch && wait_screen '▶ top-watch' && boxed screen \"is now 'top-watch'\""
-unbox screen tm send-keys -t work:panel >/dev/null
+check "N renames the selected pane, and says so on the key bar" "named top-watch && wait_screen '▶ top-watch' && barred screen \"is now 'top-watch'\""
 # Typed into N, h j k l are letters of the name, not moves.
 tm send-keys -t work:panel n; wait_screen 'New name for' >/dev/null
 tm send-keys -t work:panel -l 'hjkl-top'; tm send-keys -t work:panel Enter
 check "a name with h, j, k and l in it goes through N whole" "named hjkl-top && wait_screen '▶ hjkl-top'"
-unbox screen tm send-keys -t work:panel >/dev/null
 tm send-keys -t work:panel n; wait_screen 'New name for' >/dev/null
 tm send-keys -t work:panel -l 'top-watch'; tm send-keys -t work:panel Enter
-named top-watch >/dev/null; wait_screen '▶ top-watch' >/dev/null; unbox screen tm send-keys -t work:panel >/dev/null
+named top-watch >/dev/null; wait_screen '▶ top-watch' >/dev/null
 # O opens: the selected pane becomes tmux's active one.
 tm send-keys -t work:panel O
 check "O opens the selected pane, and says nothing: you're taken there" "for _ in \$(seq 1 30); do [[ \$(tm display -p -t work:0 '#{pane_index}') == 1 ]] && break; sleep 0.2; done; [[ \$(tm display -p -t work:0 '#{pane_index}') == 1 ]] && sleep 1.5 && nobox screen"
 tm select-pane -t work:0.0
 tm send-keys -t work:panel s
 check "S saves" "wait_screen '(manual)'"
-# What a key did shows in a box over the panel, centred, and not on the key bar; only Esc closes
-# it. Other keys are ignored meanwhile: q doesn't quit, an arrow doesn't move.
-check "and says it's saved in a box over the panel, not on the key bar" "boxed screen saved && ! screen | tail -3 | grep -cF ' saved ' >/dev/null"
-check "the box's foot says Esc closes it, and nothing more" "screen | grep -cE '║ Esc closes +║░' >/dev/null && [[ \$(notice_text screen) == saved ]]"
-selb=$(screen | grep -o '\[[0-9.]*\] ▶')
-tm send-keys -t work:panel q x Down Up Down; sleep 1.5
-check "q, another key or an arrow leave it up: the panel stays, the selection too ($selb)" "tm list-windows -F '#{window_name}' | grep -cx panel >/dev/null && boxed screen saved && [[ \$(screen | grep -o '\[[0-9.]*\] ▶') == '$selb' ]]"
-# The panel goes on under it: its clock moves, the box still over it.
-clock() { screen | grep -o '[0-9][0-9]:[0-9][0-9]:[0-9][0-9]' | head -1; }
-c0=$(clock); sleep 2.5
-check "the panel keeps refreshing under the box: its clock moves on ($c0)" "[[ -n '$c0' && \$(clock) != '$c0' ]] && boxed screen saved"
-tm send-keys -t work:panel Escape
-check "Esc closes it, the panel whole under it" "nobox screen && wait_screen 'C O N T R O L' && screen | head -1 | grep -c '^╔' >/dev/null"
+check "and says saved on the key bar, with no box over the panel" "barred screen saved && nobox screen"
 check "the peek box shows the selected pane" "screen | grep -c 'PEEK · top-watch' >/dev/null"
 # Every row is repainted right as p hides and shows it.
 whole() { local s; s=$(screen); [[ ${s%%$'\n'*} == ╔* && ${s##*$'\n'} == *╝ ]] && seen 'PEEK · ' && seen 'MESSAGES'; }
@@ -341,13 +324,13 @@ tm send-keys -t work:panel m; sleep 0.5
 check "M opens a box to write the message in, saying how to finish and back out" "wait_screen 'MESSAGE TO' && wait_screen 'Enter sends · Alt-Enter new line · Esc closes'"
 tm send-keys -t work:panel -l 'never sent'; sleep 0.3
 tm send-keys -t work:panel Escape
-check "Esc backs out of a message" "boxed screen 'message cancelled' && ! screen | grep -c 'MESSAGE TO' >/dev/null"
-unbox screen tm send-keys -t work:panel >/dev/null
+check "Esc backs out of a message" "barred screen 'message cancelled' && ! screen | grep -c 'MESSAGE TO' >/dev/null"
+unbarred screen 'message cancelled' >/dev/null
 tm send-keys -t work:panel m; sleep 0.5
 tm send-keys -t work:panel -l 'never sent either'; sleep 0.3
 tm send-keys -t work:panel C-c; sleep 1
-check "Ctrl-C backs out too, and the panel stays open" "tm list-windows -F '#{window_name}' | grep -cx panel >/dev/null && boxed screen 'message cancelled' && wait_screen 'C O N T R O L' && ! screen | grep -c 'MESSAGE TO' >/dev/null"
-unbox screen tm send-keys -t work:panel >/dev/null
+check "Ctrl-C backs out too, and the panel stays open" "tm list-windows -F '#{window_name}' | grep -cx panel >/dev/null && barred screen 'message cancelled' && wait_screen 'C O N T R O L' && ! screen | grep -c 'MESSAGE TO' >/dev/null"
+unbarred screen 'message cancelled' >/dev/null
 check "nothing was sent" "! grep -qs 'never sent' $AGENT_SAY_MAILBOX"
 # A paste into the box is text, its line breaks (CR, as a terminal sends them) included, never
 # Enter: the box stays open. Long text scrolls, a long line wraps, PgUp goes back up.
@@ -358,22 +341,12 @@ check "a paste of many lines stays in the box, which scrolls to its end and wrap
 tm send-keys -t work:panel PPage PPage PPage
 check "PgUp goes back up to its first line" "wait_screen '║ line 01'"
 tm send-keys -t work:panel Escape
-check "and Esc still sends none of it, the box gone" "wait_ok '! screen | grep -c \"MESSAGE TO\" >/dev/null' && boxed screen 'message cancelled' && ! screen | grep -cF '║ line' >/dev/null && ! grep -qs 'line 40' $AGENT_SAY_MAILBOX"
-unbox screen tm send-keys -t work:panel >/dev/null
+check "and Esc still sends none of it, the box gone" "wait_ok '! screen | grep -c \"MESSAGE TO\" >/dev/null' && barred screen 'message cancelled' && ! screen | grep -cF '║ line' >/dev/null && ! grep -qs 'line 40' $AGENT_SAY_MAILBOX"
 wait_screen 'C O N T R O L' >/dev/null
 before=$(screen | grep -o 'ART · [a-z ]*' | head -1)
 tm send-keys -t work:panel a
 check "A switches the artwork ($before)" "for _ in \$(seq 1 20); do after=\$(screen | grep -o 'ART · [a-z ]*' | head -1); [[ -n \$after && \$after != '$before' ]] && break; sleep 0.2; done; [[ \$after != '$before' ]]"
 check "and says nothing more: ART's title names it" "sleep 1.5 && nobox screen"
-# At 80 columns a long notice wraps inside its box: every row of it whole, its edges on screen.
-tm resize-window -t work:panel -x 80 -y 30; sleep 1.5
-tm send-keys -t work:panel n; wait_screen 'New name for' >/dev/null
-long='not a name at all but a sentence long enough that its notice needs two rows at eighty columns END'
-tm send-keys -t work:panel -l "$long"; tm send-keys -t work:panel Enter
-check "at 80 columns a long notice wraps in its box, every word kept" "boxed screen \"'$long' can't be a name\" && (( \$(screen | grep -c '║ [^║]* ║░') >= 3 ))"
-check "and the box fits: its rows all as wide, none past the 80 columns" "[[ \$(screen | grep -o '║ [^║]* ║░' | awk '{print length}' | sort -u | wc -l) == 1 && \$(screen | awk '{print length}' | sort -nu | tail -1) == 80 ]]"
-unbox screen tm send-keys -t work:panel >/dev/null
-tm resize-window -t work:panel -x 130 -y 40; sleep 1
 tm send-keys -t work:panel q; sleep 1
 check "Q quits" "! tm list-windows -F '#{window_name}' | grep -cx panel >/dev/null"
 # An arrow redraws from what was gathered: the links and saves aren't looked at again for it.
@@ -442,30 +415,26 @@ tm resize-window -t work:helpw -x 130 -y 40; sleep 1
 tm send-keys -t work:helpw i
 check "i asks before installing, showing what it would run" "hwait 'yes, run it' && hscreen | grep -c 'touch $T/installed' >/dev/null"
 tm send-keys -t work:helpw n
-check "n says no, and nothing runs, in a box" "boxed hscreen 'install cancelled · nothing was run' && sleep 1 && [[ ! -e $T/installed ]] && ! tm list-windows -F '#{window_name}' | grep -cx workforce >/dev/null"
-unbox hscreen tm send-keys -t work:helpw >/dev/null
+check "n says no on the key bar, and nothing runs" "barred hscreen 'install cancelled · nothing was run' && sleep 1 && [[ ! -e $T/installed ]] && ! tm list-windows -F '#{window_name}' | grep -cx workforce >/dev/null"
 check "and the help page stays open" "hscreen | grep -c 'HELP · HOW TO USE' >/dev/null && ! hscreen | grep -c 'yes, run it' >/dev/null"
 tm send-keys -t work:helpw i; hwait 'yes, run it' >/dev/null
 tm send-keys -t work:helpw y
 installed() { for _ in $(seq 1 30); do [[ -e $T/installed ]] && return 0; sleep 0.2; done; return 1; }
 check "y runs the installer in a new tmux window" "installed && tm list-windows -F '#{window_name}' | grep -cx workforce >/dev/null"
-check "and says where, in a box over the help page" "boxed hscreen 'installing in the new tmux window: workforce' && hscreen | grep -c 'HELP · HOW TO USE' >/dev/null"
-unbox hscreen tm send-keys -t work:helpw >/dev/null
-check "which Esc closes, the help page still open" "hscreen | grep -c 'HELP · HOW TO USE' >/dev/null"
+check "and says where on the key bar" "barred hscreen 'installing in the new tmux window: workforce' && hscreen | grep -c 'HELP · HOW TO USE' >/dev/null"
+check "the help page still open" "hscreen | grep -c 'HELP · HOW TO USE' >/dev/null"
 tm kill-window -t work:workforce 2>/dev/null
 tm send-keys -t work:helpw p
 check "p asks before installing playwright-mcp, showing what it would run" "hwait \"This runs playwright-mcp's installer\" && hscreen | grep -c 'touch $T/pw-installed' >/dev/null"
 tm send-keys -t work:helpw y
 pwinstalled() { for _ in $(seq 1 30); do [[ -e $T/pw-installed ]] && return 0; sleep 0.2; done; return 1; }
 check "and y runs it in a new tmux window of its own" "pwinstalled && tm list-windows -F '#{window_name}' | grep -cx playwright-mcp >/dev/null"
-unbox hscreen tm send-keys -t work:helpw >/dev/null
 tm kill-window -t work:playwright-mcp 2>/dev/null
 tm send-keys -t work:helpw c
 check "c asks before installing Codex Workforce, showing what it would run" "hwait \"This runs Codex Workforce's installer\" && hscreen | grep -c 'touch $T/cx-installed' >/dev/null"
 tm send-keys -t work:helpw y
 cxinstalled() { for _ in $(seq 1 30); do [[ -e $T/cx-installed ]] && return 0; sleep 0.2; done; return 1; }
 check "and y runs it in a new tmux window of its own" "cxinstalled && tm list-windows -F '#{window_name}' | grep -cx codex-workforce >/dev/null"
-unbox hscreen tm send-keys -t work:helpw >/dev/null
 tm kill-window -t work:codex-workforce 2>/dev/null
 # Tall enough, the ads stay put at the bottom and only the words above them scroll.
 tm resize-window -t work:helpw -x 160 -y 50; sleep 1.5
@@ -485,7 +454,7 @@ check "End shows the last of the words, the ads still under them ($q2)" "[[ $las
 tm send-keys -t work:helpw i
 check "and their buttons still work there: i asks" "hwait 'yes, run it'"
 tm send-keys -t work:helpw n
-check "n says no" "boxed hscreen 'install cancelled' && unbox hscreen tm send-keys -t work:helpw && [[ \$(hfoot) == \"\$f0\" ]]"
+check "n says no" "barred hscreen 'install cancelled' && [[ \$(hfoot) == \"\$f0\" ]]"
 tm resize-window -t work:helpw -x 90 -y 30; sleep 1.5
 check "a resize redraws it to the new size" "hwhole && [[ \$(hscreen | head -1 | awk '{print length}') == 90 && \$(hscreen | wc -l) == 30 ]] && hscreen | grep -c 'HELP · HOW TO USE' >/dev/null"
 tm resize-window -t work:helpw -x 130 -y 40; sleep 0.5
@@ -1422,7 +1391,6 @@ check "a URL is magenta and underlined, without the full stop after it" "[[ \$(m
 tm send-keys -t work:mpanel Enter
 check "M sends a message of several lines, whole" "for _ in \$(seq 1 30); do grep -q '^two lines\$' $AGENT_SAY_MAILBOX 2>/dev/null && break; sleep 0.2; done; grep -A2 -- '^## \\[panel -> ' $AGENT_SAY_MAILBOX | grep -cx 'a note in' >/dev/null && grep -A2 -- '^## \\[panel -> ' $AGENT_SAY_MAILBOX | grep -cx 'two lines' >/dev/null"
 check "the coloured words go as typed: no colour codes in the message" "grep -qF -- \"\$tok \\\`one two\" $AGENT_SAY_MAILBOX && grep -qF -- 'eleven twelve\` x' $AGENT_SAY_MAILBOX && ! grep -q \$'\\e' $AGENT_SAY_MAILBOX && ! grep -q '\\[[0-9;]*m' $AGENT_SAY_MAILBOX"
-unbox mscreen tm send-keys -t work:mpanel >/dev/null
 tm send-keys -t work:mpanel q
 tm kill-window -t work:mrecv
 
@@ -2248,20 +2216,18 @@ rtop=$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.1 '#{pane
 wait_far() { for _ in $(seq 1 ${2:-30}); do farscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 rename_far() { tm send-keys -t work:farpanel n; wait_far 'New name for' >/dev/null; tm send-keys -t work:farpanel -l "$1"; tm send-keys -t work:farpanel Enter; }
 rename_far far-renamed
-check "N names a linked computer's pane there" "boxed farscreen \"on far.example: pane $rtop is now 'far-renamed'\" && [[ \$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t $rtop '#{@agent}') == far-renamed ]]"
+check "N names a linked computer's pane there" "barred farscreen \"on far.example: pane $rtop is now 'far-renamed'\" && [[ \$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t $rtop '#{@agent}') == far-renamed ]]"
 check "with agent-say name, for that pane, nothing else" "[[ \$(cat $T/name.cmd) == \"AGENT_SAY_PANE='$rtop' PATH=\\\"\\\$HOME/.local/bin:\\\$PATH\\\" agent-say name 'far-renamed' </dev/null 2>&1\" ]]"
-check "and its row shows the new name, still selected" "unbox farscreen tm send-keys -t work:farpanel && wait_far '▶ far-renamed' 40"
+check "and its row shows the new name, still selected" "wait_far '▶ far-renamed' 40"
 rm -f "$T/name.cmd"
 rename_far "x';touch $T/pwn;'"
 check "a name that can't be one never leaves here" "wait_far \"that can't be a name\" && [[ ! -e $T/name.cmd && ! -e $T/pwn ]]"
-unbox farscreen tm send-keys -t work:farpanel >/dev/null
 rename_far list
 check "and one agent-say there turns away is refused there" "wait_far \"on far.example: 'list' can't be a name\" && [[ \$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t $rtop '#{@agent}') == far-renamed ]]"
-unbox farscreen tm send-keys -t work:farpanel >/dev/null
 # Read-only holds what that computer sends here; like V, naming there from here isn't that.
 touch "$st/links/far.example/read-only"
 rename_far far-top
-check "on a read-only link too, as V and answering are" "boxed farscreen \"on far.example: pane $rtop is now 'far-top'\" && unbox farscreen tm send-keys -t work:farpanel && wait_far '▶ far-top' 40"
+check "on a read-only link too, as V and answering are" "barred farscreen \"on far.example: pane $rtop is now 'far-top'\" && wait_far '▶ far-top' 40"
 # O on a linked computer's pane stays faded, even with a pane here ssh'd there, and moves no
 # focus: not here, not in tmux over there. It only says so.
 rt() { tmux -L "revive-panel-remote-$$" -f /dev/null "$@"; }
@@ -2272,7 +2238,6 @@ sleep 2.5
 check "with a pane here ssh'd there, O stays faded" "farscreen | grep -c '▶ far-top' >/dev/null && bar | grep -cF \"\$grey\" >/dev/null"
 tm send-keys -t work:farpanel O
 check "O there only says so" "wait_far 'O opens panes on this computer only'"
-unbox farscreen tm send-keys -t work:farpanel >/dev/null
 check "and moves nothing, here or over there" "[[ \$(tm display -p -t work '#{window_name}') == '$herewin' && \$(rt display -p -t far '#{window_name}') == elsewhere && ! -e $T/show.cmd ]]"
 rm -f "$st/links/far.example/read-only"
 tm kill-window -t work:farssh; rt kill-window -t far:elsewhere
@@ -2332,7 +2297,6 @@ for _ in $(seq 1 60); do fn | grep -c 'far-two *◌ linked' >/dev/null && break;
 for _ in $(seq 1 25); do fn | grep -c '▶ far-two' >/dev/null && break; tm send-keys -t work:farnames Down; sleep 0.4; done
 tm select-window -t work:farnames; tm send-keys -t work:farnames O
 check "O on a names-only row moves nothing, and asks nothing over there" "for _ in \$(seq 1 30); do fn | grep -c 'O opens panes on this computer only' >/dev/null && break; sleep 0.2; done; fn | grep -c 'O opens panes on this computer only' >/dev/null && [[ \$(tm display -p -t work '#{window_name}') == farnames ]] && ! grep -c -- '--show' $T/ssh.log >/dev/null && [[ ! -e $T/show.cmd ]]"
-unbox fn tm send-keys -t work:farnames >/dev/null
 tm send-keys -t work:farnames q; tm kill-window -t work:farssh
 
 # --keys: a pane id, then key names from a short list or lit:HEX text, nothing else.
@@ -2991,10 +2955,9 @@ td send-keys -t dt:0 d
 check "D asks first, and says it all comes back" "wait_d 'DETACH TMUX?' && wait_d 'This session will restore even after reboot.' && wait_d 'No, stay' && wait_d 'Yes, detach'"
 td send-keys -t dt:0 Escape
 check "Esc keeps you here" "gone_d 'DETACH TMUX?' && wait_d 'detach cancelled' && (( \$(dclients) == 1 ))"
-unbox dscr td send-keys -t dt:0 >/dev/null
+unbarred dscr 'detach cancelled' >/dev/null
 sleep 0.3; td send-keys -t dt:0 D; wait_d 'DETACH TMUX?' >/dev/null; td send-keys -t dt:0 1
-check "and so does No" "gone_d 'DETACH TMUX?' && boxed dscr 'detach cancelled' && (( \$(dclients) == 1 ))"
-unbox dscr td send-keys -t dt:0 >/dev/null
+check "and so does No" "gone_d 'DETACH TMUX?' && barred dscr 'detach cancelled' && (( \$(dclients) == 1 ))"
 sleep 0.3; td send-keys -t dt:0 D; wait_d 'DETACH TMUX?' >/dev/null; td send-keys -t dt:0 2
 check "Yes detaches: the client is gone, the session and the panel still run" "for _ in \$(seq 1 30); do (( \$(dclients) == 0 )) && break; sleep 0.2; done; (( \$(dclients) == 0 )) && td has-session -t dt && wait_d 'C O N T R O L'"
 td kill-server; tm kill-window -t work:dclient 2>/dev/null
