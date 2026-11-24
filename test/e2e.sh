@@ -371,8 +371,14 @@ picker() { o respawn-pane -k -t outer "$PICK"; wait_screen 'enter attach'; }
 row() { screen | sed -n "s/^.[ *]\{0,1\} *\([0-9]\)  $1 .*/\1/p" | head -1; }
 keys() { o send-keys -t outer "$@"; sleep 0.4; }
 # A confirmation drops keys sent with the one that asked for it (a paste can't answer
-# it), so its answer goes in a keys call of its own.
+# it), so its answer goes in a keys call of its own, once it is up: ask KEYS... sends the
+# keys that ask and waits for the question, answer KEYS... answers it and waits for the
+# list to come back (what it closed is closed by then). A fixed wait missed both on a busy
+# machine, dropping the answer.
 on_screen() { [[ $(screen) == *"$1"* ]]; }
+asked() { on_screen '[y/N]' || on_screen 'type yes to close:'; }
+ask() { keys "$@"; for _ in $(seq 50); do asked && return 0; sleep 0.1; done; return 1; }
+answer() { keys "$@"; for _ in $(seq 50); do asked || return 0; sleep 0.1; done; return 1; }
 has() { # has NAME: a session by that exact name (=NAME would split at : and .)
 	local n
 	while IFS= read -r n; do [[ $n == "$1" ]] && return 0; done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null)
@@ -386,11 +392,11 @@ keys Escape
 check "esc leaves without attaching" "wait_screen picker-exit-0 && [[ -z \$(tmux list-clients 2>/dev/null) ]]"
 
 picker
-keys "$(row older)" x
-keys n
+ask "$(row older)" x
+answer n
 check "x, then n: nothing closed" "tmux has-session -t =older && screen | grep -q 'nothing closed'"
-keys x
-keys y
+ask x
+answer y
 check "x, then y: that session is closed" "! tmux has-session -t =older 2>/dev/null"
 check "closed is recorded, so it stays closed" "wait_snap '([.sessions[].name] | index(\"older\") | not) and ([.sessions[].name] | index(\"newer\"))'"
 keys q
@@ -401,21 +407,21 @@ picker
 keys "$(row m1)" Space
 keys "$(row m2)" Space
 check "space marks rows" "[[ \$(screen | grep -c '^\*') -eq 2 ]]"
-keys x
+ask x
 check "one confirmation lists every marked session" "screen | grep -Eq 'close (m1, m2|m2, m1)\?'"
-keys y
+answer y
 check "both marked sessions closed, the rest kept" "! tmux has-session -t =m1 2>/dev/null && ! tmux has-session -t =m2 2>/dev/null && tmux has-session -t =solo"
 
 tmux new-session -d -s ag -c "$T/proj" "$T/bin/crush"
 sleep 0.5
 picker
 check "a row names the agent running in it" "screen | grep -q ' ag .*crush'"
-keys "$(row ag)" x
+ask "$(row ag)" x
 check "closing an agent session names the agent and asks for yes" "screen | grep -q 'ends crush in ag. type yes'"
-keys y Enter
+answer y Enter
 check "y is not enough for an agent session" "tmux has-session -t =ag && screen | grep -q 'nothing closed'"
-keys x
-keys yes Enter
+ask x
+answer yes Enter
 check "yes closes it" "! tmux has-session -t =ag 2>/dev/null"
 keys "$(row solo)" Enter
 check "enter attaches the chosen session" "client_on solo"
@@ -426,18 +432,18 @@ check "n makes a new session and attaches it" "client_on \$(tmux list-sessions -
 
 tmux new-session -d -s keep -c "$T/proj"
 picker
-keys "$(row keep)" a
+ask "$(row keep)" a
 check "a asks before closing every other session" "screen | grep -q 'close .*solo.*\[y/N\]'"
-keys y
+answer y
 check "a keeps only the chosen one and attaches it" "client_on keep && [[ \$(tmux list-sessions -F '#{session_name}') == keep ]]"
 check "the others are recorded closed" "wait_snap '[.sessions[].name] == [\"keep\"]'"
 tmux new-session -d -s last -c "$T/proj"
 picker
-keys "$(row last)" x
-keys y
+ask "$(row last)" x
+answer y
 check "one left: still waits for enter, attaches nothing" "! tmux has-session -t =last 2>/dev/null && screen | grep -q 'enter attach' && [[ -z \$(tmux list-clients 2>/dev/null) ]]"
-keys x
-keys y
+ask x
+answer y
 check "none left: says so" "screen | grep -q 'no sessions left'"
 keys Enter
 check "none left: enter starts a fresh one" "for _ in \$(seq 30); do [[ \$(tmux list-clients 2>/dev/null) ]] && break; sleep 0.1; done; [[ \$(nsess) -eq 1 ]] && ! tmux has-session -t =keep 2>/dev/null"
@@ -448,11 +454,11 @@ tmux new-session -d -s victim -c "$T/proj"
 tmux new-session -d -s victim:0 -c "$T/proj"
 tmux new-session -d -s a:b.c -c "$T/proj"
 picker
-keys "$(row victim:0)" x
-keys y
+ask "$(row victim:0)" x
+answer y
 check "closing a decoy victim:0 closes the decoy, not victim" "! has victim:0 && has victim"
-keys "$(row 'a:b\.c')" x
-keys y
+ask "$(row 'a:b\.c')" x
+answer y
 check "a session named a:b.c can be closed" "! has a:b.c && has victim"
 keys q
 n0=$(nsess)
@@ -466,17 +472,17 @@ tmux new-session -d -s ren -c "$T/proj"
 picker
 r=$(row ren)
 tmux rename-session -t =ren ren2 # after the list was drawn
-keys "$r" x
-keys y
+ask "$r" x
+answer y
 check "a session renamed while the list was open isn't closed by its old row" "has ren2 && on_screen 'changed while the list was open' && on_screen ' ren2 '"
 keys q
 bidi=$'bidi\u202Eevil-and-then-a-long-tail'
 tmux new-session -d -s "$bidi" -c "$T/proj"
 picker
 check "a name is shown without its bidi override" "on_screen ' bidievil-and-then-a-  ' && [[ \$(screen) != *$'\u202E'* ]]"
-keys "$(row bidievil-and-then-a-)" x
+ask "$(row bidievil-and-then-a-)" x
 check "the confirmation shows the whole name, cleaned" "on_screen 'close bidievil-and-then-a-long-tail?'"
-keys n
+answer n
 check "n there: still there" "has \"\$bidi\""
 keys q
 o kill-server
