@@ -3121,8 +3121,9 @@ draw_top() {
 draw() {
 	local cols lines n i LW RW avail peek_h=0 l r BH=3 PH sst=""
 	[[ -n $TCOLS ]] || TCOLS=$(tput cols 2>/dev/null || echo 100) TLINES=$(tput lines 2>/dev/null || echo 40)
+	# A --once is drawn at COLUMNS x LINES, its notice box too (notice_box reads TCOLS, TLINES).
+	((ONCE)) && TCOLS=${COLUMNS:-$TCOLS} TLINES=${LINES:-$TLINES}
 	cols=$TCOLS lines=$TLINES
-	((ONCE)) && cols=${COLUMNS:-$cols} lines=${LINES:-$lines}
 	W=$((cols < 80 ? 80 : cols)) IW=$((W - 4))
 	OUT=() PEEK_ROW=0
 	n=${#P_ID[@]}
@@ -3323,6 +3324,8 @@ draw() {
 
 	if ((ONCE)); then
 		printf '%s\n' "${OUT[@]}"
+		# A notice's box, as the live panel paints it over these rows, on a line of its own.
+		notice_up && { notice_box; printf '%s\n' "$NB"; }
 	else
 		# Only the lines that changed since the last frame are sent, each placed by row, and the
 		# whole update is wrapped in synchronized-output marks (?2026) so the terminal shows it at
@@ -5085,6 +5088,9 @@ SNAP_VARS=(
 	# Where you are: the selection, the windows, the peek, the ? page, a flash, a question.
 	s:SEL s:SEL_ID s:HSEL s:FOCUS a:WON s:PO s:PB s:PB_FOR s:MO s:SO s:MMAN
 	s:PEEK s:PEEK_SEL s:PEEK_ALL s:HELP s:HELP_TOP s:FLASH s:FLASH_T
+	# The notices waiting (the first in a box over the frame), and the loading box, which holds
+	# them back (notice_up). Their box (NB, NB_KEY) is made from these and the size, never kept.
+	a:NOTICES s:LBOX
 	s:ANSWERING a:ATOP s:ATOP_BH a:QL s:QFREE s:QFREEN s:QON s:QEMPTY s:QHAS
 )
 declare -A SNAP_T=()
@@ -5139,6 +5145,7 @@ snap_read() { # snap_read FILE -> SNAP_N, SNAP_K, SNAP_V: its records, for snap_
 snap_apply() {
 	local i n k t
 	for n in "${SNAP_VARS[@]}"; do [[ $n == s:* ]] || snap_set "${n#?:}"; done
+	NB_KEY="" # the notice box is made again, from what's loaded
 	for i in "${!SNAP_N[@]}"; do
 		n=${SNAP_N[i]} k=${SNAP_K[i]}
 		[[ $n =~ ^[A-Z][A-Z0-9_]*$ ]] || continue
@@ -5318,6 +5325,8 @@ if ((ONCE)); then
 	for i in "${!P_ID[@]}"; do [[ -n ${REVIVE_PANEL_SEL:-} && ${P_ID[i]} == "$REVIVE_PANEL_SEL" ]] && SEL=$i; done
 	fold_load
 	sel_fix
+	# Tests draw a notice's box: REVIVE_PANEL_NOTICE=TEXT, as though a key had just said it.
+	[[ -n ${REVIVE_PANEL_NOTICE:-} ]] && notice "$REVIVE_PANEL_NOTICE"
 	if [[ $SNAP == save:* ]]; then
 		snap_look
 		SNAP_SECS=$SECONDS

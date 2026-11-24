@@ -438,7 +438,11 @@ help_frame() {
 	vlen "$sig"
 	rep ═ $((W - 4 - VLEN))
 	line "$FRAME╚$REP$R$sig$FRAME══╝$R"
-	if ((ONCE)); then printf '%s\n' "${OUT[@]}"; return; fi
+	if ((ONCE)); then
+		printf '%s\n' "${OUT[@]}"
+		notice_up && { notice_box; printf '%s\n' "$NB"; } # as draw's --once
+		return
+	fi
 	# As draw() paints: only the lines that changed, in one synchronized update.
 	local buf=""
 	for i in "${!OUT[@]}"; do
