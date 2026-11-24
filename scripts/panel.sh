@@ -3040,6 +3040,10 @@ draw_top() {
 
 draw() {
 	local cols lines n i LW RW avail peek_h=0 l r BH=3 PH sst=""
+	# A box left over the panel goes, all of it drawn again. Drawn by a key's own steps, the
+	# boxes it opened before are done with (box_out).
+	((BOX_UP)) && PREV=() BOX_UP=0
+	((BOX_ON)) && BOX_DONE=1 BOX_PLAY=() BOX_AT=-1
 	[[ -n $TCOLS ]] || TCOLS=$(tput cols 2>/dev/null || echo 100) TLINES=$(tput lines 2>/dev/null || echo 40)
 	cols=$TCOLS lines=$TLINES
 	((ONCE)) && cols=${COLUMNS:-$cols} lines=${LINES:-$lines}
@@ -3278,20 +3282,24 @@ flash() { FLASH=$1 FLASH_T=$SECONDS; clean FLASH; } # agent-say's reply can quot
 # A code shown only in a popup, typed back there: a popup isn't a pane, so no agent can read
 # it or type into it with send-keys. The popup's own shell then runs agent-say's FUNCTION
 # ARGS... CODE (approve, grant_refresh), which refuses without that code; no command does it.
-# code_popup QUESTION VERB FUNCTION ARGS... -> the last line it said, or nothing (no match)
+# code_popup QUESTION VERB FUNCTION ARGS... -> CP_OUT: the last line it said, or nothing (no
+# match). Returns 1, CP_OUT empty, when the popup was closed with no code typed (Esc).
 code_popup() {
+	box_answered code "$1" && { CP_OUT=$BOX_ANS; return "$BOX_RC"; }
 	local q=$1 verb=$2 out="$ASTATE/intros/.allow.out" pc
 	shift 2
 	mkdir -p "$ASTATE/intros"
 	# agent-say is read in first for its input box; the code is made after, in the popup only.
 	# The popup stays open until FUNCTION is done (delivering what waited can take a while): it
 	# says so, rather than sitting there an empty box once the input box has gone.
-	pc=$(printf '%q ' bash -c 'export AGENT_SAY_MAILBOX="$3"; o=$4 s=$5; source "$s" || exit 1; c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); input_box ACCESS "Type $c and press Enter to $2" plain "Anything else counts as no · Esc cancels" "$1" && [[ $BOX_REPLY == "$c" ]] || exit 1; read -r h _ < <(stty size 2>/dev/null) || h=10; printf "\e[?25l\e[%s;5H\e[1m%sing…\e[0m" $(( (h + 1) / 2 )) "${2^}"; export AGENT_SAY_APPROVE_CODE="$c"; shift 5; "$@" "$c" >"$o" 2>&1' _ "$q" "$verb" "$AMAIL" "$out" "$ASAY" "$@")
+	pc=$(printf '%q ' bash -c 'export AGENT_SAY_MAILBOX="$3"; o=$4 s=$5; source "$s" || exit 1; c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); input_box ACCESS "Type $c and press Enter to $2" plain "Anything else counts as no · Esc cancels" "$1" || { printf "\\37" >"$o"; exit 1; }; [[ $BOX_REPLY == "$c" ]] || exit 1; read -r h _ < <(stty size 2>/dev/null) || h=10; printf "\e[?25l\e[%s;5H\e[1m%sing…\e[0m" $(( (h + 1) / 2 )) "${2^}"; export AGENT_SAY_APPROVE_CODE="$c"; shift 5; "$@" "$c" >"$o" 2>&1' _ "$q" "$verb" "$AMAIL" "$out" "$ASAY" "$@")
 	rm -f "$out"
 	# Tall enough for the question whole, however long the names in it are (it wraps, never cut).
 	tm display-popup -E -w 76 -h $((12 + ${#q} / 60)) "$pc" 2>/dev/null
-	tail -n 1 "$out" 2>/dev/null || true
+	CP_OUT=$(tail -n 1 "$out" 2>/dev/null)
 	rm -f "$out"
+	[[ $CP_OUT == "$NOTE" ]] && { CP_OUT=""; box_out 1 ""; return; }
+	box_out 0 "$CP_OUT" done
 }
 
 # read_host_keys HOST [--new | --fresh] -> KEYS: its key fingerprints, the one ssh would use
@@ -3313,8 +3321,11 @@ read_host_keys() {
 # login_window HOST [FINGERPRINT...]: the keys you just confirmed; none, the link's own.
 # Returns whether a login is open now.
 login_window() {
+	[[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+	# Over the panel drawn clean. Esc in it can't be told from a login that failed: either way
+	# it's done, and the box before doesn't come back.
+	box_answered login "$@" && return "$BOX_RC"
 	local h=$1 cmd w i
-	[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
 	shift
 	# tmux runs it with the server's environment, not this panel's: say where agent-say keeps
 	# its state, which ssh it uses, and where it reads host keys (as for the keys you confirmed).
@@ -3333,12 +3344,90 @@ login_window() {
 	fi
 	PREV=()
 	"$ASAY" _login "$h" --check
+	box_out $? "" done
+}
+
+# ------------------------------------------------------------------ one box at a time
+# The boxes over the panel (pick, ask, note, edit_box, code_popup, login_window) show one at a
+# time. A box that opens from another (B's steps, G's Approve and its code) has the panel under
+# it drawn clean first, so the one before is gone. Esc on it brings the one before back as it
+# was (its title, its choices, the one highlighted, what was typed), and the key goes on from
+# there; finished, the key goes on as it does.
+# What each box of the key asked and answered is kept, in order (BOX_LOG: its look, then its
+# status and answer, split by BOX_RS). Going back runs the key again (box_flow): the boxes
+# before come back answered as they were, unseen (BOX_PLAY), and the one to go back to is shown
+# again (BOX_AT), with its answer (BOX_SEL) highlighted or typed in. Only while the key has
+# drawn nothing but boxes: once it draws the panel (to say what it's doing, or after doing it:
+# a host key read, a link, a login), the boxes before are done with (BOX_DONE), and Esc only
+# closes, as it did.
+BOX_RS=$'\x1e' BOX_LOG=() BOX_PLAY=() BOX_N=0 BOX_AT=-1 BOX_SEL="" BOX_RE="" BOX_SIG="" BOX_RC=0 BOX_ANS=""
+BOX_UP=0 BOX_ON=0 BOX_DONE=0 BOX_BACK=0
+# box_flow FUNCTION ARGS...: a key's work (act KEY), run again while a box in it goes back.
+box_flow() {
+	local f=$FLASH ft=$FLASH_T
+	BOX_PLAY=() BOX_AT=-1
+	while :; do
+		BOX_LOG=() BOX_N=0 BOX_DONE=0 BOX_BACK=0 BOX_ON=1
+		"$@"
+		((BOX_BACK)) || break
+		FLASH=$f FLASH_T=$ft # what the way out of it said, unsaid: it goes on from the box before
+	done
+	BOX_ON=0 BOX_LOG=() BOX_PLAY=() BOX_AT=-1
+	((BOX_UP)) && PREV=() BOX_UP=0
+}
+# box_answered KIND ARGS...: before a box is drawn. Answered already, run again to go back past
+# it: BOX_RC, its status, and BOX_ANS, its answer, for it to return (0). Otherwise (1) it's to
+# be drawn, over the panel drawn clean if a box was on it; BOX_RE, what it had when it's the one
+# gone back to.
+box_answered() {
+	local s="$*" l r
+	s=${s//[0-9]/} # the same box, though a clock or a count in it has moved on
+	BOX_SIG=${s//$BOX_RS/} BOX_RE=""
+	# Going back, and still opening boxes: they go as if escaped, unseen.
+	((BOX_BACK)) && { BOX_RC=1 BOX_ANS=""; return 0; }
+	if ((BOX_N < ${#BOX_PLAY[@]})); then
+		l=${BOX_PLAY[BOX_N]}
+		if [[ ${l%%"$BOX_RS"*} == "$BOX_SIG" ]]; then
+			BOX_LOG[BOX_N++]=$l
+			r=${l#*"$BOX_RS"} BOX_RC=${r%%"$BOX_RS"*} BOX_ANS=${r#*"$BOX_RS"}
+			return 0
+		fi
+		BOX_PLAY=() BOX_AT=-1 # not the box it was: from here on, as they come
+	fi
+	((BOX_N == BOX_AT)) && BOX_RE=$BOX_SEL BOX_PLAY=() BOX_AT=-1
+	((BOX_UP)) && box_clean
+	return 1
+}
+# box_out STATUS ANSWER [done]: a box closed, finished (0) with ANSWER, or escaped. done: what it
+# did is done (a code typed back, a login), so nothing before it comes back. Returns STATUS.
+box_out() {
+	local j=$((BOX_N - 1)) r
+	BOX_LOG[BOX_N++]="$BOX_SIG$BOX_RS$1$BOX_RS$2"
+	BOX_UP=1
+	[[ -n ${3:-} ]] && BOX_DONE=1
+	(($1 == 0)) && return 0
+	# Escaped: the box it opened from, if it was finished, comes back.
+	if ((BOX_ON && !BOX_DONE && j >= 0)); then
+		r=${BOX_LOG[j]#*"$BOX_RS"}
+		if [[ ${r%%"$BOX_RS"*} == 0 ]]; then
+			BOX_PLAY=("${BOX_LOG[@]:0:j}") BOX_AT=$j BOX_SEL=${r#*"$BOX_RS"} BOX_BACK=1
+		fi
+	fi
+	return "$1"
+}
+# box_clean: the panel drawn whole, with nothing over it, by the boxes themselves (draw, called
+# by a key's own steps instead, ends what boxes went before).
+box_clean() {
+	local BOX_ON=0
+	BOX_UP=0 PREV=()
+	draw
 }
 
 ask() { # ask PROMPT -> REPLY on the bottom line. Enter accepts; Esc, Ctrl-C or an empty line backs out (returns 1)
+	box_answered ask "$1" && { REPLY=$BOX_ANS; return "$BOX_RC"; }
 	local rows cols k rest show room ok=1
 	rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80)
-	REPLY=""
+	REPLY=$BOX_RE
 	# Ctrl-C backs out of the prompt rather than closing the panel. Bash runs a trap but then
 	# goes back to waiting in read, so read in short slices and check the flag between them.
 	local INTR=0
@@ -3373,9 +3462,9 @@ ask() { # ask PROMPT -> REPLY on the bottom line. Enter accepts; Esc, Ctrl-C or 
 	done
 	trap 'exit 0' INT
 	printf '%s' "$e[?25l$e[${rows};1H$e[2K"
-	((ok)) && [[ -n $REPLY ]] && return 0
+	((ok)) && [[ -n $REPLY ]] && { box_out 0 "$REPLY"; return; }
 	REPLY=""
-	return 1
+	box_out 1 ""
 }
 
 # text_clean VAR...: written text (typed or pasted) as the panel keeps it: line breaks as LF
@@ -3397,9 +3486,11 @@ text_clean() {
 # is drawn whole again after (PREV is emptied).
 EB_MAX=10000
 edit_box() {
+	box_answered edit "$1" "$2" && { REPLY=$BOX_ANS; return "$BOX_RC"; }
 	local title=$1 hint=$2 txt=${3:-} cur k rest seq p c n ok=0 otty dirty=1 vtop=0 more fd cpid
 	local w h th tw top left
 	local -a VS VN PS PE PC
+	[[ -n $BOX_RE ]] && txt=$BOX_RE
 	text_clean txt
 	txt=${txt:0:EB_MAX} cur=${#txt}
 	# Enter (CR) told apart from Ctrl-J (LF), and Ctrl-C a key: the terminal turns neither into
@@ -3469,8 +3560,9 @@ edit_box() {
 	[[ -n $otty ]] && stty "$otty" 2>/dev/null
 	PREV=()
 	REPLY=""
-	((ok)) || return 1
+	((ok)) || { box_out 1 ""; return; }
 	REPLY=$txt
+	box_out 0 "$REPLY"
 }
 eb_ins() { # eb_ins TEXT: at the cursor, as much as EB_MAX leaves room for
 	local s=$1 room=$((EB_MAX - ${#txt}))
@@ -3599,7 +3691,7 @@ eb_draw() { # the box, centred over the panel, as pick draws its own; the cursor
 	local i j k r s t buf edge row col rs len pos from to fc=$BCYN band=25 room
 	[[ ${EBC:-} == m ]] && fc=$BMAG band=90
 	local tb="$e[48;5;${band}m" tf="$e[38;5;${band}m"
-	[[ -n $TCOLS ]] || { TCOLS=$(tput cols 2>/dev/null || echo 100) TLINES=$(tput lines 2>/dev/null || echo 40); PREV=(); draw; dirty=1; }
+	[[ -n $TCOLS ]] || { TCOLS=$(tput cols 2>/dev/null || echo 100) TLINES=$(tput lines 2>/dev/null || echo 40); box_clean; dirty=1; }
 	w=$((TCOLS - 8)) h=$((TLINES - 6))
 	((w > 100)) && w=100
 	((w < 30)) && w=$((TCOLS - 2))
@@ -3676,6 +3768,12 @@ eb_draw() { # the box, centred over the panel, as pick draws its own; the cursor
 # (as many, and no wider).
 NOTE=$'\x1f' # clean takes control characters out of anything shown, so none can start with it
 pick() {
+	box_answered pick "$@" && { read -r PICKED PKEY <<<"$BOX_ANS"; return "$BOX_RC"; }
+	local re=${BOX_RE%% *} # the item picked, gone back to
+	PSEL=${re:-${PSEL:-}} pick_box "$@"
+	box_out $? "${PICKED:-} $PKEY"
+}
+pick_box() {
 	local title=$1 rows cols w h top left i k rest sel=-1 line hint=${PHINT:-"↑↓ choose · Enter picks · Esc closes"} INTR=0
 	shift
 	local -a items=("$@") ch=() num=()
@@ -4306,7 +4404,6 @@ upd_show() {
 		sel=$PICKED
 		[[ $PKROWS == *" $sel "* ]] || break
 		[[ ${UPD_KIND[sel]} == note ]] && a=${UPD_ARG[sel]} || a=${UPD_TEXT[sel]}
-		PREV=(); draw # the list away first, so the two boxes never overlap
 		# shellcheck disable=SC2086 # mode, user and host: checked words
 		user_note $a
 		PREV=(); draw
@@ -4315,6 +4412,7 @@ upd_show() {
 }
 # note TITLE LINE...: a box over the panel, drawn as pick's, until a key is pressed.
 note() {
+	box_answered note "$@" && return "$BOX_RC"
 	local k INTR=0
 	note_box "$1" "press any key to close" "${@:2}"
 	trap 'INTR=1' INT
@@ -4322,6 +4420,7 @@ note() {
 	# The rest of a key sequence (an arrow) goes too.
 	read -rsn4 -t 0.02 _ || true
 	trap 'exit 0' INT
+	box_out 0 ""
 }
 # note_box TITLE HINT LINE...: note's box, drawn and left there. No TITLE, no title tab. Set
 # for one call, NB_ONLY=1: only made (-> NB), at the panel's size, for draw to paint.
@@ -4700,10 +4799,10 @@ act() {
 				[[ "s:$cur@${f#*@}" == "$fs" ]] || labels+=("$NOTE${f%@*} has restarted since asking")
 			fi
 			local nt=${#labels[@]}
-			PREV=(); draw # the list away first, so the two boxes never overlap
 			pick "${f:0:24} → ${t:0:24}" "${labels[@]}" "Approve" "Deny" || { PREV=(); return; } # PREV: all of it drawn again over the box
 			if ((PICKED == nt)); then
-				out=$(code_popup "Allow $f to talk with $t?" allow approve "$a")
+				code_popup "Allow $f to talk with $t?" allow approve "$a" || return
+				out=$CP_OUT
 				PREV=()
 				[[ -n $out ]] || out="not approved: the code didn't match, so it's still waiting"
 			else
@@ -4712,11 +4811,11 @@ act() {
 		else
 			# Refresh first, so a bare Enter takes nothing away.
 			local l=${labels[PICKED]%% · *} lt=${labels[PICKED]:0:60}
-			PREV=(); draw
 			pick "$lt" "Refresh" "Remove" || { PREV=(); return; }
 			if ((PICKED == 0)); then
 				# The same code popup as Approve: no agent can refresh its own access.
-				out=$(code_popup "Refresh $l for another day?" refresh grant_refresh "$a" "$b")
+				code_popup "Refresh $l for another day?" refresh grant_refresh "$a" "$b" || return
+				out=$CP_OUT
 				PREV=()
 				if [[ $out == refreshed:* ]]; then out="refreshed: $l · $((ttl / 3600))h left"
 				elif [[ -z $out ]]; then out="not refreshed: the code didn't match"; fi
@@ -5182,7 +5281,7 @@ keys() {
 		# the look at every pane is what takes the time.
 		p | P | a | A) act "$key"; nav=1; draw; nav=0; break ;;
 		"") ;;
-		*) act "$key"; nav=0; break ;;
+		*) box_flow act "$key"; nav=0; break ;;
 		esac
 		key=""
 		read -t 0 && IFS= read -rsn1 key || break
