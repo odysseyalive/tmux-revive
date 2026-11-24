@@ -58,7 +58,7 @@ trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 plain() { sed 's/\x1b\[[0-9;]*m//g'; }
 screen() { tm capture-pane -p -t work:panel; }
-wait_screen() { for _ in $(seq 1 30); do screen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_screen() { for _ in $(seq 1 30); do screen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 # wait_ok CHECK: CHECK (eval'd) comes true within 6 seconds.
 wait_ok() { for _ in $(seq 1 30); do eval "$1" && return 0; sleep 0.2; done; return 1; }
 # A notice: what a key did, or news from the background, in a box over the panel that only Esc
@@ -258,20 +258,20 @@ check "the peek takes all the space, the artwork none" "grep -q 'PEEK · ' <<<\"
 check "the peek's title offers p to hide it, not x or c" "grep -q 'PEEK · .*\[p\] hide' <<<\"\$peek\" && ! grep -q 'full view\|collapse' <<<\"\$peek\""
 check "the key bar no longer offers P" "! grep -q '\[P\]eek' <<<\"\$peek\""
 hidden=$(tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
-check "hidden, only its title stays, offering [P]eek, its first tip centered under it, then the artwork" "grep -q 'PEEK · .*\[P\]eek' <<<\"\$hidden\" && grep -A2 'PEEK · ' <<<\"\$hidden\" | sed -n 2p | grep -q '^║  *Turn \[P\]eek on to preview a selected session\.  *║\$' && grep -A2 'PEEK · ' <<<\"\$hidden\" | sed -n 3p | grep -q 'ART · '"
+check "hidden, only its title stays, offering [P]eek, its first tip centered under it, then the artwork" "grep -q 'PEEK · .*\[P\]eek' <<<\"\$hidden\" && grep -A2 'PEEK · ' <<<\"\$hidden\" | sed -n 2p | grep -c '^║  *Turn \[P\]eek on to preview a selected session\.  *║\$' >/dev/null && grep -A2 'PEEK · ' <<<\"\$hidden\" | sed -n 3p | grep -c 'ART · ' >/dev/null"
 raw=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once")
-check "with the focus in PANES, only the selected row has the faint background" "[[ \$(grep -cF $'\\e[48;5;236m' <<<\"\$raw\") == 1 ]] && grep -F $'\\e[48;5;236m' <<<\"\$raw\" | grep -q '▶'"
+check "with the focus in PANES, only the selected row has the faint background" "[[ \$(grep -cF $'\\e[48;5;236m' <<<\"\$raw\") == 1 ]] && grep -F $'\\e[48;5;236m' <<<\"\$raw\" | grep -c '▶' >/dev/null"
 tm kill-window -t work:numbers
 
 echo "keys"
 tm new-window -d -t work -n panel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 wait_screen 'C O N T R O L'
-check "it labels its own pane" "screen | grep -q 'panel *✦ this panel'"
+check "it labels its own pane" "screen | grep -c 'panel *✦ this panel' >/dev/null"
 # Counted with grep -c, never grep -q at the end of a pipe (pipefail: a closed pipe fails it).
 seen() { local n; n=$(screen | grep -cF -- "$1"); [[ $n == "${2:-1}" ]]; }
 # The # cell is the pane's window.pane, as tmux's status bar numbers it: two panes in window
 # 0 (the shell and top), the panel alone in window 1.
-check "the # cell shows each pane's window.pane" "screen | grep -q '\[0\.0\] .*bash *· shell' && screen | grep -q '\[0\.1\] .*top *▸ running' && screen | grep -q '\[1\.0\] .*panel *✦ this panel'"
+check "the # cell shows each pane's window.pane" "screen | grep -c '\[0\.0\] .*bash *· shell' >/dev/null && screen | grep -c '\[0\.1\] .*top *▸ running' >/dev/null && screen | grep -c '\[1\.0\] .*panel *✦ this panel' >/dev/null"
 tm send-keys -t work:panel 1
 check "a digit selects the first pane in that window" "wait_screen '[1.0] ▶'"
 tm send-keys -t work:panel 0
@@ -281,7 +281,7 @@ check "a window with no panes leaves the selection where it was" "wait_screen '[
 tm send-keys -t work:panel Down; wait_screen '[0.1] ▶' >/dev/null
 tm send-keys -t work:panel n; sleep 0.5
 tm send-keys -t work:panel 'top-watch' Enter
-named() { for _ in $(seq 1 30); do tm list-panes -a -F '#{@agent}' | grep -qx "$1" && return 0; sleep 0.2; done; return 1; }
+named() { for _ in $(seq 1 30); do tm list-panes -a -F '#{@agent}' | grep -cx "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 check "N renames the selected pane, and says so in a box" "named top-watch && wait_screen '▶ top-watch' && boxed screen \"is now 'top-watch'\""
 unbox screen tm send-keys -t work:panel >/dev/null
 # Typed into N, h j k l are letters of the name, not moves.
@@ -304,14 +304,14 @@ check "and says it's saved in a box over the panel, not on the key bar" "boxed s
 check "the box's foot says Esc closes it, and nothing more" "screen | grep -cE '║ Esc closes +║░' >/dev/null && [[ \$(notice_text screen) == saved ]]"
 selb=$(screen | grep -o '\[[0-9.]*\] ▶')
 tm send-keys -t work:panel q x Down Up Down; sleep 1.5
-check "q, another key or an arrow leave it up: the panel stays, the selection too ($selb)" "tm list-windows -F '#{window_name}' | grep -qx panel && boxed screen saved && [[ \$(screen | grep -o '\[[0-9.]*\] ▶') == '$selb' ]]"
+check "q, another key or an arrow leave it up: the panel stays, the selection too ($selb)" "tm list-windows -F '#{window_name}' | grep -cx panel >/dev/null && boxed screen saved && [[ \$(screen | grep -o '\[[0-9.]*\] ▶') == '$selb' ]]"
 # The panel goes on under it: its clock moves, the box still over it.
 clock() { screen | grep -o '[0-9][0-9]:[0-9][0-9]:[0-9][0-9]' | head -1; }
 c0=$(clock); sleep 2.5
 check "the panel keeps refreshing under the box: its clock moves on ($c0)" "[[ -n '$c0' && \$(clock) != '$c0' ]] && boxed screen saved"
 tm send-keys -t work:panel Escape
-check "Esc closes it, the panel whole under it" "nobox screen && wait_screen 'C O N T R O L' && screen | head -1 | grep -q '^╔'"
-check "the peek box shows the selected pane" "screen | grep -q 'PEEK · top-watch'"
+check "Esc closes it, the panel whole under it" "nobox screen && wait_screen 'C O N T R O L' && screen | head -1 | grep -c '^╔' >/dev/null"
+check "the peek box shows the selected pane" "screen | grep -c 'PEEK · top-watch' >/dev/null"
 # Every row is repainted right as p hides and shows it.
 whole() { local s; s=$(screen); [[ ${s%%$'\n'*} == ╔* && ${s##*$'\n'} == *╝ ]] && seen 'PEEK · ' && seen 'MESSAGES'; }
 check "the peek fills the space, the artwork gone" "seen '[p] hide' && seen 'ART · ' 0 && whole"
@@ -335,22 +335,22 @@ tm send-keys -t work:panel k
 check "k moves it up" "wait_screen '[1.0] ▶' && seen '] ▶'"
 # Held arrows: quick to follow, nothing echoed, nothing scrolled.
 tm send-keys -t work:panel Up Up
-quick() { local s=$EPOCHREALTIME; tm send-keys -t work:panel Down; for _ in $(seq 1 40); do screen | grep -qF "[$1] ▶" && break; sleep 0.05; done; awk -v a=$s -v b=$EPOCHREALTIME 'BEGIN{exit !(b - a < 1.0)}'; }
+quick() { local s=$EPOCHREALTIME; tm send-keys -t work:panel Down; for _ in $(seq 1 40); do screen | grep -cF "[$1] ▶" >/dev/null && break; sleep 0.05; done; awk -v a=$s -v b=$EPOCHREALTIME 'BEGIN{exit !(b - a < 1.0)}'; }
 wait_screen '[0.0] ▶' >/dev/null
 check "an arrow key moves the selection within a second" "quick 0.1"
 for _ in 1 2 3 4 5 6; do tm send-keys -t work:panel Down Up; done; sleep 1.5
-check "held arrows echo nothing onto the screen" "! screen | grep -qF '^['"
-check "and the frame never scrolls" "screen | head -1 | grep -q '^╔'"
+check "held arrows echo nothing onto the screen" "! screen | grep -cF '^[' >/dev/null"
+check "and the frame never scrolls" "screen | head -1 | grep -c '^╔' >/dev/null"
 tm send-keys -t work:panel m; sleep 0.5
 check "M opens a box to write the message in, saying how to finish and back out" "wait_screen 'MESSAGE TO' && wait_screen 'Enter sends · Alt-Enter new line · Esc closes'"
 tm send-keys -t work:panel -l 'never sent'; sleep 0.3
 tm send-keys -t work:panel Escape
-check "Esc backs out of a message" "boxed screen 'message cancelled' && ! screen | grep -q 'MESSAGE TO'"
+check "Esc backs out of a message" "boxed screen 'message cancelled' && ! screen | grep -c 'MESSAGE TO' >/dev/null"
 unbox screen tm send-keys -t work:panel >/dev/null
 tm send-keys -t work:panel m; sleep 0.5
 tm send-keys -t work:panel -l 'never sent either'; sleep 0.3
 tm send-keys -t work:panel C-c; sleep 1
-check "Ctrl-C backs out too, and the panel stays open" "tm list-windows -F '#{window_name}' | grep -qx panel && boxed screen 'message cancelled' && wait_screen 'C O N T R O L' && ! screen | grep -q 'MESSAGE TO'"
+check "Ctrl-C backs out too, and the panel stays open" "tm list-windows -F '#{window_name}' | grep -cx panel >/dev/null && boxed screen 'message cancelled' && wait_screen 'C O N T R O L' && ! screen | grep -c 'MESSAGE TO' >/dev/null"
 unbox screen tm send-keys -t work:panel >/dev/null
 check "nothing was sent" "! grep -qs 'never sent' $AGENT_SAY_MAILBOX"
 # A paste into the box is text, its line breaks (CR, as a terminal sends them) included, never
@@ -358,11 +358,11 @@ check "nothing was sent" "! grep -qs 'never sent' $AGENT_SAY_MAILBOX"
 { for i in $(seq -w 1 40); do printf 'line %s\n' "$i"; done; for i in $(seq -f %04g 1 30); do printf 'w%s ' "$i"; done; } >"$T/paste.txt"
 tm send-keys -t work:panel m; wait_screen 'Esc closes' >/dev/null
 tm load-buffer -b ptest "$T/paste.txt"; tm paste-buffer -p -d -b ptest -t work:panel
-check "a paste of many lines stays in the box, which scrolls to its end and wraps a long line" "wait_screen 'w0001' && screen | grep -q 'Esc closes' && screen | grep -qF '║ line 40' && ! screen | grep -qF '║ line 01' && ! screen | grep -q 'w0001.*w0030'"
+check "a paste of many lines stays in the box, which scrolls to its end and wraps a long line" "wait_screen 'w0001' && screen | grep -c 'Esc closes' >/dev/null && screen | grep -cF '║ line 40' >/dev/null && ! screen | grep -cF '║ line 01' >/dev/null && ! screen | grep -c 'w0001.*w0030' >/dev/null"
 tm send-keys -t work:panel PPage PPage PPage
 check "PgUp goes back up to its first line" "wait_screen '║ line 01'"
 tm send-keys -t work:panel Escape
-check "and Esc still sends none of it, the box gone" "wait_ok '! screen | grep -q \"MESSAGE TO\"' && boxed screen 'message cancelled' && ! screen | grep -qF '║ line' && ! grep -qs 'line 40' $AGENT_SAY_MAILBOX"
+check "and Esc still sends none of it, the box gone" "wait_ok '! screen | grep -c \"MESSAGE TO\" >/dev/null' && boxed screen 'message cancelled' && ! screen | grep -cF '║ line' >/dev/null && ! grep -qs 'line 40' $AGENT_SAY_MAILBOX"
 unbox screen tm send-keys -t work:panel >/dev/null
 wait_screen 'C O N T R O L' >/dev/null
 before=$(screen | grep -o 'ART · [a-z ]*' | head -1)
@@ -379,7 +379,7 @@ check "and the box fits: its rows all as wide, none past the 80 columns" "[[ \$(
 unbox screen tm send-keys -t work:panel >/dev/null
 tm resize-window -t work:panel -x 130 -y 40; sleep 1
 tm send-keys -t work:panel q; sleep 1
-check "Q quits" "! tm list-windows -F '#{window_name}' | grep -qx panel"
+check "Q quits" "! tm list-windows -F '#{window_name}' | grep -cx panel >/dev/null"
 # An arrow redraws from what was gathered: the links and saves aren't looked at again for it.
 # A tmux that logs what it's asked shows it (the saves ask it for @revive-interval).
 mkdir -p "$T/shim"
@@ -387,7 +387,7 @@ printf '#!/bin/sh\necho "$*" >>"%s/shim.log"\nexec %s "$@"\n' "$T" "$(command -v
 chmod +x "$T/shim/tmux"
 tm new-window -d -t work -n navp "env PATH=$T/shim:$PATH REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=60 $PANEL"
 nscreen() { tm capture-pane -p -t work:navp; }
-wait_n() { for _ in $(seq 1 30); do nscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_n() { for _ in $(seq 1 30); do nscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 looks() { grep -c 'show-option -gqv @revive-interval' "$T/shim.log" 2>/dev/null; }
 wait_n 'C O N T R O L' >/dev/null; sleep 0.5
 tm send-keys -t work:navp 0; wait_n '[0.0] ▶' >/dev/null; sleep 0.3
@@ -414,15 +414,15 @@ tm set-environment -g REVIVE_PLAYWRIGHT_INSTALL_CMD "touch $T/pw-installed"
 tm set-environment -g REVIVE_CODEX_INSTALL_CMD "touch $T/cx-installed"
 tm new-window -d -t work -n helpw "env PATH=$T/stub:$PATH REVIVE_WORKFORCE_INSTALL_CMD='touch $T/installed' REVIVE_PLAYWRIGHT_INSTALL_CMD='touch $T/pw-installed' REVIVE_CODEX_INSTALL_CMD='touch $T/cx-installed' REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 hscreen() { tm capture-pane -p -t work:helpw; }
-hwait() { for _ in $(seq 1 30); do hscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
-hgone() { for _ in $(seq 1 30); do hscreen | grep -qF -- "$1" || return 0; sleep 0.2; done; return 1; }
+hwait() { for _ in $(seq 1 30); do hscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
+hgone() { for _ in $(seq 1 30); do hscreen | grep -cF -- "$1" >/dev/null || return 0; sleep 0.2; done; return 1; }
 hpos() { hscreen | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1; } # the bar's "first-last of all"
 hwhole() { local s; s=$(hscreen); [[ ${s%%$'\n'*} == ╔* && ${s##*$'\n'} == *╝ ]]; }
 hwait 'C O N T R O L'
-check "the command bar offers ? for help" "hscreen | grep -qF '[?] help'"
+check "the command bar offers ? for help" "hscreen | grep -cF '[?] help' >/dev/null"
 tm send-keys -t work:helpw '?'
-check "? opens the help page, with its banner" "hwait 'C H E A T   S H E E T' && hscreen | grep -q 'HELP · HOW TO USE REVIVE'"
-check "in place of the pane list, under the panel's banner" "! hscreen | grep -q '✦ this panel\|PANES\|MESSAGES' &&hscreen | grep -q 'C O N T R O L' && hwhole"
+check "? opens the help page, with its banner" "hwait 'C H E A T   S H E E T' && hscreen | grep -c 'HELP · HOW TO USE REVIVE' >/dev/null"
+check "in place of the pane list, under the panel's banner" "! hscreen | grep -c '✦ this panel\|PANES\|MESSAGES' >/dev/null &&hscreen | grep -c 'C O N T R O L' >/dev/null && hwhole"
 # Left open, the page keeps the panel's clock: the agents' beacons take turns, live.
 beacons() { local i seen=""; for i in 1 2 3 4 5 6; do seen+=$(tm capture-pane -p -e -t work:helpw | grep -o $'\e\\[38;5;22[67]m' | sort -u | tr -d '\n'); sleep 0.8; done; printf '%s' "$seen"; }
 check "left open, its beacons blink in turn" "b=\$(beacons); [[ \$b == *'226m'* && \$b == *'227m'* ]]"
@@ -437,38 +437,38 @@ p1=$(hpos)
 check "PgDn scrolls a page ($p1)" "(( \${p1%%-*} > 10 )) && hwhole"
 tm send-keys -t work:helpw End; sleep 0.5
 p2=$(hpos) last=${p2#*-} last=${last%% *}
-check "End shows the bottom: the ads ($p2)" "[[ $last == \${p2##* } ]] && hscreen | grep -q 'Install playwright-mcp'"
+check "End shows the bottom: the ads ($p2)" "[[ $last == \${p2##* } ]] && hscreen | grep -c 'Install playwright-mcp' >/dev/null"
 tm send-keys -t work:helpw Home
-check "Home goes back to the top" "hwait ' 1-' && hscreen | grep -q 'C H E A T   S H E E T'"
+check "Home goes back to the top" "hwait ' 1-' && hscreen | grep -c 'C H E A T   S H E E T' >/dev/null"
 # This short, there's no room to pin the ads under a few rows of words: they scroll with them.
-check "too short to pin the ads, they scroll along with the words" "! hscreen | grep -q '╔═░▒▓'"
+check "too short to pin the ads, they scroll along with the words" "! hscreen | grep -c '╔═░▒▓' >/dev/null"
 tm resize-window -t work:helpw -x 130 -y 40; sleep 1
 tm send-keys -t work:helpw i
-check "i asks before installing, showing what it would run" "hwait 'yes, run it' && hscreen | grep -q 'touch $T/installed'"
+check "i asks before installing, showing what it would run" "hwait 'yes, run it' && hscreen | grep -c 'touch $T/installed' >/dev/null"
 tm send-keys -t work:helpw n
-check "n says no, and nothing runs, in a box" "boxed hscreen 'install cancelled · nothing was run' && sleep 1 && [[ ! -e $T/installed ]] && ! tm list-windows -F '#{window_name}' | grep -qx workforce"
+check "n says no, and nothing runs, in a box" "boxed hscreen 'install cancelled · nothing was run' && sleep 1 && [[ ! -e $T/installed ]] && ! tm list-windows -F '#{window_name}' | grep -cx workforce >/dev/null"
 unbox hscreen tm send-keys -t work:helpw >/dev/null
-check "and the help page stays open" "hscreen | grep -q 'HELP · HOW TO USE' && ! hscreen | grep -q 'yes, run it'"
+check "and the help page stays open" "hscreen | grep -c 'HELP · HOW TO USE' >/dev/null && ! hscreen | grep -c 'yes, run it' >/dev/null"
 tm send-keys -t work:helpw i; hwait 'yes, run it' >/dev/null
 tm send-keys -t work:helpw y
 installed() { for _ in $(seq 1 30); do [[ -e $T/installed ]] && return 0; sleep 0.2; done; return 1; }
-check "y runs the installer in a new tmux window" "installed && tm list-windows -F '#{window_name}' | grep -qx workforce"
-check "and says where, in a box over the help page" "boxed hscreen 'installing in the new tmux window: workforce' && hscreen | grep -q 'HELP · HOW TO USE'"
+check "y runs the installer in a new tmux window" "installed && tm list-windows -F '#{window_name}' | grep -cx workforce >/dev/null"
+check "and says where, in a box over the help page" "boxed hscreen 'installing in the new tmux window: workforce' && hscreen | grep -c 'HELP · HOW TO USE' >/dev/null"
 unbox hscreen tm send-keys -t work:helpw >/dev/null
-check "which Esc closes, the help page still open" "hscreen | grep -q 'HELP · HOW TO USE'"
+check "which Esc closes, the help page still open" "hscreen | grep -c 'HELP · HOW TO USE' >/dev/null"
 tm kill-window -t work:workforce 2>/dev/null
 tm send-keys -t work:helpw p
-check "p asks before installing playwright-mcp, showing what it would run" "hwait \"This runs playwright-mcp's installer\" && hscreen | grep -q 'touch $T/pw-installed'"
+check "p asks before installing playwright-mcp, showing what it would run" "hwait \"This runs playwright-mcp's installer\" && hscreen | grep -c 'touch $T/pw-installed' >/dev/null"
 tm send-keys -t work:helpw y
 pwinstalled() { for _ in $(seq 1 30); do [[ -e $T/pw-installed ]] && return 0; sleep 0.2; done; return 1; }
-check "and y runs it in a new tmux window of its own" "pwinstalled && tm list-windows -F '#{window_name}' | grep -qx playwright-mcp"
+check "and y runs it in a new tmux window of its own" "pwinstalled && tm list-windows -F '#{window_name}' | grep -cx playwright-mcp >/dev/null"
 unbox hscreen tm send-keys -t work:helpw >/dev/null
 tm kill-window -t work:playwright-mcp 2>/dev/null
 tm send-keys -t work:helpw c
-check "c asks before installing Codex Workforce, showing what it would run" "hwait \"This runs Codex Workforce's installer\" && hscreen | grep -q 'touch $T/cx-installed'"
+check "c asks before installing Codex Workforce, showing what it would run" "hwait \"This runs Codex Workforce's installer\" && hscreen | grep -c 'touch $T/cx-installed' >/dev/null"
 tm send-keys -t work:helpw y
 cxinstalled() { for _ in $(seq 1 30); do [[ -e $T/cx-installed ]] && return 0; sleep 0.2; done; return 1; }
-check "and y runs it in a new tmux window of its own" "cxinstalled && tm list-windows -F '#{window_name}' | grep -qx codex-workforce"
+check "and y runs it in a new tmux window of its own" "cxinstalled && tm list-windows -F '#{window_name}' | grep -cx codex-workforce >/dev/null"
 unbox hscreen tm send-keys -t work:helpw >/dev/null
 tm kill-window -t work:codex-workforce 2>/dev/null
 # Tall enough, the ads stay put at the bottom and only the words above them scroll.
@@ -476,13 +476,13 @@ tm resize-window -t work:helpw -x 160 -y 50; sleep 1.5
 tm send-keys -t work:helpw Home; sleep 0.5
 hfoot() { hscreen | grep -n '' | sed -n '/╔═░▒▓/,$p' | head -n -3; } # the ads, with their row numbers
 f0=$(hfoot) q0=$(hpos)
-check "a taller page pins the ads at the bottom, just above the bar ($q0)" "[[ -n \$f0 && \$q0 == 1-* ]] && hscreen | tail -5 | head -1 | grep -q '╚═*╝░' && hscreen | grep -q 'C H E A T   S H E E T'"
+check "a taller page pins the ads at the bottom, just above the bar ($q0)" "[[ -n \$f0 && \$q0 == 1-* ]] && hscreen | tail -5 | head -1 | grep -c '╚═*╝░' >/dev/null && hscreen | grep -c 'C H E A T   S H E E T' >/dev/null"
 check "and its counter counts only the words above them" "(( \${q0##* } < \${p0##* } )) && [[ \$(hscreen | grep -o '[0-9]*-[0-9]* of [0-9]* ▼') ]]"
 tm send-keys -t work:helpw j
 check "j scrolls the words, and the ads stay on the same rows" "hwait '▲ 2-' && [[ \$(hfoot) == \"\$f0\" ]]"
 tm send-keys -t work:helpw NPage; sleep 0.5
 q1=$(hpos)
-check "so does PgDn ($q1)" "(( \${q1%%-*} > 2 )) && [[ \$(hfoot) == \"\$f0\" ]] && hwhole && ! hscreen | grep -q 'C H E A T   S H E E T'"
+check "so does PgDn ($q1)" "(( \${q1%%-*} > 2 )) && [[ \$(hfoot) == \"\$f0\" ]] && hwhole && ! hscreen | grep -c 'C H E A T   S H E E T' >/dev/null"
 tm send-keys -t work:helpw End; sleep 0.5
 q2=$(hpos) last=${q2#*-} last=${last%% *}
 check "End shows the last of the words, the ads still under them ($q2)" "[[ $last == \${q2##* } ]] && [[ \$(hfoot) == \"\$f0\" ]]"
@@ -491,10 +491,10 @@ check "and their buttons still work there: i asks" "hwait 'yes, run it'"
 tm send-keys -t work:helpw n
 check "n says no" "boxed hscreen 'install cancelled' && unbox hscreen tm send-keys -t work:helpw && [[ \$(hfoot) == \"\$f0\" ]]"
 tm resize-window -t work:helpw -x 90 -y 30; sleep 1.5
-check "a resize redraws it to the new size" "hwhole && [[ \$(hscreen | head -1 | awk '{print length}') == 90 && \$(hscreen | wc -l) == 30 ]] && hscreen | grep -q 'HELP · HOW TO USE'"
+check "a resize redraws it to the new size" "hwhole && [[ \$(hscreen | head -1 | awk '{print length}') == 90 && \$(hscreen | wc -l) == 30 ]] && hscreen | grep -c 'HELP · HOW TO USE' >/dev/null"
 tm resize-window -t work:helpw -x 130 -y 40; sleep 0.5
 tm send-keys -t work:helpw x
-check "x closes it, back to the panes" "hgone 'HELP · HOW TO USE' && hwait 'PANES' && hscreen | grep -q 'this panel'"
+check "x closes it, back to the panes" "hgone 'HELP · HOW TO USE' && hwait 'PANES' && hscreen | grep -c 'this panel' >/dev/null"
 tm send-keys -t work:helpw '?'; hwait 'HELP · HOW TO USE' >/dev/null
 tm send-keys -t work:helpw Escape
 check "Esc closes it too" "hgone 'HELP · HOW TO USE' && hwait 'PANES'"
@@ -509,7 +509,7 @@ for c in 60 80 100 160; do
 	# Its two install buttons side by side where the box has room, one over the other where not.
 	b=$(grep -c 'i   Claude Workforce' <<<"$out"); [[ $(grep -c 'i   Claude Workforce .*c   Codex Workforce' <<<"$out") == 1 ]] && b=side
 	check "its Workforce buttons are both there at $c ($b)" "grep -q 'c   Codex Workforce' <<<\"\$out\" && [[ $c != 100 || $b == side ]]"
-	check "and none of its lines is cut short at $c" "! sed -n '/HELP · HOW TO USE/,\$p' <<<\"\$out\" | grep -q '…'"
+	check "and none of its lines is cut short at $c" "! sed -n '/HELP · HOW TO USE/,\$p' <<<\"\$out\" | grep -c '…' >/dev/null"
 	# That's with the ads pinned under the words (200 lines leaves room). Too short for that,
 	# everything scrolls together, and fits the same.
 	out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=$c LINES=24 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
@@ -541,7 +541,7 @@ check "it has no key reference or column list" "! grep -qiE 'key reference|What 
 # At 160x65 it all fits on one screen: every word above the ads, the ads whole at the bottom.
 out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=65 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 hp=$(grep -o '[0-9]*-[0-9]* of [0-9]*' <<<"$out" | tail -1)
-check "at 160x65 it fits on one screen ($hp), the ads whole at the bottom" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]] && tail -5 <<<\"\$out\" | head -1 | grep -q '╚═*╝░' && grep -q 'C H E A T   S H E E T' <<<\"\$out\""
+check "at 160x65 it fits on one screen ($hp), the ads whole at the bottom" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]] && tail -5 <<<\"\$out\" | head -1 | grep -c '╚═*╝░' >/dev/null && grep -q 'C H E A T   S H E E T' <<<\"\$out\""
 # Its counter counts the words alone: the whole page (as a short one counts it) less the ads,
 # which run from the blank row over their tops to the shadow under them.
 all=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=24 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
@@ -578,7 +578,7 @@ check "a CTX LEFT column follows MEM" "grep -q 'MEM  CTX LEFT' <<<\"\$out\""
 check "Claude Code's context left, from its transcript's last turn (45k of 200k: 77% left)" "grep -q 'claude .*M  ███▓· *77%' <<<\"\$out\""
 check "Codex's, from the rollout file it holds open (200k of 250k)" "grep -q 'codex .*M  █···· *20%' <<<\"\$out\""
 check "an agent with no record shows a dash" "[[ \$(grep -c 'claude .*·····    –' <<<\"\$out\") == 1 ]]"
-check "a shell shows nothing there" "grep 'bash *· shell' <<<\"\$out\" | grep -qv '–\\|%.*%'"
+check "a shell shows nothing there" "grep 'bash *· shell' <<<\"\$out\" | grep -cv '–\\|%.*%' >/dev/null"
 out=$(cframe 80)
 check "it stays in the narrowest panel" "grep -q 'codex .* 20% *║' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
 # The columns fill the row at any width: CTX LEFT ends at the panel's right edge, no row is
@@ -626,7 +626,7 @@ echo '{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_t
 out=$(cframe)
 check "the next turn counts again (500k: 50% left)" "grep -q 'claude .* 50%' <<<\"\$out\""
 rows=$(tm run-shell "HOME=$H REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows")
-check "--rows gives each pane's context left on a line of its own, before its row" "grep -A2 '^#ctx %[0-9]* 20$' <<<\"\$rows\" | grep -q $'\x1fcodex\x1f'"
+check "--rows gives each pane's context left on a line of its own, before its row" "grep -A2 '^#ctx %[0-9]* 20$' <<<\"\$rows\" | grep -c $'\x1fcodex\x1f' >/dev/null"
 # Codex 0.167 on holds no rollout open (a daemon outside the pane writes it): its rollout is the
 # one under its own CODEX_HOME (from its environment, not the panel's) for its folder, started
 # since it did. One for another folder, though newer, is no one else's.
@@ -648,7 +648,7 @@ check "a rollout for another folder isn't used: a dash" "[[ \$(grep -c 'codex .*
 b64u() { printf '%s' "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
 printf '{"auth_mode":"chatgpt","tokens":{"id_token":"%s.%s.sig"}}\n' "$(b64u '{"alg":"RS256"}')" "$(b64u '{"email":"codex.fixture@example.com","name":"??>"}')" >"$CX/auth.json"
 rows=$(tm run-shell "HOME=$H REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows")
-check "a Codex's account, from the sign-in in its CODEX_HOME, on a line before its row" "[[ \$(grep -c '^#acct %[0-9]* codex\.fixtur\$' <<<\"\$rows\") == 2 ]] && grep -A4 '^#acct %[0-9]* codex\.fixtur\$' <<<\"\$rows\" | grep -q $'\x1fcodex\x1f'"
+check "a Codex's account, from the sign-in in its CODEX_HOME, on a line before its row" "[[ \$(grep -c '^#acct %[0-9]* codex\.fixtur\$' <<<\"\$rows\") == 2 ]] && grep -A4 '^#acct %[0-9]* codex\.fixtur\$' <<<\"\$rows\" | grep -c $'\x1fcodex\x1f' >/dev/null"
 out=$(cframe 200)
 check "and shows under ACCOUNT" "grep -q ' ACCOUNT ' <<<\"\$out\" && [[ \$(grep -c ' codex\.fixtur .* codex ' <<<\"\$out\") == 2 ]]"
 rm -f "$CX/auth.json"
@@ -733,7 +733,7 @@ cxlimit "$lim"
 out=$(cframe 160)
 check "a Codex stopped at its usage limit after waiting on its agents: LIMIT and when it lifts, not WORKING" "grep -qF 'codex     $(limlabel "$lim")' <<<\"\$out\" && ! grep -q 'codex *. WORKING ' <<<\"\$out\""
 rows=$(tm run-shell "HOME=$H REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows")
-check "--rows: a line before its row with the seconds until it lifts, the row saying waiting" "grep -A3 '^#limit %[0-9]* 7[0-9][0-9][0-9] 0\$' <<<\"\$rows\" | grep -q $'\x1fcodex\x1fwaiting\x1f'"
+check "--rows: a line before its row with the seconds until it lifts, the row saying waiting" "grep -A3 '^#limit %[0-9]* 7[0-9][0-9][0-9] 0\$' <<<\"\$rows\" | grep -c $'\x1fcodex\x1fwaiting\x1f' >/dev/null"
 # Another day: its date as well as its time ("Nov 24 3:04pm"), LIMIT cut short to fit, then
 # left out on a narrow panel, every row still exactly the frame's width.
 far=$((($(date +%s) + 3 * 86400) / 3600 * 3600 + 295))
@@ -754,7 +754,7 @@ printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\
 cxwait c5
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"error","message":"%s"}}\n' "$(cxnow)" "$(cxmsg "$lim")" >>"$cxa"
 out=$(cframe 160)
-check "a usage limit outranks a wait on its agents still unanswered" "grep -qF 'codex     ◷ BACK' <<<\"\$out\" && ! grep -q 'codex *. WORKING ' <<<\"\$out\""
+check "a usage limit outranks a wait on its agents still unanswered" "grep -qF 'codex     $(limlabel "$lim")' <<<\"\$out\" && ! grep -q 'codex *. WORKING ' <<<\"\$out\""
 # Its message's time only (no token counts), written three hours ago for two hours ago: the time
 # is the next one after the message, not after now, so it has lifted.
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
@@ -767,7 +767,7 @@ printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\
 cxlimit "$lim"
 printf '{"auth_mode":"chatgpt","tokens":{"id_token":"%s.%s.sig"}}\n' "$(b64u '{"alg":"RS256"}')" "$(b64u '{"email":"codex.fixture@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"plus"}}')" >"$CX/auth.json"
 out=$(cframe 160)
-check "the same plan in its sign-in: still LIMIT" "grep -qF 'codex     ◷ BACK' <<<\"\$out\""
+check "the same plan in its sign-in: still LIMIT" "grep -qF 'codex     $(limlabel "$lim")' <<<\"\$out\""
 printf '{"auth_mode":"chatgpt","tokens":{"id_token":"%s.%s.sig"}}\n' "$(b64u '{"alg":"RS256"}')" "$(b64u '{"email":"codex.fixture@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"pro"}}')" >"$CX/auth.json"
 out=$(cframe 160)
 check "its plan changed since (plus to pro): READY · NEW PLAN" "grep -q 'codex *◆ READY · NEW PLAN' <<<\"\$out\""
@@ -856,7 +856,7 @@ if command -v python3 >/dev/null && { command -v ss || command -v lsof; } >/dev/
 	out=$(bgframe 160)
 	check "a background command serving on a port is WAITING · server, not WORKING" "grep -q 'claude *◆ WAITING · server' <<<\"\$out\" && ! grep -q 'claude *. WORKING ' <<<\"\$out\""
 	check "and its peek says a server it started runs" "grep -q 'PEEK · .*a server it started runs' <<<\"\$out\""
-	check "and the rows it gives a linked computer say so" "tm run-shell 'HOME=$H CLAUDE_CODE_TMPDIR=$T/ltmp REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows' | grep -qx '#serving $clid'"
+	check "and the rows it gives a linked computer say so" "tm run-shell 'HOME=$H CLAUDE_CODE_TMPDIR=$T/ltmp REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows' | grep -cx '#serving $clid' >/dev/null"
 fi
 # A Claude Code stopped at its usage limit: its transcript ends in the error it writes itself
 # (isApiErrorMessage, as a real one's other errors are; no real usage-limit one was on hand, so
@@ -900,12 +900,12 @@ echo "access"
 # (the right-hand column, after the last │) keeps to links and saves.
 side() { grep -F ' │ ' | sed 's/.* │ //'; }
 iid=0123456789abcdef0123456789abcdef
-check "with nothing waiting or approved, the bar has no [G]rant access" "! frame 200 50 | grep -qF '[G]rant access'"
+check "with nothing waiting or approved, the bar has no [G]rant access" "! frame 200 50 | grep -cF '[G]rant access' >/dev/null"
 mkdir -p "$T/mail/intros/$iid" && echo "x@far" >"$T/mail/intros/$iid/from" && echo "y@near" >"$T/mail/intros/$iid/to"
 out=$(frame 200 50)
 check "with one waiting, the bar offers [G]rant access" "grep -qF '[G]rant access' <<<\"\$out\""
 check "and MESSAGES shows it waiting, not failed" "grep -qF '⚑ waiting for [G]rant access x@far→y@near' <<<\"\$out\" && ! grep -qF '✗' <<<\"\$out\""
-check "and LINKS · SAVES has no access lines" "side <<<\"\$out\" | grep -qF 'SAVED' && ! side <<<\"\$out\" | grep -qE '⚑|waiting|approved|rant access'"
+check "and LINKS · SAVES has no access lines" "side <<<\"\$out\" | grep -cF 'SAVED' >/dev/null && ! side <<<\"\$out\" | grep -cE '⚑|waiting|approved|rant access' >/dev/null"
 rm -rf "$T/mail/intros/$iid"
 # The agent waiting for access shows it in its STATE, by its name@host: here, a pane named
 # acc-sh on this computer.
@@ -920,7 +920,7 @@ out=$(frame 200 50)
 check "a declined one, or an approval that has lapsed, isn't offered, and has no approved line" "! grep -qF '[G]rant access' <<<\"\$out\" && ! grep -qF ' approved' <<<\"\$out\""
 printf 'allow s:a1@h s:b1@h a@h b@h %s\n' "$(date +%s)" >>"$T/mail/grants"
 out=$(frame 200 50)
-check "an approved one is, with one summary line in MESSAGES" "grep -qF '[G]rant access' <<<\"\$out\" && [[ \$(grep -cF '✓ 1 approved · [G] to see' <<<\"\$out\") == 1 ]] && ! side <<<\"\$out\" | grep -qF 'approved'"
+check "an approved one is, with one summary line in MESSAGES" "grep -qF '[G]rant access' <<<\"\$out\" && [[ \$(grep -cF '✓ 1 approved · [G] to see' <<<\"\$out\") == 1 ]] && ! side <<<\"\$out\" | grep -cF 'approved' >/dev/null"
 rm -f "$T/mail/grants"
 # A held message waiting for access says so in MESSAGES: not failed, waiting on you. It stays
 # at the top however many messages come after it, and goes once it's delivered.
@@ -930,7 +930,7 @@ printf '## [lr@far -> dr@near 2026-11-09T19:00:00Z] #h1.0001 (held: waiting for 
 for m in 1 2 3 4 5 6 7 8 9 10; do printf '## [a@h -> b@h 2026-11-09T19:%02d:00Z] #m%s\nnote %s\n\n' "$m" "$m" "$m" >>"$AGENT_SAY_MAILBOX"; done
 out=$(frame 200 50)
 check "a held message shows waiting for [G]rant access, not ✗" "grep -qF '⚑ waiting for [G]rant access lr@far→dr@near · please run it' <<<\"\$out\" && ! grep -qF '✗' <<<\"\$out\" && ! grep -qF 'held ·' <<<\"\$out\""
-check "and with many messages after it, it's still there, first" "grep -qF 'note 10' <<<\"\$out\" && ! grep -qF 'note 6' <<<\"\$out\" && grep -A1 'MESSAGES ▓▒░' <<<\"\$out\" | grep -qF 'waiting for [G]rant access lr@far'"
+check "and with many messages after it, it's still there, first" "grep -qF 'note 10' <<<\"\$out\" && ! grep -qF 'note 6' <<<\"\$out\" && grep -A1 'MESSAGES ▓▒░' <<<\"\$out\" | grep -cF 'waiting for [G]rant access lr@far' >/dev/null"
 printf '## [lr@far -> dr@near 2026-11-09T19:54:00Z] #h1.0001 (delivered)\nplease run it\n\n' >>"$AGENT_SAY_MAILBOX"
 rm -rf "$T/mail/intros/$iid"
 out=$(frame 200 50)
@@ -999,16 +999,16 @@ check "the bar offers [G]rant access" "wait_a '[G]rant access'"
 before=$(state)
 akey g
 check "G opens LINK AGENTS TOGETHER: WAITING, then APPROVED with the time left" "wait_a 'LINK AGENTS TOGETHER' && wait_a 'WAITING' && wait_a 'APPROVED' && wait_a 'ann@far.invalid → bob@near.invalid · 2' && wait_a 'm left'"
-check "each waiting one as FROM → TO, and no declined one" "ascreen | grep -qF '1  live-root@far.invalid → dev-root@near.invalid' && ascreen | grep -qF '2  cx@far.invalid' && ! ascreen | grep -qF 'cat@far.invalid'"
-check "the headings aren't choices" "! ascreen | grep -qE '[0-9] (WAITING|APPROVED)'"
+check "each waiting one as FROM → TO, and no declined one" "ascreen | grep -cF '1  live-root@far.invalid → dev-root@near.invalid' >/dev/null && ascreen | grep -cF '2  cx@far.invalid' >/dev/null && ! ascreen | grep -cF 'cat@far.invalid' >/dev/null"
+check "the headings aren't choices" "! ascreen | grep -cE '[0-9] (WAITING|APPROVED)' >/dev/null"
 akey Escape
 check "Esc closes it, nothing changed" "gone_a 'APPROVED' && [[ \$(state) == '$before' ]]"
 akey i
 check "I, the key it had before, still opens it" "wait_a 'LINK AGENTS TOGETHER' && wait_a 'WAITING'"
 akey 1
 check "a waiting one shows its words, and Approve or Deny" "wait_a 'may I ask dev-root about the failing build?' && wait_a '1  Approve' && wait_a '2  Deny' && ! ascreen | grep -cF 'restarted' >/dev/null"
-check "under its title, why each of the two asks, one line each, never a choice" "wait_a 'why (live-root): needs the logs' && wait_a 'why (dev-root): and back' && ! ascreen | grep -qE '[0-9]  why'"
-check "and the escapes in a reason don't paint the screen" "! tm capture-pane -p -e -t work:acc | grep -qF \$'\\e[48;5;201m' && ascreen | grep -qF 'needs the logs[48;5;201m]0;pwned'"
+check "under its title, why each of the two asks, one line each, never a choice" "wait_a 'why (live-root): needs the logs' && wait_a 'why (dev-root): and back' && ! ascreen | grep -cE '[0-9]  why' >/dev/null"
+check "and the escapes in a reason don't paint the screen" "! tm capture-pane -p -e -t work:acc | grep -cF \$'\\e[48;5;201m' >/dev/null && ascreen | grep -cF 'needs the logs[48;5;201m]0;pwned' >/dev/null"
 akey Escape; gone_a '2  Deny' >/dev/null
 # Its agent restarted since asking (another session in that pane now): the window says so.
 printf 'live-root s-new\ncx %s\n' $ib >"$T/mail/links/far.invalid/sessions"
@@ -1026,14 +1026,14 @@ akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; ake
 check "the code typed back approves it" "wait_a 'live-root@far.invalid and dev-root@near.invalid can talk now' && [[ ! -e $T/mail/intros/$ia ]] && grep -q '^allow s:$ia@far.invalid s:to$ia@near.invalid live-root@far.invalid dev-root@near.invalid [0-9]*\$' $T/mail/grants"
 unbox ascreen akey >/dev/null
 check "the one the other way with it, and only that one" "[[ ! -e $T/mail/intros/$ic && -e $T/mail/intros/$ib && -e $T/mail/intros/$id ]]"
-check "and then just the panel: no box asks again" "sleep 1 && ! ascreen | grep -qE 'LINK AGENTS TOGETHER|[0-9]  (Approve|Deny)' && [[ \$(grep -c '^display-popup ' $T/popup.log) == 1 ]]"
+check "and then just the panel: no box asks again" "sleep 1 && ! ascreen | grep -cE 'LINK AGENTS TOGETHER|[0-9]  (Approve|Deny)' >/dev/null && [[ \$(grep -c '^display-popup ' $T/popup.log) == 1 ]]"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '2  Deny' >/dev/null; akey 2
 check "Deny declines it, both ways" "wait_a \"declined: cx@far.invalid and dev-root@near.invalid can't talk\" && [[ ! -e $T/mail/intros/$ib && ! -e $T/mail/intros/$id ]] && [[ \$(grep -c '^deny s:$ib@far.invalid ' $T/mail/grants) == 1 ]]"
 unbox ascreen akey >/dev/null
 check "with nothing waiting, MESSAGES has no waiting line" "gone_a 'waiting for [G]rant access' && wait_a '✓ 2 approved'"
 before=$(state)
 akey g; wait_a 'APPROVED' >/dev/null
-check "with nothing waiting, LINK AGENTS TOGETHER lists only APPROVED" "! ascreen | grep -qF 'WAITING' && ascreen | grep -qF '1  ann@far.invalid → bob@near.invalid'"
+check "with nothing waiting, LINK AGENTS TOGETHER lists only APPROVED" "! ascreen | grep -cF 'WAITING' >/dev/null && ascreen | grep -cF '1  ann@far.invalid → bob@near.invalid' >/dev/null"
 akey 1
 check "an approved one offers Refresh or Remove" "wait_a '1  Refresh' && wait_a '2  Remove'"
 akey Escape
@@ -1115,7 +1115,7 @@ tg() { tmux -L "revive-panel-grant-$$" -f /dev/null "$@"; }
 tg new-session -d -s gt -x 120 -y 40 "env AGENT_SAY_SSH=false REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$G/mailbox.md REVIVE_PANEL_REFRESH=1 $PANEL"
 tm new-window -d -t work -n gclient "env -u TMUX TERM=tmux-256color tmux -L revive-panel-grant-$$ -f /dev/null attach -t gt"
 gscr() { tm capture-pane -p -t work:gclient "$@"; }
-wait_g() { for _ in $(seq 1 30); do gscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_g() { for _ in $(seq 1 30); do gscr | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 wait_g 'C O N T R O L' >/dev/null
 tg send-keys -t gt:0 g; wait_g 'WAITING' >/dev/null; tg send-keys -t gt:0 1; wait_g '1  Approve' >/dev/null; tg send-keys -t gt:0 1
 wait_g 'and press Enter' >/dev/null
@@ -1125,7 +1125,7 @@ gcode=$(gscr | grep -oE 'Type [0-9]{4}' | grep -oE '[0-9]{4}')
 mkdir -p "$G/index.lock" && echo $ghold >"$G/index.lock/pid"
 tm send-keys -t work:gclient -l "$gcode"; tm send-keys -t work:gclient Enter; sleep 1.5 # the popup takes keys from the client
 read -r grows gblank gbg <<<"$(gscr -e | python3 -I "$T/popbox.py")"
-check "once the code is typed, the popup isn't left an empty box while it approves" "(( \${grows:-0} > 0 && \${gblank:-0} < grows )) && gscr | grep -qF 'Allowing'"
+check "once the code is typed, the popup isn't left an empty box while it approves" "(( \${grows:-0} > 0 && \${gblank:-0} < grows )) && gscr | grep -cF 'Allowing' >/dev/null"
 kill $ghold 2>/dev/null; wait $ghold 2>/dev/null
 check "and once approved, nothing of the popup is left on the panel" "wait_g 'can talk now' && sleep 0.5 && [[ \$(gscr -e | python3 -I \"$T/popbox.py\" \"\$gbg\") == none ]]"
 tg kill-server; tm kill-window -t work:gclient 2>/dev/null
@@ -1202,11 +1202,11 @@ tm new-window -d -t work -n asker "$T/bin/codex $T/ask.sh $T/ans1"
 tm set-option -p -t work:asker @agent asker
 tm new-window -d -t work -n qpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 qscreen() { tm capture-pane -p -t work:qpanel; }
-wait_q() { for _ in $(seq 1 ${2:-40}); do qscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_q() { for _ in $(seq 1 ${2:-40}); do qscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 qhas() { local n; n=$(qscreen | grep -cF -- "$1"); ((n > 0)); }
 qbox() { qscreen | sed -n '/QUESTION · /,/ART · \|MESSAGES/p'; }
 wait_q 'asker'
-for _ in $(seq 1 20); do qscreen | grep -q '▶ asker' && break; tm send-keys -t work:qpanel Down; sleep 0.3; done
+for _ in $(seq 1 20); do qscreen | grep -c '▶ asker' >/dev/null && break; tm send-keys -t work:qpanel Down; sleep 0.3; done
 check "a pane asking a question shows its question in place of the peek" "wait_q 'QUESTION · asker'"
 aid=$(tm display -p -t work:asker '#{pane_id}')
 hq=$(tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_SEL=$aid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
@@ -1236,15 +1236,15 @@ wraw=$(tm run-shell "REVIVE_PANEL_SEL=$wid COLUMNS=100 LINES=50 REVIVE_DIR=$REVI
 # wbox TITLE: the rows of the box titled TITLE, without its border and scroll bar.
 wbox() { plain <<<"$wraw" | awk -v t="$1" 'index($0, t){on=1; next} on && /^╠|^╚/{exit} on' | sed 's/^║ │ \{0,1\}//; s/[[:space:]]*[▲▼░▓]\{0,1\}║$//; s/[[:space:]]*$//'; }
 wjoin() { wbox "$1" | tr '\n' ' ' | tr -s ' '; }
-check "a line wider than the box goes on in the rows under it, nothing cut" "wjoin 'QUESTION · wideq' | grep -qF 'Halfway through a long feature build you need to know where every error code is defined across a large monorepo. ENDQ' && [[ \$(wbox 'QUESTION · wideq' | grep -c 'ENDQ\|Halfway') == 2 ]]"
+check "a line wider than the box goes on in the rows under it, nothing cut" "wjoin 'QUESTION · wideq' | grep -cF 'Halfway through a long feature build you need to know where every error code is defined across a large monorepo. ENDQ' >/dev/null && [[ \$(wbox 'QUESTION · wideq' | grep -c 'ENDQ\|Halfway') == 2 ]]"
 check "a line with no space to break at is cut at the width, every character kept" "[[ \$(wbox 'QUESTION · wideq' | tr -cd '@' | wc -c) == 110 ]]"
-check "the highlighted choice's band goes on in its wrapped row" "wjoin 'QUESTION · wideq' | grep -qF '❯ 1. Grep and Read through the monorepo in the main session, keeping every result in this one context window ENDC' && band \"\$(grep -F ENDC <<<\"\$wraw\")\" && ! grep -qF 'Grep and Read' <<<\"\$(grep -F ENDC <<<\"\$wraw\")\""
+check "the highlighted choice's band goes on in its wrapped row" "wjoin 'QUESTION · wideq' | grep -cF '❯ 1. Grep and Read through the monorepo in the main session, keeping every result in this one context window ENDC' >/dev/null && band \"\$(grep -F ENDC <<<\"\$wraw\")\" && ! grep -qF 'Grep and Read' <<<\"\$(grep -F ENDC <<<\"\$wraw\")\""
 check "a full-width rule is cut, not wrapped into a stub row" "[[ \$(wbox 'QUESTION · wideq' | grep -c '^─\\+\$') == 1 ]]"
 check "the footer is still the box's last row of text" "[[ \$(wbox 'QUESTION · wideq' | grep . | tail -1) == *'Esc to cancel' ]]"
 tm new-window -d -t work -n widep "echo 'peek of a wide pane: every error code is defined across a large monorepo, and the search will produce lots of output ENDP'; sleep 300"
 sleep 0.5
 wraw=$(tm run-shell "REVIVE_PANEL_SEL=$(tm display -p -t work:widep '#{pane_id}') COLUMNS=100 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once")
-check "the peek wraps a wide pane's lines too" "wjoin 'PEEK · ' | grep -qF 'the search will produce lots of output ENDP'"
+check "the peek wraps a wide pane's lines too" "wjoin 'PEEK · ' | grep -cF 'the search will produce lots of output ENDP' >/dev/null"
 tm kill-window -t work:wideq; tm kill-window -t work:widep
 # All of it, as in Claude Code: the question, the first and the last choice, and the footer,
 # with the rule between choices 5 and 6 not cutting anything off.
@@ -1266,7 +1266,7 @@ check "the messages step aside while a question shows" "! qhas 'MESSAGES'"
 # With two windows K goes to the same one: [⇧J/⇧K] focus.
 qtabs() { qscreen | grep -oF '[⇧J/⇧K] focus' | wc -l; }
 qcap() { tm capture-pane -e -p -t work:qpanel; }
-check "the question's title says [⇧J/⇧K] focus, before its own keys, and nothing else does" "wait_ok '(( \$(qtabs) == 1 ))' && qscreen | grep -q 'QUESTION · asker .*\[⇧J/⇧K\] focus  \[Enter\] answer' && ! qscreen | grep -qF '[⇧J] focus' && ! qscreen | grep -qF '[⇧K] focus'"
+check "the question's title says [⇧J/⇧K] focus, before its own keys, and nothing else does" "wait_ok '(( \$(qtabs) == 1 ))' && qscreen | grep -c 'QUESTION · asker .*\[⇧J/⇧K\] focus  \[Enter\] answer' >/dev/null && ! qscreen | grep -cF '[⇧J] focus' >/dev/null && ! qscreen | grep -cF '[⇧K] focus' >/dev/null"
 # Tab, Right and Left do nothing in the panel. J moves the focus to the question's window, but
 # doesn't answer it: Enter does.
 tm send-keys -t work:qpanel Tab Right Left; sleep 0.7
@@ -1274,7 +1274,7 @@ check "Tab, Right and Left don't move the focus" "qhas '▸ PANES' && ! qhas '�
 tm send-keys -t work:qpanel J
 check "J only moves the focus to the question, sending nothing" "wait_q '▸ QUESTION · asker' && ! qhas 'ANSWERING' && [[ ! -s $T/ans1.keys ]]"
 check "focused, the question's border is bright magenta, the asking colour; PANES's the frame's blue" "[[ \$(qcap | wcols '▸ QUESTION') == '95 95' && \$(qcap | wcols 'PANES') == '34 34' ]]"
-check "and [⇧J/⇧K] focus moves to PANES's title" "wait_ok '(( \$(qtabs) == 1 ))' && qscreen | grep -q 'PANES .*\[⇧J/⇧K\] focus ══╣' && ! qscreen | grep -q 'QUESTION.*\[⇧J/⇧K\] focus'"
+check "and [⇧J/⇧K] focus moves to PANES's title" "wait_ok '(( \$(qtabs) == 1 ))' && qscreen | grep -c 'PANES .*\[⇧J/⇧K\] focus ══╣' >/dev/null && ! qscreen | grep -c 'QUESTION.*\[⇧J/⇧K\] focus' >/dev/null"
 tm send-keys -t work:qpanel Enter
 check "Enter answers, and Esc or Ctrl-] are the ways out it offers" "wait_q 'ANSWERING asker' && qhas 'Esc or Ctrl-] leaves' && ! qhas 'Tab back'"
 check "while answering no title says [⇧J/⇧K] focus: the question says how to leave" "(( \$(qtabs) == 0 ))"
@@ -1283,7 +1283,7 @@ check "Tab while answering goes to the agent, and the panel stays answering" "fo
 tm send-keys -t work:qpanel C-]; wait_q 'left the question' >/dev/null
 : >"$T/ans1.keys"
 tm send-keys -t work:qpanel K
-check "K: the focus back on PANES's title highlighted, [⇧J/⇧K] focus on the question's" "wait_q '▸ PANES' && ! qhas '▸ QUESTION' && qscreen | grep -q 'QUESTION · asker .*\[⇧J/⇧K\] focus'"
+check "K: the focus back on PANES's title highlighted, [⇧J/⇧K] focus on the question's" "wait_q '▸ PANES' && ! qhas '▸ QUESTION' && qscreen | grep -c 'QUESTION · asker .*\[⇧J/⇧K\] focus' >/dev/null"
 tm send-keys -t work:qpanel Enter
 check "Enter starts answering, and says how to leave" "wait_q 'ANSWERING asker' && qhas 'Ctrl-] leaves'"
 tm send-keys -t work:qpanel C-]
@@ -1351,7 +1351,7 @@ want+=' more /review @a.md'
 check "the changed answer replaces it" "wait_q '         three more' 15 && grep -qxF -- \"paste:\$(printf %q \"\$want\")\" $T/ans2.keys && [[ ! -e $T/ans2 ]]"
 tm send-keys -t work:qpanel Enter
 check "your own Enter then picks it: the answer arrives exactly, line breaks included" "for _ in \$(seq 1 25); do [[ -s $T/ans2 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans2 2>/dev/null) == \"custom:\$want\" ]]"
-check "and nothing the box coloured carries a colour code" "! grep -q \$'\\e' $T/ans2 && ! grep -q '\\[[0-9;]*m' $T/ans2 && grep -q '^paste:' $T/ans2.keys && ! grep '^paste:' $T/ans2.keys | grep -qE '\\\\E|\\[[0-9;]*m'"
+check "and nothing the box coloured carries a colour code" "! grep -q \$'\\e' $T/ans2 && ! grep -q '\\[[0-9;]*m' $T/ans2 && grep -q '^paste:' $T/ans2.keys && ! grep '^paste:' $T/ans2.keys | grep -cE '\\\\E|\\[[0-9;]*m' >/dev/null"
 # A question whose free-text choice was written in before the panel came to it (in the pane,
 # or before it last left the question): its label is the answer, and [E]nter is still offered.
 wait_q 'PEEK · asker' 30 >/dev/null # done answering the last one
@@ -1392,9 +1392,9 @@ tm new-window -d -t work -n asker2 "$T/bin/codex $T/ask.sh $T/ans4 nofree"
 tm set-option -p -t work:asker2 @agent asker2
 tm new-window -d -t work -n qshim "env PATH=$T/shim:$PATH REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 sscreen() { tm capture-pane -p -t work:qshim; }
-wait_s() { for _ in $(seq 1 ${2:-40}); do sscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_s() { for _ in $(seq 1 ${2:-40}); do sscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 wait_s 'asker2' >/dev/null
-for _ in $(seq 1 20); do sscreen | grep -q '▶ asker2' && break; tm send-keys -t work:qshim Down; sleep 0.3; done
+for _ in $(seq 1 20); do sscreen | grep -c '▶ asker2' >/dev/null && break; tm send-keys -t work:qshim Down; sleep 0.3; done
 wait_s 'QUESTION · asker2' >/dev/null
 tm send-keys -t work:qshim Enter; wait_s 'ANSWERING asker2' >/dev/null
 for _ in 1 2 3 4; do tm send-keys -t work:qshim Down; sleep 0.4; done
@@ -1418,7 +1418,7 @@ tm new-window -d -t work -n mrecv "$T/bin/claude -c 'printf \"❯ \"; sleep 300;
 tm set-option -p -t work:mrecv @agent mrecv
 tm new-window -d -t work -n mpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 mscreen() { tm capture-pane -p -t work:mpanel; }
-for _ in $(seq 1 30); do mscreen | grep -q '▶ mrecv' && break; tm send-keys -t work:mpanel Down; sleep 0.3; done
+for _ in $(seq 1 30); do mscreen | grep -c '▶ mrecv' >/dev/null && break; tm send-keys -t work:mpanel Down; sleep 0.3; done
 tm send-keys -t work:mpanel m; sleep 0.5
 tm send-keys -t work:mpanel -l 'a note in'; tm send-keys -t work:mpanel C-j
 tm send-keys -t work:mpanel -l 'two lines'; tm send-keys -t work:mpanel C-j
@@ -1427,15 +1427,15 @@ tm send-keys -t work:mpanel -l 'two lines'; tm send-keys -t work:mpanel C-j
 tok='run /review on @src/a.md, then `make test` per https://example.com/docs. or /usr/bin'
 tm send-keys -t work:mpanel -l "$tok \`one two three four five six seven eight nine ten eleven twelve\` x"; sleep 0.8
 mcap() { tm capture-pane -e -p -t work:mpanel; }
-check "the box's frame stands out: its border bright, its title on a fixed band, a shade down its right side and under it" "wait_ok 'mscreen | grep -q \"eleven twelve\"' && [[ \$(mcap | cells 'MESSAGE TO' '╔═░') == \$'96 0 0 0\\n5;25 0 0 0' && \$(mcap | cells 'MESSAGE TO' 'MESSAGE TO') == '97 5;25 1 0' && \$(mcap | cells 'MESSAGE TO' '░▒▓ MESSAGE') == \$'5;25 0 0 0\\n97 5;25 1 0' && \$(mcap | cells 'Enter sends' '║▓') == \$'96 0 0 0\\n90 0 0 0' ]] && mscreen | grep -q '╚═*╝▓' && mscreen | grep -q '░▒▓▓▓▓▓▓'"
-check "the text rows have no background of their own, as the panel's text hasn't" "mcap | cells --box 'MESSAGE TO' | grep -q . && ! mcap | cells --box 'MESSAGE TO' | grep -qv '^[^ ]* 0 '"
+check "the box's frame stands out: its border bright, its title on a fixed band, a shade down its right side and under it" "wait_ok 'mscreen | grep -c \"eleven twelve\" >/dev/null' && [[ \$(mcap | cells 'MESSAGE TO' '╔═░') == \$'96 0 0 0\\n5;25 0 0 0' && \$(mcap | cells 'MESSAGE TO' 'MESSAGE TO') == '97 5;25 1 0' && \$(mcap | cells 'MESSAGE TO' '░▒▓ MESSAGE') == \$'5;25 0 0 0\\n97 5;25 1 0' && \$(mcap | cells 'Enter sends' '║▓') == \$'96 0 0 0\\n90 0 0 0' ]] && mscreen | grep -c '╚═*╝▓' >/dev/null && mscreen | grep -c '░▒▓▓▓▓▓▓' >/dev/null"
+check "the text rows have no background of their own, as the panel's text hasn't" "mcap | cells --box 'MESSAGE TO' | grep -c . >/dev/null && ! mcap | cells --box 'MESSAGE TO' | grep -cv '^[^ ]* 0 ' >/dev/null"
 check "a /skill is bold orange, the text by it plain" "[[ \$(mcap | cells '/review' '/review') == '5;208 0 1 0' && \$(mcap | cells '/review' 'run ') == '0 0 0 0' && \$(mcap | cells '/review' ' on ') == '0 0 0 0' ]]"
 check "a path that isn't a /skill isn't coloured" "[[ \$(mcap | cells '/usr/bin' '/usr/bin') == '0 0 0 0' ]]"
 check "an @path is cyan" "[[ \$(mcap | cells '@src/a.md' '@src/a.md') == '96 0 0 0' && \$(mcap | cells '@src/a.md' ', then') == '0 0 0 0' ]]"
-check "\`code\` is green, on both rows when it wraps" "[[ \$(mcap | cells '\`make test\`' '\`make test\`') == '92 0 0 0' && \$(mcap | cells '\`one' '\`one') == '92 0 0 0' && \$(mcap | cells 'twelve\` x' 'twelve\`') == '92 0 0 0' && \$(mcap | cells 'twelve\` x' ' x') == '0 0 0 0' ]] && ! mscreen | grep -q 'one.*twelve'"
+check "\`code\` is green, on both rows when it wraps" "[[ \$(mcap | cells '\`make test\`' '\`make test\`') == '92 0 0 0' && \$(mcap | cells '\`one' '\`one') == '92 0 0 0' && \$(mcap | cells 'twelve\` x' 'twelve\`') == '92 0 0 0' && \$(mcap | cells 'twelve\` x' ' x') == '0 0 0 0' ]] && ! mscreen | grep -c 'one.*twelve' >/dev/null"
 check "a URL is magenta and underlined, without the full stop after it" "[[ \$(mcap | cells 'https://' 'https://example.com/docs') == '95 0 0 1' && \$(mcap | cells 'https://' 'docs. ') == \$'95 0 0 1\\n0 0 0 0' ]]"
 tm send-keys -t work:mpanel Enter
-check "M sends a message of several lines, whole" "for _ in \$(seq 1 30); do grep -q '^two lines\$' $AGENT_SAY_MAILBOX 2>/dev/null && break; sleep 0.2; done; grep -A2 -- '^## \\[panel -> ' $AGENT_SAY_MAILBOX | grep -qx 'a note in' && grep -A2 -- '^## \\[panel -> ' $AGENT_SAY_MAILBOX | grep -qx 'two lines'"
+check "M sends a message of several lines, whole" "for _ in \$(seq 1 30); do grep -q '^two lines\$' $AGENT_SAY_MAILBOX 2>/dev/null && break; sleep 0.2; done; grep -A2 -- '^## \\[panel -> ' $AGENT_SAY_MAILBOX | grep -cx 'a note in' >/dev/null && grep -A2 -- '^## \\[panel -> ' $AGENT_SAY_MAILBOX | grep -cx 'two lines' >/dev/null"
 check "the coloured words go as typed: no colour codes in the message" "grep -qF -- \"\$tok \\\`one two\" $AGENT_SAY_MAILBOX && grep -qF -- 'eleven twelve\` x' $AGENT_SAY_MAILBOX && ! grep -q \$'\\e' $AGENT_SAY_MAILBOX && ! grep -q '\\[[0-9;]*m' $AGENT_SAY_MAILBOX"
 unbox mscreen tm send-keys -t work:mpanel >/dev/null
 tm send-keys -t work:mpanel q
@@ -1452,9 +1452,9 @@ msq() { bash -c 'e=$'"'"'\e'"'"' B=B BYEL=Y GRY=g DIM=d MAG=m BWHT=W BCYN=C BGRN
 	mapfile -t SL <"$2"; lines_state SL; echo "$LSTATE"; L=("${SL[@]}"); question_parts
 	for i in "${!L[@]}"; do printf "%s|%s\n" "${QSTYLE[i]}" "${L[i]}"; done' _ "$ROOT/scripts/panel.sh" "$T/msq.txt"; }
 check "a multi-select with its cursor on Submit is still asking (Enter there answers it)" "[[ \$(msq | head -1) == asking ]]"
-check "a ticked choice stands out from the unticked ones" "msq | grep -qxF 'BG|  1. [✔] Apple' && msq | grep -qxF 'W|  2. [ ] Banana'"
+check "a ticked choice stands out from the unticked ones" "msq | grep -cxF 'BG|  1. [✔] Apple' >/dev/null && msq | grep -cxF 'W|  2. [ ] Banana' >/dev/null"
 sed -i 's/^❯    Submit$/     Next/' "$T/msq.txt"
-check "a multi-select's Next, not under the cursor, is white like the choices, not grey" "msq | grep -qxF 'W|     Next'"
+check "a multi-select's Next, not under the cursor, is white like the choices, not grey" "msq | grep -cxF 'W|     Next' >/dev/null"
 sed -i 's/^     Next$/❯    Submit/' "$T/msq.txt"
 # Its free-text choice, unticked ("[ ]"), is found, and the cursor on Submit isn't on it.
 qfree() { bash -c 'source <(sed -n "/^question_free() {/,/^}/p" "$1"); QFREE=0 QFREEN=""
@@ -1517,8 +1517,8 @@ printf '%s\n' '• Finished waiting' '  └ No agents completed yet' '' '■ You
 	'› 1. Switch to gpt-6-luna                   Fast and affordable model for easier tasks.' '  2. Keep current model' \
 	'  3. Keep current model (never show again)  Hide future rate limit reminders about switching models' '' \
 	'  enter select · esc back' >"$T/msq.txt"
-check "a Codex question's history is grey, its question bold yellow" "msq | grep -qxF 'gd|■ You have hit your usage limit.' && msq | grep -qxF 'BY|  Approaching rate limits' && msq | grep -qxF 'BY|  Switch to gpt-6-luna for lower credit usage?'"
-check "its › choice bright on the band, the others white, its key hints grey" "msq | grep -q '^BW|› 1\. Switch' && msq | grep -qxF 'W|  2. Keep current model' && msq | grep -qxF 'g|  enter select · esc back'"
+check "a Codex question's history is grey, its question bold yellow" "msq | grep -cxF 'gd|■ You have hit your usage limit.' >/dev/null && msq | grep -cxF 'BY|  Approaching rate limits' >/dev/null && msq | grep -cxF 'BY|  Switch to gpt-6-luna for lower credit usage?' >/dev/null"
+check "its › choice bright on the band, the others white, its key hints grey" "msq | grep -c '^BW|› 1\. Switch' >/dev/null && msq | grep -cxF 'W|  2. Keep current model' >/dev/null && msq | grep -cxF 'g|  enter select · esc back' >/dev/null"
 
 echo "ssh links"
 # Which host an ssh command line connects to, as agent-say link takes it.
@@ -1553,7 +1553,7 @@ check "only your own ssh outside tmux is offered, not another user's" "grep -c '
 
 tm new-window -d -t work -n sshpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=false REVIVE_PANEL_REFRESH=1 $PANEL"
 sshscreen() { tm capture-pane -p -t work:sshpanel; }
-wait_ssh() { for _ in $(seq 1 40); do sshscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_ssh() { for _ in $(seq 1 40); do sshscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 wait_ssh 'C O N T R O L'
 # A pane connecting somewhere: a process whose command line is an ssh one.
 tm new-window -d -t work -n remote "bash -c 'exec -a \"ssh -p 2222 me@devbox.example\" sleep 300'"
@@ -1569,13 +1569,13 @@ check "and that one's own Esc closes it" "nobox sshscreen"
 tm kill-window -t work:q1ssh; tm kill-window -t work:q2ssh; sleep 1.5
 check "and offered for linking" "wait_ssh 'devbox.example · ssh in'"
 tm send-keys -t work:sshpanel r; sleep 0.7
-check "r does nothing: no popup" "! sshscreen | grep -q 'ATTACH SERVERS' && wait_ssh 'C O N T R O L'"
+check "r does nothing: no popup" "! sshscreen | grep -c 'ATTACH SERVERS' >/dev/null && wait_ssh 'C O N T R O L'"
 tm send-keys -t work:sshpanel B; sleep 0.7
-check "B opens a popup listing the ssh hosts" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -q 'devbox.example  · ssh in' && sshscreen | grep -q 'other host'"
-check "the popup says how to close it" "sshscreen | grep -q 'Esc closes'"
-check "with nothing linked, it offers no unlinking" "! sshscreen | grep -q 'U unlinks'"
+check "B opens a popup listing the ssh hosts" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -c 'devbox.example  · ssh in' >/dev/null && sshscreen | grep -c 'other host' >/dev/null"
+check "the popup says how to close it" "sshscreen | grep -c 'Esc closes' >/dev/null"
+check "with nothing linked, it offers no unlinking" "! sshscreen | grep -c 'U unlinks' >/dev/null"
 tm send-keys -t work:sshpanel u; sleep 0.5
-check "and U there does nothing" "sshscreen | grep -q 'ATTACH SERVERS' && ! sshscreen | grep -q 'unlinking'"
+check "and U there does nothing" "sshscreen | grep -c 'ATTACH SERVERS' >/dev/null && ! sshscreen | grep -c 'unlinking' >/dev/null"
 # Every row of the popup has its right edge in the same column as the top-right corner.
 popup_square() {
 	sshscreen | awk '
@@ -1589,7 +1589,7 @@ popup_square() {
 }
 check "the popup's edges line up on every row" "popup_square"
 tm send-keys -t work:sshpanel Escape
-check "Esc closes the popup" "boxed sshscreen 'link cancelled' && ! sshscreen | grep -q 'ATTACH SERVERS'"
+check "Esc closes the popup" "boxed sshscreen 'link cancelled' && ! sshscreen | grep -c 'ATTACH SERVERS' >/dev/null"
 unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 # Linking a host ssh has no key for asks you to confirm one first, as ssh would; No (the first
 # choice, so a bare Enter) links nothing.
@@ -1604,7 +1604,7 @@ unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 # A host ssh already trusts (its key in known_hosts): only yes or no, Yes first, its key shown.
 printf 'devbox.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >"$T/known_hosts"
 tm send-keys -t work:sshpanel B; sleep 0.7; tm send-keys -t work:sshpanel Enter
-check "a host ssh already trusts: one yes or no, with the key from your known_hosts, no list of keys" "wait_ssh 'LINK devbox.example?' && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -q '1 *Yes, link devbox.example' && ! sshscreen | grep -q 'its key is'"
+check "a host ssh already trusts: one yes or no, with the key from your known_hosts, no list of keys" "wait_ssh 'LINK devbox.example?' && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -c '1 *Yes, link devbox.example' >/dev/null && ! sshscreen | grep -c 'its key is' >/dev/null"
 tm send-keys -t work:sshpanel Enter
 check "Enter links it, and shows what happened" "wait_ssh \"couldn't run agent-say on devbox.example\""
 unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
@@ -1613,16 +1613,16 @@ st=$(dirname "$AGENT_SAY_MAILBOX"); mkdir -p "$st/links/devbox.example"; touch "
 # What the link lets that computer do shows beside it.
 touch "$st/links/devbox.example/read-only"; printf 'me\nyou\n' >"$st/links/devbox.example/allow"
 check "LINKS marks a read-only link and its allowlist" "wait_ssh 'devbox.example · read-only · only me,you'"
-check "a linked host is no longer offered" "for _ in \$(seq 1 20); do sshscreen | grep -q 'devbox.example · ssh in' || break; sleep 0.2; done; ! sshscreen | grep -q 'devbox.example · ssh in'"
+check "a linked host is no longer offered" "for _ in \$(seq 1 20); do sshscreen | grep -c 'devbox.example · ssh in' >/dev/null || break; sleep 0.2; done; ! sshscreen | grep -c 'devbox.example · ssh in' >/dev/null"
 # Unlinking is in B's popup: U on a link's line there.
 # hl_line TEXT: the popup's line showing that highlighted, by moving down to it.
 hl_line() { local n i; n=$(sshscreen | grep -o "[1-9] *$1" | head -c 1); for ((i = 1; i < n; i++)); do tm send-keys -t work:sshpanel Down; sleep 0.1; done; }
 tm send-keys -t work:sshpanel B; sleep 0.7
 check "B lists the link, and says U unlinks it" "wait_ssh 'ATTACH SERVERS' && wait_ssh 'devbox.example  · linked · link again' && wait_ssh 'U unlinks'"
 hl_line 'other host'; tm send-keys -t work:sshpanel u; sleep 0.5
-check "U on a line that isn't a link does nothing" "sshscreen | grep -q 'ATTACH SERVERS' && [[ -e $st/links/devbox.example/on ]]"
+check "U on a line that isn't a link does nothing" "sshscreen | grep -c 'ATTACH SERVERS' >/dev/null && [[ -e $st/links/devbox.example/on ]]"
 tm send-keys -t work:sshpanel Up; sleep 0.2; tm send-keys -t work:sshpanel u
-check "U on the link's line unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $st/links/devbox.example ]] && ! sshscreen | grep -q 'ATTACH SERVERS'"
+check "U on the link's line unlinks it" "wait_ssh 'unlinked devbox.example' && [[ ! -e $st/links/devbox.example ]] && ! sshscreen | grep -c 'ATTACH SERVERS' >/dev/null"
 unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 # A link that fails (here: stopped on another key than the one linked). L offers to link it again:
 # it unlinks, then links with the key ssh uses now, after one yes or no. Or unlinks it.
@@ -1633,13 +1633,13 @@ broken() { mkdir -p "$sk"; touch "$sk/on"; echo "$(ssh-keygen -lf "$T/oldkey.pub
 broken
 check "LINKS says the failing link's error plainly" "wait_ssh 'devbox.example stopped: host key changed'"
 tm send-keys -t work:sshpanel B; sleep 0.7
-check "B offers the failing link, to link again" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -q 'devbox.example  · stopped: host key changed.* · link again'"
+check "B offers the failing link, to link again" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -c 'devbox.example  · stopped: host key changed.* · link again' >/dev/null"
 pick_line() { tm send-keys -t work:sshpanel "$(sshscreen | grep -o "[1-9] *$1" | head -c 1)"; } # the popup line showing that
 pick_line "devbox.example  · stopped"
 check "picking it asks: leave it, link it again, or unlink it" "wait_ssh 'LINK devbox.example AGAIN?' && wait_ssh 'No, leave it as is' && wait_ssh 'Yes, link devbox.example again' && wait_ssh 'Unlink devbox.example'"
 tm send-keys -t work:sshpanel 2
 # It was linked to another key: that is said, with No first, though known_hosts has this one.
-check "linking again shows the key ssh uses now, warns it isn't the one linked before, No first" "wait_ssh \"WARNING: devbox.example's HOST KEY CHANGED\" && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -q \"1 *No, don't link devbox.example\""
+check "linking again shows the key ssh uses now, warns it isn't the one linked before, No first" "wait_ssh \"WARNING: devbox.example's HOST KEY CHANGED\" && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -c \"1 *No, don't link devbox.example\" >/dev/null"
 tm send-keys -t work:sshpanel 2
 check "and yes unlinks the old one and links again (its old key and error gone)" "wait_ssh \"couldn't run agent-say on devbox.example\" && [[ ! -e $sk/on && ! -e $sk/error && ! -e $sk/fingerprint ]]"
 unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
@@ -1664,9 +1664,9 @@ mkdir -p "$sk"; touch "$sk/on" "$sk/paused"; echo "$fp (ED25519)" >"$sk/fingerpr
 echo "can't reach (connection timed out) · L to try again" >"$sk/error"
 check "LINKS shows a stopped link's reason" "wait_ssh \"devbox.example can't reach\""
 tm send-keys -t work:sshpanel B; sleep 0.7
-check "B offers it, to try again" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -q \"devbox.example  · can't reach (connection timed out) · try again\""
+check "B offers it, to try again" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -c \"devbox.example  · can't reach (connection timed out) · try again\" >/dev/null"
 pick_line "devbox.example  · can.t reach"
-check "picking it tries once, with no questions, and says why it failed again" "wait_ssh 'devbox.example: ssh to devbox.example failed' && ! sshscreen | grep -q 'AGAIN?' && [[ -e $sk/paused && -e $sk/on ]] && grep -q 'B to try again' $sk/error"
+check "picking it tries once, with no questions, and says why it failed again" "wait_ssh 'devbox.example: ssh to devbox.example failed' && ! sshscreen | grep -c 'AGAIN?' >/dev/null && [[ -e $sk/paused && -e $sk/on ]] && grep -q 'B to try again' $sk/error"
 unbox sshscreen tm send-keys -t work:sshpanel >/dev/null
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh 'try again' >/dev/null; hl_line "devbox.example  ·"; tm send-keys -t work:sshpanel u
 check "U in B unlinks it" "gone_sk"
@@ -1691,14 +1691,14 @@ chmod +x "$T/livessh"
 tm new-window -d -t work -n livepanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=$T/livessh REVIVE_PANEL_REFRESH=1 $PANEL"
 tm new-window -d -t work -n liveremote "bash -c 'exec -a \"ssh live.example\" sleep 300'"
 lvs() { tm capture-pane -p -t work:livepanel; }
-wait_lv() { for _ in $(seq 1 40); do lvs | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_lv() { for _ in $(seq 1 40); do lvs | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 wait_lv 'live.example · ssh in' >/dev/null
 tm send-keys -t work:livepanel B; wait_lv 'ATTACH SERVERS' >/dev/null
 n=$(lvs | grep -o '[1-9] *live.example  · ssh in' | head -c 1)
 tm send-keys -t work:livepanel "$n"
-check "a key read through your open ssh connection: shown, said to be seen for the first time, No first" "wait_lv 'key read through your open ssh connection: $fp (ED25519)' && wait_lv 'First time we see this key' && lvs | grep -q \"1 *No, don't link live.example\""
+check "a key read through your open ssh connection: shown, said to be seen for the first time, No first" "wait_lv 'key read through your open ssh connection: $fp (ED25519)' && wait_lv 'First time we see this key' && lvs | grep -c \"1 *No, don't link live.example\" >/dev/null"
 tm send-keys -t work:livepanel Enter
-check "and Enter links nothing" "for _ in \$(seq 1 40); do lvs | grep -q 'LINK live.example?' || break; sleep 0.2; done; ! lvs | grep -q 'LINK live.example?' && [[ ! -e $st/links/live.example ]]"
+check "and Enter links nothing" "for _ in \$(seq 1 40); do lvs | grep -c 'LINK live.example?' >/dev/null || break; sleep 0.2; done; ! lvs | grep -c 'LINK live.example?' >/dev/null && [[ ! -e $st/links/live.example ]]"
 unbox lvs tm send-keys -t work:livepanel >/dev/null
 tm send-keys -t work:livepanel q
 tm kill-window -t work:liveremote 2>/dev/null
@@ -1753,7 +1753,7 @@ out=$(far "$T/fakessh")
 check "panes are grouped by computer" "grep -q 'this computer' <<<\"\$out\" && grep -q 'FAR.EXAMPLE · linked' <<<\"\$out\""
 check "a linked computer's panes show with their state" "grep -q 'far-top .*top *▸ running' <<<\"\$out\""
 check "numbered by their window.pane over there" "grep -q '\[0\.1\] *far-top ' <<<\"\$out\" && grep -q '\[0\.0\] *far-sh ' <<<\"\$out\""
-check "and its shell panes too" "grep -A3 'FAR.EXAMPLE' <<<\"\$out\" | grep -q 'bash *· shell'"
+check "and its shell panes too" "grep -A3 'FAR.EXAMPLE' <<<\"\$out\" | grep -c 'bash *· shell' >/dev/null"
 check "the whole frame still fits" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$out\") == 1 ]]"
 # With a key confirmed for the link, the panel's calls are bound to it, as agent-say's are; a key
 # revoked since the pin was built is refused on the very next call.
@@ -1824,9 +1824,9 @@ check "--rows there: an agent working with no record to go by is working, from i
 check "--rows there: a record that says busy is working, even with no sign on screen" "grep -q $'\x1fcl-busy\x1fclaude\x1fworking\x1f' <<<\"\$rows\""
 check "--rows there: a record that says idle is waiting, whatever the screen says" "grep -q $'\x1fcl-idle\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
 check "--rows there: a question on screen is asking" "grep -q $'\x1fcl-ask\x1fclaude\x1fasking\x1f' <<<\"\$rows\""
-check "--rows there: idle with agents working in the background is a line before a row saying working (as an older panel shows it)" "grep -B1 $'\x1fcl-bg\x1fclaude\x1fworking\x1f' <<<\"\$rows\" | grep -q '^#agents %[0-9]*\$'"
-check "--rows there: idle with a command still running under it, its output stale, likewise" "grep -B1 $'\x1fcl-snap\x1fclaude\x1fworking\x1f' <<<\"\$rows\" | grep -q '^#agents %[0-9]*\$'"
-check "--rows there: with only stale output, no such line" "! grep -B1 $'\x1fcl-stale\x1f' <<<\"\$rows\" | grep -q '^#agents' && grep -q $'\x1fcl-stale\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
+check "--rows there: idle with agents working in the background is a line before a row saying working (as an older panel shows it)" "grep -B1 $'\x1fcl-bg\x1fclaude\x1fworking\x1f' <<<\"\$rows\" | grep -c '^#agents %[0-9]*\$' >/dev/null"
+check "--rows there: idle with a command still running under it, its output stale, likewise" "grep -B1 $'\x1fcl-snap\x1fclaude\x1fworking\x1f' <<<\"\$rows\" | grep -c '^#agents %[0-9]*\$' >/dev/null"
+check "--rows there: with only stale output, no such line" "! grep -B1 $'\x1fcl-stale\x1f' <<<\"\$rows\" | grep -c '^#agents' >/dev/null && grep -q $'\x1fcl-stale\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
 check "--rows there: busy, or asking, with fresh output: no such line" "[[ \$(grep -c '^#agents' <<<\"\$rows\") == 2 ]] && grep -q $'\x1fcl-bgask\x1fclaude\x1fasking\x1f' <<<\"\$rows\""
 out=$(far "$T/fakessh")
 check "here: a linked agent working with no record shows WORKING" "grep -q 'cl-none .*claude *. WORKING' <<<\"\$out\""
@@ -1863,18 +1863,18 @@ far_back cl-back 7200
 far_back cl-back5 300
 sleep 0.5
 rows=$(CLAUDE_CODE_TMPDIR=$T/rtmp REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
-check "--rows there: waiting since just now, a turn you typed, is a #wait line saying u" "grep -B3 $'\x1fcl-typed\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Eq '^#wait %[0-9]+ [0-9] u\$'"
-check "--rows there: and one an agent-say message started, a" "grep -B3 $'\x1fcl-msg\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Eq '^#wait %[0-9]+ [0-9] a\$'"
-check "--rows there: one whose record says nothing of when, no #wait line" "! grep -B3 $'\x1fcl-idle\x1f' <<<\"\$rows\" | grep -q '^#wait'"
+check "--rows there: waiting since just now, a turn you typed, is a #wait line saying u" "grep -B3 $'\x1fcl-typed\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Ec '^#wait %[0-9]+ [0-9] u\$' >/dev/null"
+check "--rows there: and one an agent-say message started, a" "grep -B3 $'\x1fcl-msg\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Ec '^#wait %[0-9]+ [0-9] a\$' >/dev/null"
+check "--rows there: one whose record says nothing of when, no #wait line" "! grep -B3 $'\x1fcl-idle\x1f' <<<\"\$rows\" | grep -c '^#wait' >/dev/null"
 rm -f "$st/panel/far.example.rows"*
 raw=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once")
 out=$(plain <<<"$raw")
-check "here: a turn you typed, waiting since just now, is bold vivid lime" "grep 'cl-typed' <<<\"\$raw\" | grep -qF $'\e[1m\e[38;5;118m◆ WAITING ON YOU'"
-check "here: one an agent-say message started, done, is AGENT'S TURN DONE in the usual green" "grep 'cl-msg' <<<\"\$raw\" | grep -qF $'\e[92m◆ AGENT'\\''S TURN DONE'"
-check "here: one waiting over 90 minutes shows IDLE, in the usual WAITING ON YOU colour" "grep cl-old <<<\"\$raw\" | grep -qF $'\e[92m◇ IDLE' && grep -q 'cl-old .*claude *◇ IDLE  ' <<<\"\$out\" && ! grep -q 'cl-old .*WAITING' <<<\"\$out\""
+check "here: a turn you typed, waiting since just now, is bold vivid lime" "grep 'cl-typed' <<<\"\$raw\" | grep -cF $'\e[1m\e[38;5;118m◆ WAITING ON YOU' >/dev/null"
+check "here: one an agent-say message started, done, is AGENT'S TURN DONE in the usual green" "grep 'cl-msg' <<<\"\$raw\" | grep -cF $'\e[92m◆ AGENT'\\''S TURN DONE'" >/dev/null
+check "here: one waiting over 90 minutes shows IDLE, in the usual WAITING ON YOU colour" "grep cl-old <<<\"\$raw\" | grep -cF $'\e[92m◇ IDLE' >/dev/null && grep -q 'cl-old .*claude *◇ IDLE  ' <<<\"\$out\" && ! grep -q 'cl-old .*WAITING' <<<\"\$out\""
 check "here: resumed just now, its last turn two hours ago, shows IDLE" "grep -q 'cl-back .*claude *◇ IDLE  ' <<<\"\$out\""
 check "here: resumed just now, its last turn five minutes ago, shows WAITING ON YOU" "grep -q 'cl-back5 .*claude *◆ WAITING ON YOU' <<<\"\$out\""
-check "here: one waiting since a time not known shows --- in grey, not WAITING ON YOU" "grep 'cl-idle' <<<\"\$raw\" | grep -qF $'\e[90m  --- ' && ! grep 'cl-idle' <<<\"\$raw\" | grep -q WAITING"
+check "here: one waiting since a time not known shows --- in grey, not WAITING ON YOU" "grep 'cl-idle' <<<\"\$raw\" | grep -cF $'\e[90m  --- ' >/dev/null && ! grep 'cl-idle' <<<\"\$raw\" | grep -c WAITING >/dev/null"
 check "here: AGENT'S TURN DONE leaves a gap before the folder, and the frame is still 140 wide" "grep -q \"AGENT'S TURN DONE \" <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
 # Live, as right after tmux starts (REVIVE_PANEL_LOADBOX=1 stands in for that), with a linked
 # computer slow to send its rows: a box says it is loading, with a bar of what is ready, over
@@ -1883,23 +1883,23 @@ printf '#!/bin/sh\nsleep 5\nexec %q "$@"\n' "$T/fakessh" >"$T/slowssh"; chmod +x
 rm -f "$st/panel/far.example.rows"*
 tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/slowssh REVIVE_PANEL_LOADBOX=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 lbs() { tm capture-pane -p -t work:lboxp; }
-wait_lb() { for _ in $(seq 1 ${2:-40}); do lbs | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
-check "right after tmux starts, while a linked computer's rows are still coming, a LOADING box is up" "wait_lb '▓ LOADING ▓' && lbs | grep -q 'Loading…'"
-check "with a bar of what is ready, not all of it" "lbs | grep -Eq '║  [█░]*░ ([0-9]+)/[0-9]+  ║'"
+wait_lb() { for _ in $(seq 1 ${2:-40}); do lbs | grep -c -- "$1" >/dev/null && return 0; sleep 0.25; done; return 1; }
+check "right after tmux starts, while a linked computer's rows are still coming, a LOADING box is up" "wait_lb '▓ LOADING ▓' && lbs | grep -c 'Loading…' >/dev/null"
+check "with a bar of what is ready, not all of it" "lbs | grep -Ec '║  [█░]*░ ([0-9]+)/[0-9]+  ║' >/dev/null"
 tm send-keys -t work:lboxp Escape; sleep 0.3; tm send-keys -t work:lboxp m; sleep 1
-check "Esc doesn't close it, nor does any other key" "lbs | grep -q '▓ LOADING ▓' && ! lbs | grep -q 'MESSAGE TO'"
-check "it goes by itself once the rows are in" "for _ in \$(seq 1 60); do lbs | grep -q '▓ LOADING ▓' || break; sleep 0.25; done; ! lbs | grep -q '▓ LOADING ▓' && lbs | grep -q 'cl-idle'"
+check "Esc doesn't close it, nor does any other key" "lbs | grep -c '▓ LOADING ▓' >/dev/null && ! lbs | grep -c 'MESSAGE TO' >/dev/null"
+check "it goes by itself once the rows are in" "for _ in \$(seq 1 60); do lbs | grep -c '▓ LOADING ▓' >/dev/null || break; sleep 0.25; done; ! lbs | grep -c '▓ LOADING ▓' >/dev/null && lbs | grep -c 'cl-idle' >/dev/null"
 sleep 2.5
-check "and it stays closed, the panel whole again" "! lbs | grep -q '▓ LOADING ▓' && lbs | grep -q 'cl-idle .*---'"
+check "and it stays closed, the panel whole again" "! lbs | grep -c '▓ LOADING ▓' >/dev/null && lbs | grep -c 'cl-idle .*---' >/dev/null"
 tm kill-window -t work:lboxp
 rm -f "$st/panel/far.example.rows"*
 tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/slowssh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 wait_lb 'cl-idle' 60 && sleep 1
-check "REVIVE_PANEL_LOADBOX=0 (the tests' default): no box" "! lbs | grep -q '▓ LOADING ▓'"
+check "REVIVE_PANEL_LOADBOX=0 (the tests' default): no box" "! lbs | grep -c '▓ LOADING ▓' >/dev/null"
 tm kill-window -t work:lboxp
 tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 wait_lb 'cl-idle' && sleep 1.5
-check "REVIVE_PANEL_LOADBOX=0 (the tests' default): no box" "! lbs | grep -q '▓ LOADING ▓'"
+check "REVIVE_PANEL_LOADBOX=0 (the tests' default): no box" "! lbs | grep -c '▓ LOADING ▓' >/dev/null"
 tm kill-window -t work:lboxp
 for w in cl-typed cl-msg cl-old cl-back cl-back5; do far_tm kill-window -t far:$w; done
 # Their CPU and context left, drawn as this computer's own are. A busy pane there; a Claude
@@ -1958,7 +1958,7 @@ rctx() { grep -B1 $'\x1f'"$2"$'\x1f' <<<"$1" | sed -n 's/^#ctx %[0-9]* \([0-9]*\
 check "--rows there: a busy pane's CPU, from two looks ($(rcpu "$rows" far-spin)%)" "(( \$(rcpu \"\$rows\" far-spin) >= 10 ))"
 check "--rows there: context left from a record's transcript ($(rctx "$rows" cl-idle))" "[[ \$(rctx \"\$rows\" cl-idle) == 50 ]]"
 check "--rows there: with no record, from its config folder and the session folder it holds open ($(rctx "$rows" cl-fd))" "[[ \$(rctx \"\$rows\" cl-fd) == 25 ]]"
-check "--rows there: the account its config folder names, cut to 12, on a line before its row" "grep -B4 $'\x1fcl-fd\x1f' <<<\"\$rows\" | grep -Eqx '#acct %[0-9]+ fixture.acco' && [[ \$(grep -c '^#acct .* fixture\.acco\$' <<<\"\$rows\") == 1 ]]"
+check "--rows there: the account its config folder names, cut to 12, on a line before its row" "grep -B4 $'\x1fcl-fd\x1f' <<<\"\$rows\" | grep -Ecx '#acct %[0-9]+ fixture.acco' >/dev/null && [[ \$(grep -c '^#acct .* fixture\.acco\$' <<<\"\$rows\") == 1 ]]"
 check "--rows there: one running as another user, from the record in its own home ($(rctx "$rows" cl-env))" "[[ \$(rctx \"\$rows\" cl-env) == 80 ]] && grep -q $'\x1fcl-env\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
 check "--rows there: not through a symbolic link, to its record or its transcript" "[[ -z \$(rctx \"\$rows\" cl-lrec) && -z \$(rctx \"\$rows\" cl-ltr) ]] && grep -q $'\x1fcl-ltr\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\""
 far_tm kill-window -t far:cl-env; far_tm kill-window -t far:cl-lrec; far_tm kill-window -t far:cl-ltr
@@ -2026,7 +2026,7 @@ check "--rows: a pane running as another user with no tmux-revive: its user, and
 check "--rows: one whose user recorded a version: that version" "grep -qx \"#user $(rid as-deploy) deploy 1.0.9\" <<<\"\$rows\""
 check "--rows: one whose own install can be read: its version, read there" "grep -qx \"#user $(rid as-jarvis) jarvis 1.3.0\" <<<\"\$rows\""
 check "--rows: the owner's own: owner" "grep -qx \"#user $(rid 0.1) $(id -un) owner\" <<<\"\$rows\""
-check "--rows: the line comes before its row, and a context line still sits right above the row" "grep -A1 \"^#user $(rid as-deploy) \" <<<\"\$rows\" | grep -q $'\x1fas-deploy\x1f'"
+check "--rows: the line comes before its row, and a context line still sits right above the row" "grep -A1 \"^#user $(rid as-deploy) \" <<<\"\$rows\" | grep -c $'\x1fas-deploy\x1f' >/dev/null"
 far_tm kill-window -t far:as-root; far_tm kill-window -t far:as-deploy; far_tm kill-window -t far:as-jarvis
 # Asked again a little later, it measures since the last ask, kept over there, in one look.
 sleep 1.2
@@ -2036,7 +2036,7 @@ rm -f "$st/panel/far.example.rows"
 for c in 80 120 160 200; do
 	out=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=$c LINES=90 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 	((c >= 160)) && check "at $c columns a linked Claude Code shows its account under ACCOUNT, after USER" "grep -q ' NAME *USER *ACCOUNT *VER ' <<<\"\$out\" && grep -q 'cl-fd *[^ ]* *fixture\.acco *' <<<\"\$out\""
-	check "at $c columns a linked busy pane shows its CPU, a linked Claude Code its CTX LEFT, rows exactly $c wide" "grep 'far-spin ' <<<\"\$out\" | grep -q '[░▒▓█][░▒▓█·]* *[1-9][0-9]*%' && grep -q 'cl-idle .*M  [█▓▒░·]\{5\}  50% ║\$' <<<\"\$out\" && grep -q 'cl-fd .* 25% ║\$' <<<\"\$out\" && grep -q 'cl-cwd .* 90% ║\$' <<<\"\$out\" && grep -q 'cl-two .*·····    – ║\$' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
+	check "at $c columns a linked busy pane shows its CPU, a linked Claude Code its CTX LEFT, rows exactly $c wide" "grep 'far-spin ' <<<\"\$out\" | grep -c '[░▒▓█][░▒▓█·]* *[1-9][0-9]*%' >/dev/null && grep -q 'cl-idle .*M  [█▓▒░·]\{5\}  50% ║\$' <<<\"\$out\" && grep -q 'cl-fd .* 25% ║\$' <<<\"\$out\" && grep -q 'cl-cwd .* 90% ║\$' <<<\"\$out\" && grep -q 'cl-two .*·····    – ║\$' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
 done
 # Rows in the older form (no version, no context lines) still draw their CPU and memory.
 printf '%%5\x1f0:1.0\x1fold-cl\x1fclaude\x1fwaiting\x1fw\x1fmain\x1f42\x1f2097152\x1f1\n' >"$T/oldrows"
@@ -2068,7 +2068,7 @@ rm -f "$st/panel/far.example.rows"
 } >"$T/oldrows"
 lim=$(($(date +%s) + 7200))
 out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=160 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
-check "a linked pane at its limit: LIMIT and when it lifts here" "grep -q 'lim-far .*◷ ' <<<\"\$out\" && { grep -qF \"\$(limlabel \$lim)\" <<<\"\$out\" || grep -qF \"\$(limlabel \$((lim + 1)))\" <<<\"\$out\"; }"
+check "a linked pane at its limit: LIMIT and when it lifts here" "grep -q 'lim-far .*◷ ' <<<\"\$out\" && { grep -qF \"\$(limlabel \$lim)\" <<<\"\$out\" || grep -cF \"\$(limlabel \$((lim + 1)))\" <<<\"\$out\" >/dev/null; }"
 check "its limit lifted there: READY TO RESUME; its plan changed: READY · NEW PLAN" "grep -q 'lim-past .*◆ READY TO RESUME' <<<\"\$out\" && grep -q 'lim-plan .*◆ READY · NEW PLAN' <<<\"\$out\""
 check "a #limit line out of form, or none (an older panel): its row as before" "grep -q 'lim-bad .*--- ' <<<\"\$out\" && grep -q 'lim-none .*--- ' <<<\"\$out\" && ! grep -q 'lim-bad .*◷\|lim-none .*◷' <<<\"\$out\""
 check "ready to resume needs you: its computer's heading counts the two" "grep -q 'FAR.EXAMPLE .* 2 needs you' <<<\"\$out\""
@@ -2078,13 +2078,13 @@ rm -rf "$T/rhome/.claude" "$st/panel/far.example.rows"*
 farsel() { tm run-shell "AGENT_SAY_SSH=$1 REVIVE_PANEL_SEL=$2 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once"; }
 peekbox() { sed -n '/PEEK · /,/ART · \|MESSAGES/p'; }
 out=$(farsel "$T/fakessh" far-sh@far.example | plain)
-check "the peek at a linked computer's pane shows its screen" "peekbox <<<\"\$out\" | grep -q '^║ *│ far-marker-42'"
+check "the peek at a linked computer's pane shows its screen" "peekbox <<<\"\$out\" | grep -c '^║ *│ far-marker-42' >/dev/null"
 rm -f "$st/panel/far.example.peek-"*
 out=$(farsel "$T/oldssh" far-sh@far.example | plain)
-check "a tmux-revive there too old to peek says so" "grep -q 'far-sh' <<<\"\$out\" && peekbox <<<\"\$out\" | grep -qF 'on far.example: no peek (update tmux-revive there)'"
+check "a tmux-revive there too old to peek says so" "grep -q 'far-sh' <<<\"\$out\" && peekbox <<<\"\$out\" | grep -cF 'on far.example: no peek (update tmux-revive there)' >/dev/null"
 rm -f "$st/panel/far.example.rows"
 out=$(farsel "$T/deadssh" far-top@far.example | plain)
-check "and an unreachable one has no peek either" "peekbox <<<\"\$out\" | grep -qF 'on far.example: no peek'"
+check "and an unreachable one has no peek either" "peekbox <<<\"\$out\" | grep -cF 'on far.example: no peek' >/dev/null"
 # Versions: a linked computer's rows say its version, which its owner's panes show in VER, in the
 # warn colour when it's older than this one's. The headings say no version.
 echo 1.1.0 >"$T/remote-version"; echo 1.2.0 >"$T/local-version"
@@ -2112,10 +2112,10 @@ check "this computer's own panes don't show [U]" "grep -c ' $me *1\.2\.0 *bash' 
 rm -f "$st/panel/far.example.rows"* "$T/update.cmd"
 tm new-window -d -t work -n oldpanel "env AGENT_SAY_SSH=$T/preuserssh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 oscreen() { tm capture-pane -p -t work:oldpanel; }
-wait_o() { for _ in $(seq 1 ${2:-60}); do oscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
+wait_o() { for _ in $(seq 1 ${2:-60}); do oscreen | grep -c -- "$1" >/dev/null && return 0; sleep 0.25; done; return 1; }
 wait_o 'far-top  *\[U\]' >/dev/null
 tm send-keys -t work:oldpanel u
-check "U updates it over ssh, with no [I]: its users aren't known" "wait_o 'far.example  *1\.2\.0 → 9\.9\.9' && [[ -e $T/update.cmd ]] && ! oscreen | grep -q '\[I\]'"
+check "U updates it over ssh, with no [I]: its users aren't known" "wait_o 'far.example  *1\.2\.0 → 9\.9\.9' && [[ -e $T/update.cmd ]] && ! oscreen | grep -c '\[I\]' >/dev/null"
 tm send-keys -t work:oldpanel Escape; sleep 0.5
 tm send-keys -t work:oldpanel q
 tm kill-window -t work:oldpanel 2>/dev/null
@@ -2146,7 +2146,7 @@ rpanel() { REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data bash "$ROOT/scripts/pa
 # text may go (an agent just resumed has its text at the top, the rest blank).
 farid=$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.0 '#{pane_id}')
 farh=$(tmux -L revive-panel-remote-$$ -f /dev/null display -p -t far:0.0 '#{pane_height}')
-check "--peek prints the pane's rows down to its last text, and one blank row of the many under it" "(( \$(rpanel --peek $farid 60 | grep -c '^far-marker-42$') == 1 )) && (( \$(rpanel --peek $farid 60 | wc -l) <= $farh )) && rpanel --peek $farid 60 | tail -n 2 | head -1 | grep -q '[^[:space:]]'"
+check "--peek prints the pane's rows down to its last text, and one blank row of the many under it" "(( \$(rpanel --peek $farid 60 | grep -c '^far-marker-42$') == 1 )) && (( \$(rpanel --peek $farid 60 | wc -l) <= $farh )) && rpanel --peek $farid 60 | tail -n 2 | head -1 | grep -c '[^[:space:]]' >/dev/null"
 check "--peek turns away a bad pane id or count" "! rpanel --peek 'far:0.0' 3 && ! rpanel --peek '%0;touch $T/pwn' 3 && ! rpanel --peek %0 0 && ! rpanel --peek %0 61 && ! rpanel --peek %0 && [[ ! -e $T/pwn ]]"
 check "--peek at a pane that isn't there fails" "! rpanel --peek %999 5"
 rm -f "$st/panel/far.example.rows"
@@ -2171,7 +2171,7 @@ printf '#!/bin/bash\nif [[ ${!#} == *--peek* ]]; then cat %q; else cat %q; fi\n'
 rm -f "$st/panel/far.example.rows" "$st/panel/far.example.peek-"*
 out=$(farsel "$T/hostilessh" evil@far.example)
 bare=$(sed 's/\x1b\[[0-9;]*m//g' <<<"$out")
-check "a peek from the other side is cleaned" "peekbox <<<\"\$bare\" | grep -qF 'top]52;c;aGk=[2Jbottom31m-end' && ! LC_ALL=C grep -q '[[:cntrl:]]' <<<\"\$bare\""
+check "a peek from the other side is cleaned" "peekbox <<<\"\$bare\" | grep -cF 'top]52;c;aGk=[2Jbottom31m-end' >/dev/null && ! LC_ALL=C grep -q '[[:cntrl:]]' <<<\"\$bare\""
 check "and capped: no line past the frame, no more lines than the box" "[[ \$(awk '{w[length]=1} END{for (k in w) n++; print n}' <<<\"\$bare\") == 1 ]] && (( \$(peekbox <<<\"\$bare\" | grep -c '│') <= 60 )) && [[ \$(stat -c %s $st/panel/far.example.peek-9 2>/dev/null || echo 0) -le 65536 ]]"
 # Rows from over there are capped in bytes too: an endless line can't freeze the panel.
 printf '#!/bin/bash\nif [[ ${!#} == *--rows* ]]; then head -c 20000000 /dev/zero | tr "\\\\0" A; echo; cat %q; fi\n' "$T/hostile" >"$T/hugessh"; chmod +x "$T/hugessh"
@@ -2196,8 +2196,8 @@ check "bidi overrides and zero-width characters from over there are stripped" "g
 rm -f "$st/panel/far.example.rows"
 tm new-window -d -t work -n farpanel "env AGENT_SAY_SSH=$T/fakessh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 farscreen() { tm capture-pane -p -t work:farpanel; }
-for _ in $(seq 1 60); do farscreen | grep -q 'far-top' && break; sleep 0.25; done
-for _ in $(seq 1 20); do farscreen | grep -q '▶ far-top' && break; tm send-keys -t work:farpanel Down; sleep 0.4; done
+for _ in $(seq 1 60); do farscreen | grep -c 'far-top' >/dev/null && break; sleep 0.25; done
+for _ in $(seq 1 20); do farscreen | grep -c '▶ far-top' >/dev/null && break; tm send-keys -t work:farpanel Down; sleep 0.4; done
 bar() { tm capture-pane -e -p -t work:farpanel | grep -F 'pdate' | tail -1; }
 grey=$'\e[90m[O]pen' lit=$'\e[93mS'
 check "its peek tracks that pane's screen live" "for _ in \$(seq 1 30); do farscreen | sed -n '/PEEK · far-top/,\$p' | grep -c 'Mem' >/dev/null && break; sleep 0.3; done; farscreen | sed -n '/PEEK · far-top/,\$p' | grep -c 'Mem' >/dev/null"
@@ -2207,26 +2207,26 @@ mkdir -p "$st/intros/$gid" && echo far-top@far.example >"$st/intros/$gid/from" &
 check "a linked computer's agent waiting for access shows [G]RANT ACCESS" "for _ in \$(seq 1 30); do farscreen | grep -cE 'far-top .*⚑ \[G\]RANT ACCESS' >/dev/null && break; sleep 0.2; done; farscreen | grep -cE 'far-top .*⚑ \[G\]RANT ACCESS' >/dev/null"
 rm -rf "$st/intros/$gid"
 check "and goes back once the request is gone" "for _ in \$(seq 1 30); do farscreen | grep -cF 'RANT ACCESS' >/dev/null || break; sleep 0.2; done; ! farscreen | grep -cF 'RANT ACCESS' >/dev/null"
-check "on a linked computer's pane, O fades and N doesn't" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\" && bar | grep -qF $'\\e[93mN' && ! bar | grep -qF $'\\e[90m[N]ame'"
-check "while keys that still work stay lit" "bar | grep -qF \"\$lit\""
+check "on a linked computer's pane, O fades and N doesn't" "farscreen | grep -c '▶ far-top' >/dev/null && bar | grep -cF \"\$grey\" >/dev/null && bar | grep -cF $'\\e[93mN' >/dev/null && ! bar | grep -cF $'\\e[90m[N]ame' >/dev/null"
+check "while keys that still work stay lit" "bar | grep -cF \"\$lit\" >/dev/null"
 # U: tmux-revive updated here and on the linked computer at once, asking nothing, each once,
 # over there with a fixed command, in a popup showing how each went.
 rm -f "$T/update.cmd" "$T/update.calls" "$T/local-update.log"
-wait_fs() { for _ in $(seq 1 ${2:-30}); do farscreen | grep -q -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_fs() { for _ in $(seq 1 ${2:-30}); do farscreen | grep -c -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 calls() { grep -c "^$1 " "$T/update.calls" 2>/dev/null; }
 # Esc, then the popup gone before the next key (a key right behind Esc reads as one sequence).
-close_fs() { tm send-keys -t work:farpanel Escape; for _ in $(seq 1 25); do farscreen | grep -q '▓ UPDATE ▓' || return 0; sleep 0.2; done; return 1; }
+close_fs() { tm send-keys -t work:farpanel Escape; for _ in $(seq 1 25); do farscreen | grep -c '▓ UPDATE ▓' >/dev/null || return 0; sleep 0.2; done; return 1; }
 check "on a linked computer's pane, U is lit" "bar | grep -cF $'\\e[93mU' >/dev/null && farscreen | grep -cF '[U]pdate' >/dev/null"
 tm send-keys -t work:farpanel u
 check "U updates this computer and the linked one at once, asking nothing" "wait_fs '▓ UPDATE ▓' && wait_fs 'this computer  *1\.0\.0 → 9\.9\.9' && wait_fs 'far.example  *1\.2\.0 → 9\.9\.9'"
 check "each once" "[[ \$(calls far.example) == 1 && \$(wc -l <$T/local-update.log) == 1 ]]"
 # Each finished line says what it went from and to, not the end of the installer's help; the
 # bar under the list counts the updates done.
-check "a finished line shows 1.2.0 → 9.9.9, not the installer's last line" "! farscreen | grep -q 'agent-say name\|let agents'"
+check "a finished line shows 1.2.0 → 9.9.9, not the installer's last line" "! farscreen | grep -c 'agent-say name\|let agents' >/dev/null"
 check "and the bar under the list is full: 2/2 done" "wait_fs '║  █*  *2/2  ║'"
 check "over there with the fixed command, nothing else" "[[ \$(cat $T/update.cmd) == 'PATH=\"\$HOME/.local/bin:\$PATH\" tmux-revive update </dev/null 2>&1' ]]"
 close_fs
-check "Esc closes it" "! farscreen | grep -q '▓ UPDATE ▓'"
+check "Esc closes it" "! farscreen | grep -c '▓ UPDATE ▓' >/dev/null"
 # An update that fails there in colour: the message shows as text, without its escape codes
 # or its "xx". Tried once: nothing tries it again.
 touch "$T/update.fail"; rm -f "$T/update.calls"
@@ -2266,7 +2266,7 @@ check "one without the permission shows [I]" "wait_fs 'far.example  *no permissi
 tm send-keys -t work:farpanel Down; sleep 0.3; tm send-keys -t work:farpanel i
 check "I on its line shows tmux-revive update for its owner's pane there, copied" "wait_fs \"Run this in $me's pane on far.example:\" && [[ \$(tm show-buffer) == 'tmux-revive update' ]]"
 tm send-keys -t work:farpanel x
-check "a key closes it, back to the list" "wait_fs '▓ UPDATE ▓' && ! farscreen | grep -q 'Run this in'"
+check "a key closes it, back to the list" "wait_fs '▓ UPDATE ▓' && ! farscreen | grep -c 'Run this in' >/dev/null"
 close_fs
 rm -f "$T/update.perm"
 # N: agent-say name runs over there, for that pane, by its id.
@@ -2295,7 +2295,7 @@ rt new-window -d -t far -n elsewhere "bash --norc --noprofile"; rt select-window
 tm new-window -d -t work -n farssh "bash -c 'exec -a \"ssh far.example\" sleep 300'"
 herewin=$(tm display -p -t work '#{window_name}')
 sleep 2.5
-check "with a pane here ssh'd there, O stays faded" "farscreen | grep -q '▶ far-top' && bar | grep -qF \"\$grey\""
+check "with a pane here ssh'd there, O stays faded" "farscreen | grep -c '▶ far-top' >/dev/null && bar | grep -cF \"\$grey\" >/dev/null"
 tm send-keys -t work:farpanel O
 check "O there only says so" "wait_far 'O opens panes on this computer only'"
 unbox farscreen tm send-keys -t work:farpanel >/dev/null
@@ -2303,7 +2303,7 @@ check "and moves nothing, here or over there" "[[ \$(tm display -p -t work '#{wi
 rm -f "$st/links/far.example/read-only"
 tm kill-window -t work:farssh; rt kill-window -t far:elsewhere
 tm send-keys -t work:farpanel 0
-check "back on a pane here, O lights up again" "for _ in \$(seq 1 25); do farscreen | grep -q '\[0\.0\] ▶' && ! bar | grep -qF \"\$grey\" && break; sleep 0.2; done; farscreen | grep -q '\[0\.0\] ▶' && ! bar | grep -qF \"\$grey\""
+check "back on a pane here, O lights up again" "for _ in \$(seq 1 25); do farscreen | grep -c '\[0\.0\] ▶' >/dev/null && ! bar | grep -cF \"\$grey\" >/dev/null && break; sleep 0.2; done; farscreen | grep -c '\[0\.0\] ▶' >/dev/null && ! bar | grep -cF \"\$grey\" >/dev/null"
 tm send-keys -t work:farpanel q
 tm kill-window -t work:farpanel 2>/dev/null
 # Another user's pane on a linked computer (deploy, a stand-in as above): U runs nothing over
@@ -2321,8 +2321,8 @@ rm -f "$st/panel/far.example.rows"* "$st/users/deploy" "$T/far.calls" "$T/update
 echo 1.1.0 >"$T/remote-version"
 tm new-window -d -t work -n vpanel "env PATH=$T/uidps:$T/usudo:\$PATH AGENT_SAY_SSH=$T/logssh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 rscreen() { tm capture-pane -p -t work:vpanel; }
-wait_r() { for _ in $(seq 1 ${2:-60}); do rscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
-gone_r() { for _ in $(seq 1 20); do rscreen | grep -q -- "$1" || return 0; sleep 0.25; done; return 1; }
+wait_r() { for _ in $(seq 1 ${2:-60}); do rscreen | grep -c -- "$1" >/dev/null && return 0; sleep 0.25; done; return 1; }
+gone_r() { for _ in $(seq 1 20); do rscreen | grep -c -- "$1" >/dev/null || return 0; sleep 0.25; done; return 1; }
 close_r() { tm send-keys -t work:vpanel Escape; gone_r '▓ UPDATE ▓'; }
 check "a linked computer's pane of a user without tmux-revive shows [U]" "wait_r 'as-deploy *deploy *\[U\]'"
 tm set-buffer -- before
@@ -2330,7 +2330,7 @@ tm send-keys -t work:vpanel u
 check "U lists that user there with [I], and updates the computer" "wait_r 'deploy@far.example  *not installed  *\[I\]' && wait_r 'far.example  *1\.2\.0 → 9\.9\.9'"
 # Its number picks it, as Enter on it does.
 tm send-keys -t work:vpanel "$(rscreen | grep -o '[1-9] *deploy@far' | head -c 1)"
-check "picking it shows the install command for their pane there, copied, no sudo" "wait_r \"Run this in deploy's pane on far.example:\" && rscreen | grep -qF -- '$INSTALL_CMD' && [[ \$(tm show-buffer) == '$INSTALL_CMD' ]]"
+check "picking it shows the install command for their pane there, copied, no sudo" "wait_r \"Run this in deploy's pane on far.example:\" && rscreen | grep -cF -- '$INSTALL_CMD' >/dev/null && [[ \$(tm show-buffer) == '$INSTALL_CMD' ]]"
 tm send-keys -t work:vpanel x
 gone_r "Run this in deploy's pane" >/dev/null
 close_r
@@ -2354,8 +2354,8 @@ sleep 0.5; rm -f "$st/panel/far.example.rows"*
 tm new-window -d -t work -n farssh "bash -c 'exec -a \"ssh far.example\" sleep 300'"
 tm new-window -d -t work -n farnames "env AGENT_SAY_SSH=$T/logssh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 fn() { tm capture-pane -p -t work:farnames; }
-for _ in $(seq 1 60); do fn | grep -q 'far-two *◌ linked' && break; sleep 0.25; done
-for _ in $(seq 1 25); do fn | grep -q '▶ far-two' && break; tm send-keys -t work:farnames Down; sleep 0.4; done
+for _ in $(seq 1 60); do fn | grep -c 'far-two *◌ linked' >/dev/null && break; sleep 0.25; done
+for _ in $(seq 1 25); do fn | grep -c '▶ far-two' >/dev/null && break; tm send-keys -t work:farnames Down; sleep 0.4; done
 tm select-window -t work:farnames; tm send-keys -t work:farnames O
 check "O on a names-only row moves nothing, and asks nothing over there" "for _ in \$(seq 1 30); do fn | grep -c 'O opens panes on this computer only' >/dev/null && break; sleep 0.2; done; fn | grep -c 'O opens panes on this computer only' >/dev/null && [[ \$(tm display -p -t work '#{window_name}') == farnames ]] && ! grep -c -- '--show' $T/ssh.log >/dev/null && [[ ! -e $T/show.cmd ]]"
 unbox fn tm send-keys -t work:farnames >/dev/null
@@ -2373,7 +2373,7 @@ check "--keys text: no control characters, bidi overrides or endless text" "! rp
 # --paste: a pane id, then a written answer's text as hex: line breaks and tabs, nothing else
 # that controls the terminal, 40000 bytes at most. Text it turns away exits 2, before the pane
 # is looked for (%999 isn't there: 1).
-check "--paste pastes text into a pane over there" "[[ \$(rpanel --paste $farid \$(hex 'echo paste-$((6 * 7))')) == sent ]] && rpanel --keys $farid Enter >/dev/null && for _ in \$(seq 1 20); do tmux -L revive-panel-remote-$$ -f /dev/null capture-pane -p -t $farid | grep -q '^paste-42' && break; sleep 0.2; done && tmux -L revive-panel-remote-$$ -f /dev/null capture-pane -p -t $farid | grep -q '^paste-42'"
+check "--paste pastes text into a pane over there" "[[ \$(rpanel --paste $farid \$(hex 'echo paste-$((6 * 7))')) == sent ]] && rpanel --keys $farid Enter >/dev/null && for _ in \$(seq 1 20); do tmux -L revive-panel-remote-$$ -f /dev/null capture-pane -p -t $farid | grep -c '^paste-42' >/dev/null && break; sleep 0.2; done && tmux -L revive-panel-remote-$$ -f /dev/null capture-pane -p -t $farid | grep -c '^paste-42' >/dev/null"
 pst() { rpanel --paste "$@" >/dev/null; echo $?; }
 check "--paste takes line breaks and tabs, and up to 40000 bytes" "[[ \$(pst %999 \$(hex \$'two\\nlines\\tand a tab')) == 1 && \$(pst %999 \$(hex \"\$(printf 'é%.0s' {1..20000})\")) == 1 ]]"
 check "--paste turns away CR, escapes, C1, bidi and zero-width characters, NUL and DEL" "[[ \$(pst %999 \$(hex \$'a\\rb')) == 2 && \$(pst %999 \$(hex \$'a\\e[2J')) == 2 && \$(pst %999 c29b) == 2 && \$(pst %999 \$(hex \$'a\\u202eb')) == 2 && \$(pst %999 \$(hex \$'a\\u200bb')) == 2 && \$(pst %999 6100) == 2 && \$(pst %999 617f) == 2 ]]"
@@ -2427,9 +2427,9 @@ check "on the link key, rows come back over it" "grep -q 'far-top' <<<\"\$out\" 
 out=$(rr peek $farid 5)
 check "a peek comes back over it" "grep -q 'paste-42' <<<\"\$out\" && grep -q ' far.example _link peek $farid 5\$' $T/key.calls"
 out=$(rr keys $farid lit:$(hex 'echo keykeys-42') Enter)
-check "keys for a question go over it ($out)" "[[ \$out == sent ]] && for _ in \$(seq 1 20); do far_tm capture-pane -p -t $farid | grep -q '^keykeys-42' && break; sleep 0.2; done && far_tm capture-pane -p -t $farid | grep -q '^keykeys-42'"
+check "keys for a question go over it ($out)" "[[ \$out == sent ]] && for _ in \$(seq 1 20); do far_tm capture-pane -p -t $farid | grep -c '^keykeys-42' >/dev/null && break; sleep 0.2; done && far_tm capture-pane -p -t $farid | grep -c '^keykeys-42' >/dev/null"
 out=$(rr paste $farid $(hex 'echo keypaste-42'))
-check "a written answer goes over it ($out)" "[[ \$out == sent ]] && [[ \$(rr keys $farid Enter) == sent ]] && for _ in \$(seq 1 20); do far_tm capture-pane -p -t $farid | grep -q '^keypaste-42' && break; sleep 0.2; done && far_tm capture-pane -p -t $farid | grep -q '^keypaste-42'"
+check "a written answer goes over it ($out)" "[[ \$out == sent ]] && [[ \$(rr keys $farid Enter) == sent ]] && for _ in \$(seq 1 20); do far_tm capture-pane -p -t $farid | grep -c '^keypaste-42' >/dev/null && break; sleep 0.2; done && far_tm capture-pane -p -t $farid | grep -c '^keypaste-42' >/dev/null"
 out=$(RTIMEOUT=30 rr update)
 check "an update goes over it, as the fixed request, once ($out)" "[[ \$out == *'tmux-revive 1.2.0 -> 9.9.9'* && \$(wc -l <$T/kupdate.calls) == 1 ]] && grep -q ' far.example _link update\$' $T/key.calls"
 ktop=$(far_tm display -p -t far:0.1 '#{pane_id}')
@@ -2457,12 +2457,12 @@ sleep 0.5
 rm -f "$st/panel/far.example.rows" "$st/panel/"*.peek-*
 tm new-window -d -t work -n farq "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 fq() { tm capture-pane -p -t work:farq; }
-wait_fq() { for _ in $(seq 1 ${2:-50}); do fq | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_fq() { for _ in $(seq 1 ${2:-50}); do fq | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 wait_fq 'far-ask' 60 >/dev/null
-for _ in $(seq 1 25); do fq | grep -q '▶ far-ask' && break; tm send-keys -t work:farq Down; sleep 0.4; done
+for _ in $(seq 1 25); do fq | grep -c '▶ far-ask' >/dev/null && break; tm send-keys -t work:farq Down; sleep 0.4; done
 check "a linked computer's question shows here" "wait_fq 'QUESTION · far-ask' 100 && wait_fq 'Do you want to proceed?'"
 check "and moves no client's focus, there or here" "[[ '$fwas' == '0.0' && \$(fclient) == '$fwas' && \$(tm display -p -t work '#{window_name}') == '$hwas' ]]"
-check "its question view offers Enter, not O" "fq | grep -qF '[Enter] answer' && ! fq | grep -qF 'open the chat'"
+check "its question view offers Enter, not O" "fq | grep -cF '[Enter] answer' >/dev/null && ! fq | grep -cF 'open the chat' >/dev/null"
 # Its highlighted choice sits on a band here too, before answering, once Enter starts it, and
 # after a key moves it over the link.
 fqcolor() { tm capture-pane -e -p -t work:farq | grep -F -- "$1" | head -1; }
@@ -2487,7 +2487,7 @@ sleep 0.5
 rm -f "$st/panel/far.example.rows" "$st/panel/"*.peek-*
 tm new-window -d -t work -n farq "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 wait_fq 'far-ask' 60 >/dev/null
-for _ in $(seq 1 25); do fq | grep -q '▶ far-ask' && break; tm send-keys -t work:farq Down; sleep 0.4; done
+for _ in $(seq 1 25); do fq | grep -c '▶ far-ask' >/dev/null && break; tm send-keys -t work:farq Down; sleep 0.4; done
 wait_fq 'QUESTION · far-ask' 100 >/dev/null
 tm send-keys -t work:farq Enter; wait_fq 'ANSWERING far-ask' >/dev/null
 for _ in 1 2 3 4; do tm send-keys -t work:farq j; sleep 0.6; done
@@ -2517,7 +2517,7 @@ echo "$*" >>"$T/pwssh.log"
 [[ " $* " == *" pw.example "* ]] || exec "$T/fakessh" "$@"
 m=$T/pw.master
 fp=$(ssh-keygen -lf "$(cat "$T/pw.presented")" | awk '{print $2}')
-holds() { [[ -r $1 ]] && ssh-keygen -lf "$1" 2>/dev/null | awk '{print $2}' | grep -qxF "$fp"; }
+holds() { [[ -r $1 ]] && ssh-keygen -lf "$1" 2>/dev/null | awk '{print $2}' | grep -cxF "$fp" >/dev/null; }
 case " $* " in
 *" -O check "*) [[ -e $m ]]; exit ;;
 *" -O exit "*) rm -f "$m"; exit 0 ;;
@@ -2554,13 +2554,13 @@ pwl=$st/links/pw.example
 tm new-window -d -t work -n pwpanel "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 tm new-window -d -t work -n pwssh "bash -c 'exec -a \"ssh pw.example\" sleep 300'"
 pws() { tm capture-pane -p -t work:pwpanel; }
-wait_pw() { for _ in $(seq 1 ${2:-40}); do pws | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_pw() { for _ in $(seq 1 ${2:-40}); do pws | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 # The login window (no client is attached here to show a popup): type into ssh's prompt there.
 login_typed() {
 	local w=""
 	for _ in $(seq 1 50); do
 		w=$(tm list-windows -t work -F '#{window_id} #{window_name}' | awk '$2 == "login" && $3 == "pw.example" {print $1}')
-		[[ -n $w ]] && tm capture-pane -p -t "$w" | grep -q 'pw.example password:' && break
+		[[ -n $w ]] && tm capture-pane -p -t "$w" | grep -c 'pw.example password:' >/dev/null && break
 		sleep 0.2
 	done
 	[[ -n $w ]] || return 1
@@ -2582,24 +2582,24 @@ unbox pws tm send-keys -t work:pwpanel >/dev/null
 # Said once for the drop, not again by a panel started anew while it still needs one.
 tm new-window -d -t work -n pw2 "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 pw2() { tm capture-pane -p -t work:pw2; }
-check "a panel started again doesn't say it again" "for _ in \$(seq 1 40); do pw2 | grep -q 'pw.example · needs login' && break; sleep 0.2; done; pw2 | grep -q 'pw.example · needs login' && sleep 2.5 && nobox pw2 && [[ -e $REVIVE_DIR/panel/login-said/pw.example ]]"
+check "a panel started again doesn't say it again" "for _ in \$(seq 1 40); do pw2 | grep -c 'pw.example · needs login' >/dev/null && break; sleep 0.2; done; pw2 | grep -c 'pw.example · needs login' >/dev/null && sleep 2.5 && nobox pw2 && [[ -e $REVIVE_DIR/panel/login-said/pw.example ]]"
 tm kill-window -t work:pw2
-check "its panes too, not as unreachable" "wait_pw 'needs login · B' 50 && ! pws | grep -q 'unreachable'"
+check "its panes too, not as unreachable" "wait_pw 'needs login · B' 50 && ! pws | grep -c 'unreachable' >/dev/null"
 pw_tries() { grep -c 'BatchMode=yes.* pw.example ' "$T/pwssh.log"; }
 n=$(pw_tries); sleep 3
-check "nothing is tried over ssh meanwhile, and no login opens by itself" "[[ \$(pw_tries) == $n ]] &&[[ \$(grep -c 'ControlMaster=yes' $T/pwssh.log) == 1 ]] && ! tm list-windows -t work -F '#{window_name}' | grep -q '^login'"
+check "nothing is tried over ssh meanwhile, and no login opens by itself" "[[ \$(pw_tries) == $n ]] &&[[ \$(grep -c 'ControlMaster=yes' $T/pwssh.log) == 1 ]] && ! tm list-windows -t work -F '#{window_name}' | grep -c '^login' >/dev/null"
 tm send-keys -t work:pwpanel B; wait_pw 'needs login: type its password' >/dev/null
-check "B offers it first, to log in again" "pws | grep -q '1 *pw.example  · needs login: type its password'"
+check "B offers it first, to log in again" "pws | grep -c '1 *pw.example  · needs login: type its password' >/dev/null"
 tm send-keys -t work:pwpanel Enter
 check "and picking it opens the login again" "login_typed hunter2"
 check "after which the link picks up by itself" "boxed pws 'logged in to pw.example; its link picks up again' && unbox pws tm send-keys -t work:pwpanel && for _ in \$(seq 1 50); do [[ ! -e $pwl/login ]] && break; sleep 0.2; done; [[ ! -e $pwl/login ]] && wait_pw 'pw.example · linked' 75"
 check "logged in, what was said is forgotten, so the next drop is said again" "for _ in \$(seq 1 30); do [[ -e $REVIVE_DIR/panel/login-said/pw.example ]] || break; sleep 0.2; done; [[ ! -e $REVIVE_DIR/panel/login-said/pw.example ]]"
-check "a host with a key (far.example) never got a login" "! grep 'ControlMaster=yes' $T/pwssh.log | grep -vq ' pw.example' && [[ ! -e $st/links/far.example/login ]]"
+check "a host with a key (far.example) never got a login" "! grep 'ControlMaster=yes' $T/pwssh.log | grep -vc ' pw.example' >/dev/null && [[ ! -e $st/links/far.example/login ]]"
 # Another computer answers to pw.example, with a key of its own: a key problem, not a login.
 ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey9"
 echo "$T/hostkey9.pub" >"$T/pw.presented"
 p=$(prompts); rm -f "$T/pw.master"
-check "a link answered by another key stops on the key error, not 'needs login'" "for _ in \$(seq 1 75); do grep -q 'host key changed' $pwl/error 2>/dev/null && break; sleep 0.2; done; grep -q 'host key changed' $pwl/error && wait_pw 'pw.example stopped' 75 && ! pws | grep -q 'pw.example · needs login' && [[ ! -e $pwl/login && \$(prompts) == $p ]]"
+check "a link answered by another key stops on the key error, not 'needs login'" "for _ in \$(seq 1 75); do grep -q 'host key changed' $pwl/error 2>/dev/null && break; sleep 0.2; done; grep -q 'host key changed' $pwl/error && wait_pw 'pw.example stopped' 75 && ! pws | grep -c 'pw.example · needs login' >/dev/null && [[ ! -e $pwl/login && \$(prompts) == $p ]]"
 # A first link, pw.example not in known_hosts yet: you confirm the key ssh-keyscan shows, and
 # the login then goes only to a computer holding that key.
 tm send-keys -t work:pwpanel q
@@ -2643,7 +2643,7 @@ tmux -L "revive-panel-remote-$$" -f /dev/null set-option -p -t far:slow @agent f
 rm -f "$st/panel/far.example.rows" "$st/panel/"*.peek-*
 tm new-window -d -t work -n farq "env AGENT_SAY_SSH=$T/slowssh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 wait_fq 'far-slow' 60 >/dev/null
-for _ in $(seq 1 25); do fq | grep -q '▶ far-slow' && break; tm send-keys -t work:farq Down; sleep 0.4; done
+for _ in $(seq 1 25); do fq | grep -c '▶ far-slow' >/dev/null && break; tm send-keys -t work:farq Down; sleep 0.4; done
 wait_fqband '❯ 1. Yes' 75 >/dev/null
 tm send-keys -t work:farq Enter; wait_fq 'ANSWERING far-slow' >/dev/null
 # Down just after a look has set off, so that look comes back with the screen before the key.
@@ -2661,9 +2661,9 @@ tmux -L "revive-panel-remote-$$" -f /dev/null kill-server 2>/dev/null
 
 echo "splash"
 tm new-window -d -t work -n splash "env REVIVE_PANEL_SPLASH=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL"
-check "the dial-up splash plays" "for _ in \$(seq 1 40); do tm capture-pane -p -t work:splash | grep -q 'CONNECT 33600' && break; sleep 0.1; done; tm capture-pane -p -t work:splash | grep -q 'CONNECT 33600'"
+check "the dial-up splash plays" "for _ in \$(seq 1 40); do tm capture-pane -p -t work:splash | grep -c 'CONNECT 33600' >/dev/null && break; sleep 0.1; done; tm capture-pane -p -t work:splash | grep -c 'CONNECT 33600' >/dev/null"
 tm send-keys -t work:splash x
-check "a key skips it to the panel" "for _ in \$(seq 1 30); do tm capture-pane -p -t work:splash | grep -q 'C O N T R O L' && break; sleep 0.2; done; tm capture-pane -p -t work:splash | grep -q 'C O N T R O L'"
+check "a key skips it to the panel" "for _ in \$(seq 1 30); do tm capture-pane -p -t work:splash | grep -c 'C O N T R O L' >/dev/null && break; sleep 0.2; done; tm capture-pane -p -t work:splash | grep -c 'C O N T R O L' >/dev/null"
 tm send-keys -t work:splash q
 
 echo "hostile text"
@@ -2760,7 +2760,7 @@ check "a command shorter than @revive-done-after isn't announced" "[[ \$(dones '
 at send-keys -t asks:run 'sleep 7' Enter
 sleep 5
 check "a long one is, once it finishes" "wait_ok '[[ \$(dones \"asks:2.0 (asks:2.0) · sleep done after\") == 1 ]]'"
-check "on the client, with a bell" "wait_ok 'cscreen | grep -q \"asks:2.0 (asks:2.0) · sleep done after\"' && wait_ok bell"
+check "on the client, with a bell" "wait_ok 'cscreen | grep -c \"asks:2.0 (asks:2.0) · sleep done after\" >/dev/null' && wait_ok bell"
 at new-window -d -t asks -n gone "sleep 5"
 sleep 7
 check "a pane that closes as its command ends isn't announced" "[[ \$(dones '') == 1 ]]"
@@ -2792,8 +2792,8 @@ check "a pane where root works with no tmux-revive: root, and [U] in the warn co
 check "one whose user has an older tmux-revive: that version, in the warn colour" "grep -q 'l-deploy *deploy *1\.0\.0 *sleep' <<<\"\$out\" && grep -qF $'\\e[93m1.0.0' <<<\"\$raw\""
 check "your own panes: you, and this panel's version" "grep -q \" $me *1\.2\.0 *bash\" <<<\"\$out\""
 lbar() { plain | grep -F '[B]ridge' | tail -1; }
-check "on root's pane the command bar offers U: update, and no V" "uframe \$(tm display -p -t work:lroot '#{pane_id}') | lbar | grep -F '[U]pdate' | grep -qvF '[V]'"
-check "and on your own pane too" "uframe \$(tm display -p -t work:0.0 '#{pane_id}') | lbar | grep -qF '[U]pdate'"
+check "on root's pane the command bar offers U: update, and no V" "uframe \$(tm display -p -t work:lroot '#{pane_id}') | lbar | grep -F '[U]pdate' | grep -cvF '[V]' >/dev/null"
+check "and on your own pane too" "uframe \$(tm display -p -t work:0.0 '#{pane_id}') | lbar | grep -cF '[U]pdate' >/dev/null"
 for c in 80 120 160 200; do
 	out=$(uframe none "$c" | plain)
 	check "at $c columns every row is still exactly $c wide" "[[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
@@ -2803,8 +2803,8 @@ check "at 120 columns USER and VER still show" "grep -q 'l-root *root *\[U\]' <<
 
 tm new-window -d -t work -n upanel "env PATH=$T/uidps:$T/usudo:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md REVIVE_PANEL_REFRESH=1 $PANEL"
 uscreen() { tm capture-pane -p -t work:upanel; }
-wait_u() { for _ in $(seq 1 40); do uscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
-gone_u() { for _ in $(seq 1 20); do uscreen | grep -q -- "$1" || return 0; sleep 0.25; done; return 1; }
+wait_u() { for _ in $(seq 1 40); do uscreen | grep -c -- "$1" >/dev/null && return 0; sleep 0.25; done; return 1; }
+gone_u() { for _ in $(seq 1 20); do uscreen | grep -c -- "$1" >/dev/null || return 0; sleep 0.25; done; return 1; }
 close_u() { tm send-keys -t work:upanel Escape; gone_u '▓ UPDATE ▓'; }
 wait_u 'l-root'
 rm -f "$T/local-update.log"
@@ -2814,12 +2814,12 @@ check "U updates this computer, and lists root and deploy with [I]" "wait_u 'thi
 # Highlighted, then I.
 hl_u() { local n i; n=$(uscreen | grep -o "[1-9] *$1" | head -c 1); for ((i = 1; i < n; i++)); do tm send-keys -t work:upanel Down; sleep 0.1; done; }
 hl_u 'root  '; tm send-keys -t work:upanel i
-check "I on root's line shows the install command to run in root's pane" "wait_u \"Run this in root's pane:\" && uscreen | grep -qF -- '$INSTALL_CMD'"
+check "I on root's line shows the install command to run in root's pane" "wait_u \"Run this in root's pane:\" && uscreen | grep -cF -- '$INSTALL_CMD' >/dev/null"
 check "and copies it, with no sudo" "[[ \$(tm show-buffer) == '$INSTALL_CMD' ]] && wait_u 'Copied'"
 tm send-keys -t work:upanel x
 check "a key closes it, back to the list" "gone_u \"Run this in root's pane:\" && wait_u '▓ UPDATE ▓'"
 tm send-keys -t work:upanel Down; sleep 0.2; tm send-keys -t work:upanel I
-check "I on deploy's, with an older version: tmux-revive update, copied" "wait_u \"Run this in deploy's pane:\" && uscreen | grep -q '│* *tmux-revive update *║' && [[ \$(tm show-buffer) == 'tmux-revive update' ]]"
+check "I on deploy's, with an older version: tmux-revive update, copied" "wait_u \"Run this in deploy's pane:\" && uscreen | grep -c '│* *tmux-revive update *║' >/dev/null && [[ \$(tm show-buffer) == 'tmux-revive update' ]]"
 tm send-keys -t work:upanel x
 gone_u "Run this in deploy's pane:" >/dev/null
 close_u
@@ -2833,11 +2833,11 @@ rm -f "$T/local.fail"
 # Each user's own install or update keeps their version (agent-say _user-installed, run as the
 # owner): two users in one tmux, each with their own.
 echo 1.1.0 >"$T/umail/users/root"
-check "two users in one tmux show their own versions" "wait_u 'l-root *root *1\.1\.0' && uscreen | grep -q 'l-deploy *deploy *1\.0\.0'"
+check "two users in one tmux show their own versions" "wait_u 'l-root *root *1\.1\.0' && uscreen | grep -c 'l-deploy *deploy *1\.0\.0' >/dev/null"
 echo 1.2.0 >"$T/umail/users/deploy"
 wait_u 'l-deploy *deploy *1\.2\.0' >/dev/null
 tm send-keys -t work:upanel u
-check "one that's up to date gets no line" "wait_u 'root  *has 1\.1\.0  *\[I\]' && ! uscreen | grep -q 'deploy  *has'"
+check "one that's up to date gets no line" "wait_u 'root  *has 1\.1\.0  *\[I\]' && ! uscreen | grep -c 'deploy  *has' >/dev/null"
 close_u
 tm kill-window -t work:upanel; tm kill-window -t work:lroot; tm kill-window -t work:ldeploy
 
@@ -2861,18 +2861,18 @@ sleep 0.7
 sframe() { sm run-shell "COLUMNS=130 LINES=${1:-30} REVIVE_PANEL_TICK=${2:-0} REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$SMAIL AGENT_SAY_SSH=$T/deadssh $PANEL --once"; }
 plist() { awk '/PANES/{on=1; getline; next} on && / cpu /{exit} on'; } # the list's rows, under its column header
 raw=$(sframe 30 0) out=$(plain <<<"$raw")
-check "PANES with more rows than room scrolls: ▲, a track with its thumb, ▼ on its right edge" "[[ \$(plist <<<\"\$out\" | head -1) == *▲║ && \$(plist <<<\"\$out\" | tail -1) == *▼║ ]] && plist <<<\"\$out\" | grep -q '▓║$' && plist <<<\"\$out\" | grep -q '░║$'"
+check "PANES with more rows than room scrolls: ▲, a track with its thumb, ▼ on its right edge" "[[ \$(plist <<<\"\$out\" | head -1) == *▲║ && \$(plist <<<\"\$out\" | tail -1) == *▼║ ]] && plist <<<\"\$out\" | grep -c '▓║$' >/dev/null && plist <<<\"\$out\" | grep -c '░║$' >/dev/null"
 check "it keeps to half the room, and every row is still exactly 130 wide" "(( \$(plist <<<\"\$out\" | wc -l) <= 7 )) && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '130 ' ]]"
-check "a question out of view below makes the ▼ blink bold yellow" "plist <<<\"\$raw\" | tail -1 | grep -qF $'\\e[1m\\e[93m\\e[5m▼' && ! plist <<<\"\$raw\" | head -1 | grep -qF $'\\e[93m\\e[5m▲'"
+check "a question out of view below makes the ▼ blink bold yellow" "plist <<<\"\$raw\" | tail -1 | grep -cF $'\\e[1m\\e[93m\\e[5m▼' >/dev/null && ! plist <<<\"\$raw\" | head -1 | grep -cF $'\\e[93m\\e[5m▲' >/dev/null"
 # Dark is the border's colour: PANES has the focus, so bright cyan.
-check "and on the next tick it goes dark, as the help page's beacons do" "sframe 30 1 | plist | tail -1 | grep -qF $'\\e[96m▼' && ! sframe 30 1 | plist | grep -qF $'\\e[93m\\e[5m▼'"
+check "and on the next tick it goes dark, as the help page's beacons do" "sframe 30 1 | plist | tail -1 | grep -cF $'\\e[96m▼' >/dev/null && ! sframe 30 1 | plist | grep -cF $'\\e[93m\\e[5m▼' >/dev/null"
 # The window with the focus (PANES, to start with) has its border in bright cyan: its title's
 # rule, the edges of its rows and its scroll bar's track. The others keep the frame's blue.
-check "the focused window's border is bright cyan: its rule, its edges, its scroll bar" "[[ \$(wcols PANES <<<\"\$raw\") == '96 96' ]] && grep -F '▸ PANES' <<<\"\$raw\" | grep -qF $'\\e[96m╠' &&plist <<<\"\$raw\" | grep -qF $'\\e[96m░'"
+check "the focused window's border is bright cyan: its rule, its edges, its scroll bar" "[[ \$(wcols PANES <<<\"\$raw\") == '96 96' ]] && grep -F '▸ PANES' <<<\"\$raw\" | grep -cF $'\\e[96m╠' >/dev/null &&plist <<<\"\$raw\" | grep -cF $'\\e[96m░' >/dev/null"
 check "and the others' are the frame's blue, as is the bar under them" "[[ \$(wcols MESSAGES <<<\"\$raw\") == '34 34' ]] &&(( \$(grep -cF $'\\e[96m╠' <<<\"\$raw\") == 1 ))"
 check "[⇧J] focus is said once, on the title of the window J goes to next (MESSAGES)" "(( \$(grep -oF '[⇧J] focus' <<<\"\$out\" | wc -l) == 1 )) && grep -q 'MESSAGES ▓▒░═* \[⇧J\] focus ══╤' <<<\"\$out\""
 out=$(sframe 80 | plain)
-check "with room for every row, no scroll bar" "plist <<<\"\$out\" | grep -q 'asker9' && ! plist <<<\"\$out\" | grep -q '[▲▼░▓]║$'"
+check "with room for every row, no scroll bar" "plist <<<\"\$out\" | grep -c 'asker9' >/dev/null && ! plist <<<\"\$out\" | grep -c '[▲▼░▓]║$' >/dev/null"
 # With PANES the only window drawn (a question selected, no room to show it), J has nowhere
 # to go, and no title offers it.
 aid=$(sm display -p -t s:asker '#{pane_id}')
@@ -2888,8 +2888,8 @@ check "a linked computer's heading counts its panes and the ones that need you" 
 } >"$SMAIL"
 raw=$(sframe 30 0) out=$(plain <<<"$raw")
 mrows() { awk '/MESSAGES/{on=1; next} on && /^╠/{exit} on'; }
-check "MESSAGES shows the newest, with a scroll bar beside it" "mrows <<<\"\$out\" | grep -q 'hello 9' && ! mrows <<<\"\$out\" | grep -q 'hello 1 ' && mrows <<<\"\$out\" | head -1 | grep -q '▲│'"
-check "a message not delivered, scrolled out of view, makes its ▲ blink" "mrows <<<\"\$raw\" | head -1 | grep -qF $'\\e[1m\\e[93m\\e[5m▲'"
+check "MESSAGES shows the newest, with a scroll bar beside it" "mrows <<<\"\$out\" | grep -c 'hello 9' >/dev/null && ! mrows <<<\"\$out\" | grep -c 'hello 1 ' >/dev/null && mrows <<<\"\$out\" | head -1 | grep -c '▲│' >/dev/null"
+check "a message not delivered, scrolled out of view, makes its ▲ blink" "mrows <<<\"\$raw\" | head -1 | grep -cF $'\\e[1m\\e[93m\\e[5m▲' >/dev/null"
 # Folded: the computer is its heading alone, saying how many of its panes need you.
 mkdir -p "$REVIVE_DIR/panel/fold" && touch "$REVIVE_DIR/panel/fold/fold.example"
 out=$(sframe 80 | plain)
@@ -2899,28 +2899,28 @@ rm -f "$REVIVE_DIR/panel/fold/fold.example"
 frows
 sm new-window -d -t s: -n sp "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$SMAIL AGENT_SAY_SSH=$T/deadssh REVIVE_PANEL_REFRESH=1 $PANEL"
 sscr() { sm capture-pane -p -t s:sp; }
-wait_sp() { for _ in $(seq 1 ${2:-30}); do sscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
-gone_sp() { for _ in $(seq 1 ${2:-30}); do sscr | grep -qF -- "$1" || return 0; sleep 0.2; done; return 1; }
+wait_sp() { for _ in $(seq 1 ${2:-30}); do sscr | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
+gone_sp() { for _ in $(seq 1 ${2:-30}); do sscr | grep -cF -- "$1" >/dev/null || return 0; sleep 0.2; done; return 1; }
 wait_sp 'C O N T R O L' >/dev/null
 # [⇧J] focus, said once, on the title of the window J goes to next; the focused window's
 # border in bright cyan (96), the others' the frame's blue (34).
 stabs() { sscr | grep -oF '[⇧J] focus' | wc -l; }
 scap() { sm capture-pane -e -p -t s:sp; }
 check "PANES has the focus to start with: its title is highlighted" "wait_sp '▸ PANES'"
-check "and [⇧J] focus is on the peek's title, before its own key" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'PEEK · .*\[⇧J\] focus  \[p\] hide'"
+check "and [⇧J] focus is on the peek's title, before its own key" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -c 'PEEK · .*\[⇧J\] focus  \[p\] hide' >/dev/null"
 # [⇧K] focus the same way, on the window K goes to: from PANES, round to LINKS · SAVES.
 ktabs() { sscr | grep -oF '[⇧K] focus' | wc -l; }
-check "[⇧K] focus is on LINKS · SAVES's title, where K goes round to" "wait_ok '(( \$(ktabs) == 1 ))' && sscr | grep -q 'LINKS · SAVES ▓▒░═* \[⇧K\] focus ══╣'"
+check "[⇧K] focus is on LINKS · SAVES's title, where K goes round to" "wait_ok '(( \$(ktabs) == 1 ))' && sscr | grep -c 'LINKS · SAVES ▓▒░═* \[⇧K\] focus ══╣' >/dev/null"
 tm_s() { sm send-keys -t s:sp "$@"; }
 tm_s J
-check "J moves the focus to the peek" "wait_sp '▸ PEEK · ' && ! sscr | grep -qF '▸ PANES'"
+check "J moves the focus to the peek" "wait_sp '▸ PEEK · ' && ! sscr | grep -cF '▸ PANES' >/dev/null"
 check "its border goes bright cyan, PANES's back to the frame's blue" "wait_ok '[[ \$(scap | wcols \"▸ PEEK\") == \"96 96\" && \$(scap | wcols PANES) == \"34 34\" && \$(scap | wcols MESSAGES) == \"34 34\" ]]'"
-check "[⇧J] focus moves on, to MESSAGES's title, still once" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'MESSAGES ▓▒░═* \[⇧J\] focus ══╤' && ! sscr | grep -q 'PEEK.*\[⇧J\] focus'"
-check "and [⇧K] focus to PANES's title" "wait_ok '(( \$(ktabs) == 1 ))' && sscr | grep -q 'PANES ▓▒░═* \[⇧K\] focus ══╣'"
-check "where the arrows scroll, and the bar says so (J is on the titles now)" "wait_sp '↑↓ PgUp PgDn scroll' && ! sscr | grep -qF 'Tab next window'"
+check "[⇧J] focus moves on, to MESSAGES's title, still once" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -c 'MESSAGES ▓▒░═* \[⇧J\] focus ══╤' >/dev/null && ! sscr | grep -c 'PEEK.*\[⇧J\] focus' >/dev/null"
+check "and [⇧K] focus to PANES's title" "wait_ok '(( \$(ktabs) == 1 ))' && sscr | grep -c 'PANES ▓▒░═* \[⇧K\] focus ══╣' >/dev/null"
+check "where the arrows scroll, and the bar says so (J is on the titles now)" "wait_sp '↑↓ PgUp PgDn scroll' && ! sscr | grep -cF 'Tab next window' >/dev/null"
 check "the peek shows the bottom of its pane's screen" "wait_sp 'srow-200'"
 tm_s PPage
-check "PgUp scrolls the peek back up its screen" "gone_sp 'srow-200' && sscr | grep -q 'srow-1[0-9][0-9]'"
+check "PgUp scrolls the peek back up its screen" "gone_sp 'srow-200' && sscr | grep -c 'srow-1[0-9][0-9]' >/dev/null"
 tm_s End
 check "and End brings it back to the bottom" "wait_sp 'srow-200'"
 tm_s J
@@ -2928,49 +2928,49 @@ check "J: then MESSAGES" "wait_sp '▸ MESSAGES'"
 # MESSAGES and LINKS · SAVES share a rule and a │: the half of the rule over the focused one,
 # its outer edge, and the │ between them take the focus colour.
 check "MESSAGES's border bright cyan: its half of the rule and its left edge, not LINKS's right" "wait_ok '[[ \$(scap | wcols MESSAGES) == \"96 34\" ]]'"
-check "[⇧J] focus on LINKS · SAVES's half of the rule" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'LINKS · SAVES ▓▒░═* \[⇧J\] focus ══╣'"
+check "[⇧J] focus on LINKS · SAVES's half of the rule" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -c 'LINKS · SAVES ▓▒░═* \[⇧J\] focus ══╣' >/dev/null"
 tm_s J
 check "then LINKS · SAVES" "wait_sp '▸ LINKS · SAVES'"
 check "its border bright cyan: its right edge, not MESSAGES's left" "wait_ok '[[ \$(scap | wcols MESSAGES) == \"34 96\" ]]'"
-check "and [⇧J] focus on PANES's title, as J goes round" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -q 'PANES ▓▒░═* \[⇧J\] focus ══╣'"
-check "and [⇧K] focus on MESSAGES's, the one before" "wait_ok '(( \$(ktabs) == 1 ))' && sscr | grep -q 'MESSAGES ▓▒░═* \[⇧K\] focus ══╤'"
+check "and [⇧J] focus on PANES's title, as J goes round" "wait_ok '(( \$(stabs) == 1 ))' && sscr | grep -c 'PANES ▓▒░═* \[⇧J\] focus ══╣' >/dev/null"
+check "and [⇧K] focus on MESSAGES's, the one before" "wait_ok '(( \$(ktabs) == 1 ))' && sscr | grep -c 'MESSAGES ▓▒░═* \[⇧K\] focus ══╤' >/dev/null"
 tm_s J
-check "and round to PANES again" "wait_sp '▸ PANES' && ! sscr | grep -qF '▸ LINKS'"
+check "and round to PANES again" "wait_sp '▸ PANES' && ! sscr | grep -cF '▸ LINKS' >/dev/null"
 # K goes back; Tab, Shift-Tab, Right, Left, l and h do nothing.
 was=$(sscr | grep -F '▶' | cut -c1-40)
 tm_s l h Tab BTab Right Left; sleep 0.7
-check "Tab, Shift-Tab, Right, Left, l and h do nothing: the focus and the selection stay" "sscr | grep -qF '▸ PANES' && ! sscr | grep -qF '▸ PEEK' && ! sscr | grep -qF '▸ LINKS' && [[ \$(sscr | grep -F '▶' | cut -c1-40) == \"\$was\" ]]"
+check "Tab, Shift-Tab, Right, Left, l and h do nothing: the focus and the selection stay" "sscr | grep -cF '▸ PANES' >/dev/null && ! sscr | grep -cF '▸ PEEK' >/dev/null && ! sscr | grep -cF '▸ LINKS' >/dev/null && [[ \$(sscr | grep -F '▶' | cut -c1-40) == \"\$was\" ]]"
 tm_s J
-check "J moves the focus on" "wait_sp '▸ PEEK · ' && ! sscr | grep -qF '▸ PANES'"
+check "J moves the focus on" "wait_sp '▸ PEEK · ' && ! sscr | grep -cF '▸ PANES' >/dev/null"
 tm_s K
-check "and K back" "wait_sp '▸ PANES' && ! sscr | grep -qF '▸ PEEK'"
+check "and K back" "wait_sp '▸ PANES' && ! sscr | grep -cF '▸ PEEK' >/dev/null"
 tm_s K
-check "K from PANES goes round to LINKS · SAVES" "wait_sp '▸ LINKS · SAVES' && ! sscr | grep -qF '▸ PANES'"
+check "K from PANES goes round to LINKS · SAVES" "wait_sp '▸ LINKS · SAVES' && ! sscr | grep -cF '▸ PANES' >/dev/null"
 tm_s J
-check "and J round to PANES again" "wait_sp '▸ PANES' && ! sscr | grep -qF '▸ LINKS'"
-check "where it's PANES's border in bright cyan again, [⇧J] focus back on the peek" "wait_ok '[[ \$(scap | wcols PANES) == \"96 96\" ]]' && (( \$(stabs) == 1 )) && sscr | grep -q 'PEEK · .*\[⇧J\] focus'"
+check "and J round to PANES again" "wait_sp '▸ PANES' && ! sscr | grep -cF '▸ LINKS' >/dev/null"
+check "where it's PANES's border in bright cyan again, [⇧J] focus back on the peek" "wait_ok '[[ \$(scap | wcols PANES) == \"96 96\" ]]' && (( \$(stabs) == 1 )) && sscr | grep -c 'PEEK · .*\[⇧J\] focus' >/dev/null"
 tm_s End
 check "in PANES, End selects the last row and the view follows it off the top" "wait_sp '▶ fold-b' && gone_sp '[0.0]'"
 tm_s Home
-check "Home goes back to the first" "for _ in \$(seq 1 30); do sscr | grep -q '\[0\.0\] *▶' && break; sleep 0.2; done; sscr | grep -q '\[0\.0\] *▶'"
-sel_sp() { for _ in $(seq 1 30); do sscr | grep -q "$1" && return 0; sleep 0.2; done; return 1; }
+check "Home goes back to the first" "for _ in \$(seq 1 30); do sscr | grep -c '\[0\.0\] *▶' >/dev/null && break; sleep 0.2; done; sscr | grep -c '\[0\.0\] *▶' >/dev/null"
+sel_sp() { for _ in $(seq 1 30); do sscr | grep -c "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 # j and k move inside the focused window: in the peek they scroll it, in PANES they select.
 tm_s J; wait_sp '▸ PEEK · ' >/dev/null
 tm_s j; sleep 0.7
-check "in the peek j scrolls it, and the selection stays" "sscr | grep -q '\[0\.0\] *▶' && sscr | grep -qF '▸ PEEK · '"
+check "in the peek j scrolls it, and the selection stays" "sscr | grep -c '\[0\.0\] *▶' >/dev/null && sscr | grep -cF '▸ PEEK · ' >/dev/null"
 tm_s K; wait_sp '▸ PANES' >/dev/null
 tm_s j
-check "back in PANES, j moves the selection down" "sel_sp '\[1\.0\] *▶' && sscr | grep -qF '▸ PANES'"
+check "back in PANES, j moves the selection down" "sel_sp '\[1\.0\] *▶' && sscr | grep -cF '▸ PANES' >/dev/null"
 tm_s k
 check "and k up" "sel_sp '\[0\.0\] *▶'"
 frows # kept fresh: rows over a minute old would mean that computer stopped answering
 tm_s End; wait_sp '▶ fold-b' >/dev/null
 tm_s Up; wait_sp '▶ fold-a' >/dev/null
-top_sp() { for _ in $(seq 1 30); do sscr | grep -q '\[0\.0\] *▶' && return 0; sleep 0.2; done; return 1; } # the first row selected
+top_sp() { for _ in $(seq 1 30); do sscr | grep -c '\[0\.0\] *▶' >/dev/null && return 0; sleep 0.2; done; return 1; } # the first row selected
 tm_s Up
-check "Up skips an open computer's heading" "gone_sp '▶ fold-a' && ! sscr | grep -qF '▶▒░ FOLD.EXAMPLE'"
+check "Up skips an open computer's heading" "gone_sp '▶ fold-a' && ! sscr | grep -cF '▶▒░ FOLD.EXAMPLE' >/dev/null"
 tm_s Down
-check "and so does Down, back to its first pane, where the bar offers [F]old" "wait_sp '▶ fold-a' && ! sscr | grep -qF '▶▒░ FOLD.EXAMPLE' && wait_sp '[F]old' && sscr | grep -qF '[?] help'"
+check "and so does Down, back to its first pane, where the bar offers [F]old" "wait_sp '▶ fold-a' && ! sscr | grep -cF '▶▒░ FOLD.EXAMPLE' >/dev/null && wait_sp '[F]old' && sscr | grep -cF '[?] help' >/dev/null"
 tm_s f
 check "f folds it to its heading line, selected, saying what needs you" "wait_sp '▶▒░ FOLD.EXAMPLE' && wait_sp 'FOLD.EXAMPLE · linked · 2 panes · 1 needs you' && gone_sp 'fold-a' && wait_sp '[F] unfold'"
 check "and the fold is kept for next time" "[[ -e $REVIVE_DIR/panel/fold/fold.example ]]"
@@ -2993,16 +2993,16 @@ folds() { LC_ALL=C ls "$REVIVE_DIR/panel/fold" 2>/dev/null | tr '\n' ' '; }
 sleep 2; tm_s End
 check "a second linked computer shows its heading" "wait_sp '▶ later-b' 50 && wait_sp 'LATER.EXAMPLE · linked · 2 panes'"
 tm_s f
-check "f folds just the selected pane's computer" "wait_sp '▶▒░ LATER.EXAMPLE' && gone_sp 'later-a' && sscr | grep -q 'fold-a' && [[ \$(folds) == 'later.example ' ]]"
+check "f folds just the selected pane's computer" "wait_sp '▶▒░ LATER.EXAMPLE' && gone_sp 'later-a' && sscr | grep -c 'fold-a' >/dev/null && [[ \$(folds) == 'later.example ' ]]"
 tm_s F
 check "F folds every linked computer" "gone_sp 'fold-a' && gone_sp 'later-a' && wait_sp 'FOLD.EXAMPLE · linked · 2 panes' && [[ \$(folds) == 'fold.example later.example ' ]]"
-check "but never this computer's panes" "sscr | grep -q '\[1[0-9]\.0\]' && [[ \$(folds) == 'fold.example later.example ' ]]"
+check "but never this computer's panes" "sscr | grep -c '\[1[0-9]\.0\]' >/dev/null && [[ \$(folds) == 'fold.example later.example ' ]]"
 tm_s F
 check "F again, with every one folded, opens them all" "wait_sp 'fold-a' && wait_sp 'later-a' && [[ -z \$(folds) ]]"
 tm_s Home; sel_sp '\[0\.0\] *▶' >/dev/null
 tm_s F
-check "F from this computer's pane folds them too, and the selection stays" "gone_sp 'later-a' && gone_sp 'fold-a' && sscr | grep -q '\[0\.0\] *▶' && [[ \$(folds) == 'fold.example later.example ' ]]"
-check "on this computer's pane the bar offers no fold" "! sscr | grep -qF '[F]' && sscr | grep -qF '[?] help'"
+check "F from this computer's pane folds them too, and the selection stays" "gone_sp 'later-a' && gone_sp 'fold-a' && sscr | grep -c '\[0\.0\] *▶' >/dev/null && [[ \$(folds) == 'fold.example later.example ' ]]"
+check "on this computer's pane the bar offers no fold" "! sscr | grep -cF '[F]' >/dev/null && sscr | grep -cF '[?] help' >/dev/null"
 tm_s F; wait_sp 'later-a' >/dev/null
 tm_s q
 sm kill-server
@@ -3012,8 +3012,8 @@ td() { tmux -L "revive-panel-detach-$$" -f /dev/null "$@"; }
 td new-session -d -s dt -x 120 -y 40 "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 tm new-window -d -t work -n dclient "env -u TMUX tmux -L revive-panel-detach-$$ -f /dev/null attach -t dt"
 dscr() { td capture-pane -p -t dt:0; }
-wait_d() { for _ in $(seq 1 30); do dscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
-gone_d() { for _ in $(seq 1 30); do dscr | grep -qF -- "$1" || return 0; sleep 0.2; done; return 1; }
+wait_d() { for _ in $(seq 1 30); do dscr | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
+gone_d() { for _ in $(seq 1 30); do dscr | grep -cF -- "$1" >/dev/null || return 0; sleep 0.2; done; return 1; }
 dclients() { td list-clients 2>/dev/null | wc -l; }
 wait_d 'C O N T R O L' >/dev/null
 check "the key bar offers [D]etach" "wait_d '[D]etach' && (( \$(dclients) == 1 ))"
@@ -3036,23 +3036,23 @@ tn new-session -d -s ten -x 160 -y 40 "sleep 300" \; set -g base-index 1 \; move
 tn new-window -d -t ten:10 -n tenth "sleep 300"
 tn new-window -d -t ten:2 -n tp "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 tscr() { tn capture-pane -p -t ten:tp; }
-wait_t() { for _ in $(seq 1 30); do tscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_t() { for _ in $(seq 1 30); do tscr | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 wait_t '[10.0]' >/dev/null
 tn send-keys -t ten:tp 0
 check "with no window 0, 0 selects window 10" "wait_t '[10.0] ▶'"
 tn send-keys -t ten:tp 1
-check "and 1 still window 1" "for _ in \$(seq 1 30); do tscr | grep -q '\[1\.0\] *▶' && break; sleep 0.2; done; tscr | grep -q '\[1\.0\] *▶'"
+check "and 1 still window 1" "for _ in \$(seq 1 30); do tscr | grep -c '\[1\.0\] *▶' >/dev/null && break; sleep 0.2; done; tscr | grep -c '\[1\.0\] *▶' >/dev/null"
 # Left to itself, a panel starts with the peek hidden: its title only, offering [P]eek.
 tn send-keys -t ten:tp q; sleep 0.5
 tn new-window -d -t ten:3 -n tq "env -u REVIVE_PANEL_PEEK REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
-check "by default the peek starts hidden, its title offering [P]eek" "for _ in \$(seq 1 30); do tn capture-pane -p -t ten:tq | grep -q 'PEEK · .*\[P\]eek' && break; sleep 0.2; done; tn capture-pane -p -t ten:tq | grep -q 'PEEK · .*\[P\]eek' && ! tn capture-pane -p -t ten:tq | grep -qF '[p] hide'"
+check "by default the peek starts hidden, its title offering [P]eek" "for _ in \$(seq 1 30); do tn capture-pane -p -t ten:tq | grep -c 'PEEK · .*\[P\]eek' >/dev/null && break; sleep 0.2; done; tn capture-pane -p -t ten:tq | grep -c 'PEEK · .*\[P\]eek' >/dev/null && ! tn capture-pane -p -t ten:tq | grep -cF '[p] hide' >/dev/null"
 # P shows the peek for the selected pane only: another selected, it hides again.
 tq() { tn capture-pane -p -t ten:tq; }
-wait_tq() { for _ in $(seq 1 30); do tq | grep -q -- "$1" && return 0; sleep 0.2; done; return 1; }
+wait_tq() { for _ in $(seq 1 30); do tq | grep -c -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 tn send-keys -t ten:tq 1; wait_tq '\[1\.0\] *▶' >/dev/null; tn send-keys -t ten:tq p
 check "P shows the peek for the selected pane" "wait_tq 'PEEK · .*\[p\] hide'"
 tn send-keys -t ten:tq 0
-check "another pane selected, it hides again by itself" "wait_tq '\[10\.0\] *▶' && wait_tq 'PEEK · .*\[P\]eek' && ! tq | grep -qF '[p] hide'"
+check "another pane selected, it hides again by itself" "wait_tq '\[10\.0\] *▶' && wait_tq 'PEEK · .*\[P\]eek' && ! tq | grep -cF '[p] hide' >/dev/null"
 tn send-keys -t ten:tq p
 check "and P shows it for that one" "wait_tq 'PEEK · .*\[p\] hide'"
 # The tip under it changes every TIP_SECS (30; 1 here), to the next one, its key coloured as
@@ -3061,8 +3061,8 @@ tn new-window -d -t ten:4 -n tr "env -u REVIVE_PANEL_PEEK REVIVE_PANEL_TIP_SECS=
 # Each look takes one capture, coloured: the [U]pdate tip's line, plain and coloured, from it.
 tip_u() { for _ in $(seq 1 150); do tn capture-pane -e -p -t ten:tr >"$T/tip.cap"; grep -qF 'Revive on all open sessions. Some user sessions require a manual update.' "$T/tip.cap" && return 0; sleep 0.2; done; return 1; }
 tip_u
-check "the tip moves on to the next one: [U]pdate" "sed 's/\x1b\[[0-9;]*m//g' $T/tip.cap | grep -q '^║  *\[U\]pdate Revive on all open sessions\. Some user sessions require a manual update\.  *║\$'"
-check "its key in the key bar's colours" "grep -F 'Revive on all open sessions' $T/tip.cap | grep -qF \$'\\e[93mU'"
+check "the tip moves on to the next one: [U]pdate" "sed 's/\x1b\[[0-9;]*m//g' $T/tip.cap | grep -c '^║  *\[U\]pdate Revive on all open sessions\. Some user sessions require a manual update\.  *║\$' >/dev/null"
+check "its key in the key bar's colours" "grep -F 'Revive on all open sessions' $T/tip.cap | grep -cF \$'\\e[93mU' >/dev/null"
 tn kill-server
 
 
