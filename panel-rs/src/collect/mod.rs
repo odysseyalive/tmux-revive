@@ -4,6 +4,7 @@
 //! wait_watch saw); here they are the fields of `G`, one per bash name, so the second gather of
 //! a --once finds what the first left, as bash's does.
 
+pub mod agents;
 pub mod gather;
 pub mod jq;
 pub mod once;

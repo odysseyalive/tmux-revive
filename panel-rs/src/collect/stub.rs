@@ -5,8 +5,6 @@ use super::sh::Bytes;
 use super::G;
 
 impl G {
-    pub fn agents_look(&mut self) {}
-    pub fn wait_watch(&mut self) {}
     pub fn outside_ssh(&mut self) {
         self.x_ssh.clear();
         self.x_where.clear();

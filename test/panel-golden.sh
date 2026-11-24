@@ -449,6 +449,46 @@ render() {
 }
 
 # ------------------------------------------------------------------ live --once
+# agents_addon DIR SOCKET: stand-in Claude Codes and a Codex in a window each, with the files the
+# panel reads for them under DIR/home (their HOME too): session records, transcripts (context
+# used, the last prompt, a usage limit), an account and plan, a Codex rollout. Tier 2 only: the
+# tier-1 scenarios address the fixture's rows by number.
+agents_addon() {
+	local d=$1 s=$2 h=$1/home now
+	now=$(date +%s)
+	mkdir -p "$h/.claude/sessions" "$h/.claude/projects/-w" "$h/.codex/sessions/2026/11/24" "$d/work/cx"
+	printf '{"oauthAccount":{"emailAddress":"ada.lovelace@example.com","planDisplayName":"Max","organizationRateLimitTier":"t1","userRateLimitTier":null,"seatTier":"s","hasExtraUsageEnabled":false}}\n' >"$h/.claude.json"
+	# claude NAME STATUS SID: a process named claude that writes its own record, then sleeps
+	cat >"$d/claude.sh" <<'CL'
+h=$1 st=$2 sid=$3 now=$(date +%s)
+printf '{"pid":%s,"sessionId":"%s","status":"%s","statusUpdatedAt":%s000,"startedAt":%s000}\n' $$ "$sid" "$st" $((now - 30)) $((now - 3000)) >"$h/.claude/sessions/$$.json"
+exec -a claude sleep 100000
+CL
+	local t=$h/.claude/projects/-w
+	{
+		printf '{"type":"user","timestamp":"2026-11-24T10:00:00.000Z","message":{"content":"[agent-msg from=bob@x] please look"}}\n'
+		printf '{"type":"assistant","timestamp":"2026-11-24T10:00:05.000Z","message":{"model":"claude-opus-5","usage":{"input_tokens":1000,"cache_read_input_tokens":250000,"cache_creation_input_tokens":0}}}\n'
+	} >"$t/aaaa-1.jsonl"
+	{
+		printf '{"type":"user","timestamp":"2026-11-24T09:00:00.000Z","message":{"content":[{"type":"text","text":"fix the build please"}]}}\n'
+		printf '{"type":"assistant","timestamp":"2026-11-24T09:00:05.000Z","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":50000,"cache_read_input_tokens":0,"cache_creation_input_tokens":100}}}\n'
+		printf '{"type":"assistant","timestamp":"2026-11-24T09:01:00.000Z","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"You'"'"'ve hit your session limit · resets 10pm (Europe/Paris)"}]}}\n'
+	} >"$t/bbbb-2.jsonl"
+	tmux -S "$s" new-window -d -t work -n cl-wait -c "$d/work" "env HOME=$h bash $d/claude.sh $h idle aaaa-1"
+	tmux -S "$s" new-window -d -t work -n cl-limit -c "$d/work" "env HOME=$h bash $d/claude.sh $h idle bbbb-2"
+	tmux -S "$s" new-window -d -t work -n cl-busy -c "$d/work" "env HOME=$h bash $d/claude.sh $h busy cccc-3"
+	tmux -S "$s" set-option -p -t work:cl-wait @agent cl-wait
+	# A Codex at its prompt: its rollout names its folder, a start after its own and its tokens.
+	cat >"$d/codex.sh" <<'CX'
+h=$1 cwd=$2
+r=$h/.codex/sessions/2026/11/24/rollout-2026-11-24T10-00-00-0000aaaa-0000-0000-0000-000000000001.jsonl
+ts=$(date -u -d @$(( $(date +%s) + 1 )) +%Y-%m-%dT%H:%M:%S.000Z)
+printf '{"timestamp":"%s","type":"session_meta","payload":{"cwd":"%s","timestamp":"%s"}}\n' "$ts" "$cwd" "$ts" >"$r"
+printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":64000},"model_context_window":256000}}}\n' "$ts" >>"$r"
+exec -a codex sleep 100000
+CX
+	tmux -S "$s" new-window -d -t work -n cx-wait -c "$d/work/cx" "env HOME=$h CODEX_HOME=$h/.codex bash $d/codex.sh $h $d/work/cx"
+}
 # snapdiff.py A B: two snapshots' records, NAME[INDEX], that differ, with what CPU and memory
 # measured over wall time (and SECONDS, SCENE's pick) taken out. Exit 1 when any differ.
 cat >"$T/snapdiff.py" <<'PY'
@@ -479,13 +519,14 @@ liveonce() {
 	mkdir -p "$T/lo"
 	local LS=$T/lo.sock sc name sel id x side sdiff=0 fdiff=0 n=0
 	fixtures "$T/lx" "$LS" links
+	agents_addon "$T/lx" "$LS"
 	env_for "$T/lx" "$LS"
-	sleep 1 # the panes draw their screens
+	sleep 2 # the panes draw their screens, the agents write their records
 	# NAME SEL [ENV...], as save's
 	local -a scen=(
 		"shell 0" "shell-hidden 0 REVIVE_PANEL_PEEK=0" "outside 0 REVIVE_PANEL_PEEK=0 REVIVE_PANEL_OUTSIDE_SSH=1 REVIVE_PANEL_PROCS=ps PATH=$T/lx/fakeps:$PATH"
 		"question asker" "odd odd" "linked far-top@far.example" "linked-ask far-claude@far.example" "help 0 REVIVE_PANEL_HELP=1"
-		"tick7 0 REVIVE_PANEL_PEEK=0 REVIVE_PANEL_TICK=7 REVIVE_PANEL_ART=space"
+		"tick7 0 REVIVE_PANEL_PEEK=0 REVIVE_PANEL_TICK=7 REVIVE_PANEL_ART=space" "cl-limit cl-limit" "cl-wait cl-wait" "cx-wait cx-wait"
 	)
 	for sc in "${scen[@]}"; do
 		read -ra x <<<"$sc"
