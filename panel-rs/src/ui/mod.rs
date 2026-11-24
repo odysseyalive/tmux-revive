@@ -641,7 +641,7 @@ impl Ui {
             }
             if fds[0].revents != 0 {
                 for b in term::drain(self.sig_r) {
-                    if b == b'X' {
+                    if b == b'X' || b == b'I' {
                         self.quit(0);
                     }
                     // WINCH: all of it drawn again, at the new size
@@ -656,11 +656,14 @@ impl Ui {
                 term::drain(self.wake_r);
                 self.take();
             }
-            if fds[2].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 && fds[2].revents & libc::POLLIN == 0 {
+            if fds[2].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
                 self.quit(0); // the terminal is gone
             }
             if fds[2].revents & libc::POLLIN != 0 {
                 self.input();
+            }
+            if term::GONE.load(std::sync::atomic::Ordering::Relaxed) {
+                self.quit(0);
             }
             let now = Instant::now();
             if self.tick_at.is_some_and(|t| now >= t) && !self.want_draw {

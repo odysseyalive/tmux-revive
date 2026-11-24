@@ -44,11 +44,11 @@ impl Ui {
             Err(_) => -1, // no bash to run: carry on as before
         };
         // Ctrl-C reached both: bash's own trap decided; this one's is dropped. A WINCH is
-        // covered by painting it all again.
-        term::drain(self.sig_r);
-        if st != BACK && st != -1 {
+        // covered by painting it all again. TERM or HUP (the terminal closed) end this panel.
+        let sigs = term::drain(self.sig_r);
+        if st != BACK && st != -1 || sigs.contains(&b'X') {
             self.cleanup();
-            std::process::exit(st);
+            std::process::exit(if st == BACK || st == -1 { 0 } else { st });
         }
         // What it said: a flash still showing, for what is left of its 5 seconds.
         if let Ok(d) = std::fs::read(sh::os(&back)) {

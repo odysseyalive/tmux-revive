@@ -9,6 +9,9 @@ use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
+/// The terminal went away under a read: the panel ends
+pub static GONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The write end of the signals' self-pipe (-1 before it is made)
 static SIG_W: AtomicI32 = AtomicI32::new(-1);
 
@@ -17,7 +20,8 @@ extern "C" fn on_signal(sig: libc::c_int) {
     if fd >= 0 {
         let b: u8 = match sig {
             libc::SIGWINCH => b'W',
-            _ => b'X', // INT, TERM, HUP: exit 0
+            libc::SIGINT => b'I', // exit 0, but not while bash has the terminal (its own trap)
+            _ => b'X',            // TERM, HUP: exit 0, always
         };
         unsafe {
             libc::write(fd, &b as *const u8 as *const libc::c_void, 1);
@@ -191,6 +195,8 @@ impl super::keys::Src for Stdin {
             if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
+            // The terminal is gone (EOF, or EIO from a hung-up pty): as bash dies with it
+            GONE.store(true, Ordering::Relaxed);
             return None;
         }
     }
