@@ -496,10 +496,38 @@ pub fn itoa(n: i64) -> Bytes {
 static TZ: Once = Once::new();
 static START: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
 
+/// TZ is the whole process's: the live panel's threads each format times (the clock on the UI
+/// thread, limits and messages on the collectors'), and bash's `TZ=ZONE printf '%(...)T'` is a
+/// change of it for a moment. ZONE_LOCK makes that moment and every strftime take turns.
+static ZONE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+thread_local! {
+    /// This thread holds ZONE_LOCK (inside in_zone): its strftime calls don't take it again.
+    static IN_ZONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `TZ=ZONE CMD` for what F formats: TZ set to ZONE, F run, TZ put back, no other thread's
+/// strftime between
+pub fn in_zone<R>(zone: &[u8], f: impl FnOnce() -> R) -> R {
+    let _g = ZONE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let old = std::env::var_os("TZ");
+    std::env::set_var("TZ", <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(zone));
+    unsafe { tzset() };
+    IN_ZONE.with(|z| z.set(true));
+    let r = f();
+    IN_ZONE.with(|z| z.set(false));
+    match old {
+        Some(v) => std::env::set_var("TZ", v),
+        None => std::env::remove_var("TZ"),
+    }
+    unsafe { tzset() };
+    r
+}
+
 /// `printf '%(FMT)T' EPOCH`: libc's localtime_r and strftime, with TZ and LC_TIME as bash has them.
 /// An empty FMT is %X. As in bash, -1 is now (and -2 the shell's start, here the process's); the panel always passes
 /// a time of its own (NOW).
 pub fn strftime(fmt: &[u8], epoch: i64) -> Bytes {
+    let _g = if IN_ZONE.with(|z| z.get()) { None } else { Some(ZONE_LOCK.lock().unwrap_or_else(|e| e.into_inner())) };
     TZ.call_once(|| unsafe { tzset() });
     let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     let epoch = match epoch {

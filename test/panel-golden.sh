@@ -692,11 +692,11 @@ twins() {
 
 # ------------------------------------------------------------------ live (Phase 3)
 # The Rust panel live (GOLDEN_B) against the bash one (GOLDEN_A), each on a server of its own
-# with the same fixtures, the same keys sent to both: moves, the art, the peek, the focus, a fold
-# refused, compared as twins compares them. Then N, a key the Rust panel hands over to the bash
-# panel for that one action (REVIVE_PANEL_HANDOFF), backed out of with Esc: the rename box and
-# the notice after it are bash's on both sides, and B is the Rust panel again, with the same
-# pane selected.
+# with the same fixtures, the same keys sent to both: moves, the art, the peek, the focus, f on
+# a pane here (nothing to fold), compared as twins compares them. Then Enter on the question and N, keys the Rust panel
+# hands over to the bash panel for that one action (REVIVE_PANEL_HANDOFF), each backed out of
+# with Esc: answering, the rename box and what they say after are bash's on both sides, and B is
+# the Rust panel again, with the same pane selected.
 lv_cmd() { tmux -S "$1" display -p -t work:panel '#{pane_current_command}'; }
 # lv_bash SOCKET: its panel has a bash panel running for it (a hand-over)
 lv_bash() { ps -o args= --ppid "$(tmux -S "$1" display -p -t work:panel '#{pane_pid}')" 2>/dev/null | grep -q 'scripts/panel\.sh'; }
@@ -722,13 +722,14 @@ live() {
 		"J|▸ MESSAGES"
 		"Up Up|▸ MESSAGES"
 		"K K|▸ PANES"
-		"f|be folded"
-		"x|be folded"
+		"f|▸ PANES"
+		"x|▸ PANES"
 		"Escape|▸ PANES"
 		"j|QUESTION · asker"
 		"N|New name for"
 		"Escape|rename cancelled"
-		"Escape|▸ PANES"
+		"Enter|ANSWERING asker"
+		"Escape|left the question"
 	)
 	for step in "${steps[@]}"; do
 		keys=${step%%|*} text=${step#*|}
@@ -747,6 +748,21 @@ live() {
 	done
 	check "and B is the Rust panel again" "! lv_bash $B && [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
 	check "with the same pane selected (asker)" "tmux -S $B capture-pane -p -t work:panel | grep -q '▶.*asker'"
+	# A pane appearing between the pane list and the agents' look: a tmux on the Rust panel's
+	# PATH opens a window ahead of every other just before the batched look at the agents'
+	# screens. The asking agent's state stays on its own row, never the newcomer's.
+	local C=$T/lvc.sock shim=$T/lvc-shim
+	mkdir -p "$shim"
+	printf '#!/bin/bash\nif [[ $* == *display-message* && $* == *@@revive-* && ! -e %q ]]; then : >%q; %q -S %q new-window -d -b -t work:0 -n intruder "bash --norc --noprofile"; %q -S %q set-option -p -t work:intruder @agent intruder; fi\nexec %q "$@"\n' \
+		"$shim/done" "$shim/done" "$(command -v tmux)" "$C" "$(command -v tmux)" "$C" "$(command -v tmux)" >"$shim/tmux"
+	chmod +x "$shim/tmux"
+	twin_up "$T/lvc" "$C" "env PATH=$shim:$PATH $GOLDEN_B"
+	lvc() { tmux -S "$C" capture-pane -p -t work:panel; }
+	for _ in $(seq 1 40); do [[ -e $shim/done ]] && lvc | grep -q 'NEEDS ANSWER' && break; sleep 0.2; done
+	check "the look at the agents in the gather a pane was opened in put its state on its own row" "lvc | grep 'asker' | grep -q 'NEEDS ANSWER' && ! lvc | grep -q intruder"
+	tmux -S "$C" send-keys -t work:panel x # any key looks again
+	check "a pane opened between the pane list and the agents' look shows, not asking" "for _ in \$(seq 1 40); do lvc | grep -q 'intruder' && break; sleep 0.2; done; [[ -e $shim/done ]] && lvc | grep -q intruder && ! lvc | grep 'intruder' | grep -q 'NEEDS ANSWER'"
+	check "and the agent asking still shows NEEDS ANSWER on its own row" "lvc | grep 'asker' | grep -q 'NEEDS ANSWER'"
 }
 
 case ${1:-all} in

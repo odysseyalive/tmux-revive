@@ -5409,10 +5409,10 @@ keys() {
 }
 # A hand-over from the Rust panel (panel-rs, REVIVE_PANEL_RS=1) for a key it doesn't do yet:
 # REVIVE_PANEL_HANDOFF is the key, as keys() names it, and REVIVE_PANEL_SEL the pane it had
-# selected (REVIVE_PANEL_HSEL its heading). That one key is acted on here, every box it opens
-# and a question's answering with it; then this panel exits 100 for the Rust one to carry on,
-# its flash (what the key did) left in REVIVE_PANEL_HANDBACK. An update U started keeps it here, the
-# panel as usual, until the update is done.
+# selected (REVIVE_PANEL_HSEL its heading, REVIVE_PANEL_FLASH and _AGE its flash). That one key
+# is acted on here, every box it opens and a question's answering with it; then this panel
+# exits 100 for the Rust one to carry on, its flash (what the key did) left in
+# REVIVE_PANEL_HANDBACK. An update U started keeps it here, the panel as usual, until it's done.
 HANDOFF=${REVIVE_PANEL_HANDOFF:-}
 handback() {
 	local f=${REVIVE_PANEL_HANDBACK:-}
@@ -5425,6 +5425,7 @@ if [[ -n $HANDOFF ]]; then
 	HSEL=${REVIVE_PANEL_HSEL:-}
 	sel_fix
 	LOAD_AT=""
+	[[ ${REVIVE_PANEL_FLASH_AGE:-} =~ ^-?[0-9]{1,12}$ ]] && FLASH=${REVIVE_PANEL_FLASH:-} FLASH_T=$((SECONDS - REVIVE_PANEL_FLASH_AGE))
 	messages # G on the key bar: draw doesn't look at the messages while the pane asks
 	draw
 	act "$HANDOFF"

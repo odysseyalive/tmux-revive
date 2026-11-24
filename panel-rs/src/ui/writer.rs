@@ -1,7 +1,6 @@
 //! The live frame's writer: scripts/panel.sh draw's `else` branch after the frame is built (plan
 //! Phase 3.1). Only the lines that changed since the last frame are sent, each placed by row,
-//! the tail cleared when the frame got shorter, a notice's box painted over it all, and the
-//! whole update wrapped in synchronized-output marks (?2026), the cursor left at the top.
+//! the tail cleared when the frame got shorter, and the whole update wrapped in synchronized-output marks (?2026), the cursor left at the top.
 
 use crate::compat::{itoa, Bytes};
 

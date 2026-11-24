@@ -3,8 +3,8 @@
 //! `bash scripts/panel.sh` runs with REVIVE_PANEL_HANDOFF=KEY and REVIVE_PANEL_SEL=the selected
 //! pane's id (REVIVE_PANEL_HSEL its heading): it gathers for itself, selects that pane, draws,
 //! acts on the key with every pick, ask, note, edit_box and answer() loop it opens, and exits
-//! 100 when done, leaving its notices and flash in REVIVE_PANEL_HANDBACK. 100: this panel takes
-//! the terminal back, the same pane selected, and paints all of it. Any other end (Q, O's
+//! 100 when done, leaving its flash (since 1.2.57, what a key did) in REVIVE_PANEL_HANDBACK.
+//! 100: this panel takes the terminal back, the same pane selected, and paints all of it. Any other end (Q, O's
 //! `exec tmux attach` or a popup's exit, Ctrl-C) ends this panel too, as it would have bash's.
 
 use super::{term, Ui};
@@ -32,6 +32,9 @@ impl Ui {
             .env("REVIVE_PANEL_LOADBOX", "0")
             .env("REVIVE_PANEL_ART", scene)
             .env("REVIVE_PANEL_PEEK", if self.c.p.peek != 0 { "1" } else { "0" })
+            // the flash on the key bar, for what is left of its 5 seconds
+            .env("REVIVE_PANEL_FLASH", sh::os(&self.c.p.flash))
+            .env("REVIVE_PANEL_FLASH_AGE", (self.secs() - self.c.p.flash_t).to_string())
             .status();
         let st = match st {
             Ok(s) => {
@@ -47,13 +50,12 @@ impl Ui {
             self.cleanup();
             std::process::exit(st);
         }
-        // What it said: its notices, queued here, and a flash still showing.
+        // What it said: a flash still showing, for what is left of its 5 seconds.
         if let Ok(d) = std::fs::read(sh::os(&back)) {
             let mut age: Option<i64> = None;
             let mut flash: Option<Vec<u8>> = None;
             for (n, _k, v) in crate::snapshot::records(&d) {
                 match n.as_slice() {
-                    b"NOTICES" => self.notice(&v),
                     b"FLASH" => flash = Some(v),
                     b"FLASH_AGE" => age = Some(num(&v)),
                     _ => {}

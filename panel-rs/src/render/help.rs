@@ -23,7 +23,8 @@ impl Default for Page {
 /// HELP_FILE: `$(dirname "${BASH_SOURCE[0]}")/help.txt`, panel.sh's scripts folder. The binary
 /// finds it from where it is: the first folder above it holding scripts/help.txt, which is the
 /// install's for vendor/bin/tmux-revive-panel and the checkout's for
-/// panel-rs/target/release/tmux-revive-panel. None found: the install's place, two up.
+/// panel-rs/target/release/tmux-revive-panel. None found: the install's place, two up; never the
+/// working folder (as root() in main.rs).
 pub fn help_file() -> PathBuf {
     let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
     if let Some(exe) = &exe {
@@ -37,7 +38,8 @@ pub fn help_file() -> PathBuf {
             return d.join("scripts").join("help.txt");
         }
     }
-    PathBuf::from("scripts/help.txt")
+    // No path to the binary at all: a file that isn't there, so the page is drawn without one
+    PathBuf::from("/nonexistent/tmux-revive/scripts/help.txt")
 }
 
 /// help_wrap TEXT WIDTH -> WRAP: TEXT in lines of at most WIDTH, broken at spaces. Backticks

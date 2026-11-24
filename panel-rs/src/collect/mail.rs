@@ -156,19 +156,7 @@ impl G {
             let b = clean(&sh::cmdsub(&sh::head_c(&sh::path(&[d, b"intro"]), 200)));
             let when = if m("^[0-9]{1,12}$", &c) {
                 // TZ=UTC printf -v when '%(%H:%M)T' "$c"
-                let old = std::env::var_os("TZ");
-                std::env::set_var("TZ", "UTC");
-                extern "C" {
-                    fn tzset();
-                }
-                unsafe { tzset() };
-                let w = crate::compat::strftime(b"%H:%M", n(&c));
-                match old {
-                    Some(o) => std::env::set_var("TZ", o),
-                    None => std::env::remove_var("TZ"),
-                }
-                unsafe { tzset() };
-                w
+                crate::compat::in_zone(b"UTC", || crate::compat::strftime(b"%H:%M", n(&c)))
             } else {
                 b"--:--".to_vec()
             };

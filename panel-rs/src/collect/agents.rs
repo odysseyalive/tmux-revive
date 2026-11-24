@@ -244,19 +244,6 @@ enum Acct {
     Codex,
 }
 
-fn set_tz(z: Option<&[u8]>) -> Option<std::ffi::OsString> {
-    let old = std::env::var_os("TZ");
-    match z {
-        Some(z) => std::env::set_var("TZ", sh::os(z)),
-        None => std::env::remove_var("TZ"),
-    }
-    extern "C" {
-        fn tzset();
-    }
-    unsafe { tzset() };
-    old
-}
-
 /// tz_off EPOCH -> TZO: the offset from UTC then, in seconds, in the zone TZ names
 pub fn tz_off(e: i64) -> i64 {
     let z = crate::compat::strftime(b"%z", e);
@@ -300,16 +287,16 @@ pub fn lim_reset(at: i64, text: &[u8]) -> Option<i64> {
     }
     // In the zone it names, if this computer knows it (else this computer's own).
     let z = &mm[14];
-    let mut old: Option<Option<std::ffi::OsString>> = None;
+    let mut zone: Option<&[u8]> = None;
     if !z.is_empty() && !sh::contains(z, b"..") {
         for d in [&b"/usr/share/zoneinfo"[..], b"/var/db/timezone/zoneinfo", b"/usr/share/lib/zoneinfo"] {
             if sh::is_file(&sh::path(&[d, b"/", z])) {
-                old = Some(set_tz(Some(z)));
+                zone = Some(z);
                 break;
             }
         }
     }
-    let r = if !mm[4].is_empty() {
+    let when = || if !mm[4].is_empty() {
         let mon = crate::compat::case_map(&mm[4], false);
         // mo=${LIM_MON%%" $mon"*}; mo=$((${#mo} / 4 + 1))
         let pre = LIM_MON.windows(mon.len() + 1).position(|w| w[0] == b' ' && &w[1..] == mon.as_slice()).unwrap_or(LIM_MON.len());
@@ -333,17 +320,10 @@ pub fn lim_reset(at: i64, text: &[u8]) -> Option<i64> {
         let t = tz_off(at + w);
         at + w - (t - o)
     };
-    if let Some(o) = old {
-        match o {
-            Some(v) => {
-                set_tz(Some(&v.into_encoded_bytes()));
-            }
-            None => {
-                set_tz(None);
-            }
-        }
-    }
-    Some(r)
+    Some(match zone {
+        Some(z) => crate::compat::in_zone(z, when),
+        None => when(),
+    })
 }
 
 /// claude_limit_file: a transcript -> "AT RESET -", or nothing

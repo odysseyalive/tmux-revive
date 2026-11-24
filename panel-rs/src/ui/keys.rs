@@ -1,6 +1,6 @@
 //! Key decoding, as scripts/panel.sh's keys() reads them: one character at a time from the
 //! terminal (`read -rsn1`), an escape sequence's rest within 0.05 s a character (`read -rsn1
-//! -t 0.05`), and notice_key's and the loading box's rules. A key comes out as bash's word for
+//! -t 0.05`), and the loading box's rule. A key comes out as bash's word for
 //! it: up, down, pgup, pgdn, home, end, enter, a character, or "" (nothing to do).
 
 use crate::compat::Bytes;
@@ -110,32 +110,6 @@ pub fn class(key: &[u8]) -> Class {
     }
 }
 
-/// notice_key KEY (1.2.55): a key while a notice shows. Only a lone Esc closes it (true); an
-/// Esc that starts a sequence has its rest read and dropped, every other key is ignored.
-pub fn notice_key(src: &mut dyn Src, first: u8) -> bool {
-    let key = read_char(src, first);
-    if key != b"\x1b" {
-        return false;
-    }
-    // IFS= read -rsn1 -t 0.05 rest
-    match src.byte(SEQ_WAIT) {
-        None => true,
-        Some(b) => {
-            read_char(src, b);
-            // IFS= read -rsn4 -t 0.02 _: the rest of the sequence, 4 characters at most
-            for _ in 0..4 {
-                match src.byte(Duration::from_millis(20)) {
-                    Some(b) => {
-                        read_char(src, b);
-                    }
-                    None => break,
-                }
-            }
-            false
-        }
-    }
-}
-
 /// keys() while the loading box is up: q or Q quits (true); the key and all waiting behind it
 /// are dropped.
 pub fn lbox_key(src: &mut dyn Src, first: u8) -> bool {
@@ -230,21 +204,6 @@ pub mod tests {
         for k in ["enter", "f", "F", "q", "N", "?", "x", "é"] {
             assert_eq!(class(k.as_bytes()), Class::Act, "{}", k);
         }
-    }
-
-    #[test]
-    fn a_notice_closes_on_a_lone_esc_only() {
-        let mut s = List::new(&[b"\x1b"]);
-        let b = s.byte(Duration::ZERO).unwrap();
-        assert!(notice_key(&mut s, b));
-        // An arrow is read whole and ignored: nothing of it is left to be a key.
-        let mut s = List::new(&[b"\x1b[A", b"x"]);
-        let b = s.byte(Duration::ZERO).unwrap();
-        assert!(!notice_key(&mut s, b));
-        assert_eq!(s.byte(Duration::from_secs(1)), Some(b'x'));
-        let mut s = List::new(&[b"q"]);
-        let b = s.byte(Duration::ZERO).unwrap();
-        assert!(!notice_key(&mut s, b));
     }
 
     #[test]

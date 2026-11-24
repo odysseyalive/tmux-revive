@@ -151,6 +151,23 @@ pub fn restore(saved: &Saved) {
     out(b"\x1b[?25h\x1b[?1049l");
 }
 
+/// A panic anywhere (a collector's thread too) ends the panel as an error in bash would: the
+/// terminal put back first, the message to stderr (panel.err), exit 1
+pub fn on_panic(saved: &Saved) {
+    let t = saved.0;
+    let def = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(t) = t {
+            unsafe {
+                libc::tcsetattr(0, libc::TCSADRAIN, &t);
+            }
+        }
+        out(b"\x1b[?25h\x1b[?1049l");
+        def(info);
+        std::process::exit(1);
+    }));
+}
+
 /// The alternate screen, the cursor hidden, the screen cleared (`:5351`)
 pub fn enter() {
     out(b"\x1b[?1049h\x1b[?25l\x1b[2J");

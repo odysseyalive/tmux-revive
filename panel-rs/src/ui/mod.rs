@@ -5,7 +5,7 @@
 //! ?, Enter on a question) are handed over to the bash panel for that one action (handoff.rs).
 //!
 //! What runs where:
-//! - UI thread (here): input, the act() keys above, notices and the flash, the loading screen,
+//! - UI thread (here): input, the act() keys above, the flash, the loading screen,
 //!   the loading box and the splash, the frame and its writer.
 //! - collectors.rs: panes (gather), mail (messages, links_saves, intros) and peek, a thread
 //!   each, kicked as bash looks again: every REVIVE_PANEL_REFRESH seconds without a key, and
@@ -26,7 +26,7 @@ use crate::render::{num, Ctx, Nav};
 use crate::snapshot::Snapshot;
 use collectors::{Hub, Want};
 use keys::{Class, Src};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -35,9 +35,23 @@ use std::time::{Duration, Instant};
 const ROUND_WAIT: Duration = Duration::from_millis(300);
 
 /// The names a generation brings (what the looks gathered): the rest of the snapshot is the
-/// panel's own (selection, folds, notices, screens, messages)
+/// panel's own (selection, folds, screens, messages)
 fn gathered(name: &str) -> bool {
     name.starts_with("P_") || matches!(name, "W_SINCE" | "W_FROM" | "X_SSH" | "X_WHERE")
+}
+
+/// A generation's rows into the panel's snapshot, all of them at once: every gathered array
+/// the old one had goes (a sparse P_LIM or P_SRV too), so no row ever mixes two gathers
+fn swap_gen(s: &mut Snapshot, g: &Snapshot) {
+    s.arrays.retain(|k, _| !gathered(k));
+    for (k, v) in &g.arrays {
+        if gathered(k) {
+            s.arrays.insert(k, v.clone());
+        }
+    }
+    for k in ["RVER", "ROWNER"] {
+        s.assoc.insert(k, g.assoc.get(k).cloned().unwrap_or_default());
+    }
 }
 
 pub struct Ui {
@@ -50,17 +64,11 @@ pub struct Ui {
     wake_r: RawFd,
     /// PREV: the lines last sent
     prev: Vec<Bytes>,
-    /// NOTICES
-    notices: Vec<Bytes>,
     refresh: Duration,
     astate: Bytes,
     rdir: Bytes,
     folddir: Bytes,
-    logindir: Bytes,
     clk: i64,
-    ssh_seen: HashSet<Bytes>,
-    ssh_first: bool,
-    login_seen: BTreeMap<Bytes, bool>,
     /// LOAD_AT: where the loading screen's bar is, until the first look is in
     load_at: Option<(i64, i64)>,
     lbox: screens::Lbox,
@@ -83,19 +91,13 @@ impl Ui {
         sh::seconds()
     }
 
-    // ------------------------------------------------------------------ notices, flash
+    // ------------------------------------------------------------------ the flash
 
-    /// notice TEXT (1.2.55): cleaned, queued; the "…" flash that led up to it, done
+    /// notice TEXT, which since 1.2.57 is flash TEXT: on the key bar for 5 seconds, cleaned
+    /// (agent-say's reply can quote anything). No box, no queue: NOTICES stays empty.
     pub fn notice(&mut self, t: &[u8]) {
-        self.notices.push(clean(t));
-        if self.c.p.flash.ends_with("…".as_bytes()) {
-            self.c.p.flash.clear();
-        }
-    }
-
-    /// notice_up: one is waiting, and neither the loading box nor answering has the screen
-    fn notice_up(&self) -> bool {
-        !self.notices.is_empty() && !self.lbox.on && self.c.p.answering == 0
+        self.c.p.flash = clean(t);
+        self.c.p.flash_t = self.secs();
     }
 
     // ------------------------------------------------------------------ the selection
@@ -310,8 +312,7 @@ impl Ui {
                 }
                 let h = self.pa("P_HOST", sel);
                 if h.is_empty() {
-                    self.notice(b"this computer can't be folded");
-                    return;
+                    return; // this computer: nothing to fold (1.2.57 says nothing)
                 }
                 if self.fold_toggle(&h) {
                     self.c.p.hsel = h;
@@ -326,8 +327,7 @@ impl Ui {
                     }
                 }
                 if seen.is_empty() {
-                    self.notice(b"nothing is bridged");
-                    return;
+                    return; // nothing bridged
                 }
                 let all = seen.iter().all(|h| self.folded(h));
                 for h in &seen {
@@ -385,15 +385,6 @@ impl Ui {
                 self.quit(0);
             }
             self.look_again();
-            self.request_draw();
-            return;
-        }
-        // While a notice shows, keys are its: Esc closes it, the rest are ignored; only drawn.
-        if self.notice_up() {
-            if keys::notice_key(&mut self.src, first) {
-                self.notices.remove(0);
-                self.prev.clear(); // the panel under it, whole again
-            }
             self.request_draw();
             return;
         }
@@ -533,20 +524,10 @@ impl Ui {
         }
     }
 
-    /// A gather is in: its rows, then what the main loop does after each (`:5423-5452`): the
-    /// notices of a new ssh and of a link needing its login, the loading bar gone, the loading
-    /// box checked
+    /// A gather is in: its rows, then what the main loop does after each (1.2.57): the loading
+    /// bar gone, the loading box checked
     fn apply_gen(&mut self, g: &collectors::Gen) {
-        let s = &mut self.c.p.snap;
-        s.arrays.retain(|k, _| !gathered(k));
-        for (k, v) in &g.snap.arrays {
-            if gathered(k) {
-                s.arrays.insert(k, v.clone());
-            }
-        }
-        for k in ["RVER", "ROWNER"] {
-            s.assoc.insert(k, g.snap.assoc.get(k).cloned().unwrap_or_default());
-        }
+        swap_gen(&mut self.c.p.snap, &g.snap);
         self.c.p.p_groups = g.snap.var("P_GROUPS").map(num).unwrap_or(0);
         if let Some(v) = g.snap.var("VERSION") {
             self.c.p.version = v.to_vec();
@@ -555,50 +536,6 @@ impl Ui {
             self.c.p.host = v.to_vec();
         }
         self.a_load = g.a_load.clone();
-        // A new ssh session: said only for one opened since the panel started.
-        let mut hs: Vec<Bytes> = g.panes.ssh.clone();
-        hs.extend(g.x_ssh.iter().cloned());
-        for h in hs {
-            if h.is_empty() || self.ssh_seen.contains(&h) {
-                continue;
-            }
-            self.ssh_seen.insert(h.clone());
-            if !self.ssh_first && !sh::is_file(&sh::path(&[&self.astate, b"/links/", &h, b"/on"])) {
-                let t = crate::render::cat(&[b"new ssh: ", &h, " · B bridges it".as_bytes()]);
-                self.notice(&t);
-            }
-        }
-        self.ssh_first = false;
-        // A link whose login dropped: said once, until it's logged in again (or gone).
-        let keys: Vec<Bytes> = self.login_seen.iter().filter(|(_, v)| **v).map(|(k, _)| k.clone()).collect();
-        for h in keys {
-            if !sh::is_dir(&sh::path(&[&self.astate, b"/links/", &h])) {
-                self.login_seen.insert(h.clone(), false);
-                let _ = std::fs::remove_file(sh::os(&sh::path(&[&self.logindir, b"/", &h])));
-            }
-        }
-        for d in crate::compat::glob_dirs(&sh::path(&[&self.astate, b"/links"])) {
-            let h = sh::basename_dir(&d);
-            if !m(HOST_RE, &h) {
-                continue;
-            }
-            let dd = sh::path(&[&self.astate, b"/links/", &h]);
-            let seen = self.login_seen.get(&h).copied().unwrap_or(false);
-            if sh::is_file(&sh::path(&[&dd, b"/on"])) && sh::is_file(&sh::path(&[&dd, b"/login"])) {
-                if seen {
-                    continue;
-                }
-                let t = crate::render::cat(&[&h, " needs login · B to type its password".as_bytes()]);
-                self.notice(&t);
-                self.login_seen.insert(h.clone(), true);
-                if std::fs::create_dir_all(sh::os(&self.logindir)).is_ok() {
-                    let _ = std::fs::write(sh::os(&sh::path(&[&self.logindir, b"/", &h])), b"");
-                }
-            } else if seen {
-                self.login_seen.insert(h.clone(), false);
-                let _ = std::fs::remove_file(sh::os(&sh::path(&[&self.logindir, b"/", &h])));
-            }
-        }
         self.load_at = None; // the first look is in: no more loading bar
         self.lbox_check();
         self.started = true;
@@ -635,12 +572,10 @@ impl Ui {
         p.secs = secs;
         p.now = now;
         p.lbox = self.lbox.on as i64;
-        p.snap.arrays.insert("NOTICES", self.notices.iter().enumerate().map(|(i, x)| (i as i64, x.clone())).collect());
         self.c.draw();
         self.c.p.print.clear();
         let out = std::mem::take(&mut self.c.out);
-        let nb = if self.c.notice_up() { Some(self.c.notice_box()) } else { None };
-        let buf = writer::frame(&out, &mut self.prev, nb.as_deref());
+        let buf = writer::frame(&out, &mut self.prev, None);
         term::out(&buf);
         if self.lbox.on {
             let b = screens::lbox_draw(&mut self.lbox, &self.c);
@@ -753,6 +688,7 @@ pub fn run(root: &[u8]) -> ! {
     term::enter();
     let saved = term::Saved::take();
     saved.raw_ish();
+    term::on_panic(&saved);
     let sig_r = term::signals();
     let (wake_r, wake_w) = term::pipe();
     let hub = Arc::new(Hub::default());
@@ -777,16 +713,11 @@ pub fn run(root: &[u8]) -> ! {
         sig_r,
         wake_r,
         prev: Vec::new(),
-        notices: Vec::new(),
         refresh: Duration::from_secs_f64(refresh),
         astate: g0.astate.clone(),
         rdir: g0.rdir.clone(),
         folddir: sh::path(&[&dir, b"/panel/fold"]),
-        logindir: sh::path(&[&dir, b"/panel/login-said"]),
         clk: g0.clk,
-        ssh_seen: HashSet::new(),
-        ssh_first: true,
-        login_seen: BTreeMap::new(),
         load_at: None,
         lbox: screens::Lbox::default(),
         a_load: BTreeMap::new(),
@@ -812,12 +743,7 @@ pub fn run(root: &[u8]) -> ! {
     }
     ui.loading();
     ui.prev.clear(); // after the splash: paint the whole panel
-    // Which "needs login" notices were said, kept on disk as the folds are.
-    for f in sh::glob(&ui.logindir, b"", b"", false) {
-        if sh::is_file(&f) {
-            ui.login_seen.insert(sh::basename(&f).to_vec(), true);
-        }
-    }
+    let _ = std::fs::remove_dir_all(sh::os(&sh::path(&[&dir, b"/panel/login-said"]))); // (what an older panel kept here)
     ui.fold_load();
     ui.full_t = ui.secs();
     ui.run()
@@ -825,6 +751,28 @@ pub fn run(root: &[u8]) -> ! {
 
 #[cfg(test)]
 mod tests {
+    use crate::snapshot::Snapshot;
+
+    fn snap(recs: &[(&str, &str, &str)]) -> Snapshot {
+        Snapshot::apply(&recs.iter().map(|(a, b, c)| (a.as_bytes().to_vec(), b.as_bytes().to_vec(), c.as_bytes().to_vec())).collect::<Vec<_>>()).unwrap()
+    }
+
+    /// A pane appearing above an asking one between two gathers: the second generation's rows
+    /// replace the first's whole, so its state stays on its own row, and nothing of the old
+    /// generation (a sparse P_LIM) is left on the row that is now another pane's.
+    #[test]
+    fn a_generation_replaces_the_rows_whole() {
+        let mut s = snap(&[("P_ID", "0", "%1"), ("P_STATE", "0", "asking"), ("P_LIM", "0", "1795000000"), ("MSG", "0", "kept"), ("FOLD", "far", "1")]);
+        let g = snap(&[("P_ID", "0", "%9"), ("P_ID", "1", "%1"), ("P_STATE", "0", "shell"), ("P_STATE", "1", "asking"), ("RVER", "h", "1.0.0")]);
+        super::swap_gen(&mut s, &g);
+        assert_eq!(s.list("P_ID"), vec![b"%9".to_vec(), b"%1".to_vec()]);
+        assert_eq!(s.list("P_STATE"), vec![b"shell".to_vec(), b"asking".to_vec()]);
+        assert!(s.list("P_LIM").is_empty(), "the old generation's limit isn't left on row 0");
+        assert_eq!(s.list("MSG"), vec![b"kept".to_vec()], "the panel's own arrays stay");
+        assert_eq!(s.assoc["FOLD"].get(&b"far"[..]).map(|v| v.as_slice()), Some(&b"1"[..]));
+        assert_eq!(s.assoc["RVER"].get(&b"h"[..]).map(|v| v.as_slice()), Some(&b"1.0.0"[..]));
+    }
+
     #[test]
     fn gathered_names_are_the_looks_only() {
         use super::gathered;
