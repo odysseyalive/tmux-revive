@@ -4,6 +4,15 @@ Written 2026-11-23, against HEAD `475f43a` ("release 1.2.54"). A plan only; noth
 
 Revised the same day after an independent design review. Each finding was checked against the tree at `475f43a` before it was folded in; the citations below are what that check found.
 
+Revised again after release 1.2.55 was merged into `rust-panel` (`b3669ca`). 1.2.55 adds notice boxes: what a key did, and news from the background, now go through `notice` into a queue and show in a box over the panel, which keeps refreshing under it. Citations marked **(1.2.55)** are line numbers in `scripts/panel.sh` and `scripts/help.sh` as of the `rust-panel` commit that put the notices in the snapshot ("panel: a snapshot carries the notices, and a --once draws their box"), not `475f43a`; every other citation is still for `475f43a`.
+
+### The notice box (1.2.55): ported byte for byte, drawn over a panel that goes on
+
+This is the user's own request, made before the Rust panel and shipped in bash in 1.2.55 (unverified: relayed in the task brief that asked for this revision, 2026-11-23): **the panel keeps drawing under a notice.** Before 1.2.55 a box held the panel still until a key; now `draw` paints the first notice's box over every frame, inside the same `?2026` update (1.2.55: `scripts/panel.sh:3342-3343`), and `help_frame` does the same over the ? page (1.2.55: `scripts/help.sh:454`). The Rust panel must keep both halves:
+
+- **The box, byte for byte.** It is `note_box` with no title and the hint `Esc closes`, made (`NB_ONLY=1`) rather than written, from the first notice wrapped by `help_wrap` to `TCOLS - 10` columns, between 20 and 70, cut to `TLINES - 6` lines, with backticks turned to `'` first (`notice_box`, 1.2.55: `:4465-4476`). It is cached by size and text (`NB_KEY`); the cache is an optimisation, never state.
+- **The panel under it goes on.** Gathers, the clock, the states and the art keep changing under the box, as they do in bash. Unlike `pick`, `ask`, `note` and `edit_box`, this is not a composite without an oracle: bash draws it itself, so the box and the frame under it are checked in tier 1 (a `--once` prints the box after the frame's rows) and in tier 3 unmasked (the twins put one up).
+
 ## Decided (not reopened here)
 
 These come from the request that commissioned this plan. They are the user's words as relayed in it, not quoted from a file (unverified: relayed in the task brief, 2026-11-23):
@@ -174,6 +183,7 @@ Byte identity is still defined frame by frame: given the same snapshot, the Rust
 
 - **Three test tiers:**
   1. **Render goldens (strict bytes).** Bash `--once` with `REVIVE_PANEL_SNAP=save:F` writes what `gather` produced and what `draw` would read from outside. Then `bash panel.sh --once` with `REVIVE_PANEL_SNAP=load:F` and `tmux-revive-panel --once --snapshot F` both render from it, and the outputs are compared with `cmp`. This isolates the port of `draw` from collection. It includes the ANSWERING bar, which is built into `OUT[]` (`:3226-3234`), from the snapshot's UI state.
+     It includes the notice box (1.2.55): a `--once` prints the bytes the live panel paints over the frame, on a line after the frame's rows (1.2.55: `:3326-3328`, and `scripts/help.sh:441-445` for the ? page).
   2. **Collector goldens.** Both `--once` runs run against the private tmux fixtures of `test/panel.sh` with their own gathers. They are compared byte for byte after masking the CPU and memory columns (memory is a live RSS sum, `:1744`), the spark row and the tip line, which are measured over wall time. This proves the collectors find the same panes, agents, states, context, limits, git and links.
   3. **Live twins.** Things `--once` can't reach, because they are written straight to the terminal outside `OUT[]`, or are composites:
      - `pick`, `ask`, `note`, `edit_box`;
@@ -248,7 +258,8 @@ Every function in `scripts/panel.sh`: 181 at `475f43a`, by `grep -n '^[a-zA-Z_][
   - `draw_peek` `:2601`, `blank_tail` `:2633`, `peek_wrap` `:2648`, `peek_rows` `:2682`;
   - `draw_question` `:2718`, `qhi` `:2753`, `question_parts` `:2794`;
   - `lim_when` `:1489`, `wait_colour` `:1019`;
-  - the key bar and ANSWERING bar (`:3217-3238`).
+  - the key bar and ANSWERING bar (`:3217-3238`);
+  - the notice box (1.2.55): `note_box` (`:4414`, with `NB_ONLY=1` it fills `NB` at the panel's `TCOLS`×`TLINES` instead of writing at `tput`'s size), `notice_box` (`:4465`) and `notice_up` (`:4461`: a notice waits, and neither `LBOX` nor `ANSWERING` has the screen), painted last in `draw` (`:3343`; `:3328` under `--once`) and `help_frame` (`scripts/help.sh:454`; `:443`).
 - Navigation model (pure state):
   - `panes_rows` `:2238`, `nav_at` `:2247`, `nav_stop` `:2257`, `nav_go` `:2266`, `sel_fix` `:2285`, `tab_next` `:2192`;
   - `scroll` `:4746`, `fold_toggle` `:2225`.
@@ -291,7 +302,7 @@ Every function in `scripts/panel.sh`: 181 at `475f43a`, by `grep -n '^[a-zA-Z_][
 - `peek`: `peek_get` `:1949`, `peek_fetch` `:1963`, `peek_drop` `:1982`, `remote_peek` `:1987`.
 - `mail`:
   - `messages` `:2837`, `links_saves` `:2915`, `fold_load` `:2224`;
-  - the `SSH_SEEN` and `LOGIN_SEEN` flashes (`:5148-5166`).
+  - the `SSH_SEEN` and `LOGIN_SEEN` notices (1.2.55: `:5428`, `:5433-5448`), queued as notices since 1.2.55, not flashes. `links/*/`'s glob order now sets the order they queue in. Which "needs login" notices have been said is kept in `$DIR/panel/login-said/<host>` (1.2.55: `LOGINDIR`, `:5370-5371`): read into `LOGIN_SEEN` at startup, a file made when one is said, removed when the link logs in again or goes. The Rust panel reads and writes the same files, so the two panels never say it twice between them.
 - **`jq` filters to port exactly.** Each gets a fixture test against `jq` itself:
   - `scripts/panel.sh:730` (run with the account programs below as its arguments), `:885`, `:944`, `:1053`, `:1065`, `:1176`, `:1290`, `:1391`, `:1405`, `:1669`, `:2927`;
   - the account programs `CL_PLAN_JQ`, `CX_TOKEN_JQ`, `CX_PLAN_JQ`, `CL_ACCT_JQ` (`:742-746`); `CX_TOKEN_JQ` decodes a JWT with `@base64d` and `fromjson?` (`:743-744`);
@@ -325,7 +336,8 @@ Every function in `scripts/panel.sh`: 181 at `475f43a`, by `grep -n '^[a-zA-Z_][
   - keeping `SEL_ID` across pane changes (`:5172-5176`);
   - `UPD_N` polling (`:5170`).
 - Key decoding: `keys()` (`:5103-5141`). It handles escape sequences, Tab, j/k, the batching of held arrows, and the immediate draw for `p P a A`.
-- Flash: `flash` (`:3273`), shown for 5 s on the key bar (`:3224`).
+- Flash: `flash` (`:3273`), shown for 5 s on the key bar (`:3224`). Since 1.2.55 it is only for what is under way (`linking…`) and for what answering says; what a key did, once done, is a notice (Phase 4). `notice` clears a flash that ends in `…` (1.2.55: `:4457`).
+- Notices in the loop (1.2.55): while `notice_up`, every key goes to `notice_key` and only redraws (`nav=1`, `:5385`); a key held during a gather is not taken first while a notice waits, so the box is drawn before a key can reach it (`!${#NOTICES[@]}`, `:5463`).
 - The tip line: under a hidden peek's title (`:3121-3130`).
 
 ### Keys and modals: Phase 4
@@ -357,7 +369,8 @@ Modals and popups:
 - `pick` (`:3674`): `PKEYS`, `PKROWS`, `PHINT`, `PSEL`, `PTICK`, `PBAR`; the `NOTE` lines.
 - `ask` (`:3334`) and `text_clean` (`:3380`).
 - `edit_box` (`:3395`) with `eb_ins` `:3471`, `eb_wrap` `:3477`, `eb_line` `:3497`, `eb_max` `:3504`, `eb_move` `:3508`, `eb_paint` `:3532`, `eb_draw` `:3594`. It has its own `?2026` write, which also places and shows the cursor (`:3662`), and its own `cat`-pipe input under `stty -icrnl -isig` (`:3403-3407`).
-- `note` (`:4312`).
+- `note` (`:4312`; 1.2.55: `:4403`, now `note_box` plus its wait for a key).
+- `notice` (1.2.55): `notice TEXT` (`:4453`) `clean`s the text and queues it in `NOTICES` (`:4452`); it replaced `flash` for what a key did (O, M, N, B, G, f, F, S, D and their cancels, `unlink_host`) and for the background's news (a new ssh, a dropped login), and `help_install`/`help_open` in `scripts/help.sh`. While `notice_up` (`:4461`), keys go to `notice_key` (`:4480`): only a lone Esc, with nothing following it within 0.05 s, pops the first notice and sets `PREV=()` so the panel under it is repainted whole; an Esc that starts a sequence (an arrow) has its rest read and dropped, and every other key is ignored. `help_view` does the same (`scripts/help.sh:476`). It is not a modal on the stack of 4.1 that stops the loop: the base frame keeps being gathered and drawn, and the box is painted over it every frame (see "The notice box" at the top).
 - `code_popup` (`:3278`) and `login_window` (`:3311`). Both are tmux popups or windows running bash and `agent-say`. The Rust panel runs the same commands and keeps drawing underneath.
 - `read_host_keys` (`:3297`).
 - `user_note` (`:4129`) and `unlink_host` (`:4148`).
@@ -406,6 +419,7 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
     - `WON`, which `wstyle`/`tab_next` read from the last frame before `draw` sets it (`:3065` then `:3109` at `475f43a`), and `ATOP`/`ATOP_BH`, which `draw` fills on the first answering frame and reuses after: both must start as a fresh panel has them on every render, or the second size of a `REVIVE_PANEL_SIZES` run inherits the first's;
     - `HOST` (the banner and the heading of this computer), `SCENE` (picked with `$RANDOM` unless `REVIVE_PANEL_ART` names one, `:299-300`), `TICK`;
     - `INTROS` (the senders `draw_panes` reads, through a new `intros_look`), `SCREEN_ID`/`SCREEN`/`SCREEN_E` (the selected local pane's `capture-pane -p` and `-e -p`, as tmux gave them, before `clean`), and `RPEEK_FOR`/`RPEEK_AT`/`RPEEK` (a linked pane's peek: `new` with its last 60 lines as they came, `fail`, or nothing yet, through a new `peek_look`).
+    - **The notices (1.2.55).** `NOTICES` (the queue; only the first is drawn) and `LBOX` (which `notice_up` reads; under `--once` it is always 0, carried so the loaded frame's `notice_up` is the saved one's), with `ANSWERING` already above. The box's cache `NB`/`NB_KEY` is not carried: `snap_apply` clears `NB_KEY` so every load makes the box from `NOTICES` and the size. A `--once` takes `TCOLS`/`TLINES` from `COLUMNS`/`LINES` too, since `notice_box` reads them, so a save run's box is the size of its frame. `REVIVE_PANEL_NOTICE=TEXT` puts one notice up for a `--once`, as `REVIVE_PANEL_HELP=1` does the ? page, so a frame with a box goes through a save and a load.
 
     Not carried, so the harness sets them the same for save and load: `HOME` (a folder's `~`), `USER`, `AGENT_SAY_HOST`, `TZ`, the locale, `REVIVE_PANEL_TIP_SECS`, `REVIVE_DIR`, and the help page's install-command variables.
 
@@ -419,13 +433,13 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
   - None of these touches the remote modes. `test/panel.sh` must pass unchanged after this step, apart from any check that pinned the old `X_SSH` order (none expected; to confirm, grep its `ssh in` assertions).
 - **0.2** Add `PANEL` to `test/panel.sh` (default `bash $ROOT/scripts/panel.sh`) and use it at:
   - 36 of the 37 `--once` lines (`grep -c -- '--once' test/panel.sh`); `:2053` runs the old d621bda panel and stays bash;
-  - the 29 live-panel windows (`grep -n 'bash \$ROOT/scripts/panel.sh"' test/panel.sh`: lines 253, 346, 373, 942, 1060, 1148, 1328, 1354, 1488, 1606, 1798, 1810, 1814, 2027, 2111, 2233, 2266, 2368, 2398, 2464, 2511, 2544, 2563, 2704, 2800, 2911, 2934, 2944, 2957).
+  - the 29 live-panel windows (`grep -n 'bash \$ROOT/scripts/panel.sh"' test/panel.sh`: lines 253, 346, 373, 942, 1060, 1148, 1328, 1354, 1488, 1606, 1798, 1810, 1814, 2027, 2111, 2233, 2266, 2368, 2398, 2464, 2511, 2544, 2563, 2704, 2800, 2911, 2934, 2944, 2957). 1.2.55 added a 30th, `pw2` (a panel started again while a link still needs its login), which came in by name and now runs `$PANEL` too.
 
   Leave `--rows` and the old-version panel (`:2050-2058`) on bash.
 - **0.3** Add `test/panel-golden.sh`. It builds a scenario list and diffs the two panels with `cmp` (tier 1), and `capture-pane -e` plus the cursor on two private servers (tier 3). It keeps bash's tier-1 outputs in a cache (see the cost section). Until Phase 1 lands, both sides are bash, which proves the harness itself is stable: 20 runs in a row with no diff.
 
   **As built.** `bash test/panel-golden.sh [snaps|render|twins]` (no argument: all three). The two panels are `GOLDEN_A` and `GOLDEN_B`, command lines, both `bash scripts/panel.sh` by default.
-  - **snaps** builds a fixture tmux server (`REVIVE_SOCKET` under its own `mktemp -d`, its own `HOME`, `REVIVE_DIR`, mailbox and state): a shell with text, a stand-in agent (bash copied as `codex`) asking a question with a tab bar and a long wrapped line, a pane in a folder whose name is not UTF-8, messages (delivered, held, not delivered), an access request, a save, three links answered by a fake ssh (`far.example` with rows and a peek, `folded.example` folded, `Zed.example` unreachable with an error; its capital Z sorts it differently under C and en_US), and a `ps` stub that hides your own ssh sessions and adds three outside ones, two to one host. It saves 9 snapshots with `--once` (the save runs pin `REVIVE_PANEL_NOW` to the real time, or the fake rows would be over a minute old) and checks each loaded back draws exactly the frame its save run drew: Verification (d). UI state that `--once` can't be given from outside (answering, a flash, each window focused and scrolled, a heading selected, a folded computer, the help page scrolled, the five scenes at TICK 0, 1 and 7) is made by editing records (`snapedit`), for 33 scenarios. Then `snapfix` makes each snapshot the same from run to run (the fixture folder, host and user names fixed, CPU and memory fixed figures, `W_SINCE`/`P_LIM` moved to the frames' clock `RNOW`), so the cache key holds. It also checks that a `REVIVE_PANEL_SIZES` run equals one run per size, and (with `strace`) that a load runs no program after reading the snapshot.
+  - **snaps** builds a fixture tmux server (`REVIVE_SOCKET` under its own `mktemp -d`, its own `HOME`, `REVIVE_DIR`, mailbox and state): a shell with text, a stand-in agent (bash copied as `codex`) asking a question with a tab bar and a long wrapped line, a pane in a folder whose name is not UTF-8, messages (delivered, held, not delivered), an access request, a save, three links answered by a fake ssh (`far.example` with rows and a peek, `folded.example` folded, `Zed.example` unreachable with an error; its capital Z sorts it differently under C and en_US), and a `ps` stub that hides your own ssh sessions and adds three outside ones, two to one host. It saves 11 snapshots with `--once` (the save runs pin `REVIVE_PANEL_NOW` to the real time, or the fake rows would be over a minute old) and checks each loaded back draws exactly the frame its save run drew: Verification (d). UI state that `--once` can't be given from outside (answering, a flash, each window focused and scrolled, a heading selected, a folded computer, the help page scrolled, the five scenes at TICK 0, 1 and 7) is made by editing records (`snapedit`), for 33 scenarios. With 1.2.55's notices: two of the saves have a notice up through `REVIVE_PANEL_NOTICE` (`notice`, short; `notice-long`, three lines wrapped at 80 columns), and three edits add `help-notice` (over the ? page), `answering-notice` (queued while answering: no box) and `notice-queued` (a second behind the first: the same frame as `notice`), for 38 scenarios. Then `snapfix` makes each snapshot the same from run to run (the fixture folder, host and user names fixed, CPU and memory fixed figures, `W_SINCE`/`P_LIM` moved to the frames' clock `RNOW`), so the cache key holds. It also checks that a `REVIVE_PANEL_SIZES` run equals one run per size, and (with `strace`) that a load runs no program after reading the snapshot.
   - **render** draws every scenario at the named grid (80, 100, 130, 200 × 24, 40, 60; `GOLDEN_SWEEP=1` for 80 to 220 in steps of 7), `--- COLSxLINES` separated, A against B with `cmp`. A's output is cached in `GOLDEN_CACHE` (default `~/.cache/tmux-revive/golden`) under the sha256 of the four scripts, `VERSION`, the harness, `GOLDEN_A`, the grid, `RNOW` and the snapshot. The snapshots are regenerated each run rather than committed under `test/golden/`: committed ones would carry this machine's paths and names, and `snapfix` makes regenerated ones identical anyway. The frames are drawn under `LC_ALL=C.UTF-8`, `TZ=UTC`, `USER=golden` and a `REVIVE_SOCKET` that does not exist.
   - **twins** starts two fixture servers (no links: the fetches' timing would differ), a live panel in each with `REVIVE_PANEL_REFRESH=60` and `REVIVE_PANEL_NOW`, sends the same keys to both (selection, J/K focus, scrolling, `?` and its scroll, Esc, M's edit box with text typed, Esc), waits for each screen to show the expected text and hold still, and compares `capture-pane -e -p` plus `#{cursor_x},#{cursor_y},#{cursor_flag}`, with each row's CPU meter, percent and memory, and the cpu graph row, masked. Not foreseen above: the `?` page animates every second on each panel's own clock (`help_view`, its art and the banner's cursor), so a comparison takes up to eight pairs of shots a moment apart and passes on the first pair that agrees. The page also moves `TICK` on every two seconds (`help.sh:469`), so after it closes the two panels can be a tick apart for good (`REVIVE_PANEL_REFRESH=60` holds `TICK` still otherwise): the banner CRT's blinking cursor (`monitor`, `TICK % 2`) is masked too. In the snaps stage, each save run's frame is also compared with a `--once` that has no snapshot at all, masked the same way, so `snap_look` can't agree with itself while reading something `draw` wouldn't.
 
@@ -508,6 +522,7 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
   - `pick`, with the `PTICK` live list for `U`;
   - `ask`;
   - `note`;
+  - the notice box and `notice_key` (1.2.55), painted after the changed lines in every frame's `?2026` block, with the panel updating under it as bash's does;
   - `edit_box`, with bracketed paste (`?2004h`) and the CR/LF distinction bash gets from `stty -icrnl -isig` and a `cat` pipe (`:3403-3407`). The Rust panel switches to the same `-icrnl -isig` while the box is open and back on close; it needs no `cat`;
   - the help page's keys.
 - **4.3** Port `act()`'s keys from the table above. Every external call (`agent-say`, `save.sh`, `tmux display-popup -E`, `tmux detach-client`, `exec tmux attach`) runs on a worker or flow thread, except the `exec`, which restores the terminal and replaces the process as bash does (`:4365-4369`).
@@ -519,6 +534,7 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
   - U (update list ticking);
   - D (confirm);
   - `?` (help scroll and buttons);
+  - a notice (1.2.55): up, a key it ignores, Esc (in `test/panel-golden.sh` twins already, bash against bash: `f` on a local pane, `x`, Esc);
   - the `REVIVE_PANEL_POPUP=1` exit on O;
   - a pane created in the fixture server while a `pick` is open: the box matches bash's unmasked, PANES masked.
 
@@ -610,7 +626,7 @@ The file is 2967 lines (`wc -l test/panel.sh`) and calls `panel.sh` 90 times (`g
 | Kind | Where | Under the Rust panel |
 |---|---|---|
 | `--once` frames | 37 lines, 36 of them this panel (`:2053` is the d621bda one). Helpers `frame` `:146`, `artband` `:158`, `hframe` `:455`, `lit` `:486`, `beacon` `:488`, `cframe` `:527`, `bgframe` `:753`, `far` `:1665`, `farsel` `:1992`, `farv` `:2005`, `raw` `:2572`, `uframe` `:2688`, `sframe` `:2761`, plus inline ones | Run with `PANEL=` set to the binary: same assertions. The golden runner also runs both and diffs them (tiers 1 and 2). |
-| Live panels in windows | 29 windows (Phase 0.2's list) | Same assertions through `PANEL=`. The shim counts (`:346-361`, `:1337-1345`) hold because the Rust panel runs the same tmux argv from PATH. |
+| Live panels in windows | 30 windows (Phase 0.2's list, and 1.2.55's `pw2`) | Same assertions through `PANEL=`. The shim counts (`:346-361`, `:1337-1345`) hold because the Rust panel runs the same tmux argv from PATH. |
 | Remote and daemon modes | the `--rows` runs (`:580`, `:602`, `:687`, `:726`, `:811`, `:1736`, `:1779`, `:1869`, `:1897`, `:1900`, `:1903`, `:1936`, `:1947`, `:2047`), `rpanel` (`:2058`), `kupdate` (`:2307`) | Stay bash, unchanged. They test what linked servers run. |
 | Bash function bodies pulled out with sed | `msq` `:1383-1387`, `question_free` `:1395`, `:1423`, `ssh_dest` `:1459`, `remote_run` `rr` `:2334` | Keep for bash. Add Rust unit tests with the same inputs and expected outputs (`question_parts` styles, `question_free`, `ssh_dest`, the `remote_run` command shapes). |
 | Old-version compatibility | `d621bda`'s panel (`:2050-2056`) | Unchanged: it is the remote side. |
@@ -625,7 +641,7 @@ The file is 2967 lines (`wc -l test/panel.sh`) and calls `panel.sh` 90 times (`g
   - `panel-rs/src/**`: `main.rs`, `compat.rs`, `snapshot.rs`, `render/*`, `collect/{procs,tmux,agents,git,links,peek,mail,upd}.rs`, `ui/{loop,keys,modal,pick,ask,note,editbox,answer,flow,help}.rs`, `writer.rs`;
   - `panel-rs/tests/*`;
   - `test/panel-golden.sh` (it builds its scenario snapshots from fixtures on every run; see 0.3's as-built note: none are committed under `test/golden/`).
-- **`scripts/panel.sh`:** the test hooks of 0.1 (`REVIVE_PANEL_SNAP` covering draw-time I/O and UI state, `REVIVE_PANEL_SIZES`, `REVIVE_PANEL_NOW` including the live panel), and the `X_SSH`/`X_WHERE` sort. After that, every panel change, as the keep-in-step rule says.
+- **`scripts/panel.sh`:** the test hooks of 0.1 (`REVIVE_PANEL_SNAP` covering draw-time I/O and UI state, `REVIVE_PANEL_SIZES`, `REVIVE_PANEL_NOW` including the live panel, and `REVIVE_PANEL_NOTICE` with the notice box in a `--once` since 1.2.55), and the `X_SSH`/`X_WHERE` sort. After that, every panel change, as the keep-in-step rule says.
 - **`test/panel.sh`:** the `PANEL` variable at its call sites (0.2), `REVIVE_PANEL_PROCS=ps` with the `ps` stubs, and the new answering checks (5.3).
 - **`test/all.sh`:** add `panel-golden`.
 - **`scripts/release.sh`:** cross-builds, assets, `SHA256SUMS` lines, the publish command.
