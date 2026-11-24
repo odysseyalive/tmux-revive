@@ -64,6 +64,24 @@ barred() { local _; for _ in $(seq 1 30); do "$1" | tail -3 | grep -cF -- "$2" >
 # unbarred SCREEN TEXT: its key bar no longer says TEXT (a flash lasts 5 seconds), within 7.
 unbarred() { local _; for _ in $(seq 1 35); do "$1" | tail -3 | grep -cF -- "$2" >/dev/null || return 0; sleep 0.2; done; return 1; }
 nobox() { local _; for _ in $(seq 1 30); do "$1" | grep -cE "$NOTE_RE" >/dev/null || return 0; sleep 0.2; done; return 1; }
+# One box over the panel at a time. nboxes SCREEN: how many boxes are on it (their top-left
+# corners, below the panel's own top line). boxof SCREEN: the first one's rows, edge to edge.
+# same_box SCREEN TEXT: boxof SCREEN is TEXT, and the only box, within 6 seconds.
+nboxes() { "$1" | tail -n +2 | grep -o '╔' | wc -l; }
+cat >"$T/boxof.py" <<'PY'
+import sys
+rows = sys.stdin.read().split("\n")[1:]
+for y, t in enumerate(rows):
+    x = t.find("╔")
+    if x < 0: continue
+    r = t.find("╗", x)
+    for u in rows[y:]:
+        print(u[x:r + 1])
+        if u[x:x + 1] == "╚": break
+    break
+PY
+boxof() { "$1" | python3 -I "$T/boxof.py"; }
+same_box() { local _; for _ in $(seq 1 30); do [[ $(boxof "$1") == "$2" && $(nboxes "$1") == 1 ]] && return 0; sleep 0.2; done; return 1; }
 # wcols TITLE < CAPTURE (capture-pane -e): the colours of the window titled TITLE's left and
 # right edges, on its title line and its rows down to the next divider, one "LEFT RIGHT" for
 # each different pair (34 the frame's blue, 96 bright cyan, 95 bright magenta). A capture only
@@ -974,14 +992,17 @@ akey 1
 check "a waiting one shows its words, and Approve or Deny" "wait_a 'may I ask dev-root about the failing build?' && wait_a '1  Approve' && wait_a '2  Deny' && ! ascreen | grep -cF 'restarted' >/dev/null"
 check "under its title, why each of the two asks, one line each, never a choice" "wait_a 'why (live-root): needs the logs' && wait_a 'why (dev-root): and back' && ! ascreen | grep -cE '[0-9]  why' >/dev/null"
 check "and the escapes in a reason don't paint the screen" "! tm capture-pane -p -e -t work:acc | grep -cF \$'\\e[48;5;201m' >/dev/null && ascreen | grep -cF 'needs the logs[48;5;201m]0;pwned' >/dev/null"
-akey Escape; gone_a '2  Deny' >/dev/null
+# Esc there goes back to the list (one box at a time, below); Esc on that closes it.
+akey Escape; gone_a '2  Deny' >/dev/null; wait_a 'LINK AGENTS TOGETHER' >/dev/null; akey Escape; gone_a 'LINK AGENTS TOGETHER' >/dev/null
 # Its agent restarted since asking (another session in that pane now): the window says so.
 printf 'live-root s-new\ncx %s\n' $ib >"$T/mail/links/far.invalid/sessions"
 akey g; wait_a 'WAITING' >/dev/null; akey 1
 check "one whose agent restarted since asking says so" "wait_a 'live-root has restarted since asking' && wait_a '1  Approve'"
 printf 'live-root %s\ncx %s\n' $ia $ib >"$T/mail/links/far.invalid/sessions"
 akey Escape
-check "Esc there closes it too, nothing changed" "gone_a '2  Deny' && [[ \$(state) == '$before' ]] && [[ ! -e $T/popup.log ]]"
+check "Esc there goes back to the list, nothing changed" "gone_a '2  Deny' && wait_a 'LINK AGENTS TOGETHER' && [[ \$(state) == '$before' ]] && [[ ! -e $T/popup.log ]]"
+akey Escape
+check "and Esc on the list closes it" "gone_a 'LINK AGENTS TOGETHER' && [[ \$(state) == '$before' ]]"
 echo wrong >"$T/popup.code"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; akey 1
 check "Approve asks for the code in a popup; a wrong one approves nothing" "wait_a \"not approved: the code didn't match, so it's still waiting\" && grep -q '^display-popup ' $T/popup.log && [[ \$(state) == '$before' ]] && nobox ascreen"
@@ -999,7 +1020,8 @@ check "with nothing waiting, LINK AGENTS TOGETHER lists only APPROVED" "! ascree
 akey 1
 check "an approved one offers Refresh or Remove" "wait_a '1  Refresh' && wait_a '2  Remove'"
 akey Escape
-check "Esc there changes nothing" "gone_a '2  Remove' && [[ \$(state) == '$before' ]]"
+check "Esc there changes nothing, and the list is back" "gone_a '2  Remove' && wait_a 'LINK AGENTS TOGETHER' && [[ \$(state) == '$before' ]]"
+akey Escape; gone_a 'LINK AGENTS TOGETHER' >/dev/null
 echo wrong >"$T/popup.code"; : >"$T/popup.log"
 akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '1  Refresh' >/dev/null; akey 1
 check "Refresh asks for the code in the same popup; a wrong one is turned away" "wait_a \"not refreshed: the code didn't match\" 60 && grep -q '^display-popup ' $T/popup.log"
@@ -1075,6 +1097,24 @@ tm new-window -d -t work -n gclient "env -u TMUX TERM=tmux-256color tmux -L revi
 gscr() { tm capture-pane -p -t work:gclient "$@"; }
 wait_g() { for _ in $(seq 1 30); do gscr | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 wait_g 'C O N T R O L' >/dev/null
+# One box at a time: each box opened from another shows over the panel drawn clean, never over
+# the one it came from (gpane: the panel's own screen, under the popup). Esc on it brings that
+# one back as it was, alone.
+gpane() { tg capture-pane -p -t gt:0; }
+tg send-keys -t gt:0 g; wait_g 'WAITING' >/dev/null; sleep 0.3
+glist=$(boxof gpane)
+tg send-keys -t gt:0 1; wait_g '1  Approve' >/dev/null; sleep 0.3
+gbox=$(boxof gpane)
+check "a box opened from another shows alone: the list it came from is gone" "[[ \$(nboxes gpane) == 1 ]] && ! gpane | grep -cF 'LINK AGENTS TOGETHER' >/dev/null"
+tg send-keys -t gt:0 1
+check "Approve's code popup opens over the panel drawn clean: one box on the screen, none under it" "wait_g 'and press Enter' && [[ \$(nboxes gpane) == 0 && \$(nboxes gscr) == 1 ]]"
+tm send-keys -t work:gclient Escape
+check "Esc on the popup brings back the box it came from, as it was, and only that" "same_box gpane \"\$gbox\" && sleep 1.5 && same_box gpane \"\$gbox\" && same_box gscr \"\$gbox\" && ! gscr | grep -cF 'and press Enter' >/dev/null"
+check "and approves nothing, nor says the code didn't match" "[[ -e $G/intros/$gi ]] && ! grep -qs '^allow' $G/grants && ! gscr | grep -cF \"didn't match\" >/dev/null"
+tg send-keys -t gt:0 Escape
+check "Esc on that box brings the list back as it was, alone" "same_box gpane \"\$glist\""
+tg send-keys -t gt:0 Escape
+check "and Esc on the list closes it: no box" "for _ in \$(seq 1 30); do [[ \$(nboxes gpane) == 0 ]] && break; sleep 0.2; done; [[ \$(nboxes gpane) == 0 ]]"
 tg send-keys -t gt:0 g; wait_g 'WAITING' >/dev/null; tg send-keys -t gt:0 1; wait_g '1  Approve' >/dev/null; tg send-keys -t gt:0 1
 wait_g 'and press Enter' >/dev/null
 gcode=$(gscr | grep -oE 'Type [0-9]{4}' | grep -oE '[0-9]{4}')
@@ -1595,6 +1635,22 @@ broken
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh "link again" >/dev/null; pick_line "devbox.example  · stopped"
 wait_ssh 'LINK devbox.example AGAIN?' >/dev/null; tm send-keys -t work:sshpanel 1
 check "No there leaves it as it was, with no box" "for _ in \$(seq 1 20); do sshscreen | grep -c 'AGAIN?' >/dev/null || break; sleep 0.2; done; ! sshscreen | grep -c 'AGAIN?' >/dev/null && nobox sshscreen && [[ -e $sk/on && -s $sk/error ]]"
+# One box at a time: B's next step opens over the panel drawn clean, and Esc there brings
+# ATTACH SERVERS back as it was, the line picked still highlighted.
+tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh "link again" >/dev/null; hl_line "devbox.example  · stopped"; sleep 0.3
+battach=$(boxof sshscreen)
+tm send-keys -t work:sshpanel Enter
+check "B's next box opens alone: ATTACH SERVERS is gone from under LINK AGAIN?" "wait_ssh 'LINK devbox.example AGAIN?' && [[ \$(nboxes sshscreen) == 1 ]] && ! sshscreen | grep -cF 'ATTACH SERVERS' >/dev/null"
+tm send-keys -t work:sshpanel Escape
+check "Esc there brings ATTACH SERVERS back as it was, alone, and changes nothing" "same_box sshscreen \"\$battach\" && [[ -e $sk/on && -s $sk/error ]]"
+hl_line 'other host'; sleep 0.3
+battach=$(boxof sshscreen)
+tm send-keys -t work:sshpanel Enter
+check "other host… asks for the name with no box left over the panel" "wait_ssh 'Host to link' && [[ \$(nboxes sshscreen) == 0 ]]"
+tm send-keys -t work:sshpanel Escape
+check "Esc on that brings ATTACH SERVERS back, other host… still highlighted" "same_box sshscreen \"\$battach\" && sshscreen | grep -cE '▶ 2 +other host' >/dev/null"
+tm send-keys -t work:sshpanel Escape
+check "and Esc on ATTACH SERVERS closes it" "for _ in \$(seq 1 30); do [[ \$(nboxes sshscreen) == 0 ]] && break; sleep 0.2; done; [[ \$(nboxes sshscreen) == 0 ]] && ! sshscreen | grep -cF 'ATTACH SERVERS' >/dev/null"
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh "link again" >/dev/null; pick_line "devbox.example  · stopped"
 wait_ssh 'LINK devbox.example AGAIN?' >/dev/null; tm send-keys -t work:sshpanel 3
 # Each unlink says the same, so wait for the link itself to go, not only for the words.
