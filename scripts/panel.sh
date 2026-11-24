@@ -3270,6 +3270,8 @@ trim_colored() { # trim_colored TEXT WIDTH -> TRIM: cut to WIDTH visible charact
 }
 
 # ------------------------------------------------------------------ actions
+# flash TEXT: on the key bar for 5 seconds, for what is under way ("linking…") and what
+# answering says. What a key did, once done, is a notice (below), in a box until Esc.
 flash() { FLASH=$1 FLASH_T=$SECONDS; clean FLASH; } # agent-say's reply can quote anything
 # A code shown only in a popup, typed back there: a popup isn't a pane, so no agent can read
 # it or type into it with send-keys. The popup's own shell then runs agent-say's FUNCTION
@@ -4144,14 +4146,14 @@ user_note() {
 	tm set-buffer -w -- "$cmd" 2>/dev/null || tm set-buffer -- "$cmd" 2>/dev/null
 	note "$1 for $u" "Run this in $who:" "" "$cmd" "" "Copied. Paste it there, or press prefix ]."
 }
-# unlink_host HOST: agent-say unlink, and what it said on the bar.
+# unlink_host HOST: agent-say unlink, and what it said, in a notice.
 unlink_host() {
 	local out
 	flash "unlinking $1…"; draw
 	out=$(timeout 30 "$ASAY" unlink "$1" 2>&1 | tail -n 1)
 	clean out
 	[[ -d $ASTATE/links/$1 ]] || rm -f "$RDIR/$1.rows" # what it kept of that computer
-	flash "${out#agent-say: }"
+	notice "${out#agent-say: }"
 }
 
 # U: tmux-revive updated everywhere it can be, all at once, in a popup that shows each line
@@ -4310,8 +4312,18 @@ upd_show() {
 }
 # note TITLE LINE...: a box over the panel, drawn as pick's, until a key is pressed.
 note() {
-	local title=$1 rows cols w top left i k l hint="press any key to close" INTR=0
-	shift
+	local k INTR=0
+	note_box "$1" "press any key to close" "${@:2}"
+	trap 'INTR=1' INT
+	until IFS= read -rsn1 -t 0.2 k; do (($? <= 128 || INTR)) && break; done
+	# The rest of a key sequence (an arrow) goes too.
+	read -rsn4 -t 0.02 _ || true
+	trap 'exit 0' INT
+}
+# note_box TITLE HINT LINE...: note's box, drawn and left there. No TITLE, no title tab.
+note_box() {
+	local title=$1 hint=$2 rows cols w top left i l
+	shift 2
 	local -a ls=("$@")
 	rows=$(tput lines 2>/dev/null || echo 40) cols=$(tput cols 2>/dev/null || echo 80)
 	w=$((${#hint} + 6))
@@ -4321,8 +4333,13 @@ note() {
 	top=$(((rows - ${#ls[@]} - 5) / 2)) left=$(((cols - w) / 2))
 	((top < 1)) && top=1
 	((left < 1)) && left=1
-	rep ═ $((w - ${#title} - 11))
-	printf '%s' "$e[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
+	if [[ -n $title ]]; then
+		rep ═ $((w - ${#title} - 11))
+		printf '%s' "$e[$top;${left}H$BGBLU$BWHT╔═$R$BLU░▒▓$BGBLU$B$BWHT $title $R$BLU▓▒░$BGBLU$BWHT$REP╗$R"
+	else
+		rep ═ $((w - 2))
+		printf '%s' "$e[$top;${left}H$BGBLU$BWHT╔$REP╗$R"
+	fi
 	rep ' ' $((w - 2))
 	printf '%s' "$e[$((top + 1));${left}H$BGBLU$BWHT║$REP║$R$GRY░$R"
 	for ((i = 0; i < ${#ls[@]}; i++)); do
@@ -4335,11 +4352,46 @@ note() {
 	printf '%s' "$e[$((top + 3 + ${#ls[@]}));${left}H$BGBLU$BWHT╚$REP╝$R$GRY░$R"
 	rep ░ "$w"
 	printf '%s' "$e[$((top + 4 + ${#ls[@]}));$((left + 1))H$GRY$REP$R"
-	trap 'INTR=1' INT
-	until IFS= read -rsn1 -t 0.2 k; do (($? <= 128 || INTR)) && break; done
-	# The rest of a key sequence (an arrow) goes too.
-	read -rsn4 -t 0.02 _ || true
-	trap 'exit 0' INT
+}
+# notice TEXT: what a key just did, or why it couldn't, or news from the background (a new ssh,
+# a dropped login): in a box over the panel that stays until Esc, not on the key bar where it
+# goes by. Kept in NOTICES and shown by notices once the panel is drawn, one at a time.
+NOTICES=()
+notice() {
+	local t=$1
+	clean t # agent-say's reply can quote anything
+	NOTICES+=("$t")
+	[[ $FLASH == *… ]] && FLASH="" # the "…" that led up to it, done
+}
+# notices: each notice waiting, in turn. Only a lone Esc closes one; any other key, an arrow's
+# sequence too, is ignored. Ctrl-C quits the panel, as it does under the box. A resize draws
+# the panel and the box again.
+notices() {
+	local k rest ww
+	local -a WRAP
+	while ((${#NOTICES[@]})); do
+		# Wrapped to fit the box, at 70 columns at most; as many lines as the terminal holds.
+		ww=$((${TCOLS:-80} - 10))
+		((ww > 70)) && ww=70
+		((ww < 20)) && ww=20
+		help_wrap "${NOTICES[0]//\`/"'"}" "$ww" # help_wrap gives a backtick no room; here it takes one
+		WRAP=("${WRAP[@]:0:${TLINES:-40} - 6}")
+		note_box "" "Esc closes" "${WRAP[@]}"
+		while :; do
+			k=""
+			until IFS= read -rsn1 -t 0.2 k; do
+				(($? <= 128)) && { NOTICES=(); return 0; } # the input closed
+				[[ -z $TCOLS ]] && { draw; continue 3; } # resized
+			done
+			[[ $k == "$e" ]] || continue
+			rest=""
+			IFS= read -rsn1 -t 0.05 rest || true
+			[[ -z $rest ]] && break
+			IFS= read -rsn4 -t 0.02 _ || true # the rest of an arrow's sequence
+		done
+		NOTICES=("${NOTICES[@]:1}")
+		PREV=(); draw
+	done
 }
 act() {
 	# A key may draw over the panel (popup, prompt) and return early: repaint it whole. Keys
@@ -4348,20 +4400,20 @@ act() {
 	local id=${P_ID[SEL]:-} name=${P_NAME[SEL]:-${P_LOC[SEL]:-}} out
 	# A heading selected: the keys for a pane wait for one.
 	if [[ -n $HSEL ]]; then
-		case $1 in o | O | m | M | n | N) flash "select one of ${HSEL}'s panes for that"; return ;; esac
+		case $1 in o | O | m | M | n | N) notice "select one of ${HSEL}'s panes for that"; return ;; esac
 	fi
 	case $1 in
 	o | O)
 		# Panes on this computer only. On a linked computer's row O does nothing but say so:
 		# focus moves only where you press O, never in tmux over there.
-		[[ -n ${P_HOST[SEL]:-} ]] && { flash "O opens panes on this computer only"; return; }
+		[[ -n ${P_HOST[SEL]:-} ]] && { notice "O opens panes on this computer only"; return; }
 		[[ -n $id ]] || return
 		if [[ -n ${TMUX:-} ]]; then
 			tm switch-client -t "$id" 2>/dev/null
 			tm select-window -t "$id" 2>/dev/null
 			tm select-pane -t "$id" 2>/dev/null
 			[[ -n ${REVIVE_PANEL_POPUP:-} ]] && exit 0
-			flash "opened $name"
+			notice "opened $name"
 		else
 			tm select-window -t "$id" 2>/dev/null
 			tm select-pane -t "$id" 2>/dev/null
@@ -4369,38 +4421,38 @@ act() {
 			exec tmux attach -t "${P_LOC[SEL]%%:*}" 2>&1 # its messages on the screen again
 		fi ;;
 	m | M)
-		[[ -n $id ]] || { [[ -n ${P_HOST[SEL]:-} ]] && flash "that pane has no name; name it on ${P_HOST[SEL]} to message it"; return; }
+		[[ -n $id ]] || { [[ -n ${P_HOST[SEL]:-} ]] && notice "that pane has no name; name it on ${P_HOST[SEL]} to message it"; return; }
 		# Written in a box, as long as it needs to be: several lines go as one message.
 		edit_box "MESSAGE TO $name" "Enter sends · Alt-Enter new line · Esc closes" &&
-			[[ -n ${REPLY//[[:space:]]/} ]] || { flash "message cancelled"; draw; return; }
+			[[ -n ${REPLY//[[:space:]]/} ]] || { notice "message cancelled"; draw; return; }
 		draw # the box goes at once: sending can take a while
 		out=$("$ASAY" --from panel "$id" "$REPLY" 2>&1 | tail -n 1)
-		flash "${out#agent-say: }" ;;
+		notice "${out#agent-say: }" ;;
 	n | N)
 		if [[ -n ${P_HOST[SEL]:-} ]]; then
 			# A pane on a linked computer: agent-say name runs there, over the link's ssh.
 			local h=${P_HOST[SEL]} rid=${P_RID[SEL]:-} st
 			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return
-			[[ $rid =~ ^%[0-9]+$ ]] || { flash "on $h: can't tell which pane that is (update tmux-revive there)"; return; }
-			ask "New name for $name on $h:" || { flash "rename cancelled"; return; }
+			[[ $rid =~ ^%[0-9]+$ ]] || { notice "on $h: can't tell which pane that is (update tmux-revive there)"; return; }
+			ask "New name for $name on $h:" || { notice "rename cancelled"; return; }
 			# The same letters a name may have there, so no quote or shell character gets through.
-			[[ $REPLY =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || { flash "that can't be a name: use letters, digits and . _ - : + ="; return; }
+			[[ $REPLY =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || { notice "that can't be a name: use letters, digits and . _ - : + ="; return; }
 			flash "naming it on $h…"; draw
 			out=$(remote_run "$h" name "$rid" "$REPLY" | tail -c 4096)
 			st=$?
 			out=$(grep -v '^[[:space:]]*$' <<<"$out" | head -n 1)
 			clean out
 			out=${out#agent-say: } out=${out:0:120}
-			if ((st == 124 || st == 255)); then flash "on $h: couldn't be reached to rename"
-			else flash "on $h: ${out:-rename failed}"; fi
+			if ((st == 124 || st == 255)); then notice "on $h: couldn't be reached to rename"
+			else notice "on $h: ${out:-rename failed}"; fi
 			((st == 0)) && SEL_ID="$REPLY@$h" # the row goes by its new name
 			RFETCH_T[$h]=0 # and ask it for its rows again, to show it
 			return
 		fi
 		[[ -n $id ]] || return
-		ask "New name for $name:" || { flash "rename cancelled"; return; }
+		ask "New name for $name:" || { notice "rename cancelled"; return; }
 		out=$(AGENT_SAY_PANE=$id "$ASAY" name "$REPLY" 2>&1 | head -n 1)
-		flash "${out#agent-say: }" ;;
+		notice "${out#agent-say: }" ;;
 	b | B)
 		# Every step of this B (its key shown, the link, a login) shares one ssh-keyscan of the
 		# host: each scan is a connection that never logs in, which servers count against you.
@@ -4443,19 +4495,19 @@ act() {
 		done
 		hosts+=("") labels+=("other host… (type its name)")
 		[[ $kr != " " ]] && hint="↑↓ choose · Enter picks · U unlinks · Esc closes"
-		PKEYS=u PKROWS=$kr PHINT=$hint pick "ATTACH SERVERS" "${labels[@]}" || { flash "link cancelled"; return; }
+		PKEYS=u PKROWS=$kr PHINT=$hint pick "ATTACH SERVERS" "${labels[@]}" || { notice "link cancelled"; return; }
 		h=${hosts[PICKED]}
 		[[ $PKEY == u ]] && { unlink_host "$h"; return; }
 		if [[ -z $h ]]; then
-			ask "Host to link (as you'd type after ssh):" || { flash "link cancelled"; return; }
+			ask "Host to link (as you'd type after ssh):" || { notice "link cancelled"; return; }
 			h=$REPLY
-			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { flash "not a host name: $h"; return; }
+			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { notice "not a host name: $h"; return; }
 		fi
 		# A link whose login dropped: its key was confirmed when it was linked (and the link
 		# checks it still), so only the login is asked for.
 		if linked "$h" && [[ -f $ASTATE/links/$h/login ]]; then
 			flash "logging in to $h…"; draw
-			if login_window "$h"; then flash "logged in to $h; its link picks up again"; else flash "not logged in to $h"; fi
+			if login_window "$h"; then notice "logged in to $h; its link picks up again"; else notice "not logged in to $h"; fi
 			return
 		fi
 		# A link there already (working or not): link it again, fresh, with the key ssh uses for it
@@ -4472,7 +4524,7 @@ act() {
 			lopts=("No, leave it as is" "Yes, link $h again" "Unlink $h")
 			[[ -f $ASTATE/links/$h/linkkey ]] || lopts+=("Use the link key for $h")
 			pick "LINK $h AGAIN?" "${NOTE}It unlinks, then links again with the key ssh uses now." "${lopts[@]}" &&
-				((PICKED > 1)) || { flash "link cancelled"; return; }
+				((PICKED > 1)) || { notice "link cancelled"; return; }
 			((PICKED == 3)) && { unlink_host "$h"; return; }
 			if ((PICKED == 4)); then usekey=1; flash "moving $h to the link key…"; draw
 			else again=1 was=$(cat "$ASTATE/links/$h/fingerprint" 2>/dev/null); fi
@@ -4511,9 +4563,9 @@ act() {
 			if ((${#keys[@]})); then note+=": ${keys[0]}"; else note="no key found (not in known_hosts, no answer to ssh-keyscan)" first=""; fi
 			notes=("$NOTE$note")
 			[[ -n $first ]] && notes+=("${NOTE}First time we see this key, so check it matches your server.")
-			pick "$title" "${notes[@]}" "${yn[@]}" || { flash "link cancelled"; return; }
+			pick "$title" "${notes[@]}" "${yn[@]}" || { notice "link cancelled"; return; }
 			PICKED=$((PICKED - ${#notes[@]} + 1))
-			[[ ${yn[PICKED - 1]} == Yes* ]] || { flash "link cancelled"; return; }
+			[[ ${yn[PICKED - 1]} == Yes* ]] || { notice "link cancelled"; return; }
 			if [[ $KEY_STATE == trusted ]]; then
 				for k in "${keys[@]}"; do largs+=(--fingerprint "$k"); done
 				linked_msg="linked to $h with the key from your known_hosts: ${keys[0]}"
@@ -4542,9 +4594,9 @@ act() {
 		if [[ $LOUT == *"check it, then link again and confirm the new key"* ]]; then
 			read_host_keys "$h" --new
 			keys=("${KEYS[@]}")
-			((${#keys[@]})) || { flash "$h's host key isn't the one you confirmed, and ssh-keyscan shows no other, so it's not linked"; return; }
+			((${#keys[@]})) || { notice "$h's host key isn't the one you confirmed, and ssh-keyscan shows no other, so it's not linked"; return; }
 			pick "WARNING: $h's HOST KEY CHANGED since you linked it" "${NOTE}its key now: ${keys[0]}" "No, don't link $h" "Yes, link $h" &&
-				((PICKED == 2)) || { flash "link cancelled"; return; }
+				((PICKED == 2)) || { notice "link cancelled"; return; }
 			keys=("${keys[0]}") KEY_STATE=changed linked_msg=""
 			largs=(--yes --fingerprint "${keys[0]}")
 			flash "linking $h…"; draw
@@ -4555,10 +4607,10 @@ act() {
 		# (agent-say's login checks it strictly before ssh asks), so none confirmed, no login.
 		# Relinked, it is the key the link recorded (login_window with none given takes that).
 		if [[ $out == *"$h needs a login"* ]]; then
-			((${#keys[@]})) || { flash "no host key of $h to confirm, so no password is sent to it; not linked"; return; }
+			((${#keys[@]})) || { notice "no host key of $h to confirm, so no password is sent to it; not linked"; return; }
 			[[ $KEY_STATE == recorded ]] && keys=()
 			flash "logging in to $h…"; draw
-			login_window "$h" "${keys[@]}" || { flash "not logged in to $h; not linked"; return; }
+			login_window "$h" "${keys[@]}" || { notice "not logged in to $h; not linked"; return; }
 			flash "linking $h…"; draw
 			link_out "${largs[@]}"
 		fi
@@ -4582,7 +4634,7 @@ act() {
 			clean out
 			out="$h: $out"
 		fi
-		flash "${out#agent-say: }" ;;
+		notice "${out#agent-say: }" ;;
 	u | U) upd_show ;;
 	g | G | i | I) # I: the key it had before, kept so it still works
 		# Access: agents on two linked computers asking to talk through this one (waiting), and
@@ -4608,12 +4660,12 @@ act() {
 			((${#ids[@]} > nw)) || ids+=("") labels+=("${NOTE}APPROVED")
 			ids+=("g $a $b") labels+=("${f:0:30} → ${t:0:30} · $((w / 3600))h $((w % 3600 / 60))m left")
 		done < <(cat "$ASTATE/grants" 2>/dev/null)
-		((${#ids[@]})) || { flash "nothing waiting or approved"; return; }
+		((${#ids[@]})) || { notice "nothing waiting or approved"; return; }
 		pick "LINK AGENTS TOGETHER" "${labels[@]}" || return
 		read -r g a b <<<"${ids[PICKED]}"
 		if [[ $g == i ]]; then
 			d="$ASTATE/intros/$a"
-			[[ $a =~ ^[0-9a-f]{32}$ && -f $d/from ]] || { flash "that request is gone"; return; }
+			[[ $a =~ ^[0-9a-f]{32}$ && -f $d/from ]] || { notice "that request is gone"; return; }
 			f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to") txt=$(head -c 180 "$d/intro")
 			clean f t txt
 			# Its words (three lines at most), then the two choices. Approving takes a code typed
@@ -4679,7 +4731,7 @@ act() {
 		fi
 		PREV=() # the boxes drawn over, all of it again
 		clean out
-		flash "${out#agent-say: }" ;;
+		notice "${out#agent-say: }" ;;
 	p | P) PEEK=$((!PEEK)) PEEK_SEL=${P_ID[SEL]:-} PEEK_ALL=0 ;;
 	# Enter: on a linked computer's heading, fold it to that line (or open it again); on a pane
 	# asking a question, answer it.
@@ -4690,7 +4742,7 @@ act() {
 	# (on a folded heading, open it again, as Enter does).
 	f)
 		if [[ -n $HSEL ]]; then act enter; return
-		elif [[ -z ${P_HOST[SEL]:-} ]]; then flash "this computer can't be folded"; return; fi
+		elif [[ -z ${P_HOST[SEL]:-} ]]; then notice "this computer can't be folded"; return; fi
 		fold_toggle "${P_HOST[SEL]}" && HSEL=${P_HOST[SEL]} ;;
 	# F, a shortcut the help page tells of, not the bar: fold every linked computer (never
 	# this one), or, with all of them folded already, open them all. A selection inside one folded moves to its heading.
@@ -4698,24 +4750,24 @@ act() {
 		local -A seen=()
 		local h all=1
 		for h in "${P_HOST[@]}"; do [[ -n $h ]] && seen[$h]=1; done
-		((${#seen[@]})) || { flash "nothing is bridged"; return; }
+		((${#seen[@]})) || { notice "nothing is bridged"; return; }
 		for h in "${!seen[@]}"; do [[ -n ${FOLD[$h]:-} ]] || all=0; done
 		for h in "${!seen[@]}"; do ((all)) || [[ -z ${FOLD[$h]:-} ]] && fold_toggle "$h"; done
 		if ((all)); then HSEL=""
 		elif [[ -n ${P_HOST[SEL]:-} ]]; then HSEL=${P_HOST[SEL]}; fi ;;
 	a | A)
 		SCENE=$(((SCENE + 1) % ${#SCENES[@]}))
-		flash "art: ${TITLES[SCENE]}" ;;
+		notice "art: ${TITLES[SCENE]}" ;;
 	s | S)
-		if "$BASH" "$REVIVE_ROOT/scripts/save.sh" manual >/dev/null 2>&1; then flash "saved"; else flash "save failed (see: tmux-revive log)"; fi ;;
+		if "$BASH" "$REVIVE_ROOT/scripts/save.sh" manual >/dev/null 2>&1; then notice "saved"; else notice "save failed (see: tmux-revive log)"; fi ;;
 	# D: detach this tmux (the client looking at the panel), once you've said yes. Everything
 	# keeps running, and a snapshot is taken on detach, so it comes back after a reboot too.
 	d | D)
 		PREV=(); draw
 		pick "DETACH TMUX?" "${NOTE}This session will restore even after reboot." "No, stay" "Yes, detach" &&
-			((PICKED == 2)) || { PREV=(); flash "detach cancelled"; return; }
+			((PICKED == 2)) || { PREV=(); notice "detach cancelled"; return; }
 		PREV=()
-		tm detach-client 2>/dev/null || flash "couldn't detach" ;;
+		tm detach-client 2>/dev/null || notice "couldn't detach" ;;
 	q | Q) exit 0 ;;
 	'?') help_view ;; # quoted: a bare ? would match every key
 	# A digit N goes to window N, as the # column and tmux's status bar number it: the first pane
@@ -5149,8 +5201,8 @@ while :; do
 			[[ -n $h && -z ${SSH_SEEN[$h]:-} ]] || continue
 			SSH_SEEN[$h]=1
 			# Only one opened since the panel started: those open before are in LINKS already
-			# ([B]ridge?), and a flash for each would cover the key bar as it opens.
-			((SSH_FIRST)) || linked "$h" || flash "new ssh: $h · B bridges it"
+			# ([B]ridge?), and a notice for each would be a box to close for each as it opens.
+			((SSH_FIRST)) || linked "$h" || notice "new ssh: $h · B bridges it"
 		done
 		SSH_FIRST=0
 		# A link whose login dropped (a reboot over there, the network gone): said once.
@@ -5158,7 +5210,7 @@ while :; do
 			h=$(basename "$d")
 			[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
 			if [[ -f $d/on && -f $d/login ]]; then
-				[[ -n ${LOGIN_SEEN[$h]:-} ]] || flash "$h needs login · B to type its password"
+				[[ -n ${LOGIN_SEEN[$h]:-} ]] || notice "$h needs login · B to type its password"
 				LOGIN_SEEN[$h]=1
 			else
 				LOGIN_SEEN[$h]=""
@@ -5177,7 +5229,8 @@ while :; do
 	sel_fix
 	# A key pressed while it gathered is taken first, so one draw shows both. Not twice running,
 	# so keys arriving all the time can't keep the panel from drawing.
-	if ((!nav && !held && ${#PREV[@]})) && read -t 0; then
+	# A notice waiting is drawn first, so the key goes to its box.
+	if ((!nav && !held && ${#PREV[@]} && !${#NOTICES[@]})) && read -t 0; then
 		held=1 key=""
 		IFS= read -rsn1 key
 		keys "$key"
@@ -5189,6 +5242,9 @@ while :; do
 	((SECONDS - FULL_T >= 15)) && PREV=() FULL_T=$SECONDS
 	draw
 	((LBOX)) && lbox_draw
+	# Notices, once nothing else is over the panel: the loading box waits for no key, and
+	# while a question is answered (answer has its own loop) they wait until it's left.
+	((LBOX || ANSWERING || !${#NOTICES[@]})) || notices
 	nav=0
 	key=""
 	if ! IFS= read -rsn1 -t "$REFRESH" key; then
