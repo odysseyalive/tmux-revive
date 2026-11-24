@@ -3,6 +3,10 @@
 # fits the terminal, and that its keys work.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The panel under test: the bash one, or another that must draw the same (the Rust panel, see
+# plan/rust-panel-2026-11-23.md): PANEL=/path/to/tmux-revive-panel bash test/panel.sh. What
+# linked computers and the daemon run (--rows, --asking...) is the bash one all the same.
+PANEL=${PANEL:-bash $ROOT/scripts/panel.sh}
 T=$(mktemp -d "${TMPDIR:-/tmp}/panel-test.XXXXXX")
 unset TMUX TMUX_PANE XDG_STATE_HOME # never your state dir (agents run with it set)
 export REVIVE_DIR=$T/data AGENT_SAY_MAILBOX=$T/mail/mailbox.md REVIVE_PANEL_REFRESH=1 REVIVE_PANEL_SPLASH=0 REVIVE_PANEL_LOADBOX=0
@@ -143,7 +147,7 @@ sleep 0.5
 
 echo "one frame"
 # Inside the private server, so the panel reads its panes, not yours.
-frame() { tm run-shell "REVIVE_PANEL_PEEK=0 COLUMNS=$1 LINES=${2:-40} REVIVE_PANEL_ART=${3:-} REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
+frame() { tm run-shell "REVIVE_PANEL_PEEK=0 COLUMNS=$1 LINES=${2:-40} REVIVE_PANEL_ART=${3:-} REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain; }
 for size in "80 24" "100 40" "130 40" "200 60"; do
 	read -r c l <<<"$size"
 	shape=$(frame "$c" "$l" | awk '{w[length]=1; n++} END{for (k in w) printf "%s ", k; print "x " n}')
@@ -155,7 +159,7 @@ for a in city mountains space circuit grid; do
 done
 # Calm artwork: from one frame to the next only a few cells of the art band change, and the
 # scene beside the banner holds still.
-artband() { tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_TICK=$2 REVIVE_PANEL_ART=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
+artband() { tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_TICK=$2 REVIVE_PANEL_ART=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once"; }
 cat >"$T/calm.py" <<'PY'
 import re, sys
 T, top = sys.argv[1], int(sys.argv[2])
@@ -236,21 +240,21 @@ tm new-window -d -t work -n numbers "seq -f 'row-%g' 1 200; sleep 300"
 sleep 0.7
 nid=$(tm display -p -t work:numbers '#{pane_id}')
 pane_tail=$(tm capture-pane -p -t "$nid" | tail -2 | sed 's/[[:space:]]*$//' | tr '\n' '|')
-peek=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+peek=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 box_tail=$(awk '/PEEK · /{on=1; next} on && /MESSAGES|ART · /{exit} on' <<<"$peek" | tail -2 | sed 's/^║ │ \{0,1\}//; s/[[:space:]]*[▲▼░▓]\{0,1\}║$//; s/[[:space:]]*$//' | tr '\n' '|')
 check "the peek's bottom rows are the pane's bottom rows ($pane_tail)" "[[ '$box_tail' == '$pane_tail' ]]"
 # The peek takes all the free rows: no artwork, no full view or collapse to choose.
 check "the peek takes all the space, the artwork none" "grep -q 'PEEK · ' <<<\"\$peek\" && ! grep -q 'ART · ' <<<\"\$peek\" && [[ \$(wc -l <<<\"\$peek\") == 50 ]]"
 check "the peek's title offers p to hide it, not x or c" "grep -q 'PEEK · .*\[p\] hide' <<<\"\$peek\" && ! grep -q 'full view\|collapse' <<<\"\$peek\""
 check "the key bar no longer offers P" "! grep -q '\[P\]eek' <<<\"\$peek\""
-hidden=$(tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+hidden=$(tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 check "hidden, only its title stays, offering [P]eek, its first tip centered under it, then the artwork" "grep -q 'PEEK · .*\[P\]eek' <<<\"\$hidden\" && grep -A2 'PEEK · ' <<<\"\$hidden\" | sed -n 2p | grep -q '^║  *Turn \[P\]eek on to preview a selected session\.  *║\$' && grep -A2 'PEEK · ' <<<\"\$hidden\" | sed -n 3p | grep -q 'ART · '"
-raw=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
+raw=$(tm run-shell "REVIVE_PANEL_SEL=$nid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once")
 check "with the focus in PANES, only the selected row has the faint background" "[[ \$(grep -cF $'\\e[48;5;236m' <<<\"\$raw\") == 1 ]] && grep -F $'\\e[48;5;236m' <<<\"\$raw\" | grep -q '▶'"
 tm kill-window -t work:numbers
 
 echo "keys"
-tm new-window -d -t work -n panel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n panel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 wait_screen 'C O N T R O L'
 check "it labels its own pane" "screen | grep -q 'panel *✦ this panel'"
 # Counted with grep -c, never grep -q at the end of a pipe (pipefail: a closed pipe fails it).
@@ -343,7 +347,7 @@ check "Q quits" "! tm list-windows -F '#{window_name}' | grep -qx panel"
 mkdir -p "$T/shim"
 printf '#!/bin/sh\necho "$*" >>"%s/shim.log"\nexec %s "$@"\n' "$T" "$(command -v tmux)" >"$T/shim/tmux"
 chmod +x "$T/shim/tmux"
-tm new-window -d -t work -n navp "env PATH=$T/shim:$PATH REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=60 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n navp "env PATH=$T/shim:$PATH REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=60 $PANEL"
 nscreen() { tm capture-pane -p -t work:navp; }
 wait_n() { for _ in $(seq 1 30); do nscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 looks() { grep -c 'show-option -gqv @revive-interval' "$T/shim.log" 2>/dev/null; }
@@ -370,7 +374,7 @@ chmod +x "$T/stub/xdg-open"
 tm set-environment -g REVIVE_WORKFORCE_INSTALL_CMD "touch $T/installed"
 tm set-environment -g REVIVE_PLAYWRIGHT_INSTALL_CMD "touch $T/pw-installed"
 tm set-environment -g REVIVE_CODEX_INSTALL_CMD "touch $T/cx-installed"
-tm new-window -d -t work -n helpw "env PATH=$T/stub:$PATH REVIVE_WORKFORCE_INSTALL_CMD='touch $T/installed' REVIVE_PLAYWRIGHT_INSTALL_CMD='touch $T/pw-installed' REVIVE_CODEX_INSTALL_CMD='touch $T/cx-installed' REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n helpw "env PATH=$T/stub:$PATH REVIVE_WORKFORCE_INSTALL_CMD='touch $T/installed' REVIVE_PLAYWRIGHT_INSTALL_CMD='touch $T/pw-installed' REVIVE_CODEX_INSTALL_CMD='touch $T/cx-installed' REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 hscreen() { tm capture-pane -p -t work:helpw; }
 hwait() { for _ in $(seq 1 30); do hscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 hgone() { for _ in $(seq 1 30); do hscreen | grep -qF -- "$1" || return 0; sleep 0.2; done; return 1; }
@@ -452,7 +456,7 @@ tm send-keys -t work:helpw Escape
 check "Esc closes it too" "hgone 'HELP · HOW TO USE' && hwait 'PANES'"
 tm send-keys -t work:helpw q; sleep 1
 # The page drawn by itself at a few widths: every line fills the frame exactly.
-hframe() { tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=$1 LINES=200 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
+hframe() { tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=$1 LINES=200 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain; }
 for c in 60 80 100 160; do
 	out=$(hframe $c)
 	w=$((c < 80 ? 80 : c)) # the panel is never narrower than 80
@@ -464,7 +468,7 @@ for c in 60 80 100 160; do
 	check "and none of its lines is cut short at $c" "! sed -n '/HELP · HOW TO USE/,\$p' <<<\"\$out\" | grep -q '…'"
 	# That's with the ads pinned under the words (200 lines leaves room). Too short for that,
 	# everything scrolls together, and fits the same.
-	out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=$c LINES=24 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+	out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=$c LINES=24 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 	check "and fits $c columns too short to pin the ads" "! grep -q '╔═░▒▓' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$w ' ]]"
 done
 # The pictures .art puts by the sections: beside the words on a wide page, above them on a
@@ -476,27 +480,27 @@ check "and a satellite, alone, beside the second" "grep -q '\\(server\\|tmux\\)\
 # The pictures start under their titles: the titles' rules run the whole way, nothing on them.
 check "the pictures stay off their titles' rows" "! grep -qE '(Get your agents talking|Talk to your servers too).*(▄|▪)' <<<\"\$out\" && grep -q 'Talk to your servers too.*┄┄┄ *║\$' <<<\"\$out\""
 # The words that scroll have a scroll bar at their right, and the key bar says j/k scroll too.
-out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=40 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=40 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 check "a scroll bar shows there's more, and j/k are on the key bar" "grep -q '▲║\$' <<<\"\$out\" && grep -q '▼║\$' <<<\"\$out\" && grep -q '▓║\$' <<<\"\$out\" && grep -qF '[↑↓/j/k] scroll' <<<\"\$out\""
 out=$(hframe 100)
 check "at 100 they still fit beside the words" "grep -q '[a-z][.,]* .*$talk' <<<\"\$out\" && grep -q '\\(server\\|tmux\\)\\. .*$sat' <<<\"\$out\""
 out=$(hframe 80)
 check "at 80 they go above the words instead" "grep -q '^║  $talk  *║\$' <<<\"\$out\" && grep -q '^║   $sat  *║\$' <<<\"\$out\" && ! grep -q 'Got agents.*█▒█' <<<\"\$out\""
 # The satellite's light blinks with the panel's clock: lit one tick in three, dark between.
-lit() { tm run-shell "REVIVE_PANEL_TICK=$1 REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=200 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | grep -c $'\e\\[38;5;196m'; }
+lit() { tm run-shell "REVIVE_PANEL_TICK=$1 REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=200 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | grep -c $'\e\\[38;5;196m'; }
 check "the satellite's light comes on now and then, and is dark between" "[[ \$(lit 0) -ge 1 && \$(lit 1) == 0 && \$(lit 2) == 0 && \$(lit 3) -ge 1 ]]"
-beacon() { tm run-shell "REVIVE_PANEL_TICK=$1 REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=200 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | grep -c $'\e\\[38;5;'"$2"'m'; }
+beacon() { tm run-shell "REVIVE_PANEL_TICK=$1 REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=200 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | grep -c $'\e\\[38;5;'"$2"'m'; }
 check "the two agents' beacons take turns" "[[ \$(beacon 0 226) -ge 1 && \$(beacon 0 227) == 0 && \$(beacon 1 226) == 0 && \$(beacon 1 227) -ge 1 ]]"
 # A few suggestions to get going, not a reference: the keys are on the panel already.
 out=$(hframe 160)
 check "it has no key reference or column list" "! grep -qiE 'key reference|What the columns mean|Remember the old BBS|^║ +\\[[^]]+\\] {2,}[A-Z]' <<<\"\$out\" && grep -q 'shop-dev' <<<\"\$out\" && grep -qF '[B]ridge it' <<<\"\$out\""
 # At 160x65 it all fits on one screen: every word above the ads, the ads whole at the bottom.
-out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=65 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+out=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=65 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 hp=$(grep -o '[0-9]*-[0-9]* of [0-9]*' <<<"$out" | tail -1)
 check "at 160x65 it fits on one screen ($hp), the ads whole at the bottom" "[[ \$hp == 1-* && \${hp%% of*} == 1-\${hp##* } ]] && tail -5 <<<\"\$out\" | head -1 | grep -q '╚═*╝░' && grep -q 'C H E A T   S H E E T' <<<\"\$out\""
 # Its counter counts the words alone: the whole page (as a short one counts it) less the ads,
 # which run from the blank row over their tops to the shadow under them.
-all=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=24 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
+all=$(tm run-shell "REVIVE_PANEL_HELP=1 COLUMNS=160 LINES=24 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain | grep -o '[0-9]*-[0-9]* of [0-9]*' | tail -1)
 ads=$(($(wc -l <<<"$out") - $(grep -n '╔═░▒▓' <<<"$out" | head -1 | cut -d: -f1) - 1))
 check "and its counter counts only the words ($hp; the whole page is $all, the ads $ads rows)" "(( \${hp##* } + ads == \${all##* } ))"
 
@@ -524,7 +528,7 @@ printf '{"pid":%s,"sessionId":"s-1","status":"idle"}\n' "$clpid" >"$H/.claude/se
 	echo '{"type":"assistant","message":{"model":"<synthetic>","usage":{"input_tokens":0}}}'
 	echo '{"type":"user","message":{"content":"the word \"usage\" in a message"}}'
 } >"$H/.claude/projects/-w/s-1.jsonl"
-cframe() { tm run-shell "HOME=$H REVIVE_PANEL_PEEK=0 COLUMNS=${1:-130} LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
+cframe() { tm run-shell "HOME=$H REVIVE_PANEL_PEEK=0 COLUMNS=${1:-130} LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain; }
 out=$(cframe)
 check "a CTX LEFT column follows MEM" "grep -q 'MEM  CTX LEFT' <<<\"\$out\""
 check "Claude Code's context left, from its transcript's last turn (45k of 200k: 77% left)" "grep -q 'claude .*M  ███▓· *77%' <<<\"\$out\""
@@ -750,7 +754,7 @@ tm kill-window -t work:cxb
 # Idle between turns while its agents work in the background (their output under its temp
 # folder written to just now): WORKING, and its peek says it still takes input.
 mkdir -p "$T/ltmp/claude-$UID/-w/s-1/tasks"
-bgframe() { tm run-shell "HOME=$H CLAUDE_CODE_TMPDIR=$T/ltmp REVIVE_PANEL_SEL=$clid COLUMNS=${1:-130} LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
+bgframe() { tm run-shell "HOME=$H CLAUDE_CODE_TMPDIR=$T/ltmp REVIVE_PANEL_SEL=$clid COLUMNS=${1:-130} LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain; }
 clid=$(tm display -p -t work:cl '#{pane_id}')
 : >"$T/ltmp/claude-$UID/-w/s-1/tasks/b1.output"
 out=$(bgframe)
@@ -834,7 +838,7 @@ cllimit() { # cllimit RESET-EPOCH: the turn ends at the limit, its time in UTC
 out=$(cframe 160)
 check "a Claude Code at its usage limit: LIMIT and when it lifts, in this computer's time" "grep -qF 'claude    $(limlabel "$lim")' <<<\"\$out\""
 llid=$(tm display -p -t work:cll '#{pane_id}')
-out=$(tm run-shell "HOME=$H REVIVE_PANEL_SEL=$llid COLUMNS=160 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+out=$(tm run-shell "HOME=$H REVIVE_PANEL_SEL=$llid COLUMNS=160 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 check "and its peek says when the limit lifts" "grep -q 'PEEK · .*usage limit, back ' <<<\"\$out\""
 printf '{"oauthAccount":{"emailAddress":"lim@example.com","planDisplayName":"Max","organizationRateLimitTier":"default_claude_max_5x","hasExtraUsageEnabled":false}}\n' >"$H/.claude.json"
 out=$(cframe 160)
@@ -939,7 +943,7 @@ mkdir -p "$T/mail/links/far.invalid" "$T/mail/links/near.invalid"
 printf 'live-root %s\ncx %s\n' $ia $ib >"$T/mail/links/far.invalid/sessions"
 printf 'dev-root to%s\n' $ia >"$T/mail/links/near.invalid/sessions"
 printf 'allow s:a1@far.invalid s:b1@near.invalid ann@far.invalid bob@near.invalid %s\ndeny s:c1@far.invalid s:d1@near.invalid cat@far.invalid dan@near.invalid %s\n' $(($(date +%s) - 3600)) "$(date +%s)" >"$T/mail/grants"
-tm new-window -d -t work -n acc "env PATH=$T/popbin:\$PATH AGENT_SAY_SSH=false REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n acc "env PATH=$T/popbin:\$PATH AGENT_SAY_SSH=false REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 ascreen() { tm capture-pane -p -t work:acc; }
 wait_a() { for _ in $(seq 1 ${2:-30}); do ascreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 gone_a() { for _ in $(seq 1 30); do ascreen | grep -cF -- "$1" >/dev/null || return 0; sleep 0.2; done; return 1; }
@@ -1057,7 +1061,7 @@ echo live-root@far.invalid >"$G/intros/$gi/from"; echo dev-root@near.invalid >"$
 printf 'may I ask?' >"$G/intros/$gi/intro"; date +%s >"$G/intros/$gi/created"; echo hello >"$G/intros/$gi/held/1"
 printf 'live-root %s\n' $gi >"$G/links/far.invalid/sessions"; printf 'dev-root to%s\n' $gi >"$G/links/near.invalid/sessions"
 tg() { tmux -L "revive-panel-grant-$$" -f /dev/null "$@"; }
-tg new-session -d -s gt -x 120 -y 40 "env AGENT_SAY_SSH=false REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$G/mailbox.md REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tg new-session -d -s gt -x 120 -y 40 "env AGENT_SAY_SSH=false REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$G/mailbox.md REVIVE_PANEL_REFRESH=1 $PANEL"
 tm new-window -d -t work -n gclient "env -u TMUX TERM=tmux-256color tmux -L revive-panel-grant-$$ -f /dev/null attach -t gt"
 gscr() { tm capture-pane -p -t work:gclient "$@"; }
 wait_g() { for _ in $(seq 1 30); do gscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
@@ -1145,7 +1149,7 @@ clear; echo "all done"; sleep 300
 ASK
 tm new-window -d -t work -n asker "$T/bin/codex $T/ask.sh $T/ans1"
 tm set-option -p -t work:asker @agent asker
-tm new-window -d -t work -n qpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n qpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 qscreen() { tm capture-pane -p -t work:qpanel; }
 wait_q() { for _ in $(seq 1 ${2:-40}); do qscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 qhas() { local n; n=$(qscreen | grep -cF -- "$1"); ((n > 0)); }
@@ -1154,7 +1158,7 @@ wait_q 'asker'
 for _ in $(seq 1 20); do qscreen | grep -q '▶ asker' && break; tm send-keys -t work:qpanel Down; sleep 0.3; done
 check "a pane asking a question shows its question in place of the peek" "wait_q 'QUESTION · asker'"
 aid=$(tm display -p -t work:asker '#{pane_id}')
-hq=$(tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_SEL=$aid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+hq=$(tm run-shell "REVIVE_PANEL_PEEK=0 REVIVE_PANEL_SEL=$aid COLUMNS=120 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 check "with the peek hidden, a question still opens it" "grep -q 'QUESTION · asker' <<<\"\$hq\" && ! grep -q '\[p\] show' <<<\"\$hq\""
 # A pane wider than the box (130 columns, the box 96 inside its border): a long line goes on
 # in the rows under it, none of it cut off, the highlighted choice's band and all. A rule the
@@ -1177,7 +1181,7 @@ tm new-window -d -t work -n wideq "$T/bin/codex $T/wide.sh"
 tm set-option -p -t work:wideq @agent wideq
 sleep 0.7
 wid=$(tm display -p -t work:wideq '#{pane_id}')
-wraw=$(tm run-shell "REVIVE_PANEL_SEL=$wid COLUMNS=100 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
+wraw=$(tm run-shell "REVIVE_PANEL_SEL=$wid COLUMNS=100 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once")
 # wbox TITLE: the rows of the box titled TITLE, without its border and scroll bar.
 wbox() { plain <<<"$wraw" | awk -v t="$1" 'index($0, t){on=1; next} on && /^╠|^╚/{exit} on' | sed 's/^║ │ \{0,1\}//; s/[[:space:]]*[▲▼░▓]\{0,1\}║$//; s/[[:space:]]*$//'; }
 wjoin() { wbox "$1" | tr '\n' ' ' | tr -s ' '; }
@@ -1188,7 +1192,7 @@ check "a full-width rule is cut, not wrapped into a stub row" "[[ \$(wbox 'QUEST
 check "the footer is still the box's last row of text" "[[ \$(wbox 'QUESTION · wideq' | grep . | tail -1) == *'Esc to cancel' ]]"
 tm new-window -d -t work -n widep "echo 'peek of a wide pane: every error code is defined across a large monorepo, and the search will produce lots of output ENDP'; sleep 300"
 sleep 0.5
-wraw=$(tm run-shell "REVIVE_PANEL_SEL=$(tm display -p -t work:widep '#{pane_id}') COLUMNS=100 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
+wraw=$(tm run-shell "REVIVE_PANEL_SEL=$(tm display -p -t work:widep '#{pane_id}') COLUMNS=100 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once")
 check "the peek wraps a wide pane's lines too" "wjoin 'PEEK · ' | grep -qF 'the search will produce lots of output ENDP'"
 tm kill-window -t work:wideq; tm kill-window -t work:widep
 # All of it, as in Claude Code: the question, the first and the last choice, and the footer,
@@ -1325,7 +1329,7 @@ tm kill-window -t work:asker
 # tmux that logs what it's asked.
 tm new-window -d -t work -n asker2 "$T/bin/codex $T/ask.sh $T/ans4 nofree"
 tm set-option -p -t work:asker2 @agent asker2
-tm new-window -d -t work -n qshim "env PATH=$T/shim:$PATH REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n qshim "env PATH=$T/shim:$PATH REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 sscreen() { tm capture-pane -p -t work:qshim; }
 wait_s() { for _ in $(seq 1 ${2:-40}); do sscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 wait_s 'asker2' >/dev/null
@@ -1351,7 +1355,7 @@ tm kill-window -t work:asker2
 # shows an empty prompt, so agent-say doesn't wait for someone to finish typing there.
 tm new-window -d -t work -n mrecv "$T/bin/claude -c 'printf \"❯ \"; sleep 300; :'"
 tm set-option -p -t work:mrecv @agent mrecv
-tm new-window -d -t work -n mpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n mpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 mscreen() { tm capture-pane -p -t work:mpanel; }
 for _ in $(seq 1 30); do mscreen | grep -q '▶ mrecv' && break; tm send-keys -t work:mpanel Down; sleep 0.3; done
 tm send-keys -t work:mpanel m; sleep 0.5
@@ -1469,7 +1473,7 @@ bash -c 'exec -a "ssh -o BatchMode=yes linkpoll.example agent-say _sync x" sleep
 bash -c 'exec -a "ssh -o SendEnv=GIT_PROTOCOL git@gitfetch.example git-upload-pack x" sleep 60' & o3=$!
 bash -c 'exec -a "ssh -x -oForwardAgent=no -s sftpcopy.example sftp" sleep 60' & o4=$!
 sleep 0.5
-out=$(tm run-shell "REVIVE_PANEL_OUTSIDE_SSH=1 REVIVE_PANEL_PEEK=0 COLUMNS=140 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+out=$(tm run-shell "REVIVE_PANEL_OUTSIDE_SSH=1 REVIVE_PANEL_PEEK=0 COLUMNS=140 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 check "an ssh session outside tmux is offered for linking" "grep -q 'outside.example · ssh in' <<<\"\$out\""
 check "agent-say's own, git's and sftp's ssh aren't" "! grep -qE 'linkpoll.example|gitfetch.example|sftpcopy.example' <<<\"\$out\""
 kill $o1 $o2 $o3 $o4 2>/dev/null; wait $o1 $o2 $o3 $o4 2>/dev/null
@@ -1482,10 +1486,10 @@ mkdir -p "$T/fakeps"
 	printf 'exit $st\n'
 } >"$T/fakeps/ps"
 chmod +x "$T/fakeps/ps"
-out=$(tm run-shell "PATH=$T/fakeps:\$PATH REVIVE_PANEL_OUTSIDE_SSH=1 REVIVE_PANEL_PEEK=0 COLUMNS=140 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+out=$(tm run-shell "PATH=$T/fakeps:\$PATH REVIVE_PANEL_OUTSIDE_SSH=1 REVIVE_PANEL_PEEK=0 COLUMNS=140 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 check "only your own ssh outside tmux is offered, not another user's" "grep -c 'mine.example · ssh in' <<<\"\$out\" >/dev/null && ! grep -c 'evil.example' <<<\"\$out\" >/dev/null"
 
-tm new-window -d -t work -n sshpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=false REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n sshpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=false REVIVE_PANEL_REFRESH=1 $PANEL"
 sshscreen() { tm capture-pane -p -t work:sshpanel; }
 wait_ssh() { for _ in $(seq 1 40); do sshscreen | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 wait_ssh 'C O N T R O L'
@@ -1603,7 +1607,7 @@ exit 255
 EOF
 } >"$T/livessh"
 chmod +x "$T/livessh"
-tm new-window -d -t work -n livepanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=$T/livessh REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n livepanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=$T/livessh REVIVE_PANEL_REFRESH=1 $PANEL"
 tm new-window -d -t work -n liveremote "bash -c 'exec -a \"ssh live.example\" sleep 300'"
 lvs() { tm capture-pane -p -t work:livepanel; }
 wait_lv() { for _ in $(seq 1 40); do lvs | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
@@ -1662,7 +1666,7 @@ printf '#!/bin/sh\nexit 1\n' >"$T/norowssh" # reached, but its tmux-revive has n
 chmod +x "$T/fakessh" "$T/oldssh" "$T/deadssh" "$T/norowssh"
 st=$(dirname "$AGENT_SAY_MAILBOX")
 mkdir -p "$st/links/far.example"; touch "$st/links/far.example/on"; printf 'far-top\nfar-two\n' >"$st/links/far.example/names"
-far() { tm run-shell "AGENT_SAY_SSH=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain; }
+far() { tm run-shell "AGENT_SAY_SSH=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain; }
 out=$(far "$T/fakessh")
 check "panes are grouped by computer" "grep -q 'this computer' <<<\"\$out\" && grep -q 'FAR.EXAMPLE · linked' <<<\"\$out\""
 check "a linked computer's panes show with their state" "grep -q 'far-top .*top *▸ running' <<<\"\$out\""
@@ -1781,7 +1785,7 @@ check "--rows there: waiting since just now, a turn you typed, is a #wait line s
 check "--rows there: and one an agent-say message started, a" "grep -B3 $'\x1fcl-msg\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Eq '^#wait %[0-9]+ [0-9] a\$'"
 check "--rows there: one whose record says nothing of when, no #wait line" "! grep -B3 $'\x1fcl-idle\x1f' <<<\"\$rows\" | grep -q '^#wait'"
 rm -f "$st/panel/far.example.rows"*
-raw=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
+raw=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once")
 out=$(plain <<<"$raw")
 check "here: a turn you typed, waiting since just now, is bold vivid lime" "grep 'cl-typed' <<<\"\$raw\" | grep -qF $'\e[1m\e[38;5;118m◆ WAITING ON YOU'"
 check "here: one an agent-say message started, done, is AGENT'S TURN DONE in the usual green" "grep 'cl-msg' <<<\"\$raw\" | grep -qF $'\e[92m◆ AGENT'\\''S TURN DONE'"
@@ -1795,7 +1799,7 @@ check "here: AGENT'S TURN DONE leaves a gap before the folder, and the frame is 
 # the panel as it goes on. No key closes it; it goes once the rows are in, for good.
 printf '#!/bin/sh\nsleep 5\nexec %q "$@"\n' "$T/fakessh" >"$T/slowssh"; chmod +x "$T/slowssh"
 rm -f "$st/panel/far.example.rows"*
-tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/slowssh REVIVE_PANEL_LOADBOX=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/slowssh REVIVE_PANEL_LOADBOX=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 lbs() { tm capture-pane -p -t work:lboxp; }
 wait_lb() { for _ in $(seq 1 ${2:-40}); do lbs | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
 check "right after tmux starts, while a linked computer's rows are still coming, a LOADING box is up" "wait_lb '▓ LOADING ▓' && lbs | grep -q 'Loading…'"
@@ -1807,11 +1811,11 @@ sleep 2.5
 check "and it stays closed, the panel whole again" "! lbs | grep -q '▓ LOADING ▓' && lbs | grep -q 'cl-idle .*---'"
 tm kill-window -t work:lboxp
 rm -f "$st/panel/far.example.rows"*
-tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/slowssh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/slowssh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 wait_lb 'cl-idle' 60 && sleep 1
 check "REVIVE_PANEL_LOADBOX=0 (the tests' default): no box" "! lbs | grep -q '▓ LOADING ▓'"
 tm kill-window -t work:lboxp
-tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 wait_lb 'cl-idle' && sleep 1.5
 check "REVIVE_PANEL_LOADBOX=0 (the tests' default): no box" "! lbs | grep -q '▓ LOADING ▓'"
 tm kill-window -t work:lboxp
@@ -1948,7 +1952,7 @@ rows=$(REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/
 check "--rows asked again measures since the last ask, kept there ($(rcpu "$rows" far-spin)%)" "(( \$(rcpu \"\$rows\" far-spin) >= 10 )) && grep -q '^%[0-9]*:[0-9]* [0-9]*\$' $st/panel/ticks && [[ \$(stat -c %a $st/panel/ticks) == 600 ]]"
 rm -f "$st/panel/far.example.rows"
 for c in 80 120 160 200; do
-	out=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=$c LINES=90 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+	out=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=$c LINES=90 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 	((c >= 160)) && check "at $c columns a linked Claude Code shows its account under ACCOUNT, after USER" "grep -q ' NAME *USER *ACCOUNT *VER ' <<<\"\$out\" && grep -q 'cl-fd *[^ ]* *fixture\.acco *' <<<\"\$out\""
 	check "at $c columns a linked busy pane shows its CPU, a linked Claude Code its CTX LEFT, rows exactly $c wide" "grep 'far-spin ' <<<\"\$out\" | grep -q '[░▒▓█][░▒▓█·]* *[1-9][0-9]*%' && grep -q 'cl-idle .*M  [█▓▒░·]\{5\}  50% ║\$' <<<\"\$out\" && grep -q 'cl-fd .* 25% ║\$' <<<\"\$out\" && grep -q 'cl-cwd .* 90% ║\$' <<<\"\$out\" && grep -q 'cl-two .*·····    – ║\$' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '$c ' ]]"
 done
@@ -1956,7 +1960,7 @@ done
 printf '%%5\x1f0:1.0\x1fold-cl\x1fclaude\x1fwaiting\x1fw\x1fmain\x1f42\x1f2097152\x1f1\n' >"$T/oldrows"
 printf '#!/bin/sh\ncat %s\n' "$T/oldrows" >"$T/oldrowssh"; chmod +x "$T/oldrowssh"
 rm -f "$st/panel/far.example.rows"
-out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=120 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=120 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 check "an older row still draws: its CPU meter, percent and memory, a dash for context" "grep -q 'old-cl .*██░··   42%    2.0G  ·····    – ║\$' <<<\"\$out\""
 # An account line from a linked computer is taken only as a name of up to 12 letters, digits
 # and ._+-; any other is skipped, and its row still draws.
@@ -1966,7 +1970,7 @@ check "an older row still draws: its CPU meter, percent and memory, a dash for c
 	printf '#acct %%7 thirteenchars\n%%7\x1f0:3.0\x1facct-long\x1fclaude\x1fwaiting\x1fw\x1fmain\x1f1\x1f1024\x1f1\n'
 } >"$T/oldrows"
 rm -f "$st/panel/far.example.rows"
-out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=200 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=200 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 check "a linked computer's account line shows in ACCOUNT; one with other characters, or too long, does not" "grep -q 'acct-ok .* ok\.name+1 ' <<<\"\$out\" && ! grep -q 'bad;name\|thirteenchar' <<<\"\$out\" && grep -q 'acct-bad ' <<<\"\$out\" && grep -q 'acct-long ' <<<\"\$out\""
 rm -f "$st/panel/far.example.rows"
 # A linked pane at its usage limit (a #limit line before its row: the seconds until it lifts, -
@@ -1981,7 +1985,7 @@ rm -f "$st/panel/far.example.rows"
 	printf '%%9\x1f0:5.0\x1flim-none\x1fclaude\x1fwaiting\x1fw\x1fmain\x1f1\x1f1024\x1f1\n'
 } >"$T/oldrows"
 lim=$(($(date +%s) + 7200))
-out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=160 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=160 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 check "a linked pane at its limit: LIMIT and when it lifts here" "grep -q 'lim-far .*◷ ' <<<\"\$out\" && { grep -qF \"\$(limlabel \$lim)\" <<<\"\$out\" || grep -qF \"\$(limlabel \$((lim + 1)))\" <<<\"\$out\"; }"
 check "its limit lifted there: READY TO RESUME; its plan changed: READY · NEW PLAN" "grep -q 'lim-past .*◆ READY TO RESUME' <<<\"\$out\" && grep -q 'lim-plan .*◆ READY · NEW PLAN' <<<\"\$out\""
 check "a #limit line out of form, or none (an older panel): its row as before" "grep -q 'lim-bad .*--- ' <<<\"\$out\" && grep -q 'lim-none .*--- ' <<<\"\$out\" && ! grep -q 'lim-bad .*◷\|lim-none .*◷' <<<\"\$out\""
@@ -1989,7 +1993,7 @@ check "ready to resume needs you: its computer's heading counts the two" "grep -
 rm -f "$st/panel/far.example.rows"
 for w in cl-none cl-busy cl-idle cl-ask spin cl-fd cl-cwd cl-two cl-two2; do far_tm kill-window -t far:$w; done
 rm -rf "$T/rhome/.claude" "$st/panel/far.example.rows"*
-farsel() { tm run-shell "AGENT_SAY_SSH=$1 REVIVE_PANEL_SEL=$2 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
+farsel() { tm run-shell "AGENT_SAY_SSH=$1 REVIVE_PANEL_SEL=$2 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once"; }
 peekbox() { sed -n '/PEEK · /,/ART · \|MESSAGES/p'; }
 out=$(farsel "$T/fakessh" far-sh@far.example | plain)
 check "the peek at a linked computer's pane shows its screen" "peekbox <<<\"\$out\" | grep -q '^║ *│ far-marker-42'"
@@ -2002,7 +2006,7 @@ check "and an unreachable one has no peek either" "peekbox <<<\"\$out\" | grep -
 # Versions: a linked computer's rows say its version, which its owner's panes show in VER, in the
 # warn colour when it's older than this one's. The headings say no version.
 echo 1.1.0 >"$T/remote-version"; echo 1.2.0 >"$T/local-version"
-farv() { rm -f "$st/panel/far.example.rows"*; tm run-shell "AGENT_SAY_SSH=$1 REVIVE_VERSION_FILE=$T/${2:-local-version} COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
+farv() { rm -f "$st/panel/far.example.rows"*; tm run-shell "AGENT_SAY_SSH=$1 REVIVE_VERSION_FILE=$T/${2:-local-version} COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once"; }
 me=$(id -un)
 raw=$(farv "$T/fakessh") out=$(plain <<<"$raw")
 check "a linked computer's panes show their user, and its version in VER, older in the warn colour" "grep -c 'far-top *$me *1\.1\.0 *top' <<<\"\$out\" >/dev/null && grep -cF $'\\e[93m1.1.0' <<<\"\$raw\" >/dev/null"
@@ -2019,12 +2023,12 @@ check "with this computer's version unknown, none is in the warn colour" "grep -
 printf '#!/bin/bash\nif [[ ${!#} == *--rows ]]; then %q "$@" | grep -v "^#owner \\|^#user "; else exec %q "$@"; fi\n' "$T/fakessh" "$T/fakessh" >"$T/preuserssh"
 chmod +x "$T/preuserssh"
 rm -f "$st/panel/far.example.rows"*
-raw=$(tm run-shell "AGENT_SAY_SSH=$T/preuserssh REVIVE_PANEL_SEL=far-top@far.example REVIVE_VERSION_FILE=$T/local-version COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once") out=$(plain <<<"$raw")
+raw=$(tm run-shell "AGENT_SAY_SSH=$T/preuserssh REVIVE_PANEL_SEL=far-top@far.example REVIVE_VERSION_FILE=$T/local-version COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once") out=$(plain <<<"$raw")
 check "a linked computer from before users: its rows show [U] in VER, in the warn colour, no user" "grep -c '▶ far-top  *\[U\] *top' <<<\"\$out\" >/dev/null && grep -c 'far-sh  *\[U\] *bash' <<<\"\$out\" >/dev/null && grep -cF $'\\e[93m[U]' <<<\"\$raw\" >/dev/null"
 check "and the bar offers U: update" "grep -F '[B]ridge' <<<\"\$out\" | grep -cF '[U]pdate' >/dev/null"
 check "this computer's own panes don't show [U]" "grep -c ' $me *1\.2\.0 *bash' <<<\"\$out\" >/dev/null"
 rm -f "$st/panel/far.example.rows"* "$T/update.cmd"
-tm new-window -d -t work -n oldpanel "env AGENT_SAY_SSH=$T/preuserssh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n oldpanel "env AGENT_SAY_SSH=$T/preuserssh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 oscreen() { tm capture-pane -p -t work:oldpanel; }
 wait_o() { for _ in $(seq 1 ${2:-60}); do oscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
 wait_o 'far-top  *\[U\]' >/dev/null
@@ -2070,7 +2074,7 @@ check "if it can't be asked, the link's names show instead" "grep -q 'far-two *�
 printf '%%9\x1f0:0.0\x1fevil\x1fapp\x1b]52;c;aGk=\x07\x1fpwned\x1ffold\x1fmain\x1f99999\x1fabc\x1f1\nnot a row at all\n' >"$T/hostile"
 printf '#!/bin/sh\ncat %s\n' "$T/hostile" >"$T/hostilessh"; chmod +x "$T/hostilessh"
 rm -f "$st/panel/far.example.rows"
-out=$(tm run-shell "AGENT_SAY_SSH=$T/hostilessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once")
+out=$(tm run-shell "AGENT_SAY_SSH=$T/hostilessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once")
 check "rows from the other side are cleaned and checked" "grep -q 'evil' <<<\"\$out\" && ! grep -q \$'\\e]52' <<<\"\$out\" && ! grep -q 'pwned' <<<\"\$out\" && ! grep -q 'not a row' <<<\"\$out\""
 # A hostile peek: escape sequences, a huge line, far too many lines.
 python3 - "$T/hostilepeek" <<'PY2'
@@ -2091,7 +2095,7 @@ check "and capped: no line past the frame, no more lines than the box" "[[ \$(aw
 printf '#!/bin/bash\nif [[ ${!#} == *--rows* ]]; then head -c 20000000 /dev/zero | tr "\\\\0" A; echo; cat %q; fi\n' "$T/hostile" >"$T/hugessh"; chmod +x "$T/hugessh"
 rm -f "$st/panel/far.example.rows"
 s0=$SECONDS
-out=$(tm run-shell "AGENT_SAY_SSH=$T/hugessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+out=$(tm run-shell "AGENT_SAY_SSH=$T/hugessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 check "a huge reply from over there is cut to 256 KB ($((SECONDS - s0)) s)" "grep -c 'FAR.EXAMPLE' <<<\"\$out\" >/dev/null && (( \$(stat -c %s $st/panel/far.example.rows) <= 262144 && SECONDS - s0 < 30 ))"
 # What's kept from other computers is yours alone; old screens go; no temporary files stay.
 touch -d '-2 minutes' "$st/panel/far.example.peek-77"
@@ -2104,11 +2108,11 @@ check "and no temporary files are left" "! ls $st/panel | grep -cvE '^(ticks|pan
 printf '%%9\x1fbidi\xe2\x80\xae0:0\x1fzw\xe2\x80\x8bname\x1fapp\x1fwaiting\x1ffo\xe2\x81\xa6ld\x1fmain\x1f1\x1f1\x1f1\n' >"$T/bidirows"
 printf '#!/bin/sh\ncat %s\n' "$T/bidirows" >"$T/bidissh"; chmod +x "$T/bidissh"
 rm -f "$st/panel/far.example.rows"
-out=$(tm run-shell "AGENT_SAY_SSH=$T/bidissh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once" | plain)
+out=$(tm run-shell "AGENT_SAY_SSH=$T/bidissh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
 check "bidi overrides and zero-width characters from over there are stripped" "grep -c 'zwname' <<<\"\$out\" >/dev/null && ! grep -c \$'\\u202e\\|\\u200b\\|\\u2066' <<<\"\$out\" >/dev/null"
 # Live: select a pane on the linked computer, and the keys that can't act on it fade.
 rm -f "$st/panel/far.example.rows"
-tm new-window -d -t work -n farpanel "env AGENT_SAY_SSH=$T/fakessh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n farpanel "env AGENT_SAY_SSH=$T/fakessh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 farscreen() { tm capture-pane -p -t work:farpanel; }
 for _ in $(seq 1 60); do farscreen | grep -q 'far-top' && break; sleep 0.25; done
 for _ in $(seq 1 20); do farscreen | grep -q '▶ far-top' && break; tm send-keys -t work:farpanel Down; sleep 0.4; done
@@ -2230,7 +2234,7 @@ far_tm set-option -p -t far:as-deploy @agent as-deploy
 printf '%s %s\n' "$(far_tm display -p -t far:as-deploy '#{pane_pid}')" "$DEPLOY_UID" >>"$T/uidmap"
 rm -f "$st/panel/far.example.rows"* "$st/users/deploy" "$T/far.calls" "$T/update.calls"
 echo 1.1.0 >"$T/remote-version"
-tm new-window -d -t work -n vpanel "env PATH=$T/uidps:$T/usudo:\$PATH AGENT_SAY_SSH=$T/logssh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n vpanel "env PATH=$T/uidps:$T/usudo:\$PATH AGENT_SAY_SSH=$T/logssh REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 rscreen() { tm capture-pane -p -t work:vpanel; }
 wait_r() { for _ in $(seq 1 ${2:-60}); do rscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
 gone_r() { for _ in $(seq 1 20); do rscreen | grep -q -- "$1" || return 0; sleep 0.25; done; return 1; }
@@ -2263,7 +2267,7 @@ far_tm kill-window -t far:as-deploy
 printf '#!/bin/bash\nprintf "%%s\\n" "${!#}" >>%q\nexit 1\n' "$T/ssh.log" >"$T/logssh"; chmod +x "$T/logssh"
 sleep 0.5; rm -f "$st/panel/far.example.rows"*
 tm new-window -d -t work -n farssh "bash -c 'exec -a \"ssh far.example\" sleep 300'"
-tm new-window -d -t work -n farnames "env AGENT_SAY_SSH=$T/logssh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n farnames "env AGENT_SAY_SSH=$T/logssh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 fn() { tm capture-pane -p -t work:farnames; }
 for _ in $(seq 1 60); do fn | grep -q 'far-two *◌ linked' && break; sleep 0.25; done
 for _ in $(seq 1 25); do fn | grep -q '▶ far-two' && break; tm send-keys -t work:farnames Down; sleep 0.4; done
@@ -2365,7 +2369,7 @@ tmux -L "revive-panel-remote-$$" -f /dev/null new-window -d -t far -n ask "$T/bi
 tmux -L "revive-panel-remote-$$" -f /dev/null set-option -p -t far:ask @agent far-ask
 sleep 0.5
 rm -f "$st/panel/far.example.rows" "$st/panel/"*.peek-*
-tm new-window -d -t work -n farq "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n farq "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 fq() { tm capture-pane -p -t work:farq; }
 wait_fq() { for _ in $(seq 1 ${2:-50}); do fq | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 wait_fq 'far-ask' 60 >/dev/null
@@ -2395,7 +2399,7 @@ rv=$(cat "$T/remote-version" 2>/dev/null); echo 9.9.9 >"$T/remote-version"
 tmux -L "revive-panel-remote-$$" -f /dev/null respawn-pane -k -t far:ask "$T/bin/codex $T/ask.sh $T/ans9"
 sleep 0.5
 rm -f "$st/panel/far.example.rows" "$st/panel/"*.peek-*
-tm new-window -d -t work -n farq "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n farq "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 wait_fq 'far-ask' 60 >/dev/null
 for _ in $(seq 1 25); do fq | grep -q '▶ far-ask' && break; tm send-keys -t work:farq Down; sleep 0.4; done
 wait_fq 'QUESTION · far-ask' 100 >/dev/null
@@ -2461,7 +2465,7 @@ printf '#!/bin/sh\n[ "$(eval echo \\${$#})" = pw.example ] && echo "pw.example %
 chmod +x "$T/pwscan"
 printf 'pw.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >>"$T/known_hosts"
 pwl=$st/links/pw.example
-tm new-window -d -t work -n pwpanel "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n pwpanel "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 tm new-window -d -t work -n pwssh "bash -c 'exec -a \"ssh pw.example\" sleep 300'"
 pws() { tm capture-pane -p -t work:pwpanel; }
 wait_pw() { for _ in $(seq 1 ${2:-40}); do pws | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
@@ -2508,7 +2512,7 @@ tm send-keys -t work:pwpanel q
 AGENT_SAY_SSH=$T/pwssh "$ROOT/bin/agent-say" unlink pw.example >/dev/null 2>&1
 grep -v '^pw.example ' "$T/known_hosts" >"$T/known_hosts.new" && mv "$T/known_hosts.new" "$T/known_hosts"
 tm kill-window -t work:pwpanel 2>/dev/null
-tm new-window -d -t work -n pwpanel "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n pwpanel "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 login_win() { tm list-windows -t work -F '#{window_id} #{window_name}' | awk '$2 == "login" && $3 == "pw.example" {print $1}'; }
 link_pw() {
 	wait_pw 'pw.example · ssh in' 50 >/dev/null
@@ -2541,7 +2545,7 @@ chmod +x "$T/slowssh"
 tmux -L "revive-panel-remote-$$" -f /dev/null new-window -d -t far -n slow "$T/bin/codex $T/ask.sh $T/ans7"
 tmux -L "revive-panel-remote-$$" -f /dev/null set-option -p -t far:slow @agent far-slow
 rm -f "$st/panel/far.example.rows" "$st/panel/"*.peek-*
-tm new-window -d -t work -n farq "env AGENT_SAY_SSH=$T/slowssh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n farq "env AGENT_SAY_SSH=$T/slowssh REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 wait_fq 'far-slow' 60 >/dev/null
 for _ in $(seq 1 25); do fq | grep -q '▶ far-slow' && break; tm send-keys -t work:farq Down; sleep 0.4; done
 wait_fqband '❯ 1. Yes' 75 >/dev/null
@@ -2560,7 +2564,7 @@ rm -rf "$st/links/far.example" "$st/panel"
 tmux -L "revive-panel-remote-$$" -f /dev/null kill-server 2>/dev/null
 
 echo "splash"
-tm new-window -d -t work -n splash "env REVIVE_PANEL_SPLASH=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n splash "env REVIVE_PANEL_SPLASH=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL"
 check "the dial-up splash plays" "for _ in \$(seq 1 40); do tm capture-pane -p -t work:splash | grep -q 'CONNECT 33600' && break; sleep 0.1; done; tm capture-pane -p -t work:splash | grep -q 'CONNECT 33600'"
 tm send-keys -t work:splash x
 check "a key skips it to the panel" "for _ in \$(seq 1 30); do tm capture-pane -p -t work:splash | grep -q 'C O N T R O L' && break; sleep 0.2; done; tm capture-pane -p -t work:splash | grep -q 'C O N T R O L'"
@@ -2569,7 +2573,7 @@ tm send-keys -t work:splash q
 echo "hostile text"
 # Folder names, pane names, mail from linked machines and git config all come from elsewhere.
 # None of it may put an escape sequence on the terminal or make the panel run a command.
-raw() { tm run-shell "COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX bash $ROOT/scripts/panel.sh --once"; }
+raw() { tm run-shell "COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once"; }
 evil="$T/evil"$'\e]52;c;cHduZWQ=\a\e[2Jdir'
 mkdir -p "$evil"
 mkdir -p "$T/mail"
@@ -2685,7 +2689,7 @@ tm new-window -d -t work -n ldeploy "sleep 300"; tm set-option -p -t work:ldeplo
 printf '%s 0\n%s %s\n' "$(tm display -p -t work:lroot '#{pane_pid}')" "$(tm display -p -t work:ldeploy '#{pane_pid}')" "$DEPLOY_UID" >>"$T/uidmap"
 echo 1.0.0 >"$T/umail/users/deploy"
 echo 1.2.0 >"$T/local-version"
-uframe() { tm run-shell "PATH=$T/uidps:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_PANEL_PEEK=0 COLUMNS=${2:-140} LINES=50 REVIVE_PANEL_SEL=${1:-none} REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md bash $ROOT/scripts/panel.sh --once"; }
+uframe() { tm run-shell "PATH=$T/uidps:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_PANEL_PEEK=0 COLUMNS=${2:-140} LINES=50 REVIVE_PANEL_SEL=${1:-none} REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md $PANEL --once"; }
 raw=$(uframe) out=$(plain <<<"$raw")
 check "USER and VER come right after NAME" "grep -q ' NAME *USER *VER *APP ' <<<\"\$out\""
 check "a pane where root works with no tmux-revive: root, and [U] in the warn colour" "grep -q 'l-root *root *\[U\] *sleep' <<<\"\$out\" && grep -qF $'\\e[93m[U]' <<<\"\$raw\""
@@ -2701,7 +2705,7 @@ done
 out=$(uframe none 120 | plain)
 check "at 120 columns USER and VER still show" "grep -q 'l-root *root *\[U\]' <<<\"\$out\""
 
-tm new-window -d -t work -n upanel "env PATH=$T/uidps:$T/usudo:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tm new-window -d -t work -n upanel "env PATH=$T/uidps:$T/usudo:\$PATH REVIVE_VERSION_FILE=$T/local-version REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$T/umail/mailbox.md REVIVE_PANEL_REFRESH=1 $PANEL"
 uscreen() { tm capture-pane -p -t work:upanel; }
 wait_u() { for _ in $(seq 1 40); do uscreen | grep -q -- "$1" && return 0; sleep 0.25; done; return 1; }
 gone_u() { for _ in $(seq 1 20); do uscreen | grep -q -- "$1" || return 0; sleep 0.25; done; return 1; }
@@ -2758,7 +2762,7 @@ printf 'fold-a\nfold-b\n' >"$T/smail/links/fold.example/names"
 frows() { printf '#owner fx\n%s\n%s\n' "%1"$'\x1f'"main:7.0"$'\x1f'"fold-a"$'\x1f'"codex"$'\x1f'"asking"$'\x1f'"/tmp"$'\x1f\x1f'"0"$'\x1f'"1000"$'\x1f'"1" "%2"$'\x1f'"main:7.1"$'\x1f'"fold-b"$'\x1f'"bash"$'\x1f'"shell"$'\x1f'"/tmp"$'\x1f\x1f'"0"$'\x1f'"1000"$'\x1f'"0" >"$T/smail/panel/fold.example.rows"; }
 frows
 sleep 0.7
-sframe() { sm run-shell "COLUMNS=130 LINES=${1:-30} REVIVE_PANEL_TICK=${2:-0} REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$SMAIL AGENT_SAY_SSH=$T/deadssh bash $ROOT/scripts/panel.sh --once"; }
+sframe() { sm run-shell "COLUMNS=130 LINES=${1:-30} REVIVE_PANEL_TICK=${2:-0} REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$SMAIL AGENT_SAY_SSH=$T/deadssh $PANEL --once"; }
 plist() { awk '/PANES/{on=1; getline; next} on && / cpu /{exit} on'; } # the list's rows, under its column header
 raw=$(sframe 30 0) out=$(plain <<<"$raw")
 check "PANES with more rows than room scrolls: ▲, a track with its thumb, ▼ on its right edge" "[[ \$(plist <<<\"\$out\" | head -1) == *▲║ && \$(plist <<<\"\$out\" | tail -1) == *▼║ ]] && plist <<<\"\$out\" | grep -q '▓║$' && plist <<<\"\$out\" | grep -q '░║$'"
@@ -2776,7 +2780,7 @@ check "with room for every row, no scroll bar" "plist <<<\"\$out\" | grep -q 'as
 # With PANES the only window drawn (a question selected, no room to show it), J has nowhere
 # to go, and no title offers it.
 aid=$(sm display -p -t s:asker '#{pane_id}')
-out=$(sm run-shell "COLUMNS=130 LINES=16 REVIVE_PANEL_SEL=$aid REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$SMAIL AGENT_SAY_SSH=$T/deadssh bash $ROOT/scripts/panel.sh --once" | plain)
+out=$(sm run-shell "COLUMNS=130 LINES=16 REVIVE_PANEL_SEL=$aid REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$SMAIL AGENT_SAY_SSH=$T/deadssh $PANEL --once" | plain)
 check "with one window drawn, no [⇧J] focus anywhere" "grep -q '▸ PANES' <<<\"\$out\" && ! grep -q 'QUESTION\|MESSAGES' <<<\"\$out\" && ! grep -qF '[⇧J] focus' <<<\"\$out\""
 out=$(sframe 80 | plain)
 check "a linked computer's heading counts its panes and the ones that need you" "grep -q 'FOLD.EXAMPLE · linked · 2 panes · 1 needs you' <<<\"\$out\""
@@ -2797,7 +2801,7 @@ check "a folded computer shows its heading alone, with · 1 needs you" "grep -q 
 rm -f "$REVIVE_DIR/panel/fold/fold.example"
 # The keys, in a live panel.
 frows
-sm new-window -d -t s: -n sp "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$SMAIL AGENT_SAY_SSH=$T/deadssh REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+sm new-window -d -t s: -n sp "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$SMAIL AGENT_SAY_SSH=$T/deadssh REVIVE_PANEL_REFRESH=1 $PANEL"
 sscr() { sm capture-pane -p -t s:sp; }
 wait_sp() { for _ in $(seq 1 ${2:-30}); do sscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 gone_sp() { for _ in $(seq 1 ${2:-30}); do sscr | grep -qF -- "$1" || return 0; sleep 0.2; done; return 1; }
@@ -2908,7 +2912,7 @@ sm kill-server
 
 # D detaches tmux, the client looking at the panel, but asks first and says it all comes back.
 td() { tmux -L "revive-panel-detach-$$" -f /dev/null "$@"; }
-td new-session -d -s dt -x 120 -y 40 "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+td new-session -d -s dt -x 120 -y 40 "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 tm new-window -d -t work -n dclient "env -u TMUX tmux -L revive-panel-detach-$$ -f /dev/null attach -t dt"
 dscr() { td capture-pane -p -t dt:0; }
 wait_d() { for _ in $(seq 1 30); do dscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
@@ -2931,7 +2935,7 @@ td kill-server; tm kill-window -t work:dclient 2>/dev/null
 tn() { tmux -L "revive-panel-ten-$$" -f /dev/null "$@"; }
 tn new-session -d -s ten -x 160 -y 40 "sleep 300" \; set -g base-index 1 \; move-window -s ten:0 -t ten:1
 tn new-window -d -t ten:10 -n tenth "sleep 300"
-tn new-window -d -t ten:2 -n tp "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tn new-window -d -t ten:2 -n tp "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 tscr() { tn capture-pane -p -t ten:tp; }
 wait_t() { for _ in $(seq 1 30); do tscr | grep -qF -- "$1" && return 0; sleep 0.2; done; return 1; }
 wait_t '[10.0]' >/dev/null
@@ -2941,7 +2945,7 @@ tn send-keys -t ten:tp 1
 check "and 1 still window 1" "for _ in \$(seq 1 30); do tscr | grep -q '\[1\.0\] *▶' && break; sleep 0.2; done; tscr | grep -q '\[1\.0\] *▶'"
 # Left to itself, a panel starts with the peek hidden: its title only, offering [P]eek.
 tn send-keys -t ten:tp q; sleep 0.5
-tn new-window -d -t ten:3 -n tq "env -u REVIVE_PANEL_PEEK REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tn new-window -d -t ten:3 -n tq "env -u REVIVE_PANEL_PEEK REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 check "by default the peek starts hidden, its title offering [P]eek" "for _ in \$(seq 1 30); do tn capture-pane -p -t ten:tq | grep -q 'PEEK · .*\[P\]eek' && break; sleep 0.2; done; tn capture-pane -p -t ten:tq | grep -q 'PEEK · .*\[P\]eek' && ! tn capture-pane -p -t ten:tq | grep -qF '[p] hide'"
 # P shows the peek for the selected pane only: another selected, it hides again.
 tq() { tn capture-pane -p -t ten:tq; }
@@ -2954,7 +2958,7 @@ tn send-keys -t ten:tq p
 check "and P shows it for that one" "wait_tq 'PEEK · .*\[p\] hide'"
 # The tip under it changes every TIP_SECS (30; 1 here), to the next one, its key coloured as
 # the key bar's.
-tn new-window -d -t ten:4 -n tr "env -u REVIVE_PANEL_PEEK REVIVE_PANEL_TIP_SECS=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 bash $ROOT/scripts/panel.sh"
+tn new-window -d -t ten:4 -n tr "env -u REVIVE_PANEL_PEEK REVIVE_PANEL_TIP_SECS=1 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 # Each look takes one capture, coloured: the [U]pdate tip's line, plain and coloured, from it.
 tip_u() { for _ in $(seq 1 150); do tn capture-pane -e -p -t ten:tr >"$T/tip.cap"; grep -qF 'Revive on all open sessions. Some user sessions require a manual update.' "$T/tip.cap" && return 0; sleep 0.2; done; return 1; }
 tip_u
