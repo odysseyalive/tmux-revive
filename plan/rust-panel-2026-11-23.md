@@ -544,6 +544,10 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
   This keeps `test/panel.sh:357-359` true.
 - **3.4** Add an opt-in to `bin/tmux-revive`: `REVIVE_PANEL_RS=1 tmux-revive panel` runs the binary. It is off by default.
 
+  **As built:** a bare `panel` only (any argument stays bash's), the binary looked for in `vendor/bin`, then `panel-rs/target/release`. Unlike 6.3 below, this opt-in probes at each launch: the binary must print `ok <VERSION>` for this tree's `VERSION`, or bash runs, and `shopt -s execfail` lets a failed `exec` fall through to bash. There is no install-time probe yet (that is 6.2), and a stale build in a checkout would otherwise draw from scripts of another version. 6.3 replaces this with the install-time probe.
+
+  **Interim hand-over (as built, until Phases 4 and 5):** every key whose `act()` branch isn't ported yet (O M N B U G I S D ?, and Enter on an asking pane) restores the terminal and runs `bash scripts/panel.sh` with `REVIVE_PANEL_HANDOFF=KEY`, `REVIVE_PANEL_SEL=<pane id>` and `REVIVE_PANEL_HSEL=<heading>`. The hook (after `keys()` in `panel.sh`, inert without that variable) gathers, selects that pane, draws, runs `act KEY`, and exits 100, writing its `NOTICES` and `FLASH` to `REVIVE_PANEL_HANDBACK` for the Rust panel to show; an update `U` started keeps the bash panel running until `upd_running` is false. Status 100 resumes the Rust panel with the same selection and a full repaint; any other status (Q, O's `exec tmux attach` or popup exit, Ctrl-C) ends it.
+
   **Ships:** the user can run the Rust panel by choice. The live-panel checks in `test/panel.sh` that need no modal pass under `PANEL=…`. Tier 3 covers the loading box (`lboxp`, `:1798-1814`) and the splash (`:2562`).
 
 ### Phase 4: Every key and modal
