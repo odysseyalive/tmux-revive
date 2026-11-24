@@ -42,10 +42,18 @@ check() {
 	set +u
 	eval "$2" && ok=1
 	set -u
+	# PANEL_ONCE_MARK=FILE: a PANEL that makes FILE when run with --once tags each check with
+	# what it looked at since the last one, [once] or [live], to count the two apart.
+	local tag=""
+	if [[ -n ${PANEL_ONCE_MARK:-} ]]; then
+		tag=" [live]"
+		[[ -e $PANEL_ONCE_MARK ]] && tag=" [once]"
+		rm -f "$PANEL_ONCE_MARK"
+	fi
 	if ((ok)); then
-		printf '  \033[32mpass\033[0m %s\n' "$1"; ((pass++))
+		printf '  \033[32mpass\033[0m %s%s\n' "$1" "$tag"; ((pass++))
 	else
-		printf '  \033[31mFAIL\033[0m %s\n' "$1"; ((fail++))
+		printf '  \033[31mFAIL\033[0m %s%s\n' "$1" "$tag"; ((fail++))
 	fi
 }
 cleanup() {
