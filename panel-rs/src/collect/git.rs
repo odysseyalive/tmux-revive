@@ -45,8 +45,10 @@ impl G {
                 kept.push(b'\n');
             }
             if sh::cmdsub(&kept).is_empty() {
-                // pgit status --porcelain -uno | head -c1
-                let argv = pgit_argv(d, &[b"status", b"--porcelain", b"-uno"]);
+                // A submodule's own config isn't in that check, and status would rehash its files
+                // with that config's filters: never inside one (a submodule whose commit moved
+                // still shows). pgit status --porcelain -uno --ignore-submodules=dirty | head -c1
+                let argv = pgit_argv(d, &[b"status", b"--porcelain", b"-uno", b"--ignore-submodules=dirty"]);
                 let (_, dirty) = sh::run_capped_env(&argv, 1, &[("GIT_OPTIONAL_LOCKS", b"0")]);
                 if !sh::cmdsub(&dirty).is_empty() {
                     b.push(b'*');

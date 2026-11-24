@@ -496,6 +496,20 @@ CX
 			git -C "$g" -c user.name=t -c user.email=t@example.com commit -qm one && echo two >"$g/f"
 	done
 	git -C "$d/work/flt" config filter.x.clean cat
+	# And the Claude Code at its limit in one with a submodule whose own config sets a clean filter
+	# (touching a marker) its .gitattributes uses, with a change in it: git_info must never run
+	# status inside it, so the filter never runs (checked after the scenarios).
+	(
+		export GIT_CONFIG_GLOBAL=/dev/null
+		gg() { git -c user.name=t -c user.email=t@example.com -c protocol.file.allow=always "$@"; }
+		mkdir -p "$d/work/smsub" "$d/work/sm"
+		gg -C "$d/work/smsub" init -q -b main && echo "* filter=x" >"$d/work/smsub/.gitattributes" && echo a >"$d/work/smsub/f" &&
+			gg -C "$d/work/smsub" add . && gg -C "$d/work/smsub" commit -qm s
+		gg -C "$d/work/sm" init -q -b main && gg -C "$d/work/sm" submodule add -q ../smsub sub && gg -C "$d/work/sm" commit -qm p
+		git -C "$d/work/sm/sub" config filter.x.clean "touch $d/submodule-filter-ran; cat"
+		echo b >>"$d/work/sm/sub/f"
+	)
+	tmux -S "$s" respawn-pane -k -t work:cl-limit -c "$d/work/sm" "env HOME=$h bash $d/claude.sh $h idle bbbb-2"
 	tmux -S "$s" respawn-pane -k -t work:cl-busy -c "$d/work/flt" "env HOME=$h bash $d/claude.sh $h busy cccc-3"
 	tmux -S "$s" new-window -d -t work -n cx-wait -c "$d/work/cx" "env HOME=$h CODEX_HOME=$h/.codex bash $d/codex.sh $h $d/work/cx"
 }
@@ -568,6 +582,7 @@ liveonce() {
 	done
 	tmux -S "$LS" kill-server 2>/dev/null
 	echo "  $n scenarios: $sdiff with snapshots that differ, $fdiff with frames that differ"
+	check "git_info ran no filter of a submodule's own config (neither panel)" "[[ ! -e $T/lx/submodule-filter-ran ]]"
 	check "every scenario: A and B gather the same snapshot (CPU and memory masked)" "((sdiff == 0 && n > 0))"
 	check "every scenario: a plain --once of A and of B draw the same frame (CPU and memory masked)" "((fdiff == 0 && n > 0))"
 }
