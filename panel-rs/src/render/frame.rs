@@ -360,7 +360,7 @@ impl Ctx {
                 self.p.peek_sel = Vec::new();
             }
         }
-        let (mut show, mut bar) = (0i64, false);
+        let (mut show, mut bar, mut peek_h) = (0i64, false, 0i64);
         if n != 0 && avail >= 4 && !sst.is_empty() && sst != b"self" {
             if self.p.peek != 0 || sst == b"asking" {
                 show = 1;
@@ -378,7 +378,7 @@ impl Ctx {
         }
         self.wstyle(ask);
         if show != 0 {
-            let peek_h = avail;
+            peek_h = avail;
             avail = 0;
             self.rowl = self.p.wb[1].clone();
             self.rowr = self.p.wb[1].clone();
@@ -410,6 +410,8 @@ impl Ctx {
             self.row(b"", None);
             avail -= 1;
         }
+        // WH: each window's height, the page PgUp and PgDn move by (scroll)
+        self.p.wh = [ph, peek_h - 1, bottom, bottom];
         let lw = (self.iw - 3) * 3 / 5;
         let rw = self.iw - 3 - lw;
         if msgs != 0 {

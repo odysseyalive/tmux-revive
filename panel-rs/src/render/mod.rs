@@ -157,6 +157,8 @@ pub struct State {
     pub bh: i64,
     pub wf: i64,
     pub wb: [Bytes; 4],
+    /// WH: each window's height as draw last drew it (scroll's page)
+    pub wh: [i64; 4],
     pub wk: [Bytes; 4],
     /// NAV: a pane's index, or h:HOST for a heading (Nav::Head)
     pub nav: Vec<Nav>,
