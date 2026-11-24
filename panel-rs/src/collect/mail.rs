@@ -155,8 +155,10 @@ impl G {
             let t = clean(&sh::head1(&sh::path(&[d, b"to"])));
             let b = clean(&sh::cmdsub(&sh::head_c(&sh::path(&[d, b"intro"]), 200)));
             let when = if m("^[0-9]{1,12}$", &c) {
-                // TZ=UTC printf -v when '%(%H:%M)T' "$c"
-                crate::compat::in_zone(b"UTC", || crate::compat::strftime(b"%H:%M", n(&c)))
+                // TZ=UTC printf -v when '%(%H:%M)T' "$c": UTC by arithmetic, no change of zone
+                // (an epoch of 1 to 12 digits is never negative)
+                let t = n(&c).rem_euclid(86400);
+                format!("{:02}:{:02}", t / 3600, t / 60 % 60).into_bytes()
             } else {
                 b"--:--".to_vec()
             };
