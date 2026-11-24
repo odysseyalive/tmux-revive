@@ -815,6 +815,10 @@ check "while its record says it is still busy loading, nothing is typed in (tmux
 printf '{"pid":%s,"sessionId":"s-r","status":"idle"}\n' "$fp" >"$HOME/.claude/sessions/$fp.json"
 for _ in $(seq 30); do [[ -s $T/typed ]] && break; sleep 0.5; done
 check "a session whose question was declined is asked, once loaded, to ask it again" "grep -q '^\\[agent-say notice from tmux-revive [0-9:]*Z\\] The computer shut down while your question was waiting, and it got marked declined. Your user didn.t decline it, so please ask again.\$' $T/typed && grep -q '^## \[tmux-revive -> $rp ' $AGENT_SAY_MAILBOX"
+# That _revive done before the next is set up: still running, it reads the session record
+# rewritten below and types the Artifacts' notice into what the next check reads.
+revive_done() { for _ in $(seq 60); do pgrep -f "_revive $rp " >/dev/null || return 0; sleep 0.5; done; return 1; }
+revive_done
 # A Claude Code's Artifacts whose comment replies didn't come back, as its resumed self
 # records them in the transcript its session record names: their links follow what was cut
 # short, each once. Not the notice about it also open in another pane, nor one from before.
@@ -826,7 +830,6 @@ an_open="didn't resume its automatic replies here: this conversation is also ope
 printf '%s\n' "$(an now K5mSbWWdcmEzBKstaxLDap "$an_lost")" "$(an now EiWEreoo2GN6GDffoonWWh "$an_lost")" "$(an now K5mSbWWdcmEzBKstaxLDap "$an_lost")" \
 	"$(an now OpenElsewhereAAAAAAAAAA "$an_open")" "$(an '-1 hour' OlderOneAAAAAAAAAAAAAA "$an_lost")" >"$HOME/.claude/projects/-r/$RS.jsonl"
 printf '{"pid":%s,"sessionId":"%s","status":"idle"}\n' "$fp" "$RS" >"$HOME/.claude/sessions/$fp.json"
-revive_done() { for _ in $(seq 60); do pgrep -f "_revive $rp " >/dev/null || return 0; sleep 0.5; done; return 1; }
 typed_text() { sed 's/^\[agent-say notice from tmux-revive [0-9:]*Z\] //' "$T/typed"; }
 : >"$T/typed"
 (PATH=${PATH//"$T/bin:"/}; source "$ROOT/scripts/common.sh"; REVIVE_SAY=$ROOT/bin/agent-say; export AGENT_SAY_TEST_REVIVE_WAIT=8; source <(sed -n '/^revive_say() {/,/^}/p' "$ROOT/scripts/restore.sh"); revive_say "$rp" tasks)
