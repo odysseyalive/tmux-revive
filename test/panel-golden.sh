@@ -108,7 +108,9 @@ exec bash --norc --noprofile
 SH
 	tmux -S "$s" -f /dev/null new-session -d -s work -x 130 -y 40 -c "$d/work/shop" "bash $d/shop.sh $d/work/shop"
 	sockets+=("$s")
-	tmux -S "$s" new-window -d -t work -n asker -c "$d/work" "$d/bin/codex $d/ask.sh"
+	# HOME and CODEX_HOME the fixture's: the panel reads a codex pane's sign-in from its own
+	# environment, and the real one's ~/.codex/auth.json has no place in a test.
+	tmux -S "$s" new-window -d -t work -n asker -c "$d/work" "env HOME=$d/home CODEX_HOME=$d/home/.codex $d/bin/codex $d/ask.sh"
 	tmux -S "$s" set-option -p -t work:asker @agent asker
 	tmux -S "$s" new-window -d -t work -n odd -c "$d/work/"$'caf\xe9-\xff' "bash --norc --noprofile"
 	tmux -S "$s" set-option -p -t work:odd @agent "odd-one"

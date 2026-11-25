@@ -29,6 +29,11 @@ check() {
 cleanup() {
 	t kill-server 2>/dev/null
 	for k in sock2 sock3 sock4 sock5; do tmux -S "$T/$k" kill-server 2>/dev/null; done
+	# A config's run-shell still going as its server is killed (revive.tmux's list-keys) starts
+	# that server again, with nothing left to end it, and a daemon.sh can outlive its server:
+	# whatever still runs from this run's folder goes too.
+	sleep 0.5
+	pkill -f -- "$T/" 2>/dev/null
 	[[ -n ${KEEP:-} ]] || rm -rf "$T"
 }
 trap cleanup EXIT
