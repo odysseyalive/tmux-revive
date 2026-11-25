@@ -1737,7 +1737,7 @@ ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/oldkey"
 broken() { mkdir -p "$sk"; touch "$sk/on"; echo "$(ssh-keygen -lf "$T/oldkey.pub" | awk '{print $2}') (ED25519)" >"$sk/fingerprint"
 	echo "stopped: host key changed since you linked it. Press B to link it again" >"$sk/error"; }
 broken
-check "LINKS says the failing link's error plainly" "wait_ssh 'devbox.example stopped: host key changed'"
+check "LINKS says the failing link is not connected, with [B]ridge, not its error" "wait_ssh 'devbox.example · not connected · [B]ridge' && ! sshscreen | grep -c 'host key changed' >/dev/null"
 tm send-keys -t work:sshpanel B; sleep 0.7
 check "B offers the failing link, to link again" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -c 'devbox.example  · stopped: host key changed.* · link again' >/dev/null"
 pick_line() { tm send-keys -t work:sshpanel "$(sshscreen | grep -o "[1-9] *$1" | head -c 1)"; } # the popup line showing that
