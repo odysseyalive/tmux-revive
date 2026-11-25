@@ -727,10 +727,10 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
 
 #### 7.2 as measured
 
-**When and where.** 2026-11-25, on the development machine: `nproc` 4, Linux 7.2.11, tmux 3.8. The build was `phase5` (`bf908c1`: every key and answering in Rust, no hand-over) plus the measuring commits on branch `measure`, built with `cargo build --release`. Everything ran on a private tmux server (`test/measure.sh`), never the default one. Other agents' test suites were running on the machine. The script waits for the 1-minute load to fall under 2 before each part:
+**When and where.** 2026-11-25, on the development machine: `nproc` 4, Linux 7.2.11, tmux 3.8. The build was `phase5` (`bf908c1`: every key and answering in Rust, no hand-over) plus the measuring commits on branch `measure`, built with `cargo build --release`. The keys were measured with `3e7906e` in, and the other parts before it. That commit touches only how a move waits for the peek, which `--once`, the gather and the programs started don't use. Everything ran on a private tmux server (`test/measure.sh`), never the default one. Other agents' test suites were running on the machine. The script waits for the 1-minute load to fall under 2 before each part:
 - draw and gather started at 1.95 and 1.82;
 - programs started at 1.83;
-- the key part gave up after 40 minutes and started at 3.25 (load 2.9 to 3.7 during the idle runs).
+- keys started at 1.55, and the idle runs saw 1.3–1.8. That run is the second one, after the fix below (`3e7906e`). A first run, before the fix and with `MEASURE_WAIT=2400`, gave up waiting after 40 minutes and ran at load ~3: idle p95 35 ms with the peek off, 15 ms with it on; with the 12 loops, p95 62 and 63 ms.
 
 **How.** `bash test/measure.sh [draw|keys|gather|programs]` builds its own fixture: the golden fixture (`fixtures` and `agents_addon` from `test/panel-golden.sh`, taken out with sed) plus `MEASURE_AGENTS` (12) more stand-in Claude Codes, each with a transcript and in a git repository with an uncommitted change. That makes 19 panes, 17 of them agents, and 15 git folders.
 1. **Draw.** A snapshot saved at 200×60 by bash's `--once`, with the shell, the question or an agent selected. Each panel runs `--once` from it with `REVIVE_PANEL_SIZES` holding one `200x60` and then K of them (bash K=21, Rust K=201), 5 runs each. Per frame is (median T(K) − median T(1)) / (K−1). That covers `snap_apply` plus the frame's builders, not the live diff writer. Both panels' frames were checked to be the same bytes, all 60 lines.
@@ -741,11 +741,11 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
 | | Target | bash | Rust | |
 |---|---|---|---|---|
 | Draw per frame, 200×60: shell / question / agent | < 5 ms | 87.7 / 83.8 / 88.8 ms | 0.82 / 1.20 / 0.82 ms | met |
-| Arrow, idle (load ~3), peek off: median / p95 / max | | 61 / 199 / 348 ms | 3.7 / 35.3 / 40.7 ms | |
-| Arrow, idle, peek on | | 68 / 148 / 278 ms | 5.3 / 14.8 / 22.6 ms | |
-| Arrow, 12 loops, peek off | < 20 ms | 487 / 933 / 1458 ms | 14.1 / 62.0 / 95.8 ms | **missed** at p95 (median met) |
-| Arrow, 12 loops, peek on | < 20 ms | 507 / 846 / 937 ms | 31.7 / 63.2 / 79.8 ms | **missed** |
-| Floor (tmux and a pty only), idle / 12 loops | | median 0.45 / 0.38 ms, p95 2.4 / 2.6 ms | | |
+| Arrow, idle, peek off: median / p95 / max | | 47.6 / 75.3 / 192.9 ms | 1.85 / 7.09 / 7.37 ms | |
+| Arrow, idle, peek on | | 47.5 / 68.2 / 74.3 ms | 4.43 / 7.31 / 9.55 ms | |
+| Arrow, 12 loops, peek off | < 20 ms | 387 / 564 / 648 ms | 12.0 / 57.7 / 61.6 ms | **missed** at p95 (median met) |
+| Arrow, 12 loops, peek on | < 20 ms | 396 / 548 / 1071 ms | 27.8 / 49.0 / 50.7 ms | **missed** |
+| Floor (tmux and a pty only), idle / 12 loops | | median 0.51 / 0.46 ms, p95 0.62 / 6.6 ms | | |
 | Gather round, idle: median / p95 (max) | | 169 / 325 ms | 25 / 85 ms | |
 | Gather round, 12 loops | | 1861 / 2152 ms | 204 / 700 ms | |
 | `ps`, `head`, `readlink`, `grep`, `jq` per refresh | none | 1.0, 4.6, 10.4, 2.8, 2.0 | 0, 0, 0, 0, 0 | met |
@@ -753,21 +753,26 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
 | `git` | only on a 15 s miss | 159 runs in bursts at 5.4, 22.1, 36.2–38.9 s | 159 runs in 3 bursts, at 5.6, 21.1, 36.6 s; none between | met |
 | `tmux` per refresh | ≤ bash's | 4.00 (`capture-pane` 2, `list-panes` 1, `show-option` 1) | 4.00, the same | met |
 
-What the 12 loops meant for the load average: 10.6 during the floor run. It was 17–19 at the end of the panels' runs, because that figure also counts the panels themselves and the machine's other work (~3).
+What the 12 loops meant for the load average: 14.8–15.3 at the end of each panel's key run, which also counts the panel and the machine's other work (~1.5). The 9.8 after the floor run is the 1-minute average still climbing, not the load that run saw. Each run's pane was checked at 200×60.
 
 Steady state per round: the Rust gather takes about 25 ms (85 ms when git's 15 s cache runs out), and bash's about 168 ms (324 ms on that round). With the 12 loops, Rust's takes 140–220 ms (530–700 ms on git rounds), and bash's 1.0–2.2 s. In 45 s Rust did 21 refreshes and bash 17: bash's REFRESH is counted from the end of its gather and draw.
 
-**The miss, and its likely cause.** The idle runs miss too: their p95 is 35 ms with the peek off and 15 ms with it on. Rust's frame for a move is held for the selected pane's new screen when the move changes what the peek shows. `request_draw` (`ui/mod.rs`) sets `wait_peek` and a deadline of `ROUND_WAIT` (300 ms) whenever `want_peek()` changes. The frame is then drawn when the peek thread's `tmux capture-pane` comes back. That is one capture, or two for a pane that asks (`qhi`'s coloured one). This matches bash, which runs the same capture inside its draw, so the frame is the same. But it puts a `fork`/`exec` of the tmux client and a round trip to the tmux server into each such move, and under load those take tens of ms. It shows in the row each key moved to:
-- **Peek off, 12 loops.** Moves that change nothing in the peek (the agent rows) took median 9.8 ms, p95 18.9 ms, max 30 ms: within the target. Moves onto the asking pane (two captures) averaged 58 ms. Moves off it (the peek dropped) averaged 18–30 ms, all over 20 ms.
-- **Peek on, 12 loops.** Every move changes the peek, and every row averaged 30–50 ms.
+**The miss, and its likely cause.** Idle, every Rust arrow was under 10 ms. With the 12 loops, the misses come from moves that change what the peek shows. Rust holds the frame for a move until the selected pane's new screen is in. `request_draw` (`ui/mod.rs`) sets `wait_peek` and a deadline of `ROUND_WAIT` (300 ms), and the frame is drawn when the peek thread's `tmux capture-pane` comes back. That is one capture, or two for a pane that asks (`qhi`'s coloured one). This matches bash, which runs the same capture inside its draw, so the frame is the same. But each such move then waits for a `fork`/`exec` of the tmux client and a round trip to the tmux server, and under load those take tens of ms.
 
-The peek thread is a single thread, so a kick that arrives while it is still capturing for the refresh waits for that capture first. That is where the idle p95 comes from.
+The arrows by the row they moved to (`test/measure.sh` prints this) show it. PANES there is: row 10 the shell, 11 the asking pane, 12 a plain shell, 13–15 agents.
+- **Peek off, 12 loops.**
+  - Moves among the agents, where the peek stays off: means 8–11 ms, 1 of 40 over 20 ms.
+  - Onto the asking pane (two captures): mean 50 ms, 15 of 15 over.
+  - Off it, onto row 10 or 12: means 27 and 18 ms, 7 of 8 and 7 of 16 over.
+- **Peek on, 12 loops.** Every move changes the peek, and the rows averaged 24–44 ms.
 
-Possible fixes, not made here because each changes what is drawn:
+Moves off the asking pane drop the peek (`Want::None`), so they have no screen to wait for. Before `3e7906e` they still waited for the peek thread's empty answer: a round trip through another thread, behind any capture it was already doing. That commit draws them at once, and `cargo test` and `panel-golden.sh live` (which runs `live-answer` too) pass with it. Under load it made no clear difference: row 10 averaged 30 ms before and 27 ms after. Those moves are still slow, likely because they redraw most of the screen: the question's section gives way to MESSAGES and LINKS · SAVES, so the render, the write and tmux's parsing of it all grow. That cause is unverified.
+
+Possible fixes for the captures, not made here because each changes what is drawn:
 - draw the selection at once and the peek when its screen comes. That gives an in-between frame bash never draws: the new selection over the old pane's screen, or an empty one.
 - or keep a recent capture of every pane, so a move has nothing to wait for.
 
-Bash misses by far more (median 487 ms), because an arrow waits behind a whole gather and draw.
+Bash misses by far more (median 387 ms with the 12 loops, 47 ms idle), because an arrow waits behind a whole draw, and behind a gather when one is running.
 
 **Independence** (Verification): covered by tests, not measured again here.
 - `test/panel-golden.sh:1155-1156` (`live-answer`): while the Rust panel answers a question with REFRESH 1, a pane opened in another window shows in PANES within 2.5 s, and the question is still being answered.
