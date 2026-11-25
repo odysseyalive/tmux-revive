@@ -1318,9 +1318,13 @@ tm send-keys -t work:qpanel Enter; wait_q 'ANSWERING asker' >/dev/null
 # a panel that goes on looking (the Rust one) shows it, the asking pane's row a row down; the
 # keys typed next still go to the pane answered, never to the one now at its row.
 tm new-window -d -b -t work:asker -n above "cat"
+tm set-option -p -t work:above @agent abovepane
 sleep 2.5 # two refreshes and more: looked at again (bash's panel looks at nothing while it answers)
+if [[ $PANEL != "bash $ROOT/scripts/panel.sh" ]]; then
+	check "a pane opened while answering shows in PANES, a row above the one answered, still selected" "qscreen | awk '/abovepane/ && !a {a = NR} /▶ asker/ {s = NR} END {exit !(a && s && a < s)}'"
+fi
 tm send-keys -t work:qpanel Down
-check "keys reach the question, and the view follows it" "wait_q '❯ 2. No' 15"
+check "keys reach the question, and the view follows it" "wait_q '❯ 2. No' 15 && tm capture-pane -p -t work:asker | grep -q '❯ 2. No'"
 check "a pane opened above the one answered meanwhile got none of them" "! tm capture-pane -p -t work:above | grep -q '[^[:space:]]' && qhas 'ANSWERING asker'"
 tm kill-window -t work:above
 tm send-keys -t work:qpanel Enter
@@ -1440,6 +1444,16 @@ sends() { grep -c -- "send-keys -t $(tm display -p -t work:asker2 '#{pane_id}') 
 check "a digit typed with text after it is sent on its own" "(( \$(sends 2) == 1 && \$(sends xyz) == 1 ))"
 tm send-keys -t work:qshim Enter
 check "and the answer arrives whole" "for _ in \$(seq 1 25); do [[ -s $T/ans4 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans4 2>/dev/null) == 'custom:x2xyz' ]]"
+# The pane answered goes away (its window closed): the looks find no question, twice running,
+# and answering ends as if answered (plan Q7), the panel going on.
+for _ in $(seq 1 25); do sscreen | grep -c ANSWERING >/dev/null || break; sleep 0.2; done
+tm new-window -d -t work -n asker3 "$T/bin/codex $T/ask.sh $T/ans5 nofree"
+tm set-option -p -t work:asker3 @agent asker3
+for _ in $(seq 1 20); do sscreen | grep -c '▶ asker3' >/dev/null && break; tm send-keys -t work:qshim Down; sleep 0.3; done
+wait_s 'QUESTION · asker3' >/dev/null
+tm send-keys -t work:qshim Enter; wait_s 'ANSWERING asker3' >/dev/null
+tm kill-window -t work:asker3
+check "the pane answered gone, answering ends as answered, and the panel goes on" "wait_s 'asker3 has its answer' 15 && ! sscreen | grep -c ANSWERING >/dev/null && tm list-windows -F '#W' | grep -qx qshim"
 tm send-keys -t work:qshim q
 tm kill-window -t work:asker2
 # M writes a message of several lines in its box, and agent-say carries it whole. The agent

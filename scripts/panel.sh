@@ -2841,7 +2841,7 @@ draw_question() { # draw_question LINES
 # capture loses. Read from the pane's coloured capture, SGR codes only; START counts
 # characters of the plain line, which is the same text. Drawn on the QBAND (peek_rows).
 qhi() {
-	local i s p c pos st en on
+	local i=0 s p c pos st en on # i=0: no lines at all (a pane gone while answered), and set -u holds
 	local -a E P
 	QHI=()
 	for i in "${!L[@]}"; do [[ ${L[i]} =~ ^[[:space:]]*←.*→[[:space:]]*$ ]] && break; done
