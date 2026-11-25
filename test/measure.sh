@@ -193,13 +193,13 @@ for i in range(n):
     if got is None:
         miss += 1
     else:
-        res.append((got - t0) * 1000)
+        res.append(((got - t0) * 1000, sel))
     time.sleep(random.uniform(0.15, 0.45))
 p.stdin.close()
 p.wait(timeout=5)
 with open(out, "w") as o:
-    for v in res[1:]:  # the first only finds where the selection is
-        o.write("%.3f\n" % v)
+    for v, r in res[1:]:  # the first only finds where the selection is
+        o.write("%.3f %s\n" % (v, r))  # and the row it moved to, for a closer look (KEEP=1)
 print("    %d samples, %d with no frame in 3 s" % (len(res) - 1, miss), file=sys.stderr)
 PY
 
@@ -248,30 +248,32 @@ keys_run() { # keys_run LABEL PANE MODE
 	python3 "$T/keylat.py" "$S" "$2" "$NKEYS" "$3" "$T/keys.$1"
 	printf '  %-22s median %s ms  p95 %s ms  max %s ms  (n %s)  load %s\n' "$1" $(stats <"$T/keys.$1") "$(load1)"
 }
+# keys_panels LOAD: each panel, with the peek off (as it starts by default: only a question's
+# screen is shown, and looked at when the selection reaches it) and on (REVIVE_PANEL_PEEK=1:
+# every pane's screen, looked at on each move, the frame waiting for it up to ROUND_WAIT)
+keys_panels() {
+	local p pk cmd id
+	for pk in 0 1; do
+		for p in bash rust; do
+			if [[ $p == bash ]]; then cmd=$SH; else cmd=$RS; fi
+			panel_up "k$p" "REVIVE_PANEL_PEEK=$pk $cmd" || continue
+			id=$(tmux -S "$S" display -p -t "work:k$p" '#{pane_id}')
+			sleep 3
+			keys_run "$p-peek$pk-$1" "$id" panel
+			panel_down "k$p"
+		done
+	done
+}
 keys() {
 	echo "2. key-to-screen for an arrow (tmux control mode: send-keys written to the frame's end)"
 	quiet
-	local echo_id p cmd id
+	local echo_id
 	echo_id=$(tmux -S "$S" display -p -t work:echo '#{pane_id}')
 	keys_run floor-idle "$echo_id" echo
-	for p in bash rust; do
-		if [[ $p == bash ]]; then cmd=$SH; else cmd=$RS; fi
-		panel_up "k$p" "MEASURE_GATHER_LOG=$T/gather.$p.live $cmd" || continue
-		id=$(tmux -S "$S" display -p -t "work:k$p" '#{pane_id}')
-		sleep 3
-		keys_run "$p-idle" "$id" panel
-		panel_down "k$p"
-	done
+	keys_panels idle
 	hogs_on
-	keys_run floor-load "$echo_id" echo
-	for p in bash rust; do
-		if [[ $p == bash ]]; then cmd=$SH; else cmd=$RS; fi
-		panel_up "k$p" "MEASURE_GATHER_LOG=$T/gather.$p.load $cmd" || continue
-		id=$(tmux -S "$S" display -p -t "work:k$p" '#{pane_id}')
-		sleep 3
-		keys_run "$p-load$HOGS" "$id" panel
-		panel_down "k$p"
-	done
+	keys_run "floor-load$HOGS" "$echo_id" echo
+	keys_panels "load$HOGS"
 	hogs_off
 }
 
