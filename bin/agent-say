@@ -1662,9 +1662,13 @@ grant_set() { # grant_set allow|deny|none SENDER-SESSION RECIPIENT-SESSION [SEND
 		[[ $1 == none ]] || echo "$1 $2 $3 ${4:-$2} ${5:-$3} $now"; } >"$t"
 	mv "$t" "$GRANTS"
 	index_unlock
-	# Every change, with what made it, so one you didn't make shows (agent-say intros).
-	printf '%s %s %s %s %s %s by pid %s (%s) under %s\n' "$(date -u +%FT%TZ)" "$1" "${4:-$2}" "${5:-$3}" "$2" "$3" "$$" \
-		"$(ps -o args= -p $$ 2>/dev/null | head -c 80)" "$(ps -o args= -p "$PPID" 2>/dev/null | head -c 80)" >>"$GRANTS.log"
+	# Every change, with what made it, so one you didn't make shows (agent-say intros). The
+	# process that runs it (BASHPID: in the panel's code popup that's a fork of its shell, which
+	# has closed by now) and that one's own parent.
+	local me=${BASHPID:-$$} up
+	up=$(ps -o ppid= -p "$me" 2>/dev/null | tr -d ' ')
+	printf '%s %s %s %s %s %s by pid %s (%s) under %s\n' "$(date -u +%FT%TZ)" "$1" "${4:-$2}" "${5:-$3}" "$2" "$3" "$me" \
+		"$(ps -o args= -p "$me" 2>/dev/null | head -c 80)" "$(ps -o args= -p "${up:-$PPID}" 2>/dev/null | head -c 80)" >>"$GRANTS.log"
 }
 # Why an agent asks, as the panel shows it over Approve and Deny: one short line, the --why
 # it gave or, without one, how its message opens (its first line, up to its first sentence's
@@ -1914,8 +1918,10 @@ grant_refresh() { # grant_refresh A B CODE: an allow for the pair (sessions, eit
 	if ((n)); then mv "$t" "$GRANTS"; else rm -f "$t"; fi
 	index_unlock
 	((n)) || die "nothing allowed for $1 and $2"
-	printf '%s refresh %s %s by pid %s (%s) under %s\n' "$(date -u +%FT%TZ)" "$1" "$2" "$$" \
-		"$(ps -o args= -p $$ 2>/dev/null | head -c 80)" "$(ps -o args= -p "$PPID" 2>/dev/null | head -c 80)" >>"$GRANTS.log"
+	local me=${BASHPID:-$$} up
+	up=$(ps -o ppid= -p "$me" 2>/dev/null | tr -d ' ')
+	printf '%s refresh %s %s by pid %s (%s) under %s\n' "$(date -u +%FT%TZ)" "$1" "$2" "$me" \
+		"$(ps -o args= -p "$me" 2>/dev/null | head -c 80)" "$(ps -o args= -p "${up:-$PPID}" 2>/dev/null | head -c 80)" >>"$GRANTS.log"
 	echo "refreshed: $1 and $2 are allowed for $(ttl_text "$SESSION_TTL") from now"
 }
 
