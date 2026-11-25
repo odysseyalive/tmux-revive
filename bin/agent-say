@@ -2946,7 +2946,7 @@ case "$cmd" in
 				# Turned away for its host key: it isn't the computer you confirmed. The link stops.
 				link_log "$d/error.new"
 				if [[ -s "$d/fingerprint" ]] && grep -q 'Host key verification failed' "$d/error.new" 2>/dev/null; then
-					echo "stopped: host key changed since you linked it. Press L to link it again" >"$d/error"
+					echo "stopped: host key changed since you linked it · B to try again" >"$d/error"
 					rm -f "$d/error.new" "$d/login"
 					touch "$d/paused"
 					break

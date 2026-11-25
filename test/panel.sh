@@ -1735,7 +1735,7 @@ check "U on the link's line unlinks it, gone from LINKS, with no box" "for _ in 
 sk=$st/links/devbox.example
 ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/oldkey"
 broken() { mkdir -p "$sk"; touch "$sk/on"; echo "$(ssh-keygen -lf "$T/oldkey.pub" | awk '{print $2}') (ED25519)" >"$sk/fingerprint"
-	echo "stopped: host key changed since you linked it. Press B to link it again" >"$sk/error"; }
+	echo "stopped: host key changed since you linked it · B to try again" >"$sk/error"; }
 broken
 check "LINKS says the failing link is not connected, with [B]ridge, not its error" "wait_ssh 'devbox.example · not connected · [B]ridge' && ! sshscreen | grep -c 'host key changed' >/dev/null"
 tm send-keys -t work:sshpanel B; sleep 0.7
