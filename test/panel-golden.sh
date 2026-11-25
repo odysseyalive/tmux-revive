@@ -772,7 +772,26 @@ live() {
 	done
 	check "and B is the Rust panel again" "! lv_bash $B && [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
 	check "with the same pane selected (asker)" "tmux -S $B capture-pane -p -t work:panel | grep -q '▶.*asker'"
-	check "the hand-overs were N's and Enter's, no other" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter' ]]"
+	# S saves in Rust, and G with nothing to list (the fixture's intro is days old: G's _cull, by
+	# the clock and not REVIVE_PANEL_NOW, clears it) stays in Rust, saying nothing. After the
+	# hand-overs above, so no bash panel gathered fresh shows a screen the other has yet to.
+	lv_step "$A" "$B" s "saved" "S: "
+	lv_step "$A" "$B" g "C O N T R O L" "G with nothing waiting: "
+	check "S and the empty G did not go to the bash panel" "! lv_bash $B && [[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter' ]]"
+	# One made now waits: G goes to bash's box.
+	local tw
+	for tw in lva lvb; do
+		mkdir -p "$T/$tw/state/intros/i9"
+		echo near@far.example >"$T/$tw/state/intros/i9/from"; echo asker@golden >"$T/$tw/state/intros/i9/to"
+		date +%s >"$T/$tw/state/intros/i9/created"; echo "may I see the log?" >"$T/$tw/state/intros/i9/intro"
+	done
+	# Both look again (a key that does nothing), so A's key bar has G too, and the flash before is gone.
+	sleep 5
+	lv_step "$A" "$B" x "rant access" "an intro waiting: "
+	lv_step "$A" "$B" g "LINK AGENTS TOGETHER" "an intro waiting: "
+	check "G with an intro waiting went to the bash panel" "lv_bash $B"
+	lv_step "$A" "$B" Escape "▸ PANES" "an intro waiting: "
+	check "the hand-overs were N's, Enter's and the waiting intro's G, no other: S and the empty G stayed in Rust" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter\\ng' ]]"
 	# O on a pane here: the Rust panel opens it itself, as bash does. A client attached to each
 	# server (from a tmux of their own, at a size the panels' windows ignore) is switched to it.
 	local K=$T/lvk.sock
@@ -782,7 +801,7 @@ live() {
 	for _ in $(seq 1 25); do [[ -n $(tmux -S "$A" list-clients) && -n $(tmux -S "$B" list-clients) ]] && break; sleep 0.2; done
 	lv_step "$A" "$B" O "▸ PANES" ""
 	check "O: tmux's client went to the pane on both (asker)" "[[ \$(tmux -S $A list-clients -F '#{window_name}') == asker && \$(tmux -S $B list-clients -F '#{window_name}') == asker ]]"
-	check "O did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter' ]]"
+	check "O did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter\\ng' ]]"
 	tmux -S "$K" kill-server 2>/dev/null
 	# REVIVE_PANEL_POPUP: the panel closes once O has opened the pane (bash's exit 0).
 	local s
@@ -803,7 +822,7 @@ live() {
 		[[ $s == "$B" ]] && who=B
 		check "$who with REVIVE_PANEL_POPUP: O opens the pane and the panel closes" "for _ in \$(seq 1 25); do tmux -S $s list-windows -F '#W' | grep -qx pop || break; sleep 0.2; done; ! tmux -S $s list-windows -F '#W' | grep -qx pop && [[ \$(tmux -S $s display -p -t work '#I') == 0 ]]"
 	done
-	check "O in the popup did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter' ]]"
+	check "O in the popup did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter\\ng' ]]"
 	# Outside tmux (no TMUX): O selects the pane, puts the terminal back and becomes `tmux attach
 	# -t SESSION`. A tmux on PATH notes an attach and ends there (never your server); the rest
 	# go to the real one.
@@ -830,7 +849,7 @@ live() {
 		[[ $who == B ]] && s=$B
 		check "$who outside tmux: O selects the pane and becomes tmux attach -t work" "for _ in \$(seq 1 25); do tmux -S $s list-windows -F '#W' | grep -qx out || break; sleep 0.2; done; ! tmux -S $s list-windows -F '#W' | grep -qx out && [[ \$(tmux -S $s display -p -t work '#I') == 0 && \$(cat $at/attach.last.$who 2>/dev/null) == 'attach -t work' ]]"
 	done
-	check "O outside tmux did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter' ]]"
+	check "O outside tmux did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter\\ng' ]]"
 	# A pane appearing between the pane list and the agents' look: a tmux on the Rust panel's
 	# PATH opens a window ahead of every other just before the batched look at the agents'
 	# screens. The asking agent's state stays on its own row, never the newcomer's.

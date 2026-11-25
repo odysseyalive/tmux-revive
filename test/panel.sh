@@ -363,7 +363,7 @@ tm send-keys -t work:panel -l 'never sent'; sleep 0.3
 tm send-keys -t work:panel Escape
 check "Esc backs out of a message" "barred screen 'message cancelled' && ! screen | grep -c 'MESSAGE TO' >/dev/null"
 unbarred screen 'message cancelled' >/dev/null
-tm send-keys -t work:panel m; sleep 0.5
+tm send-keys -t work:panel m; wait_screen 'MESSAGE TO' >/dev/null # open first: Ctrl-C at the panel itself quits
 tm send-keys -t work:panel -l 'never sent either'; sleep 0.3
 tm send-keys -t work:panel C-c; sleep 1
 check "Ctrl-C backs out too, and the panel stays open" "tm list-windows -F '#{window_name}' | grep -cx panel >/dev/null && barred screen 'message cancelled' && wait_screen 'C O N T R O L' && ! screen | grep -c 'MESSAGE TO' >/dev/null"
@@ -702,17 +702,20 @@ check "a wait call from before the codex started isn't its own: not WORKING" "[[
 # counts say when each limit resets, to the second, and its plan). LIMIT and when it lifts,
 # though it was waiting on its agents before; READY TO RESUME once that's past, or its plan
 # has changed since; as before once it goes on.
-# limlabel EPOCH [WIDTH]: the STATE cell's words for a limit lifting then, as the panel says it:
-# the time today, with its date another day; the first form that fits WIDTH (19, 18 narrow).
+# limlabel EPOCH [LATER]: the STATE cell's words for a limit lifting then, as the panel says it
+# LATER seconds from now: the time left, counting down in whole minutes rounded up (12m, 3h
+# 20m, past a day 2d 4h). limre EPOCH: the words now or a minute on (a frame drawn a moment
+# after), as an ERE.
 limlabel() {
-	local t c
-	t=$(date -d "@$1" +%I:%M%p) t=${t#0} t=${t,,} t=${t/:00/}
-	[[ $(date -d "@$1" +%F) == "$(date +%F)" ]] || t="$(date -d "@$1" '+%b %-d') $t"
-	if [[ $t == *" "* ]]; then
-		for c in "◷ BACK $t" "◷ $t"; do ((${#c} <= ${2:-19})) && break; done
-	else c="◷ BACK AT $t"; fi
-	echo "$c"
+	local s=$(($1 - $(date +%s) - ${2:-0})) m d h t
+	((s < 0)) && s=0
+	m=$(((s + 59) / 60)) d=$((m / 1440)) h=$((m % 1440 / 60)) m=$((m % 60))
+	if ((d)); then t=${d}d; ((h)) && t+=" ${h}h"
+	elif ((h)); then t=${h}h; ((m)) && t+=" ${m}m"
+	else t=${m}m; fi
+	echo "◷ BACK IN $t"
 }
+limre() { echo "($(limlabel "$1")|$(limlabel "$1" 60))"; }
 # cxmsg EPOCH: Codex's message for a limit lifting then ("Nov 25th, 2026 3:04 PM" another day).
 cxmsg() {
 	local d t=$(date -d "@$1" '+%-I:%M %p')
@@ -733,30 +736,30 @@ cxwait c4
 cxout c4
 cxlimit "$lim"
 out=$(cframe 160)
-check "a Codex stopped at its usage limit after waiting on its agents: LIMIT and when it lifts, not WORKING" "grep -qF 'codex     $(limlabel "$lim")' <<<\"\$out\" && ! grep -q 'codex *. WORKING ' <<<\"\$out\""
+check "a Codex stopped at its usage limit after waiting on its agents: LIMIT and when it lifts, not WORKING" "grep -qE 'codex     $(limre "$lim")' <<<\"\$out\" && ! grep -q 'codex *. WORKING ' <<<\"\$out\""
 rows=$(tm run-shell "HOME=$H REVIVE_DIR=$REVIVE_DIR bash $ROOT/scripts/panel.sh --rows")
 check "--rows: a line before its row with the seconds until it lifts, the row saying waiting" "grep -A3 '^#limit %[0-9]* 7[0-9][0-9][0-9] 0\$' <<<\"\$rows\" | grep -c $'\x1fcodex\x1fwaiting\x1f' >/dev/null"
-# Another day: its date as well as its time ("Nov 24 3:04pm"), LIMIT cut short to fit, then
-# left out on a narrow panel, every row still exactly the frame's width.
+# Another day (a weekly limit): the countdown in days and hours ("2d 23h"), on a wide panel and a
+# narrow one alike, every row still exactly the frame's width.
 far=$((($(date +%s) + 3 * 86400) / 3600 * 3600 + 295))
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
 cxlimit "$far"
 out=$(cframe 160)
-check "a limit lifting another day: its date and time ($(limlabel "$far"))" "grep -qF 'codex     $(limlabel "$far")' <<<\"\$out\" && grep -qF '$(date -d "@$far" '+%b %-d')' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '160 ' ]]"
+check "a limit lifting another day: the countdown in days and hours ($(limlabel "$far"))" "grep -qE 'codex     $(limre "$far")' <<<\"\$out\" && grep -q 'codex .*◷ BACK IN [0-9]d' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '160 ' ]]"
 out=$(cframe 100)
-check "and on a narrow panel, cut to fit ($(limlabel "$far" 18))" "grep -qF '$(limlabel "$far" 18)' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '100 ' ]]"
-# On the hour, no :00 (so LIMIT stays whole for a one-digit hour).
-far=$((far - 295))
+check "and on a narrow panel, whole ($(limlabel "$far"))" "grep -qE '$(limre "$far")' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '100 ' ]]"
+# Three days to the hour: days and hours only, never minutes.
+far=$(($(date +%s) / 3600 * 3600 + 3 * 86400))
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
 cxlimit "$far"
 out=$(cframe 100)
-check "another day on the hour: its date and the hour, no :00 ($(limlabel "$far" 18))" "grep -qF '$(limlabel "$far" 18)' <<<\"\$out\" && ! grep -q 'codex .*◷.*:00' <<<\"\$out\""
+check "days out: days and hours, no minutes ($(limlabel "$far"))" "grep -qE '$(limre "$far")' <<<\"\$out\" && ! grep -q 'codex .*◷.*[0-9]m ' <<<\"\$out\""
 # An older Codex's error event, its wait call still unanswered: the limit outranks the wait.
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
 cxwait c5
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"error","message":"%s"}}\n' "$(cxnow)" "$(cxmsg "$lim")" >>"$cxa"
 out=$(cframe 160)
-check "a usage limit outranks a wait on its agents still unanswered" "grep -qF 'codex     $(limlabel "$lim")' <<<\"\$out\" && ! grep -q 'codex *. WORKING ' <<<\"\$out\""
+check "a usage limit outranks a wait on its agents still unanswered" "grep -qE 'codex     $(limre "$lim")' <<<\"\$out\" && ! grep -q 'codex *. WORKING ' <<<\"\$out\""
 # Its message's time only (no token counts), written three hours ago for two hours ago: the time
 # is the next one after the message, not after now, so it has lifted.
 printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\n' "$(cxnow)" >>"$cxa"
@@ -769,7 +772,7 @@ printf '{"timestamp":"%s","type":"event_msg","payload":{"type":"task_started"}}\
 cxlimit "$lim"
 printf '{"auth_mode":"chatgpt","tokens":{"id_token":"%s.%s.sig"}}\n' "$(b64u '{"alg":"RS256"}')" "$(b64u '{"email":"codex.fixture@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"plus"}}')" >"$CX/auth.json"
 out=$(cframe 160)
-check "the same plan in its sign-in: still LIMIT" "grep -qF 'codex     $(limlabel "$lim")' <<<\"\$out\""
+check "the same plan in its sign-in: still LIMIT" "grep -qE 'codex     $(limre "$lim")' <<<\"\$out\""
 printf '{"auth_mode":"chatgpt","tokens":{"id_token":"%s.%s.sig"}}\n' "$(b64u '{"alg":"RS256"}')" "$(b64u '{"email":"codex.fixture@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"pro"}}')" >"$CX/auth.json"
 out=$(cframe 160)
 check "its plan changed since (plus to pro): READY · NEW PLAN" "grep -q 'codex *◆ READY · NEW PLAN' <<<\"\$out\""
@@ -882,10 +885,10 @@ cllimit() { # cllimit RESET-EPOCH: the turn ends at the limit, its time in UTC
 	printf '{"type":"last-prompt"}\n'
 } >"$H/.claude/projects/-w/s-lim.jsonl"
 out=$(cframe 160)
-check "a Claude Code at its usage limit: LIMIT and when it lifts, in this computer's time" "grep -qF 'claude    $(limlabel "$lim")' <<<\"\$out\""
+check "a Claude Code at its usage limit: LIMIT and when it lifts, in this computer's time" "grep -qE 'claude    $(limre "$lim")' <<<\"\$out\""
 llid=$(tm display -p -t work:cll '#{pane_id}')
 out=$(tm run-shell "HOME=$H REVIVE_PANEL_SEL=$llid COLUMNS=160 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
-check "and its peek says when the limit lifts" "grep -q 'PEEK · .*usage limit, back ' <<<\"\$out\""
+check "and its peek says when the limit lifts, and how long that is" "grep -q 'PEEK · .*usage limit, back .* (in [0-9][0-9hmd ]*)' <<<\"\$out\""
 printf '{"oauthAccount":{"emailAddress":"lim@example.com","planDisplayName":"Max","organizationRateLimitTier":"default_claude_max_5x","hasExtraUsageEnabled":false}}\n' >"$H/.claude.json"
 out=$(cframe 160)
 check "its account's plan changed since the panel saw the limit (Pro to Max): READY · NEW PLAN" "grep -q 'claude *◆ READY · NEW PLAN' <<<\"\$out\""
@@ -2085,7 +2088,7 @@ rm -f "$st/panel/far.example.rows"
 } >"$T/oldrows"
 lim=$(($(date +%s) + 7200))
 out=$(tm run-shell "AGENT_SAY_SSH=$T/oldrowssh COLUMNS=160 LINES=50 REVIVE_PANEL_PEEK=0 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
-check "a linked pane at its limit: LIMIT and when it lifts here" "grep -q 'lim-far .*◷ ' <<<\"\$out\" && { grep -qF \"\$(limlabel \$lim)\" <<<\"\$out\" || grep -cF \"\$(limlabel \$((lim + 1)))\" <<<\"\$out\" >/dev/null; }"
+check "a linked pane at its limit: LIMIT and when it lifts here" "grep -q 'lim-far .*◷ ' <<<\"\$out\" && grep -qE \"\$(limre \$lim)\" <<<\"\$out\""
 check "its limit lifted there: READY TO RESUME; its plan changed: READY · NEW PLAN" "grep -q 'lim-past .*◆ READY TO RESUME' <<<\"\$out\" && grep -q 'lim-plan .*◆ READY · NEW PLAN' <<<\"\$out\""
 check "a #limit line out of form, or none (an older panel): its row as before" "grep -q 'lim-bad .*--- ' <<<\"\$out\" && grep -q 'lim-none .*--- ' <<<\"\$out\" && ! grep -q 'lim-bad .*◷\|lim-none .*◷' <<<\"\$out\""
 check "ready to resume needs you: its computer's heading counts the two" "grep -q 'FAR.EXAMPLE .* 2 needs you' <<<\"\$out\""
