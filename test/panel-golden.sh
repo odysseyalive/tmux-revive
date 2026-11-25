@@ -771,9 +771,14 @@ lv_step() {
 		cmp -s "$T/shot.a" "$T/shot.b" && break
 		sleep 0.2
 	done
+	# LV_PLAIN: the screens compared without their colours (the ? page blinks with TICK, which
+	# it moves on every two seconds by each panel's own clock; its colours are tier 1's)
+	if [[ -n ${LV_PLAIN:-} ]]; then plain <"$T/shot.a" >"$T/shot.pa" && mv "$T/shot.pa" "$T/shot.a"; plain <"$T/shot.b" >"$T/shot.pb" && mv "$T/shot.pb" "$T/shot.b"; fi
 	LV_TEXT=$4 # the text by name, so a quote in it is just a quote
 	check "$5after '$3': the same screen and cursor ($4)" "grep -aqF -- \"\$LV_TEXT\" $T/shot.a && cmp -s $T/shot.a $T/shot.b"
 	[[ -n ${GOLDEN_DEBUG:-} ]] && plain <"$T/shot.a" | grep -E '▶|▓▒░ [A-Z]|^║ \[' | cut -c1-80
+	# the text never came: the bottom of A's screen, to see what it says instead
+	grep -aqF -- "$LV_TEXT" "$T/shot.a" || plain <"$T/shot.a" | tail -n 3 | sed 's/^/      A: /'
 	cmp -s "$T/shot.a" "$T/shot.b" || diff "$T/shot.a" "$T/shot.b" | head -${GOLDEN_DIFF:-6} | sed 's/^/      /'
 }
 live() {
@@ -873,6 +878,48 @@ live() {
 	check "D, Ctrl-C: the box closed and neither panel ended" "[[ \$(lv_cmd $B) == tmux-revive-pan* && \$(lv_cmd $A) == bash ]]"
 	lv_step "$A" "$B" "D 2" "couldn't detach" "D, Yes with no client: "
 	check "N and D did not go to the bash panel" "! lv_bash $B && [[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
+	# M: edit_box as bash's, kept above the question's peek; what's typed and the cursor (in
+	# each shot), Alt-Enter's new line, the cursor moved, a paste of 40 lines that scrolls it,
+	# PgUp back to its top, Esc and Ctrl-C cancelling, then one sent through agent-say.
+	lv_step "$A" "$B" m "MESSAGE TO asker" "M: "
+	lv_step "$A" "$B" "h i Space t h e r e" "hi there" "M: "
+	lv_step "$A" "$B" "M-Enter s e c o n d" "second" "M, Alt-Enter: "
+	lv_step "$A" "$B" "Left Left Up End Home Right" "second" "M, the cursor moved: "
+	lv_step "$A" "$B" "BSpace DC" "second" "M, Backspace and Delete: "
+	{ for i in $(seq -w 1 40); do printf 'line %s\n' "$i"; done; for i in $(seq -f %04g 1 30); do printf 'w%s ' "$i"; done; } >"$T/paste.txt"
+	for s in "$A" "$B"; do tmux -S "$s" load-buffer -b ptest "$T/paste.txt"; tmux -S "$s" paste-buffer -p -d -b ptest -t work:panel; done
+	lv_step "$A" "$B" "" "w0030" "M, a paste of 40 lines: "
+	lv_step "$A" "$B" "PPage PPage PPage" "MESSAGE TO asker" "M, PgUp: "
+	lv_step "$A" "$B" "NPage End" "MESSAGE TO asker" "M, PgDn: "
+	lv_step "$A" "$B" Escape "message cancelled" "M, Esc: "
+	lv_step "$A" "$B" "m x y" "xy" "M: "
+	lv_step "$A" "$B" C-c "message cancelled" "M, Ctrl-C: "
+	check "M, Ctrl-C: the box closed and neither panel ended" "[[ \$(lv_cmd $B) == tmux-revive-pan* && \$(lv_cmd $A) == bash ]]"
+	lv_step "$A" "$B" "m Space Space Enter" "message cancelled" "M, only spaces: "
+	# Sent to odd-one, a shell: agent-say turns it away on both ("not sent"), and the box is
+	# gone (test/panel.sh delivers one to a stand-in agent under either panel).
+	lv_step "$A" "$B" "Down m" "MESSAGE TO odd-one" "M: "
+	lv_step "$A" "$B" "o n e M-Enter t w o Enter" "C O N T R O L" "M, sent: "
+	check "M, sent: the box gone on both, and nothing delivered to a shell" "! grep -aq 'MESSAGE TO' $T/shot.a && ! grep -aq 'MESSAGE TO' $T/shot.b && ! grep -qx two $T/lva/state/mailbox.md && ! grep -qx two $T/lvb/state/mailbox.md"
+	lv_step "$A" "$B" "Up" "QUESTION · asker" "M, back to asker: "
+	# The ? page: scrolling, a page, the ends, an install button's confirm box (n: nothing
+	# runs), Ctrl-C and Esc closing it.
+	LV_PLAIN=1 lv_step "$A" "$B" "?" "HELP · HOW TO USE REVIVE" "?: "
+	LV_PLAIN=1 lv_step "$A" "$B" "j j Down" "HELP · HOW TO USE REVIVE" "?, down: "
+	LV_PLAIN=1 lv_step "$A" "$B" "k Up" "HELP · HOW TO USE REVIVE" "?, up: "
+	LV_PLAIN=1 lv_step "$A" "$B" "NPage Space" "HELP · HOW TO USE REVIVE" "?, a page: "
+	LV_PLAIN=1 lv_step "$A" "$B" "End" "HELP · HOW TO USE REVIVE" "?, End: "
+	LV_PLAIN=1 lv_step "$A" "$B" "PPage Home" "HELP · HOW TO USE REVIVE" "?, Home: "
+	LV_PLAIN=1 lv_step "$A" "$B" "i" "yes, run it" "?, install: "
+	LV_PLAIN=1 lv_step "$A" "$B" "n" "install cancelled · nothing was run" "?, n: "
+	check "?, n: nothing ran" "! tmux -S $A list-windows -F '#W' | grep -qx workforce && ! tmux -S $B list-windows -F '#W' | grep -qx workforce"
+	LV_PLAIN=1 lv_step "$A" "$B" "p" "This runs playwright-mcp's installer" "?, install: "
+	LV_PLAIN=1 lv_step "$A" "$B" "Escape" "install cancelled · nothing was run" "?, Esc on the confirm: "
+	LV_PLAIN=1 lv_step "$A" "$B" "C-c" "▸ PANES" "?, Ctrl-C: "
+	check "?, Ctrl-C: the page closed and neither panel ended" "[[ \$(lv_cmd $B) == tmux-revive-pan* && \$(lv_cmd $A) == bash ]]"
+	LV_PLAIN=1 lv_step "$A" "$B" "? x" "▸ PANES" "?, x: "
+	LV_PLAIN=1 lv_step "$A" "$B" "? Escape" "▸ PANES" "?, Esc: "
+	check "M and ? did not go to the bash panel" "! lv_bash $B && [[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
 	# O on a pane here: the Rust panel opens it itself, as bash does. A client attached to each
 	# server (from a tmux of their own, at a size the panels' windows ignore) is switched to it.
 	local K=$T/lvk.sock
