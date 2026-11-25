@@ -1039,7 +1039,7 @@ mod tests {
             (2, "m", said("that pane has no name; name it on far.example to message it")),
             (3, "N", said("on Zed.example: can't tell which pane that is (update tmux-revive there)")),
             (3, "n", said("on Zed.example: can't tell which pane that is (update tmux-revive there)")),
-            // what can act, acts: O here opens, M and N go on to their box (the hand-over)
+            // what can act, acts: O here opens, M and N go on to their box
             (0, "O", None),
             (0, "M", None),
             (0, "N", None),

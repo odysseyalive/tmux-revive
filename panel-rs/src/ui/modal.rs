@@ -659,9 +659,13 @@ pub fn run_first_line(argv: &[Bytes], envs: &[(&str, Bytes)]) -> Bytes {
     use std::io::Read;
     use std::os::fd::FromRawFd;
     let mut p = [0 as libc::c_int; 2];
-    // close-on-exec: no other command started meanwhile (a collector's) keeps the pipe open
-    if unsafe { libc::pipe2(p.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+    if unsafe { libc::pipe(p.as_mut_ptr()) } != 0 {
         return Vec::new();
+    }
+    // close-on-exec (pipe2 isn't on macOS): no other command started meanwhile (a collector's)
+    // keeps the pipe open
+    for fd in p {
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     }
     let (r, w) = unsafe { (std::fs::File::from_raw_fd(p[0]), std::os::fd::OwnedFd::from_raw_fd(p[1])) };
     let mut c = std::process::Command::new(sh::os(&argv[0]));
