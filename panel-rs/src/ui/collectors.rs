@@ -93,6 +93,9 @@ pub struct Hub {
     pub want: Mutex<Want>,
     /// the files peek_look fetched, removed when the panel closes
     pub peek_files: Mutex<Vec<Bytes>>,
+    /// Rows to ask a linked computer for at the next gather, as bash's RFETCH_T[$h]=0 after
+    /// N, U or an answer there (handed over): Some(None) every computer's, Some(Some(h)) one's
+    pub rows_again: Mutex<Option<Option<Bytes>>>,
     pub panes_k: Kick,
     pub mail_k: Kick,
     pub peek_k: Kick,
@@ -119,6 +122,9 @@ pub fn start(root: &[u8], hub: &Arc<Hub>, wake: RawFd) {
             let mut g = live_g(&r);
             loop {
                 h.panes_k.wait();
+                if let Some(k) = h.rows_again.lock().unwrap().take() {
+                    g.rgate.again(k.as_deref());
+                }
                 g.gather();
                 let gen = Arc::new(Gen {
                     snap: snap_of(&g),

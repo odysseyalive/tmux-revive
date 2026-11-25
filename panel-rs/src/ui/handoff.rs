@@ -67,6 +67,20 @@ impl Ui {
             }
         }
         let _ = std::fs::remove_file(sh::os(&back));
+        // What act() set RFETCH_T[$h]=0 for in the bash panel, so its next gather asks for the
+        // rows at once (a pane renamed or answered there, tmux-revive updated): the same here,
+        // or the change would show only when the 10 s gate next lets a fetch through.
+        let again = match key {
+            b"n" | b"N" | b"enter" => {
+                let h = self.c.p.a("P_HOST", self.c.p.sel).to_vec();
+                (!h.is_empty()).then_some(Some(h))
+            }
+            b"u" | b"U" => Some(None),
+            _ => None,
+        };
+        if again.is_some() {
+            *self.hub.rows_again.lock().unwrap() = again;
+        }
         term::enter();
         self.saved.raw_ish();
         self.prev.clear();

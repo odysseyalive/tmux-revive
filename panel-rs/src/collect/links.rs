@@ -190,6 +190,16 @@ impl Gate {
         self.busy.insert(k.to_vec(), b.clone());
         Some(b)
     }
+    /// RFETCH_T[$h]=0 (every key with None): the next ask may start at once, though not
+    /// while one is still running
+    pub fn again(&mut self, k: Option<&[u8]>) {
+        match k {
+            Some(k) => {
+                self.t.remove(k);
+            }
+            None => self.t.clear(),
+        }
+    }
     /// peek_drop: the ask in flight is let go (its answer thrown away), the next may start at once
     pub fn drop_key(&mut self, k: &[u8]) {
         self.busy.remove(k);
@@ -522,6 +532,22 @@ mod tests {
     //! The hard constraints, each tried against a stand-in ssh that counts its runs (no real
     //! connection is ever made: AGENT_SAY_SSH is the stand-in, agent-say is `false`).
     use super::*;
+
+    /// RFETCH_T[$h]=0: that host's rows may be asked for again at once (every host's with
+    /// None), never while an ask for them still runs
+    #[test]
+    fn again_lets_the_next_ask_through_at_once() {
+        let mut g = Gate::default();
+        let a = g.start(b"a", 100, 10).unwrap();
+        let _b = g.start(b"b", 100, 10).unwrap();
+        a.store(false, Ordering::SeqCst);
+        assert!(g.start(b"a", 101, 10).is_none(), "the gate holds for 10 s");
+        g.again(Some(b"a"));
+        assert!(g.start(b"a", 101, 10).is_some(), "again: at once");
+        assert!(g.start(b"b", 101, 10).is_none(), "b's still running");
+        g.again(None);
+        assert!(g.start(b"b", 101, 10).is_none(), "not while it runs");
+    }
 
     struct Tmp(std::path::PathBuf);
     impl Drop for Tmp {
