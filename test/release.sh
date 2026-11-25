@@ -103,7 +103,15 @@ check "an old installer's rule still finds exactly one tarball line" \
 	"(( \$(grep -cE '^[0-9a-f]{64}  tmux-revive-[0-9]+\\.[0-9]+\\.[0-9]+\\.tar\\.gz\$' $R0/SHA256SUMS) == 1 ))"
 CARGO_FAIL=aarch64-apple-darwin rel --dry-run --key "$T/key" --out "$T/of" 1.0.0; rc=$?
 check "a platform that fails to build fails the release" "((rc != 0)) && said 'no release without every platform' && [[ ! -e $T/of/SHA256SUMS.sig ]]"
-CARGO_UNSIGNED=1 rel --dry-run --key "$T/key" --out "$T/ou" 1.0.0; rc=$?
+# The system's commands less any real rcodesign, so this holds once one is installed.
+mkdir -p "$T/norcs"
+for d in /usr/bin /bin; do
+	for f in "$d"/*; do
+		n=${f##*/}
+		[[ $n == rcodesign || -e $T/norcs/$n || ! -x $f ]] || ln -s "$f" "$T/norcs/$n"
+	done
+done
+CARGO_UNSIGNED=1 PATH="$T/cargo:$T/norcs" bash "$T/repo/scripts/release.sh" --dry-run --key "$T/key" --out "$T/ou" 1.0.0 >"$T/out" 2>&1; rc=$?
 check "an unsigned macOS binary with no rcodesign fails the release, saying why" "((rc != 0)) && said 'no code signature' && said rcodesign"
 CARGO_UNSIGNED=1 PATH="$T/rcs:$PATH" rel --dry-run --key "$T/key" --out "$T/ou2" 1.0.0; rc=$?
 check "with rcodesign it is signed ad hoc, then summed" "((rc == 0)) && (cd $T/ou2 && sha256sum -c --quiet SHA256SUMS)"
