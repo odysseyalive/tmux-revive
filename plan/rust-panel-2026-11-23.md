@@ -725,6 +725,14 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
 
   **As built (2026-11-25):** `test/all.sh`, the local pre-release run (no GitHub CI), now gates on both panels: `panel-golden`'s default `all` runs snaps, render, live-once (tier 2), twins and live (tier 3 and the no-hand-over checks), and a new `panel-rs` entry runs `test/panel.sh` again with `PANEL=` the binary panel-golden just built (or `GOLDEN_B`). The bash `panel` entry stays, so the fallback is tested on every release too.
 
+#### Phase 6's dry run, signed, and the drift check (2026-11-25)
+
+**The dry run with every binary signed.** With `rcodesign` (apple-codesign, in `~/.cargo/bin`) on PATH, `scripts/release.sh --dry-run --key ~/.ssh/tmux_revive_release 9.9.9`, run in a throwaway clone of `measure` on a local `main`, built the tarball and all four panel binaries; zig signed macos-arm64 and rcodesign macos-x86_64 (release.sh refuses an unsigned Mach-O). `SHA256SUMS` has five lines and `sha256sum -c` passes; `ssh-keygen -Y verify` gives a good `tmux-revive-release` signature for the release key. Still unverified: the macOS and arm64 Linux binaries running on real machines (linked without an SDK, `xcrun` warns), the user's to try.
+
+**Drift (Verification, "Drift").** `git rev-list --no-merges 475f43a..measure -- scripts/panel.sh scripts/help.sh scripts/help.txt` lists 21 commits; 14 of them touch no `panel-rs/` file. None is a gap: four are the hand-over itself (`50fba19`, `eb86b67`, `097d783`, `3aec517`), gone from both sides; `cd5d090` (one box at a time) and `3a12a5d` (notices back to the bar) were ported in Phase 4; `88a5349`, `8946cb0`, `a73b00a`, `16275af` are the notice box and the snapshot's frame, which the snaps and render tiers compare byte for byte; `3fc8e94`, `f3b34a7`, `94a6f03` are Phase 0's hooks and the `X_SSH` sort; `62a17b6` is bash's `qhi` crash on an empty screen, whose Rust side the Q7 checks cover on both panels.
+
+**The arrow's miss, decided.** The loaded p95 above stays a miss: both fixes draw a frame bash never draws, against the user's byte-identical screen. Reversible if the user prefers the faster in-between frame.
+
 #### 7.2 as measured
 
 **When and where.** 2026-11-25, on the development machine: `nproc` 4, Linux 7.2.11, tmux 3.8. The build was `phase5` (`bf908c1`: every key and answering in Rust, no hand-over) plus the measuring commits on branch `measure`, built with `cargo build --release`. The keys were measured with `3e7906e` in, and the other parts before it. That commit touches only how a move waits for the peek, which `--once`, the gather and the programs started don't use. Everything ran on a private tmux server (`test/measure.sh`), never the default one. Other agents' test suites were running on the machine. The script waits for the 1-minute load to fall under 2 before each part:
