@@ -335,17 +335,20 @@ restore) shift; "$BASH" "$ROOT/scripts/restore.sh" "$@" ;;
 status) shift; "$BASH" "$ROOT/scripts/restore.sh" --dry-run "$@" ;;
 panel)
 	shift
-	# REVIVE_PANEL_RS=1: the Rust panel (panel-rs) for the live panel, a bare `panel` only; any
-	# argument (--once, and what linked computers and the daemon ask for) is the bash one's. Its
-	# binary, installed (vendor/bin) or built in this tree (panel-rs/target/release), must answer
-	# --probe with this tree's version, or the bash panel runs; so does one that fails to exec.
-	if ((!$#)) && [[ ${REVIVE_PANEL_RS:-} == 1 ]]; then
-		ver=$(head -n 1 "$ROOT/VERSION" 2>/dev/null)
-		for rs in "$ROOT/vendor/bin/tmux-revive-panel" "$ROOT/panel-rs/target/release/tmux-revive-panel"; do
-			[[ -x $rs && $("$rs" --probe 2>/dev/null </dev/null) == "ok $ver" ]] || continue
-			shopt -s execfail
-			exec "$rs"
-		done
+	# REVIVE_PANEL_RS=1 (until it is the default): the Rust panel (panel-rs) for the live panel
+	# and --once; what linked computers and the daemon ask for (--rows --peek --keys --paste
+	# --show --asking --running) is always the bash one's, and REVIVE_PANEL_BASH=1 picks bash.
+	# The installed binary (vendor/bin) was probed by install.sh, so it isn't probed here; a
+	# build in this checkout (panel-rs/target/release) may be stale, so it must answer --probe
+	# with this tree's version. One that fails to exec falls through to bash (execfail).
+	if [[ ${REVIVE_PANEL_RS:-} == 1 && ${REVIVE_PANEL_BASH:-} != 1 ]] &&
+		{ ((!$#)) || [[ $* == --once || ($# == 3 && $1 == --once && $2 == --snapshot) ]]; }; then
+		shopt -s execfail
+		rs=$ROOT/vendor/bin/tmux-revive-panel
+		[[ -x $rs ]] && exec "$rs" "$@"
+		rs=$ROOT/panel-rs/target/release/tmux-revive-panel
+		[[ -x $rs && $("$rs" --probe 2>/dev/null </dev/null) == "ok $(head -n 1 "$ROOT/VERSION" 2>/dev/null)" ]] &&
+			exec "$rs" "$@"
 	fi
 	exec "$BASH" "$ROOT/scripts/panel.sh" "$@" ;;
 list)
