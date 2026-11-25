@@ -717,7 +717,8 @@ impl EbIo for Ui {
         // Resized (bash's WINCH empties TCOLS, and eb_draw draws the panel clean at the new size
         // first, then itself), or the peek under it moved (the panel goes on under the box
         // here): the box drawn again where it now goes.
-        if (self.c.p.tcols, self.c.p.tlines, self.c.p.peek_row) != eb.drawn_for {
+        if self.eb_winch || (self.c.p.tcols, self.c.p.tlines, self.c.p.peek_row) != eb.drawn_for {
+            self.eb_winch = false;
             self.over = None;
             self.box_clean();
             eb.dirty = true;
@@ -747,6 +748,7 @@ impl Ui {
         term::out(b"\x1b[?2004h");
         self.modal_on = true;
         self.eb_on = true;
+        self.eb_winch = false;
         let ok = edit_loop(self, &mut eb);
         term::out(b"\x1b[?2004l\x1b[?25l");
         if let Some(t) = otty {

@@ -398,6 +398,7 @@ impl Ui {
                             // box, too, once it's had a moment: not the old one over it)
                             if self.eb_on {
                                 self.over = None;
+                                self.eb_winch = true;
                             }
                             term::out(b"\x1b[2J");
                             self.prev.clear();

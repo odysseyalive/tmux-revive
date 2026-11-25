@@ -142,6 +142,8 @@ pub struct Ui {
     modal_on: bool,
     /// edit_box is up: a resize takes its box off until it's drawn again at the new size
     eb_on: bool,
+    /// WINCH came while edit_box was up (bash's TCOLS=""): its box is drawn again
+    eb_winch: bool,
     /// The ? page is up: it moves TICK itself (every other second), the panel's clock doesn't
     help_on: bool,
     /// pick's PICKED and PKEY, ask's REPLY
@@ -957,6 +959,7 @@ pub fn run(root: &[u8]) -> ! {
         over: None,
         modal_on: false,
         eb_on: false,
+        eb_winch: false,
         help_on: false,
         picked: Vec::new(),
         pkey: Vec::new(),
