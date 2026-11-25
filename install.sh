@@ -203,6 +203,82 @@ fetch_release() {
 	[ "$(cat "$1/src/VERSION" 2>/dev/null)" = "$VER" ] || die "$file doesn't hold version $VER; refusing"
 }
 
+# panel_bin: the Rust panel's binary into $tmp/src/vendor/bin (moved into $APP with the rest),
+# checked and probed, or nothing: on any failure it is deleted, said, and the bash panel runs.
+# Never dies. A release install takes its prebuilt asset, checked against the release's signed
+# SHA256SUMS (passed on by the outer installer as _REVIVE_SUMS; an older outer one passes
+# nothing, and then it is fetched and its signature checked here). An install from a checkout
+# (REVIVE_SOURCE alone) takes that checkout's build if it is newer than its source. Following a
+# branch (REVIVE_REF) has no assets. Nothing here compiles.
+panel_bin() {
+	pb=$tmp/src/vendor/bin/tmux-revive-panel
+	pv=$(cat "$tmp/src/VERSION" 2>/dev/null) || pv=""
+	is_version "$pv" || return 0
+	case ${_REVIVE_ORIGIN:-} in
+	"release v"*)
+		case "$OS-$(uname -m)" in
+		Linux-x86_64) plat=linux-x86_64 ;;
+		Linux-aarch64 | Linux-arm64) plat=linux-arm64 ;;
+		Darwin-arm64) plat=macos-arm64 ;;
+		Darwin-x86_64) plat=macos-x86_64 ;;
+		*) return 0 ;;
+		esac
+		pa=tmux-revive-panel-$pv-$plat
+		( release_base ) >/dev/null 2>&1 || { warn "the panel's binary: no release to fetch it from; the bash panel will run"; return 0; }
+		release_base
+		ps=${_REVIVE_SUMS:-}
+		if [ -z "$ps" ] || [ ! -f "$ps" ]; then
+			# An outer installer from before the binary: check the release's SHA256SUMS here.
+			ps=$tmp/panel-sums/SHA256SUMS
+			mkdir -p "$tmp/panel-sums"
+			printf '%s\n' "$ALLOWED_SIGNERS" >"$tmp/panel-sums/allowed_signers"
+			if ! rget "tags/v$pv" SHA256SUMS "$ps" || ! rget "tags/v$pv" SHA256SUMS.sig "$ps.sig" ||
+				! ssh-keygen -Y verify -f "$tmp/panel-sums/allowed_signers" -I "$NS" -n "$NS" -s "$ps.sig" <"$ps" >/dev/null 2>&1; then
+				warn "couldn't check release v$pv's signed SHA256SUMS for the panel's binary; the bash panel will run"
+				return 0
+			fi
+		fi
+		want=$(awk -v n="$pa" 'NF == 2 && $2 == n && $1 ~ /^[0-9a-f]+$/ && length($1) == 64 { print $1 }' "$ps") || want=""
+		# A release without binaries for this computer: the bash panel, nothing to say.
+		[ -n "$want" ] && [ "$(printf '%s\n' "$want" | wc -l)" -eq 1 ] || return 0
+		mkdir -p "$tmp/src/vendor/bin"
+		if ! rget "tags/v$pv" "$pa" "$pb"; then
+			rm -f "$pb"
+			warn "couldn't download the panel's binary ($pa); the bash panel will run"
+			return 0
+		fi
+		if [ "$(sha256 "$pb")" != "$want" ]; then
+			rm -f "$pb"
+			warn "the panel's binary ($pa) doesn't match its signed checksum; not installed, the bash panel will run"
+			return 0
+		fi
+		;;
+	"")
+		[ -n "${REVIVE_SOURCE:-}" ] || return 0
+		pc=$REVIVE_SOURCE/panel-rs/target/release/tmux-revive-panel
+		[ -f "$pc" ] || return 0
+		if [ -n "$(find "$REVIVE_SOURCE/panel-rs/src" "$REVIVE_SOURCE/panel-rs/Cargo.toml" "$REVIVE_SOURCE/panel-rs/Cargo.lock" -newer "$pc" 2>/dev/null | head -n 1)" ]; then
+			warn "panel-rs/target/release/tmux-revive-panel is older than panel-rs/src (cargo build --release); the bash panel will run"
+			return 0
+		fi
+		mkdir -p "$tmp/src/vendor/bin"
+		cp "$pc" "$pb" || { rm -f "$pb"; warn "couldn't copy $pc; the bash panel will run"; return 0; }
+		;;
+	*) return 0 ;;
+	esac
+	chmod 0755 "$pb" || :
+	# The probe: a binary that won't run here (too old a glibc, musl, an unsigned macOS
+	# binary) or that belongs to another version is not installed.
+	if have timeout; then got=$(timeout 10 "$pb" --probe 2>/dev/null </dev/null) || got=""
+	else got=$("$pb" --probe 2>/dev/null </dev/null) || got=""; fi
+	if [ "$got" != "ok $pv" ]; then
+		rm -f "$pb"
+		warn "the panel's binary didn't pass its check here (--probe: ${got:-no answer}, wanted: ok $pv); not installed, the bash panel will run"
+		return 0
+	fi
+	say "the panel's binary checks out (tmux-revive-panel $pv)"
+}
+
 # The config tmux actually loads: the first of these that exists.
 tmux_conf() {
 	for f in "$HOME/.tmux.conf" "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf"; do
@@ -693,12 +769,13 @@ main() {
 			c=$(git -C "$REVIVE_SOURCE" rev-parse HEAD 2>/dev/null) && is_sha "$c" && origin="$origin (commit $c)"
 		fi
 		mkdir -p "$tmp/src"
-		(cd "$REVIVE_SOURCE" && tar cf - --exclude=.git --exclude=.claude --exclude=vendor .) | (cd "$tmp/src" && tar xf -)
+		(cd "$REVIVE_SOURCE" && tar cf - --exclude=.git --exclude=.claude --exclude=vendor --exclude=./panel-rs/target .) | (cd "$tmp/src" && tar xf -)
 	elif [ -z "$REF" ]; then
 		# The verified release installs itself: its own installer does the setup, as a
 		# download of it would, and this one never trusts anything it didn't check.
 		fetch_release "$tmp"
-		_REVIVE_ORIGIN="release v$VER (signature verified)" REVIVE_SOURCE="$tmp/src" REVIVE_REF="" REVIVE_VERSION="" \
+		_REVIVE_ORIGIN="release v$VER (signature verified)" _REVIVE_SUMS="$tmp/release/SHA256SUMS" \
+			REVIVE_SOURCE="$tmp/src" REVIVE_REF="" REVIVE_VERSION="" \
 			sh "$tmp/src/install.sh" "$@"
 		exit
 	else
@@ -739,6 +816,7 @@ main() {
 			pkg_install jq || die "install jq, then rerun"
 		fi
 	fi
+	panel_bin || :
 
 	# ----------------------------------------------------------------- install
 	mkdir -p "$DATA"
