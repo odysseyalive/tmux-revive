@@ -1137,6 +1137,27 @@ tg send-keys -t gt:0 Escape
 check "Esc on that box brings the list back as it was, alone" "same_box gpane \"\$glist\""
 tg send-keys -t gt:0 Escape
 check "and Esc on the list closes it: no box" "for _ in \$(seq 1 30); do [[ \$(nboxes gpane) == 0 ]] && break; sleep 0.2; done; [[ \$(nboxes gpane) == 0 ]]"
+# The same for Refresh's code popup, from an approved one's box.
+# Made 29.5 minutes ago: its time left (in its title) holds still for the half minute this takes.
+echo "allow s:a1@far.invalid s:b1@near.invalid ann@far.invalid bob@near.invalid $(($(date +%s) - 1770))" >"$G/grants"
+tg send-keys -t gt:0 g; wait_g 'APPROVED' >/dev/null; tg send-keys -t gt:0 2; wait_g '1  Refresh' >/dev/null; sleep 0.3
+gbox=$(boxof gpane)
+tg send-keys -t gt:0 1
+check "Refresh's code popup opens over the panel drawn clean too" "wait_g 'press Enter to refresh' && [[ \$(nboxes gpane) == 0 && \$(nboxes gscr) == 1 ]] && ! gpane | grep -cF 'Remove' >/dev/null"
+tm send-keys -t work:gclient Escape
+check "and Esc on it brings back Refresh or Remove, alone" "same_box gpane \"\$gbox\" && same_box gscr \"\$gbox\""
+tg send-keys -t gt:0 Escape; wait_g 'LINK AGENTS TOGETHER' >/dev/null; tg send-keys -t gt:0 Escape
+for _ in $(seq 1 30); do [[ $(nboxes gpane) == 0 ]] && break; sleep 0.2; done
+rm -f "$G/grants"
+# B's login popup, from ATTACH SERVERS (a link whose login dropped), over the panel drawn
+# clean. No key was confirmed for it, so the login ends at once, in a note in the popup.
+mkdir -p "$G/links/login.invalid"; touch "$G/links/login.invalid/on" "$G/links/login.invalid/login"
+tg send-keys -t gt:0 B; wait_g 'ATTACH SERVERS' >/dev/null; wait_g '1  login.invalid' >/dev/null
+tg send-keys -t gt:0 1
+check "B's login popup opens over the panel drawn clean: ATTACH SERVERS is gone from under it" "wait_g \"Couldn't log in to login.invalid\" && [[ \$(nboxes gpane) == 0 ]] && ! gpane | grep -cF 'ATTACH SERVERS' >/dev/null"
+tm send-keys -t work:gclient Enter
+check "and once it closes, nothing comes back: no box" "for _ in \$(seq 1 30); do gscr | grep -cF \"Couldn't log in\" >/dev/null || break; sleep 0.2; done; sleep 0.5; [[ \$(nboxes gpane) == 0 && \$(nboxes gscr) == 0 ]]"
+rm -rf "$G/links/login.invalid"
 tg send-keys -t gt:0 g; wait_g 'WAITING' >/dev/null; tg send-keys -t gt:0 1; wait_g '1  Approve' >/dev/null; tg send-keys -t gt:0 1
 wait_g 'and press Enter' >/dev/null
 gcode=$(gscr | grep -oE 'Type [0-9]{4}' | grep -oE '[0-9]{4}')
@@ -2858,8 +2879,9 @@ hl_u() { local n i; n=$(uscreen | grep -o "[1-9] *$1" | head -c 1); for ((i = 1;
 hl_u 'root  '; tm send-keys -t work:upanel i
 check "I on root's line shows the install command to run in root's pane" "wait_u \"Run this in root's pane:\" && uscreen | grep -cF -- '$INSTALL_CMD' >/dev/null"
 check "and copies it, with no sudo" "[[ \$(tm show-buffer) == '$INSTALL_CMD' ]] && wait_u 'Copied'"
+check "the note opens alone, over the panel drawn clean: UPDATE is gone from under it" "[[ \$(nboxes uscreen) == 1 ]] && ! uscreen | grep -cF '▓ UPDATE ▓' >/dev/null"
 tm send-keys -t work:upanel x
-check "a key closes it, back to the list" "gone_u \"Run this in root's pane:\" && wait_u '▓ UPDATE ▓'"
+check "a key closes it, back to the list, alone" "gone_u \"Run this in root's pane:\" && wait_u '▓ UPDATE ▓' && [[ \$(nboxes uscreen) == 1 ]]"
 tm send-keys -t work:upanel Down; sleep 0.2; tm send-keys -t work:upanel I
 check "I on deploy's, with an older version: tmux-revive update, copied" "wait_u \"Run this in deploy's pane:\" && uscreen | grep -c '│* *tmux-revive update *║' >/dev/null && [[ \$(tm show-buffer) == 'tmux-revive update' ]]"
 tm send-keys -t work:upanel x
