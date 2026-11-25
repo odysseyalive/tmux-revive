@@ -1309,7 +1309,7 @@ twins) twins ;;
 live) live ;;
 live-ubg) build_b && live_ubg ;; # U, B and G alone, as live ends with them
 live-answer) build_b && live_answer ;; # answering alone, as live runs it before U, B and G
-all) snaps; render; twins ;;
+all) snaps; render; liveonce; twins; live ;; # tier 2 (live-once) and the live twins gate a release (plan 7.3)
 *) echo "usage: panel-golden.sh [snaps|render|live-once|twins|live|live-ubg|live-answer]" >&2; exit 2 ;;
 esac
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

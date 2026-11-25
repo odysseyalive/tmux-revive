@@ -707,6 +707,8 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
 ### Phase 7: Default on, measure, and keep bash honest
 
 - **7.1** Turn routing on by default: drop 6.3's `REVIVE_PANEL_RS=1` condition.
+
+  **As built (2026-11-25):** `bin/tmux-revive panel` (bare, or `--once [--snapshot F]`) runs the binary unless `REVIVE_PANEL_BASH=1`: `vendor/bin`'s unprobed, else a checkout's `panel-rs/target/release` build only if it answers `--probe` with this tree's VERSION; otherwise, or when `exec` fails, bash. `REVIVE_PANEL_RS` is gone. `test/release.sh`'s dispatcher checks run with no variable set and expect the binary; `REVIVE_PANEL_BASH=1`, each remote flag, a non-executable, unexecutable or missing binary, and a checkout build of another version still end in bash. The user-facing lines (README "Open the panel", docs/COMMANDS.md "Control panel") went through oa-work for the user's voice.
 - **7.2** Measure against the baseline on the same machine and load:
   - draw time per frame;
   - key-to-screen time;
@@ -720,6 +722,8 @@ Phase 0 edits `scripts/panel.sh` more than a pair of `--once` hooks: the snapsho
   - `tmux` per refresh no more than bash's own, because the argv is kept the same: bash runs `list-panes` (`:1728`), the batched agent capture (`:1650`), `show-option @revive-interval` (`:2925`), the peek or question capture (`:2621`/`:2737`) and, on a question with a tab bar, `qhi`'s capture (`:2759`): four or five. Fewer comes only with control mode, later;
   - on macOS, `ps` and `lsof` stay, as bash's fallback has them (`:1763-1771`, `:1155`).
 - **7.3** The keep-both-in-step rule is already in force by now (it started per function in Phase 1). From here, tier 2 is a release gate.
+
+  **As built (2026-11-25):** `test/all.sh`, the local pre-release run (no GitHub CI), now gates on both panels: `panel-golden`'s default `all` runs snaps, render, live-once (tier 2), twins and live (tier 3 and the no-hand-over checks), and a new `panel-rs` entry runs `test/panel.sh` again with `PANEL=` the binary panel-golden just built (or `GOLDEN_B`). The bash `panel` entry stays, so the fallback is tested on every release too.
 
 ## The cost of keeping both in step
 

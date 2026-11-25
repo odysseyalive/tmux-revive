@@ -47,9 +47,9 @@ t split-window -h -t work:1 -c /tmp 2>/dev/null || t split-window -h -t work -c 
 t send-keys -t work:0.1 'echo marker-from-before-reboot' Enter
 t new-window -t work -n pager -c "$T/proj" "less /etc/hostname"
 t new-session -d -s agent -c "$T/proj"
-# The panel, the way `tmux-revive panel` runs it: bash .../scripts/panel.sh, or with
-# REVIVE_PANEL_RS=1 in the environment the Rust panel's binary (vendor/bin, or a build in
-# panel-rs/target/release that answers --probe with this tree's VERSION).
+# The panel, the way `tmux-revive panel` runs it: the Rust panel's binary (vendor/bin, or a
+# build in panel-rs/target/release that answers --probe with this tree's VERSION), or with
+# none, or REVIVE_PANEL_BASH=1 in the environment, bash .../scripts/panel.sh.
 export AGENT_SAY_MAILBOX=$T/mail/mailbox.md AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false REVIVE_PANEL_SPLASH=0 REVIVE_PANEL_LOADBOX=0 AGENT_SAY_REVIVE_GAP=0
 t new-window -d -t agent -n panel -c "$T/proj" "$ROOT/bin/tmux-revive panel"
 t send-keys -t agent "$T/bin/claude --model opus 'do not resend this prompt'" Enter

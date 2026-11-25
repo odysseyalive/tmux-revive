@@ -128,6 +128,11 @@ tmux-revive panel
 Run it inside tmux. To open it with a key instead, see `@revive-panel-key` under
 [Settings](#settings).
 
+The panel is a small program that ships prebuilt with each release. If it won't
+run on your computer, tmux-revive falls back to the shell version, which looks
+and works the same. And if you'd rather use the shell version anyway, run
+`REVIVE_PANEL_BASH=1 tmux-revive panel`.
+
 Remember the old BBS screens? This is a live one for every pane. It shows
 what's running in each, and whether each AI agent is working, waiting on you,
 or stuck on a question before it can go on. CPU, memory and git status are

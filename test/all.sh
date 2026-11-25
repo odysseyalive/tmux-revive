@@ -4,20 +4,24 @@
 # GOLDEN_B, a built one) and compares its frames with bash's.
 #   bash test/all.sh            all suites
 #   bash test/all.sh panel e2e  just those
+# panel-rs is test/panel.sh again with the Rust panel (PANEL=, built by panel-golden first).
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 export TERM=${TERM:-xterm-256color}
 
 suites=("$@")
-((${#suites[@]})) || suites=(e2e agent-say panel panel-golden release)
+((${#suites[@]})) || suites=(e2e agent-say panel panel-golden panel-rs release)
 
 declare -A result
 failed=0
 for s in "${suites[@]}"; do
 	printf '\n\033[1m== %s ==\033[0m\n' "$s"
 	start=$SECONDS
-	if bash "test/$s.sh"; then result[$s]="pass"; else result[$s]="FAIL"; failed=1; fi
+	if [[ $s == panel-rs ]]; then
+		rs=${GOLDEN_B:-$ROOT/panel-rs/target/release/tmux-revive-panel}
+		if [[ -x $rs ]] && PANEL=$rs PANEL_ONCE_MARK=1 bash test/panel.sh; then result[$s]="pass"; else result[$s]="FAIL"; failed=1; fi
+	elif bash "test/$s.sh"; then result[$s]="pass"; else result[$s]="FAIL"; failed=1; fi
 	result[$s]+=" ($((SECONDS - start))s)"
 done
 

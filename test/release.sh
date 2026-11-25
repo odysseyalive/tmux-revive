@@ -169,26 +169,25 @@ pan() { # pan [VAR=VALUE...] [ARG...]: what `tmux-revive panel ARG...` ran
 	cat "$T/out"
 }
 for a in "" "--once" "--once --snapshot $T/x"; do
-	check "REVIVE_PANEL_RS=1 panel${a:+ $a}: the binary" "[[ \$(pan REVIVE_PANEL_RS=1 $a) == 'rust-panel $a' ]]"
+	check "panel${a:+ $a}: the binary" "[[ \$(pan $a) == 'rust-panel $a' ]]"
 done
-check "without REVIVE_PANEL_RS: bash" "[[ \$(pan) == 'bash-panel ' ]]"
-check "REVIVE_PANEL_BASH=1: bash" "[[ \$(pan REVIVE_PANEL_RS=1 REVIVE_PANEL_BASH=1) == 'bash-panel ' ]]"
+check "REVIVE_PANEL_BASH=1: bash" "[[ \$(pan REVIVE_PANEL_BASH=1) == 'bash-panel ' ]]"
 for a in --rows "--peek %1 5" --keys --paste --show --asking --running "--once --rows"; do
-	check "panel $a: always bash" "[[ \$(pan REVIVE_PANEL_RS=1 $a) == 'bash-panel $a' ]]"
+	check "panel $a: always bash" "[[ \$(pan $a) == 'bash-panel $a' ]]"
 done
 chmod a-x "$D/vendor/bin/tmux-revive-panel"
-check "a binary that isn't executable: bash" "[[ \$(pan REVIVE_PANEL_RS=1) == 'bash-panel ' ]]"
+check "a binary that isn't executable: bash" "[[ \$(pan) == 'bash-panel ' ]]"
 printf '\177ELF\002\001\001\000garbage\000\000' >"$D/vendor/bin/tmux-revive-panel" && chmod +x "$D/vendor/bin/tmux-revive-panel"
-check "a binary that fails to exec: bash" "[[ \$(pan REVIVE_PANEL_RS=1 | tail -n 1) == 'bash-panel ' ]]"
+check "a binary that fails to exec: bash" "[[ \$(pan | tail -n 1) == 'bash-panel ' ]]"
 rm "$D/vendor/bin/tmux-revive-panel"
-check "no binary: bash" "[[ \$(pan REVIVE_PANEL_RS=1) == 'bash-panel ' ]]"
+check "no binary: bash" "[[ \$(pan) == 'bash-panel ' ]]"
 # A checkout's own build is used only if it answers --probe with this tree's version.
 mkdir -p "$D/panel-rs/target/release"
 printf '#!/bin/sh\n[ "$1" = --probe ] && { echo "ok 0.9.9"; exit 0; }\necho "rust-panel $*"\n' >"$D/panel-rs/target/release/tmux-revive-panel"
 chmod +x "$D/panel-rs/target/release/tmux-revive-panel"
-check "a checkout's build of another version: bash" "[[ \$(pan REVIVE_PANEL_RS=1) == 'bash-panel ' ]]"
+check "a checkout's build of another version: bash" "[[ \$(pan) == 'bash-panel ' ]]"
 sed -i.bak 's/0\.9\.9/1.1.0/' "$D/panel-rs/target/release/tmux-revive-panel"
-check "a checkout's build of this version: the binary" "[[ \$(pan REVIVE_PANEL_RS=1) == 'rust-panel ' ]]"
+check "a checkout's build of this version: the binary" "[[ \$(pan) == 'rust-panel ' ]]"
 fresh
 inst env REVIVE_VERSION=1.0.0 sh "$T/repo/install.sh" --no-config; rc=$?
 check "REVIVE_VERSION pins that release" "((rc == 0)) && installed 1.0.0"

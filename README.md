@@ -37,6 +37,8 @@ I wanted one screen that shows every pane and every agent. Inside tmux, run:
 tmux-revive panel
 ```
 
+There's nothing to compile. The installer grabs the panel built for your system, and where that won't run, it falls back to the shell version.
+
 ![The tmux-revive control panel: three agents in three projects, two working and one waiting on you](assets/panel.png)
 
 Press [?] for the help page. It's a good place to start. Turn [P]eek on to preview the selected session.

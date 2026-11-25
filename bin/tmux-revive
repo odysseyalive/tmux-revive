@@ -335,13 +335,13 @@ restore) shift; "$BASH" "$ROOT/scripts/restore.sh" "$@" ;;
 status) shift; "$BASH" "$ROOT/scripts/restore.sh" --dry-run "$@" ;;
 panel)
 	shift
-	# REVIVE_PANEL_RS=1 (until it is the default): the Rust panel (panel-rs) for the live panel
-	# and --once; what linked computers and the daemon ask for (--rows --peek --keys --paste
-	# --show --asking --running) is always the bash one's, and REVIVE_PANEL_BASH=1 picks bash.
+	# The Rust panel (panel-rs) for the live panel and --once, where there is one; what linked
+	# computers and the daemon ask for (--rows --peek --keys --paste --show --asking --running)
+	# is always the bash one's, and REVIVE_PANEL_BASH=1 picks bash.
 	# The installed binary (vendor/bin) was probed by install.sh, so it isn't probed here; a
 	# build in this checkout (panel-rs/target/release) may be stale, so it must answer --probe
 	# with this tree's version. One that fails to exec falls through to bash (execfail).
-	if [[ ${REVIVE_PANEL_RS:-} == 1 && ${REVIVE_PANEL_BASH:-} != 1 ]] &&
+	if [[ ${REVIVE_PANEL_BASH:-} != 1 ]] &&
 		{ ((!$#)) || [[ $* == --once || ($# == 3 && $1 == --once && $2 == --snapshot) ]]; }; then
 		shopt -s execfail
 		rs=$ROOT/vendor/bin/tmux-revive-panel
