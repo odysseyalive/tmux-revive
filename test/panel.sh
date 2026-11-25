@@ -1420,7 +1420,7 @@ check "Enter straight after a Down onto the empty free-text choice opens the box
 tm send-keys -t work:qpanel Escape
 for _ in $(seq 1 30); do qhas 'Esc closes' || break; sleep 0.2; done
 tm send-keys -t work:qpanel E
-check "E opens the box too, sending nothing" "wait_q 'Esc closes' 15 && qhas 'ANSWER · asker' && ! grep -qxE 'E|e' $T/ans2.keys"
+check "E opens the box too, sending nothing, the only box on the screen (at its top, by the frame's corner)" "wait_q 'Esc closes' 15 && qhas 'ANSWER · asker' && ! grep -qxE 'E|e' $T/ans2.keys && [[ \$(qscreen | grep -o '╔' | wc -l) == 2 ]]"
 check "the box keeps above the question, which shows whole under it" "qscreen | awk '/ANSWER · asker/ {t = NR} /╚═/ && t && !b {b = NR} /QUESTION · asker/ {q = NR} END {exit !(t && b && q && b < q)}' && qhas '1. Yes' && qhas '❯ 5. Type something.'"
 # Lines from Alt-Enter and Ctrl-J; then the cursor goes back up to fix a typo, to the start of
 # a line for Delete, to the end of another, and PgUp to the very start.
@@ -1736,7 +1736,7 @@ pick_line "devbox.example  · stopped"
 check "picking it asks: leave it, link it again, or unlink it" "wait_ssh 'LINK devbox.example AGAIN?' && wait_ssh 'No, leave it as is' && wait_ssh 'Yes, link devbox.example again' && wait_ssh 'Unlink devbox.example'"
 tm send-keys -t work:sshpanel 2
 # It was linked to another key: that is said, with No first, though known_hosts has this one.
-check "linking again shows the key ssh uses now, warns it isn't the one linked before, No first" "wait_ssh \"WARNING: devbox.example's HOST KEY CHANGED\" && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -c \"1 *No, don't link devbox.example\" >/dev/null"
+check "linking again shows the key ssh uses now, warns it isn't the one linked before, No first, alone: LINK AGAIN? is gone from under it" "wait_ssh \"WARNING: devbox.example's HOST KEY CHANGED\" && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -c \"1 *No, don't link devbox.example\" >/dev/null && [[ \$(nboxes sshscreen) == 1 ]]"
 tm send-keys -t work:sshpanel 2
 check "and yes unlinks the old one and links again (its old key and error gone)" "wait_ssh \"couldn't run agent-say on devbox.example\" && [[ ! -e $sk/on && ! -e $sk/error && ! -e $sk/fingerprint ]]"
 broken
