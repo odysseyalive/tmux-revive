@@ -124,8 +124,9 @@ impl Ctx {
         let title = if st == b"agents" {
             cat(&[ft, "PEEK · ".as_bytes(), &name, " · agents busy, takes input".as_bytes()])
         } else if st == b"limit" {
-            let lw = self.lim_when(&self.p.a("P_LIM", sel).to_vec());
-            let back = if lw.is_empty() { Vec::new() } else { cat(&[b", back ", &lw]) };
+            let at = self.p.a("P_LIM", sel).to_vec();
+            let lw = self.lim_when(&at);
+            let back = if lw.is_empty() { Vec::new() } else { cat(&[b", back ", &lw, b" (in ", &self.lim_left(&at), b")"]) };
             cat(&[ft, "PEEK · ".as_bytes(), &name, " · usage limit".as_bytes(), &back])
         } else if st == b"ready" && self.p.a("P_LWHY", sel) == b"plan" {
             cat(&[ft, "PEEK · ".as_bytes(), &name, " · new plan, ready to resume".as_bytes()])

@@ -1523,6 +1523,20 @@ lim_when() {
 	if [[ $d == "$n" ]]; then LWHEN=$t
 	else printf -v d '%(%b %d)T' "$1"; LWHEN="${d/ 0/ } $t"; fi
 }
+# lim_left EPOCH -> LLEFT: how long until a limit lifts, counting down: whole minutes, rounded up
+# (so never 0m while it holds), as 12m, 3h 20m, and past a day its days and hours, 2d 4h.
+lim_left() {
+	local s m d h
+	LLEFT=""
+	[[ $1 =~ ^[0-9]+$ ]] || return 0
+	now_s
+	s=$(($1 - NOW))
+	((s < 0)) && s=0
+	m=$(((s + 59) / 60)) d=$((m / 1440)) h=$((m % 1440 / 60)) m=$((m % 60))
+	if ((d)); then LLEFT=${d}d; ((h)) && LLEFT+=" ${h}h"
+	elif ((h)); then LLEFT=${h}h; ((m)) && LLEFT+=" ${m}m"
+	else LLEFT=${m}m; fi
+}
 
 screen_state() { # screen_state PANE -> LSTATE: asking / working / waiting, read off the bottom of the screen
 	local -a SL
@@ -2358,7 +2372,6 @@ sel_fix() {
 }
 
 state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters wide (the column 20 on a wide panel)
-	local w
 	CPAD="  " # what fills a wide panel's column after it
 	case $1 in
 	asking) CELL="$B$BMAG$BLINK?$R$B$BMAG NEEDS ANSWER    $R" ;;
@@ -2375,19 +2388,13 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 		elif ((WAGENT && ${sw:-0})); then CELL="$WCOL◆ AGENT'S TURN DONE$R" CPAD=" "
 		elif ((WAGENT)); then CELL="$WCOL◆ AGENT TURN DONE $R"
 		else CELL="$WCOL◆ WAITING ON YOU  $R"; fi ;;
-	# Stopped at its usage limit, and when it lifts (lim_when), in amber: nothing to do yet.
-	# "BACK AT" a time today; another day's date makes it longer: BACK, then nothing, before the time goes.
+	# Stopped at its usage limit, and how long until it lifts (lim_left), counting down in
+	# amber: nothing to do yet. A day or more counts in days (a weekly limit). When, to the
+	# minute, is in its peek.
 	limit)
-		lim_when "${2:+${P_LIM[$2]:-}}"
-		# The first of these that fits: 19 where the column is 20 wide (one space before FOLDER).
-		w=18
-		((${sw:-0})) && w=19
-		if [[ -z $LWHEN ]]; then CELL="◷ USAGE LIMIT"
-		else
-			if [[ $LWHEN == *" "* ]]; then
-				for CELL in "◷ BACK $LWHEN" "◷ $LWHEN"; do ((${#CELL} <= w)) && break; done
-			else CELL="◷ BACK AT $LWHEN"; fi
-		fi
+		lim_left "${2:+${P_LIM[$2]:-}}"
+		if [[ -z $LLEFT ]]; then CELL="◷ USAGE LIMIT"
+		else CELL="◷ BACK IN $LLEFT"; fi
 		fld "$CELL" 18
 		((${#CELL} > 18)) && { fld "$CELL" 19; CPAD=" "; }
 		CELL="$e[38;5;214m$FLD$R" ;;
@@ -2693,7 +2700,8 @@ draw_peek() { # draw_peek LINES: the bottom of the selected pane's screen, or th
 	if [[ ${P_STATE[SEL]:-} == agents ]]; then sectk "${ft}PEEK · $name · agents busy, takes input" "$KC" $fc "${WB[1]}" "${WK[1]}"
 	elif [[ ${P_STATE[SEL]:-} == limit ]]; then
 		lim_when "${P_LIM[SEL]:-}"
-		sectk "${ft}PEEK · $name · usage limit${LWHEN:+, back $LWHEN}" "$KC" $fc "${WB[1]}" "${WK[1]}"
+		lim_left "${P_LIM[SEL]:-}"
+		sectk "${ft}PEEK · $name · usage limit${LWHEN:+, back $LWHEN (in $LLEFT)}" "$KC" $fc "${WB[1]}" "${WK[1]}"
 	elif [[ ${P_STATE[SEL]:-} == ready && ${P_LWHY[SEL]:-} == plan ]]; then sectk "${ft}PEEK · $name · new plan, ready to resume" "$KC" $fc "${WB[1]}" "${WK[1]}"
 	elif [[ ${P_STATE[SEL]:-} == ready ]]; then sectk "${ft}PEEK · $name · limit lifted, ready to resume" "$KC" $fc "${WB[1]}" "${WK[1]}"
 	elif [[ -n ${P_SRV[SEL]:-} ]]; then sectk "${ft}PEEK · $name · a server it started runs" "$KC" $fc "${WB[1]}" "${WK[1]}"; else sectk "${ft}PEEK · $name" "$KC" $fc "${WB[1]}" "${WK[1]}"; fi

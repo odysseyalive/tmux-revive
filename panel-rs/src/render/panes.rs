@@ -141,6 +141,25 @@ impl Ctx {
         }
     }
 
+    /// lim_left EPOCH -> LLEFT: how long until a limit lifts, counting down: whole minutes,
+    /// rounded up (so never 0m while it holds), as 12m, 3h 20m, and past a day 2d 4h
+    pub fn lim_left(&self, at: &[u8]) -> Bytes {
+        if !all_digits(at) {
+            return Vec::new();
+        }
+        let s = (num(at) - self.p.now).max(0);
+        let m = (s + 59) / 60;
+        let (d, h, m) = (m / 1440, m % 1440 / 60, m % 60);
+        let t = if d != 0 {
+            if h != 0 { format!("{d}d {h}h") } else { format!("{d}d") }
+        } else if h != 0 {
+            if m != 0 { format!("{h}h {m}m") } else { format!("{h}h") }
+        } else {
+            format!("{m}m")
+        };
+        t.into_bytes()
+    }
+
     /// tab_next [STEP] -> NEXTW: the window J (STEP 1) or K (3) moves the focus to
     pub fn tab_next(&self, step: i64) -> i64 {
         let mut f = self.p.focus;
@@ -261,24 +280,16 @@ impl Ctx {
                 }
             }
             b"limit" => {
-                // lim_when "${2:+${P_LIM[$2]:-}}"
+                // lim_left "${2:+${P_LIM[$2]:-}}"
                 let at: Bytes = match row {
                     Some(r) => self.p.a("P_LIM", r).to_vec(),
                     None => Vec::new(),
                 };
-                let lw = self.lim_when(&at);
-                let w = if sw != 0 { 19 } else { 18 };
-                let cell: Bytes = if lw.is_empty() {
+                let left = self.lim_left(&at);
+                let cell: Bytes = if left.is_empty() {
                     "◷ USAGE LIMIT".as_bytes().to_vec()
-                } else if lw.contains(&b' ') {
-                    let a = cat(&["◷ BACK ".as_bytes(), &lw]);
-                    if blen(&a) <= w {
-                        a
-                    } else {
-                        cat(&["◷ ".as_bytes(), &lw])
-                    }
                 } else {
-                    cat(&["◷ BACK AT ".as_bytes(), &lw])
+                    cat(&["◷ BACK IN ".as_bytes(), &left])
                 };
                 let mut f = self.fld(&cell, 18);
                 if blen(&cell) > 18 {
