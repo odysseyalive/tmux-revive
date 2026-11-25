@@ -891,6 +891,14 @@ live() {
 	lv_step "$D" "$E" N "select one of Zed.example" "linked: "
 	lv_step "$D" "$E" f "zed-a" "linked: "
 	check "linked: none of these keys went to the bash panel" "[[ -e $T/lve-shim/handoffs && ! -s $T/lve-shim/handoffs ]]"
+	# N on a read-only link's pane that can act (rows, so a P_RID): not faded, so it goes on to
+	# bash's rename box, as V and answering do there; read-only holds only what comes here.
+	: >"$T/lvd/state/links/far.example/read-only"
+	: >"$T/lve/state/links/far.example/read-only"
+	lv_step "$D" "$E" "Down Down Down" "far.example · read-only" "linked: "
+	lv_step "$D" "$E" N "New name for far-top on far.example" "linked, read-only: "
+	lv_step "$D" "$E" Escape "rename cancelled" "linked, read-only: "
+	check "linked, read-only: N on a pane with rows went on to bash's box, the only hand-over" "[[ \$(cat $T/lve-shim/handoffs) == N ]]"
 }
 
 case ${1:-all} in
