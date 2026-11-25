@@ -49,12 +49,68 @@ fresh() { rm -rf "$H"; mkdir -p "$H"; }
 installed() { [[ $(cat "$APP/VERSION" 2>/dev/null) == "$1" ]]; }
 said() { grep -qF -- "$1" "$T/out"; }
 
+# A stand-in `cargo zigbuild` (no zig needed): it logs its arguments and writes, for each
+# target, a "binary" that answers --probe with the VERSION it was built from, as the real one
+# does, and otherwise says `rust-panel ARGS`; for macOS a Mach-O header, with a code signature
+# unless CARGO_UNSIGNED is set. CARGO_FAIL=TARGET fails that target. A stand-in rcodesign
+# signs one (turns its load command into LC_CODE_SIGNATURE). The real cross-build is run by
+# hand (plan/rust-panel-2026-11-23.md, Phase 6, As built).
+mkdir -p "$T/cargo" "$T/rcs"
+cat >"$T/cargo/cargo" <<'EOF'
+#!/bin/bash
+[[ $1 == zigbuild ]] || exit 1
+[[ $2 == --help ]] && exit 0
+echo "$*" >>"$CARGO_LOG"
+m="" t="" d=""
+while (($#)); do case $1 in --manifest-path) m=$2; shift ;; --target-dir) d=$2; shift ;; --target) t=$2; shift ;; esac; shift; done
+[[ $t == "${CARGO_FAIL:-}" ]] && { echo "error: could not compile for $t (stand-in)" >&2; exit 101; }
+v=$(cat "${m%/panel-rs/Cargo.toml}/VERSION")
+o=$d/${t%%.*}/release
+mkdir -p "$o"
+case $t in
+*-apple-darwin)
+	c=1d; [[ -n ${CARGO_UNSIGNED:-} ]] && c=19
+	printf '\xcf\xfa\xed\xfe\x07\x00\x00\x01\x03\x00\x00\x00\x02\x00\x00\x00\x01\x00\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x'$c'\x00\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' >"$o/tmux-revive-panel" ;;
+*) printf '#!/bin/sh\n[ "$1" = --probe ] && { echo "ok %s"; exit 0; }\necho "rust-panel $*"\n' "$v" >"$o/tmux-revive-panel" ;;
+esac
+chmod +x "$o/tmux-revive-panel"
+EOF
+printf '#!/bin/bash\n[[ $1 == sign ]] && printf "\\x1d" | dd of="$2" bs=1 seek=32 conv=notrunc status=none\n' >"$T/rcs/rcodesign"
+chmod +x "$T/cargo/cargo" "$T/rcs/rcodesign"
+export CARGO_LOG=$T/cargo.log
+case $(uname -m) in aarch64 | arm64) PLAT=linux-arm64 ;; *) PLAT=linux-x86_64 ;; esac
+PLATS="linux-x86_64 linux-arm64 macos-x86_64 macos-arm64"
+
 echo "release.sh"
-rel() { bash "$T/repo/scripts/release.sh" "$@" >"$T/out" 2>&1; }
+rel() { PATH="$T/cargo:$PATH" bash "$T/repo/scripts/release.sh" "$@" >"$T/out" 2>&1; }
 rel --dry-run --key "$T/key" --out "$T/rel/download/v1.0.0" 1.0.0; rc=$?
 check "a dry run builds the tarball, SHA256SUMS and its signature" \
 	"((rc == 0)) && [[ -s $T/rel/download/v1.0.0/tmux-revive-1.0.0.tar.gz && -s $T/rel/download/v1.0.0/SHA256SUMS && -s $T/rel/download/v1.0.0/SHA256SUMS.sig ]]"
 check "and tags nothing, prints no publish commands" "! said 'gh release' && [[ -z \$(git -C $T/repo tag) ]]"
+R0=$T/rel/download/v1.0.0
+check "it builds the panel for the four platforms, --release --locked, from the clone" \
+	"(( \$(grep -c -- '--release --locked' $CARGO_LOG) == 4 )) && ! grep -q -- '--manifest-path $T/repo/' $CARGO_LOG &&
+	( for t in x86_64-unknown-linux-gnu.2.17 aarch64-unknown-linux-gnu.2.17 x86_64-apple-darwin aarch64-apple-darwin; do grep -q -- \"--target \$t\\\$\" $CARGO_LOG || exit 1; done )"
+check "one binary per platform, named by version and platform" \
+	"( for p in $PLATS; do [[ -x $R0/tmux-revive-panel-1.0.0-\$p ]] || exit 1; done )"
+check "SHA256SUMS: the tarball's line first, then one for each binary, and they check out" \
+	"(( \$(wc -l <$R0/SHA256SUMS) == 5 )) && head -n 1 $R0/SHA256SUMS | grep -q '  tmux-revive-1.0.0.tar.gz\$' &&
+	(( \$(grep -c '  tmux-revive-panel-1.0.0-' $R0/SHA256SUMS) == 4 )) && (cd $R0 && sha256sum -c --quiet SHA256SUMS)"
+check "and its signature covers them" \
+	"ssh-keygen -Y verify -f <(echo '$signer') -I tmux-revive-release -n tmux-revive-release -s $R0/SHA256SUMS.sig <$R0/SHA256SUMS >/dev/null 2>&1"
+check "the binary answers --probe with the release's version" "[[ \$($R0/tmux-revive-panel-1.0.0-$PLAT --probe) == 'ok 1.0.0' ]]"
+check "an old installer's rule still finds exactly one tarball line" \
+	"(( \$(grep -cE '^[0-9a-f]{64}  tmux-revive-[0-9]+\\.[0-9]+\\.[0-9]+\\.tar\\.gz\$' $R0/SHA256SUMS) == 1 ))"
+CARGO_FAIL=aarch64-apple-darwin rel --dry-run --key "$T/key" --out "$T/of" 1.0.0; rc=$?
+check "a platform that fails to build fails the release" "((rc != 0)) && said 'no release without every platform' && [[ ! -e $T/of/SHA256SUMS.sig ]]"
+CARGO_UNSIGNED=1 rel --dry-run --key "$T/key" --out "$T/ou" 1.0.0; rc=$?
+check "an unsigned macOS binary with no rcodesign fails the release, saying why" "((rc != 0)) && said 'no code signature' && said rcodesign"
+CARGO_UNSIGNED=1 PATH="$T/rcs:$PATH" rel --dry-run --key "$T/key" --out "$T/ou2" 1.0.0; rc=$?
+check "with rcodesign it is signed ad hoc, then summed" "((rc == 0)) && (cd $T/ou2 && sha256sum -c --quiet SHA256SUMS)"
+mkdir -p "$T/nozig"
+printf '#!/bin/sh\necho "error: no such command: zigbuild" >&2\nexit 101\n' >"$T/nozig/cargo" && chmod +x "$T/nozig/cargo"
+PATH="$T/nozig:$PATH" bash "$T/repo/scripts/release.sh" --dry-run --key "$T/key" --out "$T/oz" 1.0.0 >"$T/out" 2>&1; rc=$?
+check "no cargo-zigbuild: a clear error before anything is built" "((rc != 0)) && said 'needs cargo-zigbuild' && [[ ! -e $T/oz/tmux-revive-1.0.0.tar.gz ]]"
 check "a key install.sh already trusts: no line to paste" "! said 'ALLOWED_SIGNERS='"
 check "the private key is never printed" "! grep -q 'PRIVATE KEY' $T/out"
 rel --dry-run --key "$T/key" --out "$T/rel/download/v1.1.0" 1.1.0
@@ -72,21 +128,59 @@ git -C "$T/repo" checkout -q README.md
 
 git clone -q "$T/repo" "$T/maint"
 git -C "$T/maint" config user.name t && git -C "$T/maint" config user.email t@localhost
-bash "$T/maint/scripts/release.sh" --key "$T/other" --out "$T/o4" 1.2.0 >"$T/out" 2>&1; rc=$?
+PATH="$T/cargo:$PATH" bash "$T/maint/scripts/release.sh" --key "$T/other" --out "$T/o4" 1.2.0 >"$T/out" 2>&1; rc=$?
 check "a real release with a key install.sh doesn't trust is refused" "((rc != 0)) && said \"doesn't trust\" && [[ -z \$(git -C $T/maint tag) ]]"
-bash "$T/maint/scripts/release.sh" --key "$T/key" --out "$T/o5" 1.2.0 >"$T/out" 2>&1; rc=$?
+PATH="$T/cargo:$PATH" bash "$T/maint/scripts/release.sh" --key "$T/key" --out "$T/o5" 1.2.0 >"$T/out" 2>&1; rc=$?
 check "a real release commits VERSION, tags it, prints the push and gh commands" \
 	"((rc == 0)) && [[ \$(git -C $T/maint cat-file -t v1.2.0) == tag && \$(git -C $T/maint show v1.2.0:VERSION) == 1.2.0 ]] && said 'git push origin main v1.2.0' && said 'gh release create v1.2.0'"
+check "the gh command publishes the four binaries too" \
+	"( for p in $PLATS; do grep 'gh release create v1.2.0' -A 1 $T/out | grep -qF $T/o5/tmux-revive-panel-1.2.0-\$p || exit 1; done )"
 check "and pushes nothing" "[[ -z \$(git -C $T/repo tag) && \$(git -C $T/repo rev-parse HEAD) == $REPO_SHA ]]"
 
 echo "install"
 fresh
 inst sh "$T/repo/install.sh" --no-config; rc=$?
 check "a good release installs (the latest)" "((rc == 0)) && installed 1.1.0 && said 'signed by the release key'"
+PB=$APP/vendor/bin/tmux-revive-panel
+check "the panel's binary for this computer is installed, checked and probed" \
+	"[[ -x $PB && \$($PB --probe) == 'ok 1.1.0' ]] && cmp -s $PB $T/rel/download/v1.1.0/tmux-revive-panel-1.1.0-$PLAT && said 'binary checks out'"
 check "it says where it came from" "grep -qxF 'release v1.1.0 (signature verified)' $APP/INSTALLED"
 inst "$H/.local/bin/tmux-revive" version
 check "tmux-revive version prints it" "said 'tmux-revive 1.1.0' && said 'installed from release v1.1.0 (signature verified)'"
 check "--no-config reached the release's own installer" "[[ ! -e $H/.tmux.conf && ! -e $H/.config/tmux ]]"
+
+# The dispatcher, in a copy of that install whose bash panel only says how it was run.
+echo "tmux-revive panel: Rust or bash"
+D=$T/disp
+rm -rf "$D" && cp -a "$APP" "$D"
+printf 'echo "bash-panel $*"\n' >"$D/scripts/panel.sh"
+pan() { # pan [VAR=VALUE...] [ARG...]: what `tmux-revive panel ARG...` ran
+	local e=()
+	while [[ ${1:-} == *=* ]]; do e+=("$1"); shift; done
+	inst env "${e[@]}" "$D/bin/tmux-revive" panel "$@"
+	cat "$T/out"
+}
+for a in "" "--once" "--once --snapshot $T/x"; do
+	check "REVIVE_PANEL_RS=1 panel${a:+ $a}: the binary" "[[ \$(pan REVIVE_PANEL_RS=1 $a) == 'rust-panel $a' ]]"
+done
+check "without REVIVE_PANEL_RS: bash" "[[ \$(pan) == 'bash-panel ' ]]"
+check "REVIVE_PANEL_BASH=1: bash" "[[ \$(pan REVIVE_PANEL_RS=1 REVIVE_PANEL_BASH=1) == 'bash-panel ' ]]"
+for a in --rows "--peek %1 5" --keys --paste --show --asking --running "--once --rows"; do
+	check "panel $a: always bash" "[[ \$(pan REVIVE_PANEL_RS=1 $a) == 'bash-panel $a' ]]"
+done
+chmod a-x "$D/vendor/bin/tmux-revive-panel"
+check "a binary that isn't executable: bash" "[[ \$(pan REVIVE_PANEL_RS=1) == 'bash-panel ' ]]"
+printf '\177ELF\002\001\001\000garbage\000\000' >"$D/vendor/bin/tmux-revive-panel" && chmod +x "$D/vendor/bin/tmux-revive-panel"
+check "a binary that fails to exec: bash" "[[ \$(pan REVIVE_PANEL_RS=1 | tail -n 1) == 'bash-panel ' ]]"
+rm "$D/vendor/bin/tmux-revive-panel"
+check "no binary: bash" "[[ \$(pan REVIVE_PANEL_RS=1) == 'bash-panel ' ]]"
+# A checkout's own build is used only if it answers --probe with this tree's version.
+mkdir -p "$D/panel-rs/target/release"
+printf '#!/bin/sh\n[ "$1" = --probe ] && { echo "ok 0.9.9"; exit 0; }\necho "rust-panel $*"\n' >"$D/panel-rs/target/release/tmux-revive-panel"
+chmod +x "$D/panel-rs/target/release/tmux-revive-panel"
+check "a checkout's build of another version: bash" "[[ \$(pan REVIVE_PANEL_RS=1) == 'bash-panel ' ]]"
+sed -i.bak 's/0\.9\.9/1.1.0/' "$D/panel-rs/target/release/tmux-revive-panel"
+check "a checkout's build of this version: the binary" "[[ \$(pan REVIVE_PANEL_RS=1) == 'rust-panel ' ]]"
 fresh
 inst env REVIVE_VERSION=1.0.0 sh "$T/repo/install.sh" --no-config; rc=$?
 check "REVIVE_VERSION pins that release" "((rc == 0)) && installed 1.0.0"
@@ -125,6 +219,74 @@ bad; rm -rf "$B"; cp -r "$T/rel/download/v1.0.0" "$B"
 fresh
 inst env REVIVE_RELEASE_BASE="$T/bad" REVIVE_VERSION=1.1.0 sh "$T/repo/install.sh" --no-config; rc=$?
 check "an older signed release passed off as the one pinned is refused" "((rc != 0)) && said 'asked for v1.1.0' && [[ ! -e $APP ]]"
+
+
+# The panel's binary: a bad one is never installed, and never stops the install.
+echo "the panel's binary"
+resign() { # SHA256SUMS for $B's files as they are now, signed by the release key
+	(cd "$B" && shopt -s nullglob && sha256sum tmux-revive-1.1.0.tar.gz tmux-revive-panel-1.1.0-* >SHA256SUMS)
+	rm -f "$B/SHA256SUMS.sig"
+	ssh-keygen -q -Y sign -f "$T/key" -n tmux-revive-release "$B/SHA256SUMS"
+}
+nobin() { # nobin WHAT EXPECTED-WARNING: installs, says so, no binary left
+	check "$1: not installed, the install goes on" \
+		"((rc == 0)) && installed 1.1.0 && said \"$2\" && said 'the bash panel will run' && [[ ! -e $APP/vendor/bin/tmux-revive-panel ]]"
+}
+pinst() { fresh; inst env REVIVE_RELEASE_BASE="$T/bad" "$@" sh "$T/repo/install.sh" --no-config; rc=$?; }
+bad; printf x >>"$B/tmux-revive-panel-1.1.0-$PLAT"
+pinst
+nobin "a tampered binary" "doesn't match its signed checksum"
+bad; printf '#!/bin/sh\nexit 1\n' >"$B/tmux-revive-panel-1.1.0-$PLAT"; resign
+pinst
+nobin "a signed binary whose probe fails" "didn't pass its check"
+bad; printf '#!/bin/sh\necho "ok 1.0.0"\n' >"$B/tmux-revive-panel-1.1.0-$PLAT"; resign
+pinst
+nobin "a signed binary of another version" "wanted: ok 1.1.0"
+bad; rm "$B/tmux-revive-panel-1.1.0-$PLAT"
+pinst
+nobin "a binary in SHA256SUMS that won't download" "couldn't download the panel's binary"
+bad; rm "$B"/tmux-revive-panel-*; resign
+pinst
+check "a release with no binaries: installs, the bash panel, nothing said" \
+	"((rc == 0)) && installed 1.1.0 && ! said \"panel's binary\" && [[ ! -e $APP/vendor/bin/tmux-revive-panel ]]"
+# An installer from before the binary (v1.2.57) hands over without _REVIVE_SUMS: the new
+# release's installer checks SHA256SUMS and its signature itself, then installs the binary.
+if git -C "$ROOT" show v1.2.57:install.sh >"$T/old-install.sh" 2>/dev/null; then
+	sed -i.bak "s|^ALLOWED_SIGNERS=.*|ALLOWED_SIGNERS='$signer'|" "$T/old-install.sh"
+	fresh
+	inst sh "$T/old-install.sh" --no-config; rc=$?
+	check "an installer from before the binaries accepts a release with them" "((rc == 0)) && installed 1.1.0 && said 'signed by the release key'"
+	check "and the release's own installer still gets the binary, checking the sums itself" \
+		"[[ \$($APP/vendor/bin/tmux-revive-panel --probe) == 'ok 1.1.0' ]] && said 'binary checks out'"
+	bad; rm "$B/SHA256SUMS.sig"; ssh-keygen -q -Y sign -f "$T/other" -n tmux-revive-release "$B/SHA256SUMS"
+	fresh
+	# The old outer installer would refuse that signature, so the inner one is run as it would be.
+	mkdir -p "$T/inner" && rm -rf "$T/inner/src" && mkdir -p "$T/inner/src"
+	tar xzf "$B/tmux-revive-1.1.0.tar.gz" -C "$T/inner/src" --strip-components=1
+	inst env REVIVE_RELEASE_BASE="$T/bad" _REVIVE_ORIGIN="release v1.1.0 (signature verified)" REVIVE_SOURCE="$T/inner/src" sh "$T/inner/src/install.sh" --no-config; rc=$?
+	nobin "with no sums handed over and a SHA256SUMS signed by another key, the binary" "couldn't check release v1.1.0's signed SHA256SUMS"
+else
+	check "v1.2.57's install.sh is in this checkout's history" false
+fi
+# From a checkout (REVIVE_SOURCE): its own build, if newer than its source. Never cargo.
+mkdir -p "$T/repo/panel-rs/target/release" "$T/nocargo"
+printf '#!/bin/sh\necho cargo "$@" >>%q\nexit 1\n' "$T/cargo-ran" >"$T/nocargo/cargo" && chmod +x "$T/nocargo/cargo"
+printf '#!/bin/sh\n[ "$1" = --probe ] && { echo "ok 1.0.0"; exit 0; }\n' >"$T/repo/panel-rs/target/release/tmux-revive-panel"
+chmod +x "$T/repo/panel-rs/target/release/tmux-revive-panel"
+touch -d '1 hour ago' "$T/repo/panel-rs/src"/*.rs
+fresh
+inst env PATH="$T/nocargo:$T/ib:$PATH" REVIVE_SOURCE="$T/repo" sh "$T/repo/install.sh" --no-config; rc=$?
+check "an install from a checkout copies its build, probed" \
+	"((rc == 0)) && [[ \$($APP/vendor/bin/tmux-revive-panel --probe) == 'ok 1.0.0' ]] && said 'binary checks out'"
+check "and not the rest of panel-rs/target" "[[ ! -e $APP/panel-rs/target ]]"
+inst "$H/.local/bin/tmux-revive" uninstall; rc=$?
+check "uninstall takes the binary with the app" "((rc == 0)) && [[ ! -e $APP ]]"
+touch "$T/repo/panel-rs/src/main.rs"
+fresh
+inst env PATH="$T/nocargo:$T/ib:$PATH" REVIVE_SOURCE="$T/repo" sh "$T/repo/install.sh" --no-config; rc=$?
+check "a build older than its source isn't copied (bash panel), and nothing is compiled" \
+	"((rc == 0)) && said 'older than panel-rs/src' && [[ ! -e $APP/vendor/bin/tmux-revive-panel && ! -e $T/cargo-ran ]]"
+rm -rf "$T/repo/panel-rs/target"
 
 mkdir -p "$T/empty"
 fresh
@@ -281,7 +443,7 @@ ghinst() {
 api_used() { grep -q '^https://api.github.com/repos/odysseyalive/tmux-revive/releases/assets/' "$T/gh.log"; }
 ghinst GH_FAIL=2
 check "a download that fails twice is tried again, and installs" "((rc == 0)) && installed 1.1.0 && said 'signed by the release key'"
-check "after waiting 2 s, then 5 s, for each file" "[[ \$(tr '\\n' ' ' <$T/sleep.log) == '2 5 2 5 2 5 ' ]]"
+check "after waiting 2 s, then 5 s, for each file (the panel's binary too)" "[[ \$(tr '\\n' ' ' <$T/sleep.log) == '2 5 2 5 2 5 2 5 ' ]]"
 check "and no need for GitHub's API" "! api_used && ! said \"through GitHub's API\""
 ghinst GH_DOWN=1
 check "github.com never serving it: GitHub's API does, and it installs" \
