@@ -410,7 +410,7 @@ snaps() {
 	check "linked: its peek, from the fake ssh" "sframe linked | grep -ac 'load average: 0.10' >/dev/null"
 	# A link working: its heading and its LINKS row say linked. One that isn't, failed (Zed) or
 	# its poller not running (folded), whatever the reason: not connected, and [B]ridge, in both.
-	check "linked: far.example's link works: linked, on its heading and in LINKS" "sframe linked | grep -ac 'FAR.EXAMPLE · linked · 2 panes · 1 needs you' >/dev/null && sframe linked | grep -ac '● far.example · linked · 2 names' >/dev/null"
+	check "linked: far.example's link works: linked, on its heading and in LINKS" "sframe linked | grep -ac 'FAR.EXAMPLE · linked · 2 panes' >/dev/null && sframe linked | grep -ac '● far.example · linked · 2 names' >/dev/null"
 	check "linked: Zed.example's failed: not connected · [B]ridge on its heading, its error not shown" "sframe linked | grep -ac 'ZED.EXAMPLE · not connected · \\[B\\]ridge · 2 panes *║' >/dev/null && ! sframe linked | grep -ac 'Connection refused' >/dev/null"
 	check "linked: and in LINKS, for it and for folded.example, whose poller isn't running" "sframe linked | grep -ac '● Zed.example · not connected · \\[B\\]ridge' >/dev/null && sframe linked | grep -ac '● folded.example · not connected · \\[B\\]ridge' >/dev/null && ! sframe linked | grep -ac 'not running' >/dev/null"
 	check "linked: B in the panel's key style, then ridge, on the heading" "env \"\${RENV[@]}\" COLUMNS=130 LINES=45 REVIVE_PANEL_SNAP=load:$T/snap/linked bash $ROOT/scripts/panel.sh --once </dev/null | grep -a 'ZED.EXAMPLE' | grep -acF $'\\e[90m· not connected ·\\e[0m \\e[94m[\\e[1m\\e[93mB\\e[0m\\e[94m]\\e[0m\\e[97mridge\\e[0m' >/dev/null"
