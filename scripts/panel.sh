@@ -3390,14 +3390,24 @@ code_popup() {
 	shift 2
 	mkdir -p "$ASTATE/intros"
 	# agent-say is read in first for its input box; the code is made after, in the popup only.
-	# The popup stays open until FUNCTION is done (delivering what waited can take a while): it
-	# says so, rather than sitting there an empty box once the input box has gone.
-	pc=$(printf '%q ' bash -c 'export AGENT_SAY_MAILBOX="$3"; o=$4 s=$5; source "$s" || exit 1; c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); input_box ACCESS "Type $c and press Enter to $2" plain "Anything else counts as no · Esc cancels" "$1" || { printf "\\37" >"$o"; exit 1; }; [[ $BOX_REPLY == "$c" ]] || exit 1; read -r h _ < <(stty size 2>/dev/null) || h=10; printf "\e[?25l\e[%s;5H\e[1m%sing…\e[0m" $(( (h + 1) / 2 )) "${2^}"; export AGENT_SAY_APPROVE_CODE="$c"; shift 5; "$@" "$c" >"$o" 2>&1' _ "$q" "$verb" "$AMAIL" "$out" "$ASAY" "$@")
-	rm -f "$out"
+	# Typed back, the popup closes at once: its shell goes on with FUNCTION in the background (a
+	# fork of it, so the code goes nowhere else), and says which one in OUT.pid.
+	pc=$(printf '%q ' bash -c 'export AGENT_SAY_MAILBOX="$3"; o=$4 s=$5; source "$s" || exit 1; c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); input_box ACCESS "Type $c and press Enter to $2" plain "Anything else counts as no · Esc cancels" "$1" || { printf "\\37" >"$o"; exit 1; }; [[ $BOX_REPLY == "$c" ]] || exit 1; export AGENT_SAY_APPROVE_CODE="$c"; shift 5; trap "" HUP; ( exec </dev/null >"$o" 2>&1; "$@" "$c" ) & echo $! >"$o.pid"' _ "$q" "$verb" "$AMAIL" "$out" "$ASAY" "$@")
+	rm -f "$out" "$out.pid"
 	# Tall enough for the question whole, however long the names in it are (it wraps, never cut).
 	tm display-popup -E -w 76 -h $((12 + ${#q} / 60)) "$pc" 2>/dev/null
+	# While FUNCTION runs (delivering what waited can take a while), a small box says so, with
+	# nothing in it to answer, and goes when it's done. The panel waits for it too, should no
+	# popup show.
+	if [[ -s $out.pid ]]; then
+		pc=$(printf '%q ' bash -c 'read -r p <"$1" 2>/dev/null; [[ $p =~ ^[0-9]+$ ]] || exit 0; trap "" INT; stty -echo -icanon 2>/dev/null; e=$(printf "\033"); b="$e[44m$e[1;97m" R="$e[0m" g=("▒" "▓" "█" "▓" "▒") t="${2^}ing…" l=$(( (22 - ${#2}) / 2 )); printf "%s" "$e[?25l$e[1;1H$b╔═$R$e[34m░▒▓$b ACCESS $R$e[34m▓▒░$b═══════════╗$R$e[2;1H$b║                          ║$R$e[3;1H$b║                          ║$e[3;$((l + 2))H$t$R$e[4;1H$b║                          ║$R$e[5;1H$b╚══════════════════════════╝$R"; i=0 d=1; while kill -0 "$p" 2>/dev/null; do s=""; for ((j = 0; j < 20; j++)); do if ((j >= i && j < i + 5)); then s+="$e[96m${g[j - i]}"; else s+="$e[36m░"; fi; done; printf "%s" "$e[4;5H$e[44m$s$R"; ((i + d < 0 || i + d > 15)) && d=$((-d)); i=$((i + d)); sleep 0.08; done' _ "$out.pid" "$verb")
+		tm display-popup -E -B -w 28 -h 5 "$pc" 2>/dev/null
+		local p=""
+		read -r p <"$out.pid"
+		while [[ $p =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null; do sleep 0.1; done
+	fi
 	CP_OUT=$(tail -n 1 "$out" 2>/dev/null)
-	rm -f "$out"
+	rm -f "$out" "$out.pid"
 	[[ $CP_OUT == "$NOTE" ]] && { CP_OUT=""; box_out 1 ""; return; }
 	box_out 0 "$CP_OUT" done
 }

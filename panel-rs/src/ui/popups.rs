@@ -13,9 +13,13 @@ use crate::render::cat;
 
 /// code_popup's own shell, as bash's `bash -c '…'` has it (word for word: a cargo test reads
 /// it from panel.sh). agent-say is read in first for its input box; the code is made after, in
-/// the popup only. The popup stays open until FUNCTION is done (delivering what waited can take
-/// a while): it says so, rather than sitting there an empty box once the input box has gone.
-pub const POPUP_SH: &str = r#"export AGENT_SAY_MAILBOX="$3"; o=$4 s=$5; source "$s" || exit 1; c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); input_box ACCESS "Type $c and press Enter to $2" plain "Anything else counts as no · Esc cancels" "$1" || { printf "\\37" >"$o"; exit 1; }; [[ $BOX_REPLY == "$c" ]] || exit 1; read -r h _ < <(stty size 2>/dev/null) || h=10; printf "\e[?25l\e[%s;5H\e[1m%sing…\e[0m" $(( (h + 1) / 2 )) "${2^}"; export AGENT_SAY_APPROVE_CODE="$c"; shift 5; "$@" "$c" >"$o" 2>&1"#;
+/// the popup only. Typed back, the popup closes at once: its shell goes on with FUNCTION in the
+/// background (a fork of it, so the code goes nowhere else), and says which one in OUT.pid.
+pub const POPUP_SH: &str = r#"export AGENT_SAY_MAILBOX="$3"; o=$4 s=$5; source "$s" || exit 1; c=$(( $(od -An -N4 -tu4 /dev/urandom) % 9000 + 1000 )); input_box ACCESS "Type $c and press Enter to $2" plain "Anything else counts as no · Esc cancels" "$1" || { printf "\\37" >"$o"; exit 1; }; [[ $BOX_REPLY == "$c" ]] || exit 1; export AGENT_SAY_APPROVE_CODE="$c"; shift 5; trap "" HUP; ( exec </dev/null >"$o" 2>&1; "$@" "$c" ) & echo $! >"$o.pid""#;
+
+/// The small popup while FUNCTION runs (delivering what waited can take a while): it says so,
+/// with nothing in it to answer, and goes when it's done (bash's, word for word, as above).
+pub const WAIT_SH: &str = r#"read -r p <"$1" 2>/dev/null; [[ $p =~ ^[0-9]+$ ]] || exit 0; trap "" INT; stty -echo -icanon 2>/dev/null; e=$(printf "\033"); b="$e[44m$e[1;97m" R="$e[0m" g=("▒" "▓" "█" "▓" "▒") t="${2^}ing…" l=$(( (22 - ${#2}) / 2 )); printf "%s" "$e[?25l$e[1;1H$b╔═$R$e[34m░▒▓$b ACCESS $R$e[34m▓▒░$b═══════════╗$R$e[2;1H$b║                          ║$R$e[3;1H$b║                          ║$e[3;$((l + 2))H$t$R$e[4;1H$b║                          ║$R$e[5;1H$b╚══════════════════════════╝$R"; i=0 d=1; while kill -0 "$p" 2>/dev/null; do s=""; for ((j = 0; j < 20; j++)); do if ((j >= i && j < i + 5)); then s+="$e[96m${g[j - i]}"; else s+="$e[36m░"; fi; done; printf "%s" "$e[4;5H$e[44m$s$R"; ((i + d < 0 || i + d > 15)) && d=$((-d)); i=$((i + d)); sleep 0.08; done"#;
 
 /// A word as a shell reads it back: in single quotes (printf %q's job, for tmux's sh -c)
 pub fn q(s: &[u8]) -> Bytes {
@@ -126,12 +130,34 @@ impl Ui {
         let mut w: Vec<&[u8]> = vec![b"bash", b"-c", POPUP_SH.as_bytes(), b"_", qn, verb, &self.amail, &out, &asay];
         w.extend_from_slice(args);
         let pc = cmdline(&w);
+        let pidf = sh::path(&[&out, b".pid"]);
         let _ = std::fs::remove_file(sh::os(&out));
+        let _ = std::fs::remove_file(sh::os(&pidf));
         // Tall enough for the question whole, however long the names in it are (it wraps, never cut).
         let h = itoa(12 + blen(qn) / 60);
         self.wait_job(move || sh::tm(&[b"display-popup", b"-E", b"-w", b"76", b"-h", &h, &pc]));
+        // While FUNCTION runs (delivering what waited can take a while), a small box says so, with
+        // nothing in it to answer, and goes when it's done. The panel waits for it too, should no
+        // popup show.
+        if std::fs::metadata(sh::os(&pidf)).map(|m| m.len() > 0).unwrap_or(false) {
+            let wc = cmdline(&[b"bash", b"-c", WAIT_SH.as_bytes(), b"_", &pidf, verb]);
+            let pf = pidf.clone();
+            self.wait_job(move || {
+                sh::tm(&[b"display-popup", b"-E", b"-B", b"-w", b"28", b"-h", b"5", &wc]);
+                // `read -r p`, then `[[ $p =~ ^[0-9]+$ ]] && kill -0 "$p"` until it's gone
+                let p = std::fs::read(sh::os(&pf)).unwrap_or_default();
+                let p = p.split(|&c| c == b'\n').next().unwrap_or_default();
+                let pid = std::str::from_utf8(p).ok().filter(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit())).and_then(|p| p.parse::<libc::pid_t>().ok());
+                if let Some(pid) = pid {
+                    while pid > 0 && unsafe { libc::kill(pid, 0) } == 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            });
+        }
         let cp = sh::cmdsub(sh::tail_n(&std::fs::read(sh::os(&out)).unwrap_or_default(), 1));
         let _ = std::fs::remove_file(sh::os(&out));
+        let _ = std::fs::remove_file(sh::os(&pidf));
         if cp == [NOTE] {
             self.box_out(1, b"", false);
             return (false, Vec::new());
@@ -249,7 +275,7 @@ impl Ui {
 mod tests {
     use super::*;
 
-    /// The popup's shell is the one in panel.sh's code_popup, byte for byte
+    /// The popups' shells are the ones in panel.sh's code_popup, byte for byte
     #[test]
     fn the_popup_runs_bashs_shell() {
         let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/panel.sh")).unwrap();
@@ -257,6 +283,10 @@ mod tests {
         let a = l.find("bash -c '").unwrap() + "bash -c '".len();
         let b = l.rfind("' _ \"$q\"").unwrap();
         assert_eq!(&l[a..b], POPUP_SH);
+        let l = src.lines().find(|l| l.contains("' _ \"$out.pid\" \"$verb\")")).expect("code_popup's wait popup in panel.sh");
+        let a = l.find("bash -c '").unwrap() + "bash -c '".len();
+        let b = l.rfind("' _ \"$out.pid\"").unwrap();
+        assert_eq!(&l[a..b], WAIT_SH);
     }
 
     /// A command line put together here is read back as the same words by a shell

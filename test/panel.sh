@@ -958,6 +958,8 @@ cat >"$T/popbin/tmux" <<POP
 if [[ \$1 == display-popup ]]; then
 	echo "\$*" >>"$T/popup.log"
 	cmd=\${!#}
+	# The small one while it approves: it only waits, and draws nothing here (no client).
+	[[ " \$* " == *" -B "* ]] && { eval "\$cmd" >/dev/null 2>&1; exit 0; }
 	coproc P { eval "\$cmd"; }
 	buf=""
 	while IFS= read -r -N1 -t 5 c <&"\${P[0]}"; do buf+=\$c; [[ \$buf =~ Type\ ([0-9]{4})\  ]] && break; done
@@ -1032,7 +1034,7 @@ echo right >"$T/popup.code"; : >"$T/popup.log"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '1  Approve' >/dev/null; akey 1
 check "the code typed back approves it" "wait_a 'live-root@far.invalid and dev-root@near.invalid can talk now' && [[ ! -e $T/mail/intros/$ia ]] && grep -q '^allow s:$ia@far.invalid s:to$ia@near.invalid live-root@far.invalid dev-root@near.invalid [0-9]*\$' $T/mail/grants"
 check "the one the other way with it, and only that one" "[[ ! -e $T/mail/intros/$ic && -e $T/mail/intros/$ib && -e $T/mail/intros/$id ]]"
-check "and then just the panel: no box asks again" "sleep 1 && ! ascreen | grep -cE 'LINK AGENTS TOGETHER|[0-9]  (Approve|Deny)' >/dev/null && [[ \$(grep -c '^display-popup ' $T/popup.log) == 1 ]]"
+check "and then just the panel: no box asks again" "sleep 1 && ! ascreen | grep -cE 'LINK AGENTS TOGETHER|[0-9]  (Approve|Deny)' >/dev/null && [[ \$(grep -c '^display-popup -E -w 76 ' $T/popup.log) == 1 ]]"
 akey g; wait_a 'WAITING' >/dev/null; akey 1; wait_a '2  Deny' >/dev/null; akey 2
 check "Deny declines it, both ways" "wait_a \"declined: cx@far.invalid and dev-root@near.invalid can't talk\" && [[ ! -e $T/mail/intros/$ib && ! -e $T/mail/intros/$id ]] && [[ \$(grep -c '^deny s:$ib@far.invalid ' $T/mail/grants) == 1 ]]"
 check "with nothing waiting, MESSAGES has no waiting line" "gone_a 'waiting for [G]rant access' && wait_a '✓ 2 approved'"
@@ -1063,10 +1065,11 @@ akey q
 tm kill-window -t work:acc 2>/dev/null
 rm -rf "$T/mail/intros" "$T/mail/grants"* "$T/popup.log"
 # The real popup, on a client attached to a tmux of its own (work:gclient is its terminal):
-# once the code is typed, the popup stays open while the approval runs, so it's never an
-# empty box meanwhile. popbox < CAPTURE (capture-pane -e) [BG]: the popup on it, as "ROWS
-# BLANK BG", BLANK its rows that are nothing but its background BG; with none open, "none",
-# or "painted" when a row still has 20 blank cells in BG.
+# once the code is typed, the popup asking for it closes at once, and a small box says the
+# approval is under way until it's done. popbox < CAPTURE (capture-pane -e) [BG]: the popup
+# with tmux's border on it, as "ROWS BLANK BG", BLANK its rows that are nothing but its
+# background BG; with none open, "none", or "painted" when a row still has 20 blank cells in BG.
+# waitbox < CAPTURE: the small box (its ACCESS tab) as "LEFT WIDTH ROWS SCREENWIDTH", or "0 0 0 0".
 cat >"$T/popbox.py" <<'PY'
 import re, sys
 bg, grid = "", []
@@ -1106,6 +1109,21 @@ for y in range(top + 1, len(grid)):
     if inner and all(c == " " and b for c, b in inner): blank += 1
     pbg = pbg or (inner[0][1] if inner else "")
 print(rows, blank, pbg)
+PY
+cat >"$T/waitbox.py" <<'PY'
+import sys
+rows = sys.stdin.read().split("\n")
+for y, t in enumerate(rows):
+    x = t.find("╔═░▒▓ ACCESS ▓▒░")
+    if x < 0: continue
+    h = 1
+    for u in rows[y + 1:]:
+        h += 1
+        if u[x:x + 1] == "╚": break
+    print(x, t.find("╗", x) - x + 1, h, max(len(r) for r in rows))
+    break
+else:
+    print(0, 0, 0, 0)
 PY
 G=$T/gmail gi=5555555555555555eeeeeeeeeeeeeeee
 mkdir -p "$G/intros/$gi/held" "$G/links/far.invalid" "$G/links/near.invalid"
@@ -1164,11 +1182,29 @@ gcode=$(gscr | grep -oE 'Type [0-9]{4}' | grep -oE '[0-9]{4}')
 # agent-say's lock held a while (by a live "agent-say"), so the approval takes its time.
 (exec -a agent-say-hold sleep 30) & ghold=$!
 mkdir -p "$G/index.lock" && echo $ghold >"$G/index.lock/pid"
-tm send-keys -t work:gclient -l "$gcode"; tm send-keys -t work:gclient Enter; sleep 1.5 # the popup takes keys from the client
-read -r grows gblank gbg <<<"$(gscr -e | python3 -I "$T/popbox.py")"
-check "once the code is typed, the popup isn't left an empty box while it approves" "(( \${grows:-0} > 0 && \${gblank:-0} < grows )) && gscr | grep -cF 'Allowing' >/dev/null"
+tm send-keys -t work:gclient -l "$gcode"; tm send-keys -t work:gclient Enter; sleep 1.2 # the popup takes keys from the client
+gwait=$(gscr); gwaite=$(gscr -e)
+read -r wl ww wh sw <<<"$(python3 -I "$T/waitbox.py" <<<"$gwait")"
+check "once the code is typed, the popup asking for it is gone at once: nothing on the screen asks for anything" "! grep -cE 'press Enter|Esc cancels|Esc closes' <<<\"\$gwait\" >/dev/null && [[ \$(python3 -I \"$T/popbox.py\" <<<\"\$gwaite\") == none ]]"
+check "a small box says Allowing… while it approves, in the middle, over the panel drawn clean" "grep -cF '║        Allowing…         ║' <<<\"\$gwait\" >/dev/null && (( \${ww:-0} == 28 && \${wh:-0} == 5 && wl > 0 && sw - ww - 2 * wl >= -2 && sw - ww - 2 * wl <= 2 )) && [[ \$(nboxes gpane) == 0 ]]"
+check "its bar moves: it's working, not stuck" "a=\$(gscr | grep -F '▓█▓'); sleep 0.3; b=\$(gscr | grep -F '▓█▓'); [[ -n \$a && -n \$b && \$a != \$b ]]"
+tm send-keys -t work:gclient Escape; tm send-keys -t work:gclient C-c; tm send-keys -t work:gclient x
+check "keys there change nothing: it stays until the approval is done" "sleep 0.4 && gscr | grep -cF 'Allowing…' >/dev/null && [[ -e $G/intros/$gi ]]"
 kill $ghold 2>/dev/null; wait $ghold 2>/dev/null
-check "and once approved, nothing of the popup is left on the panel" "wait_g 'can talk now' && sleep 0.5 && [[ \$(gscr -e | python3 -I \"$T/popbox.py\" \"\$gbg\") == none ]]"
+check "and once approved, it goes by itself: the key bar says so, nothing of a popup left" "wait_g 'can talk now' && sleep 0.5 && ! gscr | grep -cF 'ACCESS' >/dev/null && [[ \$(gscr -e | python3 -I \"$T/popbox.py\") == none && \$(nboxes gscr) == 0 ]]"
+check "approved as before: its grant made, the intro gone" "grep -q '^allow s:$gi@far.invalid ' $G/grants && [[ ! -e $G/intros/$gi ]]"
+# Refresh's the same: the code typed back, a small box says Refreshing… till it's done.
+tg send-keys -t gt:0 g; wait_g 'APPROVED' >/dev/null; tg send-keys -t gt:0 1; wait_g '1  Refresh' >/dev/null; tg send-keys -t gt:0 1
+wait_g 'press Enter to refresh' >/dev/null
+gcode=$(gscr | grep -oE 'Type [0-9]{4}' | grep -oE '[0-9]{4}')
+(exec -a agent-say-hold sleep 30) & ghold=$!
+mkdir -p "$G/index.lock" && echo $ghold >"$G/index.lock/pid"
+tm send-keys -t work:gclient -l "$gcode"; tm send-keys -t work:gclient Enter; sleep 1.2
+gwait=$(gscr)
+read -r wl ww wh sw <<<"$(python3 -I "$T/waitbox.py" <<<"$gwait")"
+check "Refresh's code typed back: a small box says Refreshing…, and nothing asks" "grep -cF '║       Refreshing…        ║' <<<\"\$gwait\" >/dev/null && (( \${ww:-0} == 28 && \${wh:-0} == 5 )) && ! grep -cE 'press Enter|Esc cancels' <<<\"\$gwait\" >/dev/null"
+kill $ghold 2>/dev/null; wait $ghold 2>/dev/null
+check "and goes when it's refreshed" "wait_g 'refreshed: live-root@far.invalid' && sleep 0.5 && ! gscr | grep -cF 'ACCESS' >/dev/null && [[ \$(nboxes gscr) == 0 ]]"
 tg kill-server; tm kill-window -t work:gclient 2>/dev/null
 echo "questions"
 # rv LINE: a coloured capture's line has reverse video on (the highlighted choice's mark).
