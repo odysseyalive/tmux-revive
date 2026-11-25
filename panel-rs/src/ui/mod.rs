@@ -728,10 +728,11 @@ impl Ui {
     }
 
     /// A frame wanted now; one whose peek moved to another pane waits a moment for its screen
+    /// (a peek gone, Want::None, has no screen to wait for: drawn at once)
     fn request_draw(&mut self) {
         self.want_draw = true;
         self.draw_at = Instant::now();
-        if self.want_peek() {
+        if self.want_peek() && *self.hub.want.lock().unwrap() != Want::None {
             self.wait_peek = true;
             self.draw_at = Instant::now() + ROUND_WAIT;
         }
