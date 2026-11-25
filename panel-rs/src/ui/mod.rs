@@ -69,6 +69,16 @@ fn swap_gen(s: &mut Snapshot, g: &Snapshot) {
     }
 }
 
+/// LUP for the headings: the generation's, each host LINKS has a row for as the mail had it. A
+/// generation in before its mail would otherwise put a heading and its LINKS row a gather apart;
+/// a host the mail hasn't seen yet has no LINKS row to disagree with.
+fn lup_over(s: &mut Snapshot, mail: &BTreeMap<Bytes, Bytes>) {
+    let l = s.assoc.entry("LUP").or_default();
+    for (h, v) in mail {
+        l.insert(h.clone(), v.clone());
+    }
+}
+
 /// act()'s early returns for O, M and N, the ones that need nothing but the selection: every
 /// key the key bar fades (State::keys_off) is one of them. Some(Some(TEXT)): notice TEXT and
 /// return; Some(None): return, saying nothing; None: the key acts (O opens, M and N go on to
@@ -130,6 +140,8 @@ pub struct Ui {
     // The round: a gather kicked and not yet in, and the mail and peek after it.
     wait_gen: bool,
     wait_mail: bool,
+    /// The LUP of the mail drawn (the one its LINKS rows went by), over each generation's
+    mail_lup: BTreeMap<Bytes, Bytes>,
     wait_peek: bool,
     want_draw: bool,
     draw_at: Instant,
@@ -750,6 +762,8 @@ impl Ui {
             let s = &mut self.c.p.snap;
             s.arrays.insert("MSG", to_map(mm.msg));
             s.arrays.insert("SIDE", to_map(mm.side));
+            self.mail_lup = mm.lup;
+            lup_over(s, &self.mail_lup);
             s.arrays.insert("INTROS", to_map(mm.intros));
             self.c.p.mold = mm.mold;
             self.c.p.mwait = mm.mwait;
@@ -790,6 +804,7 @@ impl Ui {
     /// bar gone, the loading box checked
     fn apply_gen(&mut self, g: &collectors::Gen) {
         swap_gen(&mut self.c.p.snap, &g.snap);
+        lup_over(&mut self.c.p.snap, &self.mail_lup);
         self.c.p.p_groups = g.snap.var("P_GROUPS").map(num).unwrap_or(0);
         if let Some(v) = g.snap.var("VERSION") {
             self.c.p.version = v.to_vec();
@@ -967,6 +982,7 @@ pub fn run(root: &[u8]) -> ! {
         started: false,
         wait_gen: true,
         wait_mail: false,
+        mail_lup: BTreeMap::new(),
         wait_peek: false,
         want_draw: false,
         draw_at: Instant::now(),
@@ -1008,6 +1024,8 @@ pub fn run(root: &[u8]) -> ! {
 #[cfg(test)]
 mod tests {
     use crate::snapshot::Snapshot;
+    use crate::compat::Bytes;
+    use std::collections::BTreeMap;
 
     fn snap(recs: &[(&str, &str, &str)]) -> Snapshot {
         Snapshot::apply(&recs.iter().map(|(a, b, c)| (a.as_bytes().to_vec(), b.as_bytes().to_vec(), c.as_bytes().to_vec())).collect::<Vec<_>>()).unwrap()
@@ -1027,6 +1045,22 @@ mod tests {
         assert_eq!(s.list("MSG"), vec![b"kept".to_vec()], "the panel's own arrays stay");
         assert_eq!(s.assoc["FOLD"].get(&b"far"[..]).map(|v| v.as_slice()), Some(&b"1"[..]));
         assert_eq!(s.assoc["RVER"].get(&b"h"[..]).map(|v| v.as_slice()), Some(&b"1.0.0"[..]));
+    }
+
+    /// A generation in before its mail: each heading LINKS has a row for says what that row says
+    /// (the mail's LUP), a host new in the generation what the generation found.
+    #[test]
+    fn headings_go_by_the_lup_links_went_by() {
+        let mut s = snap(&[("LUP", "far", "0")]);
+        let g = snap(&[("LUP", "far", "1"), ("LUP", "new", "1")]);
+        let mail: BTreeMap<Bytes, Bytes> = [(b"far".to_vec(), b"0".to_vec())].into_iter().collect();
+        super::swap_gen(&mut s, &g);
+        super::lup_over(&mut s, &mail);
+        assert_eq!(s.assoc["LUP"].get(&b"far"[..]).map(|v| v.as_slice()), Some(&b"0"[..]), "LINKS's row still says not connected");
+        assert_eq!(s.assoc["LUP"].get(&b"new"[..]).map(|v| v.as_slice()), Some(&b"1"[..]));
+        let mail: BTreeMap<Bytes, Bytes> = [(b"far".to_vec(), b"1".to_vec()), (b"new".to_vec(), b"1".to_vec())].into_iter().collect();
+        super::lup_over(&mut s, &mail);
+        assert_eq!(s.assoc["LUP"].get(&b"far"[..]).map(|v| v.as_slice()), Some(&b"1"[..]), "its mail in: linked, in both");
     }
 
     /// State with these panes' rows, pane SEL selected, heading HSEL

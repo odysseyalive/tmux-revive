@@ -61,6 +61,8 @@ pub struct Mail {
     pub mwait: i64,
     pub intro_on: Bytes,
     pub side: Vec<Bytes>,
+    /// the LUP links_saves went by: the headings go by it too, so the two never disagree
+    pub lup: BTreeMap<Bytes, Bytes>,
     pub intros: Vec<Bytes>,
 }
 
@@ -168,7 +170,8 @@ pub fn start(root: &[u8], hub: &Arc<Hub>, wake: RawFd) {
                 let intros = g.intros_look();
                 let (msg, mold, mwait, intro_on) = g.messages();
                 let side = g.links_saves();
-                *h.mail.lock().unwrap() = Some(Mail { msg, mold, mwait, intro_on, side, intros });
+                let lup = g.lup.clone();
+                *h.mail.lock().unwrap() = Some(Mail { msg, mold, mwait, intro_on, side, intros, lup });
                 poke(wake);
             }
         })
