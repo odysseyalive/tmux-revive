@@ -316,6 +316,11 @@ mod tests {
             if x != y {
                 continue;
             }
+            // a kernel thread ([kworker/u8:3-events]) takes the name of the work it's on, which
+            // can change and change back between the two looks; no pane runs one
+            if r.args.first() == Some(&b'[') {
+                continue;
+            }
             both += 1;
             // memory moves: proc_rss_is_ps_rss
             if !(x.ppid == r.ppid && x.uid == r.uid && x.args == r.args) {
