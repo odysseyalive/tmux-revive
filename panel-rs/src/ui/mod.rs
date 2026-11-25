@@ -18,9 +18,11 @@
 
 pub mod boxes;
 pub mod collectors;
+pub mod flows;
 pub mod handoff;
 pub mod keys;
 pub mod modal;
+pub mod popups;
 pub mod screens;
 pub mod term;
 pub mod upd;
@@ -374,15 +376,10 @@ impl Ui {
         match key {
             b"o" | b"O" => self.open(),
             b"s" | b"S" => self.save(),
-            // Access with nothing to show (none waiting, none approved): act returns, saying
-            // nothing, so there is no box to hand over for.
-            b"g" | b"G" | b"i" | b"I" => {
-                if self.access_any() {
-                    self.handoff(key)
-                }
-            }
-            b"m" | b"M" | b"b" | b"B" | b"?" => self.handoff(key),
+            b"b" | b"B" => self.link(),
             b"u" | b"U" => self.upd_show(),
+            b"g" | b"G" | b"i" | b"I" => self.access(),
+            b"m" | b"M" | b"?" => self.handoff(key),
             b"n" | b"N" => {
                 if self.rename() {
                     return; // on a linked computer: SEL_ID is its new name, for the next gather
@@ -562,25 +559,6 @@ impl Ui {
         let save = sh::path(&[&self.root, b"/scripts/save.sh"]);
         let ok = sh::run(&[b"bash", &save, b"manual"]).ok;
         self.notice(if ok { b"saved" } else { b"save failed (see: tmux-revive log)" });
-    }
-
-    /// act's G (and I) up to its list: agent-say's _cull first (it clears what has lapsed and
-    /// says how long an approval lasts), then whether any intro waits or any approval is still
-    /// in its time. True: there is a list to show.
-    fn access_any(&self) -> bool {
-        let asay = sh::path(&[&self.root, b"/bin/agent-say"]);
-        let ttl = sh::cmdsub(&sh::run(&[b"timeout", b"10", &asay, b"_cull"]).out);
-        let ttl = if m("^[1-9][0-9]{0,9}$", &ttl) { num(&ttl) } else { 86400 };
-        let now = self.now();
-        let intros = sh::path(&[&self.astate, b"/intros"]);
-        if sh::glob_sub(&intros, b"from").iter().any(|f| sh::is_file(f)) {
-            return true;
-        }
-        let grants = std::fs::read(sh::os(&sh::path(&[&self.astate, b"/grants"]))).unwrap_or_default();
-        sh::lines(&grants).iter().any(|l| {
-            let f = sh::read_ws(l, 7, b" \t\n");
-            f[0] == b"allow" && m("^[0-9]{1,12}$", &f[5]) && num(&f[5]) + ttl > now
-        })
     }
 
     /// act's O on a pane here (pane_key_early has said no to the rest): inside tmux the client
