@@ -16,7 +16,7 @@
 #                                      cursors compared with CPU, memory and the cpu graph masked
 #                                      (tier 3)
 #   bash test/panel-golden.sh live     the Rust panel live (B) against bash (A), twins' way, and a
-#                                      key it hands over to bash (N, Esc) coming back to it
+#                                      key it hands over to bash (Enter, Esc) coming back to it
 #
 # GOLDEN_A and GOLDEN_B: the two panels, as commands: A bash scripts/panel.sh, B the Rust one,
 # panel-rs/target/release/tmux-revive-panel (built here with cargo unless GOLDEN_B is given). The
@@ -151,6 +151,11 @@ if [[ $cmd == *' panel --rows' ]]; then
 	else
 		printf '%s\n' "%1${S}fold:0.0${S}fold-sh${S}bash${S}shell${S}home${S}${S}0${S}4096${S}0"
 	fi
+	exit 0
+fi
+if [[ $cmd == *' agent-say name '* ]]; then
+	n=${cmd##* name \'} n=${n%%\'*}
+	echo "pane %1 is now '$n'"
 	exit 0
 fi
 if [[ $cmd == *' panel --peek '* ]]; then
@@ -626,6 +631,50 @@ for line in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").split("\n
         line = re.sub(r"(\$" + esc + " " + esc + r")[█ ]", r"\1<cursor>", line, count=1)
     print(meter.sub("<cpu mem>", line))
 PY
+cat >"$T/box.py" <<'PY'
+import re, sys
+# box.py TITLE < CAPTURE (capture-pane -e): only the box titled TITLE (pick's, note's), its
+# shadow too, cell by cell with each cell's colours and attributes as tmux keeps them, so what
+# differs around it (the panel going on under it) doesn't count.
+title = sys.argv[1]
+sys.stdout.reconfigure(errors="surrogateescape")
+rows = []
+for line in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").split("\n"):
+    a, cells, i = {}, [], 0
+    while i < len(line):
+        m = re.match(r"\x1b\[([0-9;:]*)m", line[i:])
+        if m:
+            ps = [int(x) if x else 0 for x in re.split("[;:]", m.group(1))] or [0]
+            j = 0
+            while j < len(ps):
+                p = ps[j]
+                if p == 0: a = {}
+                elif p in (38, 48) and j + 1 < len(ps):
+                    n = 3 if ps[j + 1] == 5 else 5
+                    a["fg" if p == 38 else "bg"] = tuple(ps[j:j + n]); j += n - 1
+                elif 30 <= p <= 37 or 90 <= p <= 97: a["fg"] = p
+                elif 40 <= p <= 47 or 100 <= p <= 107: a["bg"] = p
+                elif p == 39: a.pop("fg", None)
+                elif p == 49: a.pop("bg", None)
+                elif p == 22: a.pop(1, None); a.pop(2, None)
+                elif 23 <= p <= 29: a.pop(p - 20, None)
+                else: a[p] = 1
+                j += 1
+            i += m.end()
+            continue
+        cells.append((tuple(sorted(a.items(), key=str)), line[i])); i += 1
+    rows.append(cells)
+plain = ["".join(c for _, c in r) for r in rows]
+top = next(i for i, l in enumerate(plain) if " " + title + " " in l and "╔" in l)
+left = plain[top].index("╔")
+right = plain[top].index("╗", left)
+bot = next(i for i in range(top + 1, len(plain)) if plain[i][left:left + 1] == "╚")
+# the frame's top row, the rows with their shadow cell at the right, and the shadow row under it
+print(top, left, rows[top][left:right + 1])
+for i in range(top + 1, bot + 1):
+    print(i, left, rows[i][left:right + 2])
+print(bot + 1, left + 1, rows[bot + 1][left + 1:right + 2])
+PY
 twin_up() { # twin_up DIR SOCKET PANEL: the fixture, and PANEL live in a window of its own
 	local d=$1 s=$2
 	fixtures "$d" "$s"
@@ -691,10 +740,11 @@ twins() {
 # ------------------------------------------------------------------ live (Phase 3)
 # The Rust panel live (GOLDEN_B) against the bash one (GOLDEN_A), each on a server of its own
 # with the same fixtures, the same keys sent to both: moves, the art, the peek, the focus, f on
-# a pane here (nothing to fold), compared as twins compares them. Then Enter on the question and N, keys the Rust panel
-# hands over to the bash panel for that one action (REVIVE_PANEL_HANDOFF), each backed out of
-# with Esc: answering, the rename box and what they say after are bash's on both sides, and B is
-# the Rust panel again, with the same pane selected.
+# a pane here (nothing to fold), compared as twins compares them. N (rename) and D (detach) and
+# their boxes, the Rust panel's own. Enter on the question, a key the Rust panel hands over to
+# the bash panel for that one action (REVIVE_PANEL_HANDOFF), backed out of with Esc: answering
+# and what it says after are bash's on both sides, and B is the Rust panel again, with the same
+# pane selected.
 lv_cmd() { tmux -S "$1" display -p -t work:panel '#{pane_current_command}'; }
 # lv_bash SOCKET: its panel has a bash panel running for it (a hand-over)
 lv_bash() { ps -o args= --ppid "$(tmux -S "$1" display -p -t work:panel '#{pane_pid}')" 2>/dev/null | grep -q 'scripts/panel\.sh'; }
@@ -719,7 +769,8 @@ lv_step() {
 		cmp -s "$T/shot.a" "$T/shot.b" && break
 		sleep 0.2
 	done
-	check "$5after '$3': the same screen and cursor ($4)" "grep -aqF -- '$4' $T/shot.a && cmp -s $T/shot.a $T/shot.b"
+	LV_TEXT=$4 # the text by name, so a quote in it is just a quote
+	check "$5after '$3': the same screen and cursor ($4)" "grep -aqF -- \"\$LV_TEXT\" $T/shot.a && cmp -s $T/shot.a $T/shot.b"
 	[[ -n ${GOLDEN_DEBUG:-} ]] && plain <"$T/shot.a" | grep -E '▶|▓▒░ [A-Z]|^║ \[' | cut -c1-80
 	cmp -s "$T/shot.a" "$T/shot.b" || diff "$T/shot.a" "$T/shot.b" | head -${GOLDEN_DIFF:-6} | sed 's/^/      /'
 }
@@ -768,7 +819,7 @@ live() {
 		done
 		check "after '${keys:-the start}': the same screen and cursor ($text)" "grep -aqF -- '$text' $T/shot.a && cmp -s $T/shot.a $T/shot.b"
 		cmp -s "$T/shot.a" "$T/shot.b" || diff "$T/shot.a" "$T/shot.b" | head -${GOLDEN_DIFF:-6} | sed 's/^/      /'
-		[[ $keys == N ]] && check "N went to the bash panel" "lv_bash $B"
+		[[ $keys == N ]] && check "N's box is the Rust panel's own (no hand-over)" "! lv_bash $B && [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
 	done
 	check "and B is the Rust panel again" "! lv_bash $B && [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
 	check "with the same pane selected (asker)" "tmux -S $B capture-pane -p -t work:panel | grep -q '▶.*asker'"
@@ -777,7 +828,7 @@ live() {
 	# hand-overs above, so no bash panel gathered fresh shows a screen the other has yet to.
 	lv_step "$A" "$B" s "saved" "S: "
 	lv_step "$A" "$B" g "C O N T R O L" "G with nothing waiting: "
-	check "S and the empty G did not go to the bash panel" "! lv_bash $B && [[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter' ]]"
+	check "S and the empty G did not go to the bash panel" "! lv_bash $B && [[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
 	# One made now waits: G goes to bash's box.
 	local tw
 	for tw in lva lvb; do
@@ -791,7 +842,35 @@ live() {
 	lv_step "$A" "$B" g "LINK AGENTS TOGETHER" "an intro waiting: "
 	check "G with an intro waiting went to the bash panel" "lv_bash $B"
 	lv_step "$A" "$B" Escape "▸ PANES" "an intro waiting: "
-	check "the hand-overs were N's, Enter's and the waiting intro's G, no other: S and the empty G stayed in Rust" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter\\ng' ]]"
+	check "the hand-overs were Enter's and the waiting intro's G, no other: N, S and the empty G stayed in Rust" "[[ \$(cat $T/lvb-shim/handoffs) == \$'enter\\ng' ]]"
+	# N on a pane here: the ask line on the bottom row as bash's, what's typed shown (Backspace
+	# too), Enter renames it (agent-say name) and says so; then back to its own name.
+	lv_step "$A" "$B" N "New name for asker:" "N here: "
+	lvtyped() { tmux -S "$A" capture-pane -p -t work:panel | grep -qF "$1" && tmux -S "$B" capture-pane -p -t work:panel | grep -qF "$1"; }
+	lv_step "$A" "$B" "t m p" "Enter sends" "N here: "
+	check "N here: what's typed shows on both" "lvtyped 'New name for asker: tmp▏ Enter sends · Esc cancels'"
+	lv_step "$A" "$B" BSpace "Enter sends" "N here: "
+	check "N here: Backspace takes the last off on both" "lvtyped 'New name for asker: tm▏ Enter sends'"
+	lv_step "$A" "$B" Enter "is now 'tm'" "N here: "
+	check "N here: the pane is renamed on both" "tmux -S $A list-panes -a -F '#{@agent}' | grep -qx tm && tmux -S $B list-panes -a -F '#{@agent}' | grep -qx tm"
+	lv_step "$A" "$B" x "C O N T R O L" "N here: "
+	check "N here: the row goes by its new name on both" "tmux -S $A capture-pane -p -t work:panel | grep -q '▶.* tm ' && tmux -S $B capture-pane -p -t work:panel | grep -q '▶.* tm '"
+	lv_step "$A" "$B" N "New name for tm:" "N here: "
+	lv_step "$A" "$B" "a s k e r Enter" "is now 'asker'" "N here: "
+	lv_step "$A" "$B" x "C O N T R O L" "N here: "
+	check "N here: and by its own again" "tmux -S $B capture-pane -p -t work:panel | grep -q '▶.*asker'"
+	# D: the pick box as bash's, a move in it, Esc and No cancelling, Ctrl-C closing it with the
+	# panel going on, and Yes with no client to detach.
+	lv_step "$A" "$B" D "DETACH TMUX?" "D: "
+	lv_step "$A" "$B" Down "DETACH TMUX?" "D: "
+	lv_step "$A" "$B" Up "DETACH TMUX?" "D: "
+	lv_step "$A" "$B" Escape "detach cancelled" "D: "
+	lv_step "$A" "$B" "D 1" "detach cancelled" "D, No: "
+	lv_step "$A" "$B" D "DETACH TMUX?" "D: "
+	lv_step "$A" "$B" C-c "detach cancelled" "D, Ctrl-C: "
+	check "D, Ctrl-C: the box closed and neither panel ended" "[[ \$(lv_cmd $B) == tmux-revive-pan* && \$(lv_cmd $A) == bash ]]"
+	lv_step "$A" "$B" "D 2" "couldn't detach" "D, Yes with no client: "
+	check "N and D did not go to the bash panel" "! lv_bash $B && [[ \$(cat $T/lvb-shim/handoffs) == \$'enter\\ng' ]]"
 	# O on a pane here: the Rust panel opens it itself, as bash does. A client attached to each
 	# server (from a tmux of their own, at a size the panels' windows ignore) is switched to it.
 	local K=$T/lvk.sock
@@ -801,7 +880,7 @@ live() {
 	for _ in $(seq 1 25); do [[ -n $(tmux -S "$A" list-clients) && -n $(tmux -S "$B" list-clients) ]] && break; sleep 0.2; done
 	lv_step "$A" "$B" O "▸ PANES" ""
 	check "O: tmux's client went to the pane on both (asker)" "[[ \$(tmux -S $A list-clients -F '#{window_name}') == asker && \$(tmux -S $B list-clients -F '#{window_name}') == asker ]]"
-	check "O did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter\\ng' ]]"
+	check "O did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'enter\\ng' ]]"
 	tmux -S "$K" kill-server 2>/dev/null
 	# REVIVE_PANEL_POPUP: the panel closes once O has opened the pane (bash's exit 0).
 	local s
@@ -822,7 +901,7 @@ live() {
 		[[ $s == "$B" ]] && who=B
 		check "$who with REVIVE_PANEL_POPUP: O opens the pane and the panel closes" "for _ in \$(seq 1 25); do tmux -S $s list-windows -F '#W' | grep -qx pop || break; sleep 0.2; done; ! tmux -S $s list-windows -F '#W' | grep -qx pop && [[ \$(tmux -S $s display -p -t work '#I') == 0 ]]"
 	done
-	check "O in the popup did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter\\ng' ]]"
+	check "O in the popup did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'enter\\ng' ]]"
 	# Outside tmux (no TMUX): O selects the pane, puts the terminal back and becomes `tmux attach
 	# -t SESSION`. A tmux on PATH notes an attach and ends there (never your server); the rest
 	# go to the real one.
@@ -849,7 +928,7 @@ live() {
 		[[ $who == B ]] && s=$B
 		check "$who outside tmux: O selects the pane and becomes tmux attach -t work" "for _ in \$(seq 1 25); do tmux -S $s list-windows -F '#W' | grep -qx out || break; sleep 0.2; done; ! tmux -S $s list-windows -F '#W' | grep -qx out && [[ \$(tmux -S $s display -p -t work '#I') == 0 && \$(cat $at/attach.last.$who 2>/dev/null) == 'attach -t work' ]]"
 	done
-	check "O outside tmux did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'N\\nenter\\ng' ]]"
+	check "O outside tmux did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'enter\\ng' ]]"
 	# A pane appearing between the pane list and the agents' look: a tmux on the Rust panel's
 	# PATH opens a window ahead of every other just before the batched look at the agents'
 	# screens. The asking agent's state stays on its own row, never the newcomer's.
@@ -915,12 +994,44 @@ live() {
 	: >"$T/lvd/state/links/far.example/read-only"
 	: >"$T/lve/state/links/far.example/read-only"
 	lv_step "$D" "$E" "Down Down Down" "far-top" "linked: "
-	# The box only, not the whole screen: the bash panel a hand-over runs draws PANES from its
-	# top, not scrolled as the Rust panel had it (the hand-over doesn't carry PO yet).
-	tmux -S "$D" send-keys -t work:panel N; tmux -S "$E" send-keys -t work:panel N
-	check "linked, read-only: N on a pane with rows opens bash's rename box on both" "settle $D 'New name for far-top on far.example:' && settle $E 'New name for far-top on far.example:'"
+	lv_step "$D" "$E" N "New name for far-top on far.example:" "linked, read-only: "
 	lv_step "$D" "$E" Escape "rename cancelled" "linked, read-only: "
-	check "linked, read-only: N on a pane with rows went on to bash's box, the only hand-over" "[[ \$(cat $T/lve-shim/handoffs) == N ]]"
+	# A name that can't be one there, then one that can: agent-say name runs there (the fake
+	# ssh answers as it would), and what it says is said here.
+	lv_step "$D" "$E" "N a Space b Enter" "be a name: use letters" "linked: "
+	lv_step "$D" "$E" "N n e w Enter" "on far.example: pane %1 is now 'new'" "linked: "
+	check "linked: N on a pane with rows stayed in Rust, as every key here did" "! lv_bash $E && [[ -e $T/lve-shim/handoffs && ! -s $T/lve-shim/handoffs ]]"
+	# A pane opened while D's box is up: the Rust panel goes on looking under it (REFRESH 1
+	# here), so PANES shows it with the box still up, where bash's is frozen; the box itself,
+	# and the cursor, as bash's.
+	local F=$T/lvf.sock G=$T/lvg.sock
+	for d in lvf lvg; do
+		fixtures "$T/$d" "$T/$d.sock"
+		env_for "$T/$d" "$T/$d.sock"
+		local cmd=$GOLDEN_A
+		[[ $d == lvg ]] && cmd=$GOLDEN_B
+		# shellcheck disable=SC2145
+		tmux -S "$T/$d.sock" new-window -d -t work -n panel "env ${ENV[*]} REVIVE_PANEL_REFRESH=1 REVIVE_PANEL_NOW=$RNOW AGENT_SAY_SSH=false $cmd"
+	done
+	lvp() { tmux -S "$1" capture-pane -p -t work:panel; }
+	for s in "$F" "$G"; do for _ in $(seq 1 50); do lvp "$s" | grep -q '▶' && break; sleep 0.2; done; done
+	for s in "$F" "$G"; do tmux -S "$s" send-keys -t work:panel D; done
+	check "a pane opened under D's box: both show the box" "for _ in \$(seq 1 40); do lvp $F | grep -q 'DETACH TMUX?' && lvp $G | grep -q 'DETACH TMUX?' && break; sleep 0.2; done; lvp $F | grep -q 'DETACH TMUX?' && lvp $G | grep -q 'DETACH TMUX?'"
+	for s in "$F" "$G"; do
+		tmux -S "$s" new-window -d -t work -n newcomer "bash --norc --noprofile"
+		tmux -S "$s" set-option -p -t work:newcomer @agent newcomer
+	done
+	check "a pane opened under D's box: the Rust panel's PANES shows it, the box still up" "for _ in \$(seq 1 40); do lvp $G | grep -q newcomer && break; sleep 0.2; done; lvp $G | grep -q newcomer && lvp $G | grep -q 'DETACH TMUX?'"
+	check "a pane opened under D's box: bash's panel is frozen under its box" "! lvp $F | grep -q newcomer"
+	sleep 1.5 # a look or two more under it
+	for s in "$F" "$G"; do
+		tmux -S "$s" capture-pane -e -p -t work:panel | python3 "$T/box.py" 'DETACH TMUX?' >"$T/box.$(basename "$s")"
+		tmux -S "$s" display -p -t work:panel 'cursor #{cursor_x},#{cursor_y},#{cursor_flag}' >>"$T/box.$(basename "$s")"
+	done
+	check "a pane opened under D's box: the box, its colours and the cursor are bash's" "[[ -s $T/box.lvf.sock ]] && cmp -s $T/box.lvf.sock $T/box.lvg.sock"
+	cmp -s "$T/box.lvf.sock" "$T/box.lvg.sock" || diff "$T/box.lvf.sock" "$T/box.lvg.sock" | head -6 | cut -c1-300 | sed 's/^/      /'
+	for s in "$F" "$G"; do tmux -S "$s" send-keys -t work:panel Escape; done
+	check "a pane opened under D's box: Esc, and both show it" "for _ in \$(seq 1 40); do lvp $F | grep -q newcomer && lvp $G | grep -q newcomer && break; sleep 0.2; done; lvp $F | grep -q 'detach cancelled' && lvp $G | grep -q 'detach cancelled' && lvp $F | grep -q newcomer"
 }
 
 case ${1:-all} in
