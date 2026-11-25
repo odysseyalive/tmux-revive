@@ -73,7 +73,7 @@ SH="bash $T/root/scripts/panel.sh"
 # The panel, and the test binary that holds measure_gather (built here, with your HOME: the
 # fixture's environment has its own)
 build() {
-	[[ -x $RS ]] || cargo build --release --locked --quiet --manifest-path "$ROOT/panel-rs/Cargo.toml" </dev/null || exit 1
+	cargo build --release --locked --quiet --manifest-path "$ROOT/panel-rs/Cargo.toml" </dev/null || exit 1
 	TEXE=$(cargo test --release --locked --no-run --message-format=json --manifest-path "$ROOT/panel-rs/Cargo.toml" 2>/dev/null </dev/null |
 		python3 -c 'import json, sys
 for l in sys.stdin:
@@ -258,7 +258,10 @@ draw() {
 # ------------------------------------------------------------------ 2. keys
 keys_run() { # keys_run LABEL PANE MODE
 	python3 "$T/keylat.py" "$S" "$2" "$NKEYS" "$3" "$T/keys.$1"
-	printf '  %-22s median %s ms  p95 %s ms  max %s ms  (n %s)  load %s\n' "$1" $(stats <"$T/keys.$1") "$(load1)"
+	printf '  %-22s median %s ms  p95 %s ms  max %s ms  (n %s)  load %s  %s\n' "$1" $(stats <"$T/keys.$1") "$(load1)" \
+		"$(tmux -S "$S" display -p -t "$2" '#{pane_width}x#{pane_height}')"
+	# by the row each key moved the selection to (which pane that is: the panel's PANES)
+	[[ $3 == echo ]] || sort -k2n "$T/keys.$1" | awk '{ n[$2]++; s[$2] += $1; if ($1 > 20) o[$2]++ } END { for (r in n) printf "    row %s: n %d, mean %.1f ms, %d over 20 ms\n", r, n[r], s[r] / n[r], o[r] }' | sort -k2n
 }
 # keys_panels LOAD: each panel, with the peek off (as it starts by default: only a question's
 # screen is shown, and looked at when the selection reaches it) and on (REVIVE_PANEL_PEEK=1:

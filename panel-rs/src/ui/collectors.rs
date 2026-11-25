@@ -219,6 +219,11 @@ mod measure {
     #[test]
     #[ignore]
     fn measure_gather() {
+        // never your own tmux: only the private server test/measure.sh names
+        if std::env::var_os("REVIVE_SOCKET").is_none_or(|s| s.is_empty()) {
+            eprintln!("measure_gather: no REVIVE_SOCKET (run it through test/measure.sh)");
+            return;
+        }
         let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).canonicalize().unwrap();
         let root = root.as_os_str().as_encoded_bytes();
         crate::collect::sh::init(root);
