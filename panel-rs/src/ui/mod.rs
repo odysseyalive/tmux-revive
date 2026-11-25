@@ -1,11 +1,11 @@
 //! The live panel (plan Phase 3): scripts/panel.sh's main loop, keys() and the act() keys that
 //! move, scroll, fold, peek and change the art, on a UI thread that never waits on a collector.
 //! Every frame is render::Ctx::draw's, the same builders --once draws with; the writer sends the
-//! lines that changed inside ?2026. O, N, S, D, U (upd.rs), B and G (flows.rs, popups.rs), and
-//! O M N where the key bar fades them, are here too; every key act() runs goes through box_flow
-//! (boxes.rs), and the boxes it opens (pick, ask, note, tmux's popups) wait in modal.rs with the
-//! panel going on under them. Keys whose act() branch isn't ported yet (M ?, Enter on a
-//! question) are handed over to the bash panel for that one action (handoff.rs).
+//! lines that changed inside ?2026. O, N, S, D, U (upd.rs), B and G (flows.rs, popups.rs), M
+//! (edit_box, editbox.rs), the ? page (help.rs), and O M N where the key bar fades them, are here
+//! too; every key act() runs goes through box_flow (boxes.rs), and the boxes it opens (pick, ask,
+//! note, edit_box, tmux's popups) wait in modal.rs with the panel going on under them. Enter on
+//! a question, not ported yet, is handed over to the bash panel for that one action (handoff.rs).
 //!
 //! What runs where:
 //! - UI thread (here): input, the act() keys above and their boxes, the flash, the loading
@@ -19,8 +19,10 @@
 
 pub mod boxes;
 pub mod collectors;
+pub mod editbox;
 pub mod flows;
 pub mod handoff;
+pub mod help;
 pub mod keys;
 pub mod modal;
 pub mod popups;
@@ -138,6 +140,10 @@ pub struct Ui {
     over: Option<Bytes>,
     /// A box is up: Ctrl-C closes it, not the panel
     modal_on: bool,
+    /// edit_box is up: a resize takes its box off until it's drawn again at the new size
+    eb_on: bool,
+    /// The ? page is up: it moves TICK itself (every other second), the panel's clock doesn't
+    help_on: bool,
     /// pick's PICKED and PKEY, ask's REPLY
     picked: Bytes,
     pkey: Bytes,
@@ -384,7 +390,8 @@ impl Ui {
             b"b" | b"B" => self.link(),
             b"u" | b"U" => self.upd_show(),
             b"g" | b"G" | b"i" | b"I" => self.access(),
-            b"m" | b"M" | b"?" => self.handoff(key),
+            b"m" | b"M" => self.message(),
+            b"?" => self.help_view(),
             b"n" | b"N" => {
                 if self.rename() {
                     return; // on a linked computer: SEL_ID is its new name, for the next gather
@@ -535,6 +542,29 @@ impl Ui {
         let out = out.strip_prefix(b"agent-say: ".as_slice()).unwrap_or(&out).to_vec();
         self.notice(&out);
         false
+    }
+
+    /// act's M (pane_key_early has said no to what can't be messaged): written in a box, as
+    /// long as it needs to be: several lines go as one message, through agent-say --from panel.
+    fn message(&mut self) {
+        use crate::render::cat;
+        let sel = self.c.p.sel;
+        let id = self.pa("P_ID", sel);
+        let name = if !self.c.p.a("P_NAME", sel).is_empty() { self.pa("P_NAME", sel) } else { self.pa("P_LOC", sel) };
+        let ok = self.edit_box(&cat(&[b"MESSAGE TO ", &name]), "Enter sends · Alt-Enter new line · Esc closes".as_bytes(), b"", false);
+        // [[ -n ${REPLY//[[:space:]]/} ]]
+        if !ok || crate::compat::chars(&self.reply).all(crate::compat::is_space) {
+            self.notice(b"message cancelled");
+            BoxHost::draw(self);
+            return;
+        }
+        BoxHost::draw(self); // the box goes at once: sending can take a while
+        let asay = sh::path(&[&self.root, b"/bin/agent-say"]);
+        let reply = self.reply.clone();
+        // out=$("$ASAY" --from panel "$id" "$REPLY" 2>&1 | tail -n 1)
+        let out = self.wait_job(move || modal::run_last_line(&[asay, b"--from".to_vec(), b"panel".to_vec(), id, reply]));
+        let out = out.strip_prefix(b"agent-say: ".as_slice()).unwrap_or(&out).to_vec();
+        self.notice(&out);
     }
 
     /// act's D: detach this tmux (the client looking at the panel), once you've said yes.
@@ -808,7 +838,8 @@ impl Ui {
         self.c.draw();
         self.c.p.print.clear();
         let out = std::mem::take(&mut self.c.out);
-        let mut buf = writer::frame(&out, &mut self.prev, None);
+        // The ? page's own writer (help_frame's) leaves the cursor where it was: no ESC[H.
+        let mut buf = writer::frame_at(&out, &mut self.prev, None, self.c.p.help == 0);
         if let Some(o) = &self.over {
             // after the frame's ESC[H, so the cursor ends where the box leaves it
             if let Some(n) = buf.len().checked_sub(b"\x1b[?2026l".len()) {
@@ -891,7 +922,7 @@ pub fn run(root: &[u8]) -> ! {
     let env = Env::read();
     let mut c = Ctx::load(&Snapshot::apply(&[]).unwrap_or_default(), &env);
     c.tick = 0;
-    c.p.help = 0; // the ? page is the bash panel's for now (a hand-over)
+    c.p.help = 0; // (REVIVE_PANEL_HELP opens the page for a --once only, as help.sh's)
     c.p.version = g0.version.clone();
     c.p.host = g0.host.clone();
     let refresh = sh::env("REVIVE_PANEL_REFRESH").filter(|v| !v.is_empty()).unwrap_or_else(|| b"2".to_vec());
@@ -925,6 +956,8 @@ pub fn run(root: &[u8]) -> ! {
         bx: Boxes::default(),
         over: None,
         modal_on: false,
+        eb_on: false,
+        help_on: false,
         picked: Vec::new(),
         pkey: Vec::new(),
         reply: Vec::new(),

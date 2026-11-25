@@ -303,6 +303,32 @@ pub fn remove_all(s: &[u8], set: Set) -> Bytes {
     }
 }
 
+/// `[[ $c == [[:space:]] ]]` for one character as bash matches it: iswspace when it decodes,
+/// isspace on the byte when it doesn't.
+pub fn is_space(c: &[u8]) -> bool {
+    match c {
+        [] => false,
+        [b] if *b < 0x80 => unsafe { libc::isspace(*b as libc::c_int) != 0 },
+        _ => match decode(c) {
+            (_, Some(wc)) => unsafe { iswspace(wc as libc::c_uint) != 0 },
+            (_, None) => unsafe { libc::isspace(c[0] as libc::c_int) != 0 },
+        },
+    }
+}
+
+/// `[[ $c == [[:cntrl:]] ]]` for one character: iswcntrl when it decodes, iscntrl on the byte
+/// when it doesn't.
+pub fn is_cntrl(c: &[u8]) -> bool {
+    match c {
+        [] => false,
+        [b] if *b < 0x80 => unsafe { libc::iscntrl(*b as libc::c_int) != 0 },
+        _ => match decode(c) {
+            (_, Some(wc)) => unsafe { iswcntrl(wc as libc::c_uint) != 0 },
+            (_, None) => unsafe { libc::iscntrl(c[0] as libc::c_int) != 0 },
+        },
+    }
+}
+
 /// C1: the C1 controls U+0080-U+009F, as panel.sh builds it (UTF-8 bytes).
 pub fn c1_set() -> Bytes {
     let mut v = Vec::new();

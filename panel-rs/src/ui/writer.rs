@@ -9,6 +9,11 @@ const E: &[u8] = b"\x1b";
 /// draw's writer: OUT against PREV (PREV becomes OUT), and NB, the notice box painted over the
 /// frame when one is up -> what is printed (nothing when nothing changed)
 pub fn frame(out: &[Bytes], prev: &mut Vec<Bytes>, nb: Option<&[u8]>) -> Bytes {
+    frame_at(out, prev, nb, true)
+}
+
+/// frame, HOME false for the ? page's writer (help_frame's), which doesn't send the cursor home
+pub fn frame_at(out: &[Bytes], prev: &mut Vec<Bytes>, nb: Option<&[u8]>, home: bool) -> Bytes {
     let mut buf: Bytes = Vec::new();
     for (i, l) in out.iter().enumerate() {
         // [[ ${OUT[i]} == "${PREV[i]-}" ]] && continue
@@ -40,7 +45,10 @@ pub fn frame(out: &[Bytes], prev: &mut Vec<Bytes>, nb: Option<&[u8]>) -> Bytes {
     }
     let mut w = b"\x1b[?2026h".to_vec();
     w.extend(buf);
-    w.extend_from_slice(b"\x1b[H\x1b[?2026l");
+    if home {
+        w.extend_from_slice(b"\x1b[H");
+    }
+    w.extend_from_slice(b"\x1b[?2026l");
     w
 }
 

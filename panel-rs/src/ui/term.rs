@@ -149,6 +149,25 @@ impl Saved {
     }
 }
 
+/// edit_box's `stty -icrnl -isig`, on top of what is set now: Enter comes as CR (Ctrl-J as LF)
+/// and Ctrl-C as the byte 0x03. -> what to put back (`stty "$otty"`), None with no terminal.
+pub fn eb_mode() -> Option<libc::termios> {
+    let mut t: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(0, &mut t) } != 0 {
+        return None;
+    }
+    let mut r = t;
+    r.c_iflag &= !libc::ICRNL;
+    r.c_lflag &= !libc::ISIG;
+    unsafe { libc::tcsetattr(0, libc::TCSADRAIN, &r) };
+    Some(t)
+}
+
+/// `stty "$otty"`: the settings eb_mode found, back
+pub fn set_mode(t: &libc::termios) {
+    unsafe { libc::tcsetattr(0, libc::TCSADRAIN, t) };
+}
+
 /// restore_term: the settings put back, the cursor shown, the normal screen again
 pub fn restore(saved: &Saved) {
     saved.put_back();

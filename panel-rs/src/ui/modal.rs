@@ -352,7 +352,10 @@ impl Ui {
             let now = Instant::now();
             if self.tick_at.is_some_and(|t| now >= t) && !self.want_draw {
                 // read -t timed out: the animation moves on with the clock, and all is looked at
-                self.c.tick += 1;
+                // (the ? page moves it on itself, as help_view does)
+                if !self.help_on {
+                    self.c.tick += 1;
+                }
                 self.look_again();
             }
             if self.want_draw && (now >= self.draw_at || (!self.wait_mail && !self.wait_peek && !self.wait_gen)) {
@@ -391,7 +394,11 @@ impl Ui {
                         b'I' if self.modal_on => intr = true,
                         b'I' => self.quit(0),
                         _ => {
-                            // WINCH: all of it drawn again, at the new size
+                            // WINCH: all of it drawn again, at the new size (edit_box's
+                            // box, too, once it's had a moment: not the old one over it)
+                            if self.eb_on {
+                                self.over = None;
+                            }
                             term::out(b"\x1b[2J");
                             self.prev.clear();
                             self.c.p.atop.clear();
@@ -424,7 +431,7 @@ impl Ui {
     }
 
     /// One byte from the terminal by DL, the panel going on meanwhile
-    fn mbyte(&mut self, dl: Instant) -> Result<u8, Rd> {
+    pub(super) fn mbyte(&mut self, dl: Instant) -> Result<u8, Rd> {
         use super::keys::Src;
         loop {
             match self.pump(true, -1, Some(dl)) {
@@ -475,7 +482,7 @@ impl Ui {
 
     /// `until IFS= read -rsn1 -t 0.2 k; do …; done`: one character (Rd::Ch, "" for Enter), or
     /// why there is none. TICK, when given, runs after each 0.2 s that passes with no key.
-    fn mkey<'t>(&mut self, mut tick: Option<&mut (dyn FnMut(&mut Ui) -> Option<Vec<Bytes>> + 't)>) -> Result<Bytes, Result<Vec<Bytes>, Rd>> {
+    pub(super) fn mkey<'t>(&mut self, mut tick: Option<&mut (dyn FnMut(&mut Ui) -> Option<Vec<Bytes>> + 't)>) -> Result<Bytes, Result<Vec<Bytes>, Rd>> {
         loop {
             match self.mread(1, Duration::from_millis(200)) {
                 (k, Rd::Ch(_)) => return Ok(k),
@@ -699,6 +706,48 @@ pub fn run_first_line(argv: &[Bytes], envs: &[(&str, Bytes)]) -> Bytes {
         let _ = ch.wait();
     }
     out
+}
+
+/// `ARGV 2>&1 | tail -n 1` in `$( )`: its stdout and stderr in one pipe, read to the end, and
+/// the last line (a trailing newline taken off, as the command substitution does).
+pub fn run_last_line(argv: &[Bytes]) -> Bytes {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    let mut p = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe(p.as_mut_ptr()) } != 0 {
+        return Vec::new();
+    }
+    for fd in p {
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+    let (mut r, w) = unsafe { (std::fs::File::from_raw_fd(p[0]), std::os::fd::OwnedFd::from_raw_fd(p[1])) };
+    let mut c = std::process::Command::new(sh::os(&argv[0]));
+    for a in &argv[1..] {
+        c.arg(sh::os(a));
+    }
+    let w2 = w.try_clone();
+    c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::from(w));
+    if let Ok(w2) = w2 {
+        c.stderr(std::process::Stdio::from(w2));
+    }
+    let ch = c.spawn();
+    drop(c);
+    let mut out = Vec::new();
+    if let Ok(mut ch) = ch {
+        let _ = r.read_to_end(&mut out);
+        let _ = ch.wait();
+    }
+    last_line(&out)
+}
+
+/// `$(… | tail -n 1)` of what a command wrote: its last line, the newline ending it gone
+pub fn last_line(out: &[u8]) -> Bytes {
+    let s = out.strip_suffix(b"\n").unwrap_or(out);
+    let l = match s.iter().rposition(|&c| c == b'\n') {
+        Some(i) => &s[i + 1..],
+        None => s,
+    };
+    sh::cmdsub(l)
 }
 
 #[cfg(test)]
