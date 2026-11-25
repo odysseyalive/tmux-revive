@@ -1314,8 +1314,15 @@ tm send-keys -t work:qpanel Enter; wait_q 'ANSWERING asker' >/dev/null
 tm send-keys -t work:qpanel Escape
 check "Esc leaves without sending anything, the question still waiting" "wait_q 'left the question' && ! qhas 'ANSWERING' && qhas 'QUESTION · asker' && [[ ! -s $T/ans1.keys && ! -e $T/ans1 ]]"
 tm send-keys -t work:qpanel Enter; wait_q 'ANSWERING asker' >/dev/null
+# A pane opened while answering, sorting above the one answered (in a window before its own):
+# a panel that goes on looking (the Rust one) shows it, the asking pane's row a row down; the
+# keys typed next still go to the pane answered, never to the one now at its row.
+tm new-window -d -b -t work:asker -n above "cat"
+sleep 2.5 # two refreshes and more: looked at again (bash's panel looks at nothing while it answers)
 tm send-keys -t work:qpanel Down
 check "keys reach the question, and the view follows it" "wait_q '❯ 2. No' 15"
+check "a pane opened above the one answered meanwhile got none of them" "! tm capture-pane -p -t work:above | grep -q '[^[:space:]]' && qhas 'ANSWERING asker'"
+tm kill-window -t work:above
 tm send-keys -t work:qpanel Enter
 check "Enter answers it (Down, Enter: choice 2)" "for _ in \$(seq 1 25); do [[ -s $T/ans1 ]] && break; sleep 0.2; done; [[ \$(cat $T/ans1 2>/dev/null) == picked:2 ]]"
 check "answered, the view goes back to the peek" "wait_q 'PEEK · asker' 30 && ! qhas 'ANSWERING' && ! qhas 'QUESTION'"
@@ -1344,6 +1351,13 @@ tm send-keys -t work:qpanel -l 'never sent'; sleep 0.3
 tm send-keys -t work:qpanel Escape
 esc=$(printf '%q' $'\e') # as the stand-in logs it
 check "Esc closes the box and sends nothing: still answering, the choice still empty" "wait_q 'closed; nothing was sent' 15 && ! qhas 'Esc closes' && qhas 'ANSWERING asker' && qhas '❯ 5. Type something.' && ! grep -qxF -- \"\$esc\" $T/ans2.keys && ! grep -q 'paste:' $T/ans2.keys && [[ ! -e $T/ans2 ]]"
+# Enter straight after a Down that lands on the empty free-text choice, before the view has
+# caught up: looked at afresh, it opens the box, and no Enter goes (it would decline).
+tm send-keys -t work:qpanel -l 'k'; wait_q '❯ 4. Later' 15 >/dev/null
+tm send-keys -t work:qpanel Down Enter
+check "Enter straight after a Down onto the empty free-text choice opens the box too, and sends no Enter" "wait_q 'Enter done · Alt-Enter new line · Esc closes' 15 && qhas 'ANSWER · asker' && ! grep -qxF \"''\" $T/ans2.keys && [[ ! -e $T/ans2 ]]"
+tm send-keys -t work:qpanel Escape
+for _ in $(seq 1 30); do qhas 'Esc closes' || break; sleep 0.2; done
 tm send-keys -t work:qpanel E
 check "E opens the box too, sending nothing" "wait_q 'Esc closes' 15 && qhas 'ANSWER · asker' && ! grep -qxE 'E|e' $T/ans2.keys"
 check "the box keeps above the question, which shows whole under it" "qscreen | awk '/ANSWER · asker/ {t = NR} /╚═/ && t && !b {b = NR} /QUESTION · asker/ {q = NR} END {exit !(t && b && q && b < q)}' && qhas '1. Yes' && qhas '❯ 5. Type something.'"
