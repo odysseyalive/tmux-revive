@@ -895,8 +895,11 @@ live() {
 	# bash's rename box, as V and answering do there; read-only holds only what comes here.
 	: >"$T/lvd/state/links/far.example/read-only"
 	: >"$T/lve/state/links/far.example/read-only"
-	lv_step "$D" "$E" "Down Down Down" "far.example · read-only" "linked: "
-	lv_step "$D" "$E" N "New name for far-top on far.example" "linked, read-only: "
+	lv_step "$D" "$E" "Down Down Down" "far-top" "linked: "
+	# The box only, not the whole screen: the bash panel a hand-over runs draws PANES from its
+	# top, not scrolled as the Rust panel had it (the hand-over doesn't carry PO yet).
+	tmux -S "$D" send-keys -t work:panel N; tmux -S "$E" send-keys -t work:panel N
+	check "linked, read-only: N on a pane with rows opens bash's rename box on both" "settle $D 'New name for far-top on far.example:' && settle $E 'New name for far-top on far.example:'"
 	lv_step "$D" "$E" Escape "rename cancelled" "linked, read-only: "
 	check "linked, read-only: N on a pane with rows went on to bash's box, the only hand-over" "[[ \$(cat $T/lve-shim/handoffs) == N ]]"
 }
