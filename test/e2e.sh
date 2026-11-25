@@ -47,7 +47,9 @@ t split-window -h -t work:1 -c /tmp 2>/dev/null || t split-window -h -t work -c 
 t send-keys -t work:0.1 'echo marker-from-before-reboot' Enter
 t new-window -t work -n pager -c "$T/proj" "less /etc/hostname"
 t new-session -d -s agent -c "$T/proj"
-# The panel, the way `tmux-revive panel` runs it: bash .../scripts/panel.sh.
+# The panel, the way `tmux-revive panel` runs it: bash .../scripts/panel.sh, or with
+# REVIVE_PANEL_RS=1 in the environment the Rust panel's binary (vendor/bin, or a build in
+# panel-rs/target/release that answers --probe with this tree's VERSION).
 export AGENT_SAY_MAILBOX=$T/mail/mailbox.md AGENT_SAY_KNOWN_HOSTS=$T/known_hosts AGENT_SAY_KEYSCAN=false REVIVE_PANEL_SPLASH=0 REVIVE_PANEL_LOADBOX=0 AGENT_SAY_REVIVE_GAP=0
 t new-window -d -t agent -n panel -c "$T/proj" "$ROOT/bin/tmux-revive panel"
 t send-keys -t agent "$T/bin/claude --model opus 'do not resend this prompt'" Enter
@@ -144,6 +146,16 @@ mkdir -p "$REVIVE_DIR/snapshots" && chmod 755 "$REVIVE_DIR" && : >"$REVIVE_DIR/r
 t set-option -p -t work:0.1 @agent scribe
 t set-option -p -t work:0.1 @agent-at 2026-01-02T03:04:05Z
 
+# The Rust panel runs as its own binary, no interpreter: installed in vendor/bin, or a checkout's
+# build. Stand-ins whose argv is just that path (a -- argument: not the live panel), in a tree
+# with a bin/tmux-revive, which restore relaunches (here it only sleeps).
+mkdir -p "$T/inst/bin" "$T/inst/vendor/bin" "$T/inst/panel-rs/target/release"
+printf '#!/bin/sh\nexec sleep 600\n' >"$T/inst/bin/tmux-revive" && chmod +x "$T/inst/bin/tmux-revive"
+t new-window -d -t agent -n rp1 "bash -c 'exec -a \"\$0\" cat' $T/inst/vendor/bin/tmux-revive-panel"
+t new-window -d -t agent -n rp2 "bash -c 'exec -a \"\$0\" cat' $T/inst/panel-rs/target/release/tmux-revive-panel"
+t new-window -d -t agent -n rp3 "bash -c 'exec -a \"\$0\" cat --' $T/inst/vendor/bin/tmux-revive-panel"
+sleep 0.5
+
 echo "save"
 HOME=$FAKEHOME bash "$ROOT/scripts/save.sh" manual --quiet
 state=$REVIVE_DIR/last/state.json
@@ -157,6 +169,9 @@ check "prompt argument dropped, --model kept" "jq -e '.. | objects | select(.kin
 check "remote control carried over" "jq -e '.. | objects | select(.kind? == \"claude\") | .cmd | test(\"--remote-control demo\")' $state >/dev/null"
 check "pager pane captured as a program" "jq -e '[.. | objects | select(.kind? == \"program\") | .cmd] | any(test(\"less\"))' $state >/dev/null"
 check "panel captured as \`tmux-revive panel\` from its install" "jq -e --arg c \"$ROOT/bin/tmux-revive panel\" '[.. | objects | select(.kind? == \"program\") | .cmd] | index(\$c)' $state >/dev/null"
+check "the Rust panel's binary, installed or a checkout's build, captured as \`tmux-revive panel\`" \
+	"[[ \$(jq --arg c \"$T/inst/bin/tmux-revive panel\" '[.. | objects | select(.kind? == \"program\" and .cmd == \$c)] | length' $state) == 2 ]]"
+check "and with a -- argument it isn't the live panel" "! grep -q 'tmux-revive-panel' $state"
 check "split pane cwd kept" "jq -e '[.sessions[] | select(.name==\"work\") | .windows[0].panes[].cwd] | index(\"/tmp\")' $state >/dev/null"
 
 if ((AGENTS)); then
@@ -197,7 +212,7 @@ check "claude resumed exactly once, in its project" "[[ \$(wc -l <$T/claude-laun
 check "agent-say name and its date restored" "[[ \$(t display -p -t work:0.1 '#{@agent} #{@agent-at}') == 'scribe 2026-01-02T03:04:05Z' && -z \$(t display -p -t work:0.0 '#{@agent}') ]]"
 check "scrollback replayed" "t capture-pane -p -t work:0.1 -S -50 | grep -q marker-from-before-reboot"
 check "pager relaunched" "t list-panes -a -F '#{pane_current_command}' | grep -q less"
-check "panel relaunched" "pgrep -f '$ROOT/scripts/panel.sh' >/dev/null"
+check "panel relaunched" "pgrep -f '$ROOT/scripts/panel.sh' >/dev/null || pgrep -fx '$ROOT/(vendor/bin|panel-rs/target/release)/tmux-revive-panel' >/dev/null"
 cpane=$(grep -o 'pane %[0-9]*: interrupted at shutdown' "$REVIVE_DIR/revive.log" | grep -o '%[0-9]*')
 claude_pane() { # the pane the resumed stand-in claude runs in
 	local c p
