@@ -18,7 +18,8 @@ use sh::Bytes;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The P_* arrays: one record per pane, by row. The dense ones grow together; P_SRV, P_LIM,
-/// P_LWHY, W_SINCE and W_FROM are sparse (set by row).
+/// P_LWHY, W_SINCE and W_FROM are sparse (set by row). P_LWHY: "plan" when its plan changed
+/// since its limit, "login" on a names-only row whose link waits for its login.
 #[derive(Default, Clone, Debug)]
 pub struct Panes {
     pub id: Vec<Bytes>,

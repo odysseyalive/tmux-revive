@@ -79,11 +79,12 @@ impl Ctx {
         let id = self.p.a("P_RID", sel).to_vec();
         self.p.l = vec![Vec::new(), cat(&[b"  on ", &h, b": no peek (update tmux-revive there)"])];
         let st = self.p.a("P_STATE", sel).to_vec();
-        if st == b"unreachable" {
+        // A names-only row of a computer not connected: why there's no peek, and the login B asks for.
+        if st == b"linked" && self.p.assoc("LUP", &h) != b"1" {
             self.p.l = vec![Vec::new(), cat(&[b"  on ", &h, b": can't be reached to peek"])];
-        }
-        if st == b"login" {
-            self.p.l = vec![Vec::new(), cat(&[b"  on ", &h, b": needs login \xc2\xb7 press B to type its password"])];
+            if self.p.a("P_LWHY", sel) == b"login" {
+                self.p.l = vec![Vec::new(), cat(&[b"  on ", &h, b": needs login \xc2\xb7 press B to type its password"])];
+            }
         }
         if !(re("^[A-Za-z0-9][A-Za-z0-9._-]*$").is_match(&h) && re("^%[0-9]+$").is_match(&id)) {
             return;

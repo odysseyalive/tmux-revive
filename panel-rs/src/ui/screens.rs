@@ -121,8 +121,9 @@ impl Ui {
                     tot += 1;
                     done += 1;
                 }
-                // Names only, its rows not in yet: still asking it, for a minute at most.
-                if self.c.p.a("P_STATE", i) == b"linked" && hs.get(&h) == Some(&1) && secs - self.lbox.t0 < 60 {
+                // Names only, its rows not in yet: still asking it, for a minute at most. Not while
+                // its link isn't working (LUP): nothing is coming.
+                if self.c.p.a("P_STATE", i) == b"linked" && self.c.p.assoc("LUP", &h) == b"1" && hs.get(&h) == Some(&1) && secs - self.lbox.t0 < 60 {
                     hs.insert(h, 2);
                     done -= 1;
                 }

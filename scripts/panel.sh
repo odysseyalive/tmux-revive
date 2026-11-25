@@ -1347,7 +1347,8 @@ ctx_left() { # ctx_left KIND AGENT_PID PANE PID... -> CTX: percent of its contex
 # names, else this computer's, worked out once. Once past it, or its account's plan has changed
 # since (an upgrade), it's READY TO RESUME, and waits on you after all.
 declare -A LIM_STAMP=() LIM_VAL=() LIM_BASE=()
-declare -a P_LIM=() P_LWHY=() # by row: when its limit lifts (epoch), "plan" when its plan changed since
+declare -a P_LIM=() P_LWHY=() # by row: when its limit lifts (epoch), "plan" when its plan changed since,
+# "login" on a names-only row whose link waits for its login
 LIM_MON=" jan feb mar apr may jun jul aug sep oct nov dec"
 LIM_RE='(resets|try again at)( at)? ((jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* ([0-9]{1,2})(st|nd|rd|th)?,( ([0-9]{4}),?)? )?([0-9]{1,2})(:([0-9]{2}))? ?([ap]m)?( \(([A-Za-z][A-Za-z0-9_+/-]*)\))?'
 tz_off() { # tz_off EPOCH -> TZO: the offset from UTC then, in seconds, in the zone TZ names
@@ -2029,8 +2030,11 @@ peek_drop() {
 remote_peek() { # remote_peek LINES -> L: the selected linked pane's screen, or why it can't be shown
 	local h=${P_HOST[SEL]} id=${P_RID[SEL]:-} n=$1 l
 	L=("" "  on $h: no peek (update tmux-revive there)")
-	[[ ${P_STATE[SEL]:-} == unreachable ]] && L=("" "  on $h: can't be reached to peek")
-	[[ ${P_STATE[SEL]:-} == login ]] && L=("" "  on $h: needs login · press B to type its password")
+	# A names-only row of a computer not connected: why there's no peek, and the login B asks for.
+	if [[ ${P_STATE[SEL]:-} == linked && ${LUP[$h]:-} != 1 ]]; then
+		L=("" "  on $h: can't be reached to peek")
+		[[ ${P_LWHY[SEL]:-} == login ]] && L=("" "  on $h: needs login · press B to type its password")
+	fi
 	[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $id =~ ^%[0-9]+$ ]] || return 0
 	((n > 60)) && n=60
 	# With a snapshot (REVIVE_PANEL_SNAP), what it holds for this pane, if anything.
@@ -2182,15 +2186,14 @@ remote_panes() {
 			done < <(head -n 200 "$f")
 		fi
 		if ((!got)); then
-			# Names only, from the link.
-			st=linked
-			[[ -s $f || ! -s $d/error ]] || st=unreachable
-			((lg)) && st=login
+			# Names only, from the link: linked, drawn not connected while LUP says so (as its
+			# heading is). A login it waits for is noted for its peek.
 			while IFS= read -r name; do
 				[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$ ]] || continue
-				P_ID+=("$name@$h") P_LOC+=("") P_NAME+=("$name") P_APP+=("") P_STATE+=("$st") P_DIR+=("")
+				P_ID+=("$name@$h") P_LOC+=("") P_NAME+=("$name") P_APP+=("") P_STATE+=(linked) P_DIR+=("")
 				P_GIT+=("") P_CPU+=(0) P_MEM+=(0) P_CTX+=("") P_AGENT+=(0) P_SSH+=("") P_HOST+=("$h") P_RID+=("") P_WP+=("")
 				P_USER+=("") P_INST+=("") P_ACCT+=("")
+				((lg)) && P_LWHY[${#P_ID[@]} - 1]=login
 				got=1
 			done < <(head -c 65536 "$d/names" 2>/dev/null | head -n 200)
 		fi
@@ -2416,8 +2419,8 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 	shell) CELL="$GRY· shell           $R" ;;
 	self) CELL="$BBLU✦ this panel      $R" ;;
 	linked) CELL="$GRY◌ linked          $R" ;;
-	unreachable) CELL="$BRED◌ unreachable     $R" ;;
-	login) CELL="$BYEL◌ needs login · B $R" ;;
+	# Names only, its link not working (LUP), whatever the reason: as LINKS says it.
+	offline) CELL="$BRED◌$R ${GRY}not connected   $R" ;;
 	*) CELL="$CYN▸ running         $R" ;;
 	esac
 }
@@ -2481,6 +2484,8 @@ draw_panes() {
 		# Its agent waiting for access through here: said in its STATE, unless it asks a question.
 		st=${P_STATE[i]}
 		[[ $st != asking && -n ${P_NAME[i]} && $gw == *" ${P_NAME[i]}@${P_HOST[i]:-${AGENT_SAY_HOST:-$HOST}} "* ]] && st=grant
+		# A names-only row of a computer whose link isn't working: not connected, as its heading.
+		[[ $st == linked && ${LUP[${P_HOST[i]:-}]:-} != 1 ]] && st=offline
 		# Whether the row needs you (a question, access waiting, ready to go on after a usage
 		# limit, [U]), and how many on each
 		# computer do, for its heading.
@@ -2592,7 +2597,7 @@ draw_panes() {
 			if [[ $git == *\* ]]; then cells+="$BYEL$FLD$R "; else cells+="$GRN$FLD$R "; fi
 		fi
 		# Names-only rows from a link have nothing measured: leave CPU and memory blank.
-		if [[ ${P_STATE[i]} != linked && ${P_STATE[i]} != unreachable && ${P_STATE[i]} != login ]]; then
+		if [[ ${P_STATE[i]} != linked ]]; then
 			meter "${P_CPU[i]}"
 			human "${P_MEM[i]}"
 			printf -v num '%4s%%  %6s' "${P_CPU[i]}" "$HUMAN"
@@ -5119,8 +5124,9 @@ lbox_count() { # -> LB_TOT: agents here and linked computers, LB_DONE: those rea
 		h=${P_HOST[i]:-}
 		if [[ -n $h ]]; then
 			[[ -n ${hs[$h]:-} ]] || { hs[$h]=1; ((++LB_TOT, ++LB_DONE)); }
-			# Names only, its rows not in yet: still asking it, for a minute at most.
-			[[ ${P_STATE[i]} == linked && ${hs[$h]} == 1 ]] && ((SECONDS - LBOX_T0 < 60)) && { hs[$h]=2; ((--LB_DONE)); }
+			# Names only, its rows not in yet: still asking it, for a minute at most. Not while its
+			# link isn't working (LUP): nothing is coming.
+			[[ ${P_STATE[i]} == linked && ${LUP[$h]:-} == 1 && ${hs[$h]} == 1 ]] && ((SECONDS - LBOX_T0 < 60)) && { hs[$h]=2; ((--LB_DONE)); }
 			continue
 		fi
 		((${P_AGENT[i]:-0})) || continue

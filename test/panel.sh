@@ -2254,6 +2254,10 @@ check "a link that isn't working: its heading says not connected · [B]ridge, it
 check "and its LINKS row says the same, not the error" "grep -c '● far.example · not connected · \[B\]ridge' <<<\"\$out\" >/dev/null && ! grep -c 'no such host name' <<<\"\$out\" >/dev/null"
 check "B in the panel's key style, then ridge" "grep -F 'FAR.EXAMPLE' <<<\"\$raw\" | grep -cF $'\\e[90m· not connected ·\\e[0m \\e[94m[\\e[1m\\e[93mB\\e[0m\\e[94m]\\e[0m\\e[97mridge\\e[0m' >/dev/null"
 check "and nothing went over ssh to it" "[[ ! -s $T/far.calls ]]"
+# Its names-only rows say the same: not connected, in LINKS's colours (its dot red, the words
+# grey), where a working one's say linked (above, the rows it didn't answer).
+check "its names-only rows say not connected, not linked or unreachable" "grep -c 'far-two *◌ not connected *║' <<<\"\$out\" >/dev/null && ! grep -c '◌ linked\|◌ unreachable' <<<\"\$out\" >/dev/null"
+check "the ◌ red, the words grey, as LINKS has them" "grep -F 'far-two' <<<\"\$raw\" | grep -cF $'\\e[91m◌\\e[0m \\e[90mnot connected   \\e[0m' >/dev/null"
 rm -f "$lk/error" "$lk/paused"
 mv "$lk/pid" "$lk/pid.kept"
 out=$(farv "$T/fakessh" | plain)
@@ -2716,7 +2720,9 @@ tm new-window -d -t work -n pw2 "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T
 pw2() { tm capture-pane -p -t work:pw2; }
 check "a panel started while it needs a login opens no box, and its LINKS says not connected" "for _ in \$(seq 1 40); do pw2 | grep -c 'pw.example · not connected · \\[B\\]ridge' >/dev/null && break; sleep 0.2; done; pw2 | grep -c 'pw.example · not connected · \\[B\\]ridge' >/dev/null && sleep 2.5 && nobox pw2 && [[ ! -e $REVIVE_DIR/panel/login-said ]]"
 tm kill-window -t work:pw2
-check "its panes too, not as unreachable" "wait_pw 'needs login · B' 50 && ! pws | grep -c 'unreachable' >/dev/null"
+check "its panes too, as not connected, not unreachable or needs login" "wait_pw '◌ not connected' 50 && ! pws | grep -c '◌ unreachable\|needs login · B' >/dev/null"
+out=$(tm run-shell "AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan REVIVE_PANEL_SEL=far-top@pw.example COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
+check "and the peek at one of them says B logs in" "grep -c '▶ far-top *◌ not connected' <<<\"\$out\" >/dev/null && peekbox <<<\"\$out\" | grep -cF 'on pw.example: needs login · press B to type its password' >/dev/null"
 pw_tries() { grep -c 'BatchMode=yes.* pw.example ' "$T/pwssh.log"; }
 n=$(pw_tries); sleep 3
 check "nothing is tried over ssh meanwhile, and no login opens by itself" "[[ \$(pw_tries) == $n ]] &&[[ \$(grep -c 'ControlMaster=yes' $T/pwssh.log) == 1 ]] && ! tm list-windows -t work -F '#{window_name}' | grep -c '^login' >/dev/null"

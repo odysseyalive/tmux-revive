@@ -308,8 +308,8 @@ impl Ctx {
             b"shell" => cat(&[GRY, "· shell           ".as_bytes(), R]),
             b"self" => cat(&[BBLU, "✦ this panel      ".as_bytes(), R]),
             b"linked" => cat(&[GRY, "◌ linked          ".as_bytes(), R]),
-            b"unreachable" => cat(&[BRED, "◌ unreachable     ".as_bytes(), R]),
-            b"login" => cat(&[BYEL, "◌ needs login · B ".as_bytes(), R]),
+            // Names only, its link not working (LUP), whatever the reason: as LINKS says it.
+            b"offline" => cat(&[BRED, "◌".as_bytes(), R, b" ", GRY, b"not connected   ", R]),
             _ => cat(&[CYN, "▸ running         ".as_bytes(), R]),
         }
     }
@@ -429,6 +429,10 @@ impl Ctx {
                 if contains(&gw, &cat(&[b" ", pname, b"@", &at, b" "])) {
                     st = b"grant".to_vec();
                 }
+            }
+            // A names-only row of a computer whose link isn't working: not connected, as its heading.
+            if st == b"linked" && self.p.assoc("LUP", &h) != b"1" {
+                st = b"offline".to_vec();
             }
             let key: Bytes = if h.is_empty() { b".".to_vec() } else { h.clone() };
             *cnt.entry(key.clone()).or_insert(0) += 1;
@@ -608,7 +612,7 @@ impl Ctx {
             }
             // Names-only rows from a link have nothing measured: CPU and memory blank.
             let pst = self.p.a("P_STATE", i);
-            if pst != b"linked" && pst != b"unreachable" && pst != b"login" {
+            if pst != b"linked" {
                 let cpu = self.p.a("P_CPU", i).to_vec();
                 let meter = self.meter(&cpu);
                 let human = self.human(num(self.p.a("P_MEM", i)));

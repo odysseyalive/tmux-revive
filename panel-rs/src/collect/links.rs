@@ -363,14 +363,8 @@ impl G {
                 got = self.read_rows(&h, &f);
             }
             if !got {
-                // Names only, from the link.
-                let mut st: &[u8] = b"linked";
-                if !(sh::nonempty(&f) || !sh::nonempty(&sh::path(&[&d, b"error"]))) {
-                    st = b"unreachable";
-                }
-                if lg {
-                    st = b"login";
-                }
+                // Names only, from the link: linked, drawn not connected while LUP says so (as
+                // its heading is). A login it waits for is noted for its peek.
                 let raw = sh::head_c(&sh::path(&[&d, b"names"]), 65536);
                 let lines = sh::lines(sh::head_n(&raw, 200));
                 for name in lines {
@@ -382,7 +376,7 @@ impl G {
                     p.loc.push(Vec::new());
                     p.name.push(name);
                     p.app.push(Vec::new());
-                    p.state.push(st.to_vec());
+                    p.state.push(b"linked".to_vec());
                     p.dir.push(Vec::new());
                     p.git.push(Vec::new());
                     p.cpu.push(b"0".to_vec());
@@ -396,6 +390,9 @@ impl G {
                     p.user.push(Vec::new());
                     p.inst.push(Vec::new());
                     p.acct.push(Vec::new());
+                    if lg {
+                        p.lwhy.insert(p.id.len() as i64 - 1, b"login".to_vec());
+                    }
                     got = true;
                 }
             }

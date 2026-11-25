@@ -91,7 +91,7 @@ LONG_NOTICE="linked to far.example with the key from your known_hosts: SHA256:Xq
 # DIR's environment (env_for) reads: a shell with text on its screen, a stand-in agent (a copy of
 # bash named codex) asking a question, a pane in a folder whose name isn't UTF-8, messages, an
 # access request waiting, a save. With "links": three linked computers, answered by a fake ssh
-# (far.example with rows and a peek, folded.example folded, Zed.example unreachable), and a ps
+# (far.example with rows and a peek, folded.example folded, Zed.example not connected), and a ps
 # that adds ssh sessions outside tmux, two to one host.
 fixtures() {
 	local d=$1 s=$2 st=$1/state
@@ -315,6 +315,7 @@ snaps() {
 	save odd odd
 	save linked far-top@far.example
 	save linked-ask far-claude@far.example
+	save linked-off zed-b@Zed.example
 	save help 0 REVIVE_PANEL_HELP=1
 	save tick7 0 REVIVE_PANEL_PEEK=0 REVIVE_PANEL_TICK=7 REVIVE_PANEL_ART=space
 	# A notice, short and long: on the key bar since 1.2.57, with no box over the panel.
@@ -414,6 +415,8 @@ snaps() {
 	check "linked: Zed.example's failed: not connected · [B]ridge on its heading, its error not shown" "sframe linked | grep -ac 'ZED.EXAMPLE · not connected · \\[B\\]ridge · 2 panes *║' >/dev/null && ! sframe linked | grep -ac 'Connection refused' >/dev/null"
 	check "linked: and in LINKS, for it and for folded.example, whose poller isn't running" "sframe linked | grep -ac '● Zed.example · not connected · \\[B\\]ridge' >/dev/null && sframe linked | grep -ac '● folded.example · not connected · \\[B\\]ridge' >/dev/null && ! sframe linked | grep -ac 'not running' >/dev/null"
 	check "linked: B in the panel's key style, then ridge, on the heading" "env \"\${RENV[@]}\" COLUMNS=130 LINES=45 REVIVE_PANEL_SNAP=load:$T/snap/linked bash $ROOT/scripts/panel.sh --once </dev/null | grep -a 'ZED.EXAMPLE' | grep -acF $'\\e[90m· not connected ·\\e[0m \\e[94m[\\e[1m\\e[93mB\\e[0m\\e[94m]\\e[0m\\e[97mridge\\e[0m' >/dev/null"
+	check "linked: Zed.example's names-only rows say not connected, far.example's rows aren't names only" "sframe linked | grep -ac 'zed-a *◌ not connected *║' >/dev/null && sframe linked | grep -ac 'zed-b *◌ not connected *║' >/dev/null && ! sframe linked | grep -ac '◌ unreachable\|◌ linked' >/dev/null"
+	check "linked-off: a not-connected names-only row selected: its peek says it can't be reached" "sframe linked-off | grep -ac '▶ zed-b *◌ not connected' >/dev/null && sframe linked-off | grep -ac 'on Zed.example: can.t be reached to peek' >/dev/null"
 	check "linked: at 80 columns too, with its pane count" "sframe linked 80 40 | grep -ac 'ZED.EXAMPLE · not connected · \\[B\\]ridge · 2 panes' >/dev/null"
 	check "folded: far.example folded to its heading" "sframe folded | grep -ac '▶.*FAR.EXAMPLE · linked · 2 panes' >/dev/null && ! sframe folded | grep -ac '0\\.1\\] *far-top' >/dev/null"
 	check "help: the ? page" "sframe help | grep -ac 'HELP · HOW TO USE REVIVE' >/dev/null"
@@ -1049,7 +1052,7 @@ live() {
 	# first): O on a linked computer's pane, N on one whose rows haven't come (no P_RID), and
 	# O and M on a heading.
 	# End: fold-sh, on folded.example (opened by F), its rows in. Up three times: far.example's
-	# two panes, then Zed.example's last, a name only (the link unreachable: no rows, no
+	# two panes, then Zed.example's last, a name only (the link not connected: no rows, no
 	# P_RID). f there folds Zed.example to its heading, selected; f again opens it.
 	lv_step "$D" "$E" End "fold-sh" "linked: "
 	lv_step "$D" "$E" O "O opens panes on this computer only" "linked: "
