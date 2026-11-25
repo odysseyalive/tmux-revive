@@ -1453,7 +1453,7 @@ for _ in $(seq 1 20); do sscreen | grep -c '▶ asker3' >/dev/null && break; tm 
 wait_s 'QUESTION · asker3' >/dev/null
 tm send-keys -t work:qshim Enter; wait_s 'ANSWERING asker3' >/dev/null
 tm kill-window -t work:asker3
-check "the pane answered gone, answering ends as answered, and the panel goes on" "wait_s 'asker3 has its answer' 15 && ! sscreen | grep -c ANSWERING >/dev/null && tm list-windows -F '#W' | grep -qx qshim"
+check "the pane answered gone, answering ends as answered, and the panel goes on" "wait_s 'asker3 has its answer' 15 && ! sscreen | grep -c ANSWERING >/dev/null && tm list-windows -t work -F '#W' | grep -qx qshim"
 tm send-keys -t work:qshim q
 tm kill-window -t work:asker2
 # M writes a message of several lines in its box, and agent-say carries it whole. The agent
