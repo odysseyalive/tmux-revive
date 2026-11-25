@@ -403,6 +403,15 @@ detect_program() { # foreground job of the pane's tty
 		name=tmux-revive
 		ARGV=("${ARGV[1]%/scripts/panel.sh}/bin/tmux-revive" panel)
 	fi
+	# The Rust panel runs as its own binary: installed (vendor/bin) or a checkout's build.
+	if [[ $name == tmux-revive-panel ]]; then
+		local r=${ARGV[0]%/vendor/bin/tmux-revive-panel}
+		[[ $r == "${ARGV[0]}" ]] && r=${ARGV[0]%/panel-rs/target/release/tmux-revive-panel}
+		[[ $r != "${ARGV[0]}" && -x $r/bin/tmux-revive ]] || return 1
+		[[ ${ARGV[1]:-} == --* ]] && return 1 # --once: not the live panel
+		name=tmux-revive
+		ARGV=("$r/bin/tmux-revive" panel)
+	fi
 	[[ $PROGRAMS == *" :all: "* || $PROGRAMS == *" $name "* ]] || return 1
 	[[ $name == nvim ]] && nvim_strip_revive
 	# The argv as it ran, -S included if vim had one. Adding -S for a
