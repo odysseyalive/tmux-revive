@@ -639,6 +639,7 @@ impl Ctx {
             n = hsplit;
         }
         view -= foot;
+        self.p.help_view = view;
         if self.p.help_top > n - view {
             self.p.help_top = n - view;
         }

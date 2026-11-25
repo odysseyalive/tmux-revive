@@ -272,6 +272,7 @@ impl Ctx {
         self.w = if cols < 80 { 80 } else { cols };
         self.iw = self.w - 4;
         self.out = Vec::new();
+        self.p.peek_row = 0;
         self.p.bh = 3;
         let n = self.p.alen("P_ID");
         self.p.n = n;
@@ -380,6 +381,7 @@ impl Ctx {
         if show != 0 {
             peek_h = avail;
             avail = 0;
+            self.p.peek_row = self.out.len() as i64 + 1;
             self.rowl = self.p.wb[1].clone();
             self.rowr = self.p.wb[1].clone();
             self.draw_peek(peek_h - 1);

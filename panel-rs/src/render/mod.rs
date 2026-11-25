@@ -122,6 +122,8 @@ pub struct State {
     pub peek_all: i64,
     pub help: i64,
     pub help_top: i64,
+    /// HELP_VIEW: the rows of words the ? page showed last (its Space and PgUp/PgDn page)
+    pub help_view: i64,
     pub flash: Bytes,
     pub flash_t: i64,
     pub lbox: i64,
@@ -164,6 +166,8 @@ pub struct State {
     pub nav: Vec<Nav>,
     pub nat: i64,
     pub cpad: Bytes,
+    /// PEEK_ROW: the row the peek's window starts on, 0 when none shows (edit_box keeps above it)
+    pub peek_row: i64,
     /// L: the screen being drawn in the peek or question box
     pub l: Vec<Bytes>,
     pub qstyle: BTreeMap<i64, Bytes>,
