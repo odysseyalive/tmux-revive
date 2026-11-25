@@ -94,11 +94,21 @@ pub struct Hub {
     /// the files peek_look fetched, removed when the panel closes
     pub peek_files: Mutex<Vec<Bytes>>,
     /// Rows to ask a linked computer for at the next gather, as bash's RFETCH_T[$h]=0 after
-    /// N, U or an answer there (handed over): Some(None) every computer's, Some(Some(h)) one's
-    pub rows_again: Mutex<Option<Option<Bytes>>>,
+    /// N, U or an answer there (handed over), each kept till then: None every computer's,
+    /// Some(h) one's (rows_again)
+    pub rows_again: Mutex<Vec<Option<Bytes>>>,
+    /// VERSION read again (U updated this computer: upd_poll), for the gathers from now on
+    pub version: Mutex<Option<Bytes>>,
     pub panes_k: Kick,
     pub mail_k: Kick,
     pub peek_k: Kick,
+}
+
+impl Hub {
+    /// RFETCH_T[$h]=0 (None: every host's): that computer's rows asked for at the next gather
+    pub fn rows_again(&self, h: Option<Bytes>) {
+        self.rows_again.lock().unwrap().push(h);
+    }
 }
 
 /// G for the live panel: as panel.sh starts, not a --once (links wait their turn, never "now")
@@ -122,8 +132,11 @@ pub fn start(root: &[u8], hub: &Arc<Hub>, wake: RawFd) {
             let mut g = live_g(&r);
             loop {
                 h.panes_k.wait();
-                if let Some(k) = h.rows_again.lock().unwrap().take() {
+                for k in std::mem::take(&mut *h.rows_again.lock().unwrap()) {
                     g.rgate.again(k.as_deref());
+                }
+                if let Some(v) = h.version.lock().unwrap().take() {
+                    g.version = v;
                 }
                 g.gather();
                 let gen = Arc::new(Gen {

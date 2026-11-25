@@ -23,6 +23,7 @@ pub mod keys;
 pub mod modal;
 pub mod screens;
 pub mod term;
+pub mod upd;
 pub mod writer;
 
 use crate::collect::sh::{self, Bytes};
@@ -140,6 +141,11 @@ pub struct Ui {
     reply: Bytes,
     /// SEL_ID set by a key for the next gather to find (N on a linked computer: its new name)
     pending_sel: Option<Bytes>,
+    /// U's jobs and box (upd.rs)
+    upd: upd::Upd,
+    /// AMAIL and ME, for B's and G's popups (agent-say's mailbox, this user)
+    amail: Bytes,
+    me: Bytes,
 }
 
 impl BoxHost for Ui {
@@ -375,7 +381,8 @@ impl Ui {
                     self.handoff(key)
                 }
             }
-            b"m" | b"M" | b"b" | b"B" | b"u" | b"U" | b"?" => self.handoff(key),
+            b"m" | b"M" | b"b" | b"B" | b"?" => self.handoff(key),
+            b"u" | b"U" => self.upd_show(),
             b"n" | b"N" => {
                 if self.rename() {
                     return; // on a linked computer: SEL_ID is its new name, for the next gather
@@ -512,7 +519,7 @@ impl Ui {
             if st == 0 {
                 self.pending_sel = Some(cat(&[&reply, b"@", &h])); // the row goes by its new name
             }
-            *self.hub.rows_again.lock().unwrap() = Some(Some(h)); // RFETCH_T[$h]=0: its rows asked for again, to show it
+            self.hub.rows_again(Some(h)); // RFETCH_T[$h]=0: its rows asked for again, to show it
             return true;
         }
         if !self.ask(&cat(&[b"New name for ", &name, b":"])) {
@@ -779,6 +786,9 @@ impl Ui {
         if let Some(id) = self.pending_sel.take() {
             self.c.p.sel_id = id;
         }
+        if self.upd.n() > 0 {
+            self.upd_poll(); // what U started, finished since
+        }
         // The round: the mail after the panes (bash's draw runs messages after the gather), and
         // the peek, looked at again.
         self.wait_mail = true;
@@ -936,6 +946,9 @@ pub fn run(root: &[u8]) -> ! {
         pkey: Vec::new(),
         reply: Vec::new(),
         pending_sel: None,
+        upd: upd::Upd::default(),
+        amail: g0.amail.clone(),
+        me: g0.me.clone(),
     };
     drop(g0);
     match sh::env("REVIVE_PANEL_SPLASH").as_deref() {

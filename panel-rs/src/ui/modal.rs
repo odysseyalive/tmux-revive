@@ -70,7 +70,8 @@ pub fn tsize() -> (i64, i64) {
 /// What pick takes for one call (bash sets these as PKEYS=… pick …): letters that also pick
 /// the highlighted item on the rows PKROWS lists (" 0 3 "); PHINT, the hint line; PSEL, the
 /// item highlighted first; PTICK, run every 0.2 s, Some(items) when they are new (as many, and
-/// no wider); PBAR, "DONE TOTAL" drawn as a bar in the blank row.
+/// no wider); PBAR, "DONE TOTAL" drawn as a bar in the blank row; KROWS_AT, PKROWS as it is at
+/// the key (bash's pick reads the global, which U's PTICK rewrites), in place of krows.
 #[derive(Default)]
 pub struct PickOpts<'a> {
     pub keys: Bytes,
@@ -79,6 +80,7 @@ pub struct PickOpts<'a> {
     pub sel: Bytes,
     pub tick: Option<&'a mut dyn FnMut(&mut Ui) -> Option<Vec<Bytes>>>,
     pub bar: Option<&'a dyn Fn(&Ui) -> Bytes>,
+    pub krows_at: Option<&'a dyn Fn(&Ui) -> Bytes>,
 }
 
 /// pick_box's state: its items, which are choices (num, ch), the one highlighted, its place
@@ -568,7 +570,8 @@ impl Ui {
                 }
                 k => k,
             };
-            if let Some((st, picked, pkey)) = pb.key(k, &o.keys, &o.krows) {
+            let krows = o.krows_at.map(|f| f(self)).unwrap_or_else(|| o.krows.clone());
+            if let Some((st, picked, pkey)) = pb.key(k, &o.keys, &krows) {
                 if let Some(p) = picked {
                     self.picked = itoa(p as i64);
                     self.pkey = pkey;

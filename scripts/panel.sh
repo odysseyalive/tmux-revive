@@ -5519,7 +5519,7 @@ keys() {
 # selected (REVIVE_PANEL_HSEL its heading, REVIVE_PANEL_FLASH and _AGE its flash). That one key
 # is acted on here, every box it opens and a question's answering with it; then this panel
 # exits 100 for the Rust one to carry on, its flash (what the key did) left in
-# REVIVE_PANEL_HANDBACK. An update U started keeps it here, the panel as usual, until it's done.
+# REVIVE_PANEL_HANDBACK.
 HANDOFF=${REVIVE_PANEL_HANDOFF:-}
 handback() {
 	local f=${REVIVE_PANEL_HANDBACK:-}
@@ -5536,7 +5536,7 @@ if [[ -n $HANDOFF ]]; then
 	messages # G on the key bar: draw doesn't look at the messages while the pane asks
 	draw
 	box_flow act "$HANDOFF" # as keys() runs it: Esc on a box brings the one before back
-	((UPD_N)) && upd_running || handback
+	handback
 fi
 held=0 FULL_T=$SECONDS
 while :; do
@@ -5548,7 +5548,6 @@ while :; do
 		LOAD_AT="" # the first look is in: no more loading bar
 		lbox_check
 		((UPD_N)) && upd_poll # what U started, finished since
-		[[ -n $HANDOFF ]] && ! upd_running && handback # the update done: back to the Rust panel
 	fi
 	# Keep the same pane selected when panes come and go.
 	if [[ -n $SEL_ID ]]; then

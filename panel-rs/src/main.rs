@@ -71,6 +71,8 @@ fn main() {
     match a.as_slice() {
         [] => ui::run(&root()),
         ["--probe"] => println!("ok {}", VERSION.trim()),
+        // A U job for a linked computer (ui/upd.rs): remote_run HOST REQUEST... here
+        ["--remote-run", _, _, ..] => ui::upd::remote_run_main(&root(), &args[1..].iter().map(|a| a.as_encoded_bytes().to_vec()).collect::<Vec<_>>()),
         ["--once", "--snapshot", _] | ["--snapshot", _, "--once"] | ["--once"] => {
             // --snapshot F, or as bash takes it: REVIVE_PANEL_SNAP=load:F; else it gathers
             let f: std::ffi::OsString = if a.len() == 3 {
