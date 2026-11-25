@@ -1,20 +1,26 @@
 //! The live panel (plan Phase 3): scripts/panel.sh's main loop, keys() and the act() keys that
 //! move, scroll, fold, peek and change the art, on a UI thread that never waits on a collector.
 //! Every frame is render::Ctx::draw's, the same builders --once draws with; the writer sends the
-//! lines that changed inside ?2026. O, and O M N where the key bar fades them, are here too.
-//! Keys whose act() branch isn't ported yet (M N B U G I S D ?, Enter on a question) are
-//! handed over to the bash panel for that one action (handoff.rs).
+//! lines that changed inside ?2026. O, N, S, D, the empty G, and O M N where the key bar fades
+//! them, are here too; every key act() runs goes through box_flow (boxes.rs), and the boxes it
+//! opens (pick, ask, note) wait in modal.rs with the panel going on under them. Keys whose act()
+//! branch isn't ported yet (M B U G I ?, Enter on a question) are handed over to the bash panel
+//! for that one action (handoff.rs).
 //!
 //! What runs where:
-//! - UI thread (here): input, the act() keys above, the flash, the loading screen,
-//!   the loading box and the splash, the frame and its writer.
+//! - UI thread (here): input, the act() keys above and their boxes, the flash, the loading
+//!   screen, the loading box and the splash, the frame and its writer.
+//! - a thread per command that can take a while (agent-say name, remote_run), the panel drawing
+//!   while it waits (modal.rs wait_job).
 //! - collectors.rs: panes (gather), mail (messages, links_saves, intros) and peek, a thread
 //!   each, kicked as bash looks again: every REVIVE_PANEL_REFRESH seconds without a key, and
 //!   after any key but a move.
 
+pub mod boxes;
 pub mod collectors;
 pub mod handoff;
 pub mod keys;
+pub mod modal;
 pub mod screens;
 pub mod term;
 pub mod writer;
@@ -25,6 +31,7 @@ use crate::compat::clean;
 use crate::render::frame::Env;
 use crate::render::{num, Ctx, Nav};
 use crate::snapshot::Snapshot;
+use boxes::{BoxHost, Boxes};
 use collectors::{Hub, Want};
 use keys::{Class, Src};
 use std::collections::BTreeMap;
@@ -121,6 +128,39 @@ pub struct Ui {
     draw_at: Instant,
     /// When TICK moves on: REFRESH after the last frame with no key (bash's read -t)
     tick_at: Option<Instant>,
+    /// BOX_*: one box at a time (boxes.rs)
+    bx: Boxes,
+    /// The box up now (pick, ask, note), painted over every frame drawn under it
+    over: Option<Bytes>,
+    /// A box is up: Ctrl-C closes it, not the panel
+    modal_on: bool,
+    /// pick's PICKED and PKEY, ask's REPLY
+    picked: Bytes,
+    pkey: Bytes,
+    reply: Bytes,
+    /// SEL_ID set by a key for the next gather to find (N on a linked computer: its new name)
+    pending_sel: Option<Bytes>,
+}
+
+impl BoxHost for Ui {
+    fn bx(&mut self) -> &mut Boxes {
+        &mut self.bx
+    }
+    fn flash_get(&self) -> (Bytes, i64) {
+        (self.c.p.flash.clone(), self.c.p.flash_t)
+    }
+    fn flash_put(&mut self, f: (Bytes, i64)) {
+        self.c.p.flash = f.0;
+        self.c.p.flash_t = f.1;
+    }
+    fn prev_clear(&mut self) {
+        self.prev.clear();
+    }
+    /// draw, as a key's own steps call it: its BOX_ lines, then the frame
+    fn draw(&mut self) {
+        self.draw_box_lines();
+        self.paint();
+    }
 }
 
 impl Ui {
@@ -335,7 +375,13 @@ impl Ui {
                     self.handoff(key)
                 }
             }
-            b"m" | b"M" | b"n" | b"N" | b"b" | b"B" | b"u" | b"U" | b"d" | b"D" | b"?" => self.handoff(key),
+            b"m" | b"M" | b"b" | b"B" | b"u" | b"U" | b"?" => self.handoff(key),
+            b"n" | b"N" => {
+                if self.rename() {
+                    return; // on a linked computer: SEL_ID is its new name, for the next gather
+                }
+            }
+            b"d" | b"D" => self.detach(),
             b"p" | b"P" => {
                 self.c.p.peek = (self.c.p.peek == 0) as i64;
                 self.c.p.peek_sel = self.pa("P_ID", sel);
@@ -419,6 +465,89 @@ impl Ui {
             _ => {}
         }
         self.c.p.sel_id = self.pa("P_ID", self.c.p.sel);
+    }
+
+    /// act's N (pane_key_early has said no to what can't be renamed): a new name asked for on
+    /// the bottom line, then agent-say name for a pane here, or, on a linked computer, agent-say
+    /// name there over the link (remote_run), its rows asked for again at once. true: act
+    /// returns there (bash's `return` in that branch), SEL_ID left for the next gather.
+    fn rename(&mut self) -> bool {
+        use crate::render::cat;
+        let sel = self.c.p.sel;
+        let id = self.pa("P_ID", sel);
+        let name = if !self.c.p.a("P_NAME", sel).is_empty() { self.pa("P_NAME", sel) } else { self.pa("P_LOC", sel) };
+        let h = self.pa("P_HOST", sel);
+        let asay = sh::path(&[&self.root, b"/bin/agent-say"]);
+        if !h.is_empty() {
+            // A pane on a linked computer: agent-say name runs there, over the link's ssh.
+            let rid = self.pa("P_RID", sel);
+            if !self.ask(&cat(&[b"New name for ", &name, b" on ", &h, b":"])) {
+                self.notice(b"rename cancelled");
+                return true;
+            }
+            let reply = self.reply.clone();
+            // The same letters a name may have there, so no quote or shell character gets through.
+            if !m("^[A-Za-z0-9][A-Za-z0-9_.:+=-]*$", &reply) {
+                self.notice(b"that can't be a name: use letters, digits and . _ - : + =");
+                return true;
+            }
+            self.notice(&cat(&[b"naming it on ", &h, "…".as_bytes()]));
+            BoxHost::draw(self);
+            let cfg = crate::collect::links::LinkCfg::from_env(&self.astate, &asay);
+            let (h2, r2) = (h.clone(), reply.clone());
+            // out=$(remote_run "$h" name "$rid" "$REPLY" | tail -c 4096); st=$? (pipefail: remote_run's)
+            let (st, out) = self.wait_job(move || crate::collect::links::remote_run(&cfg, &h2, &[b"name", &rid, &r2], usize::MAX));
+            let out = sh::cmdsub(&out[out.len().saturating_sub(4096)..]);
+            // out=$(grep -v '^[[:space:]]*$' <<<"$out" | head -n 1); clean out
+            let first = sh::here(&out).into_iter().find(|l| !l.iter().all(|c| c.is_ascii_whitespace())).unwrap_or_default();
+            let out = clean(&first);
+            let out = out.strip_prefix(b"agent-say: ".as_slice()).unwrap_or(&out).to_vec();
+            let out = crate::compat::substr(&out, 0, Some(120)).unwrap_or_default();
+            if st == 124 || st == 255 {
+                self.notice(&cat(&[b"on ", &h, b": couldn't be reached to rename"]));
+            } else {
+                let what: &[u8] = if out.is_empty() { b"rename failed" } else { &out };
+                self.notice(&cat(&[b"on ", &h, b": ", what]));
+            }
+            if st == 0 {
+                self.pending_sel = Some(cat(&[&reply, b"@", &h])); // the row goes by its new name
+            }
+            *self.hub.rows_again.lock().unwrap() = Some(Some(h)); // RFETCH_T[$h]=0: its rows asked for again, to show it
+            return true;
+        }
+        if !self.ask(&cat(&[b"New name for ", &name, b":"])) {
+            self.notice(b"rename cancelled");
+            return false;
+        }
+        let reply = self.reply.clone();
+        // out=$(AGENT_SAY_PANE=$id "$ASAY" name "$REPLY" 2>&1 | head -n 1)
+        let out = self.wait_job(move || modal::run_first_line(&[asay, b"name".to_vec(), reply], &[("AGENT_SAY_PANE", id)]));
+        let out = sh::cmdsub(&out);
+        let out = out.strip_prefix(b"agent-say: ".as_slice()).unwrap_or(&out).to_vec();
+        self.notice(&out);
+        false
+    }
+
+    /// act's D: detach this tmux (the client looking at the panel), once you've said yes.
+    /// Everything keeps running, and a snapshot is taken on detach, so it comes back after a
+    /// reboot too.
+    fn detach(&mut self) {
+        self.prev.clear();
+        BoxHost::draw(self);
+        let items = vec![
+            crate::render::cat(&[&[modal::NOTE], b"This session will restore even after reboot."]),
+            b"No, stay".to_vec(),
+            b"Yes, detach".to_vec(),
+        ];
+        if !(self.pick(&mut modal::PickOpts::default(), b"DETACH TMUX?", &items) && num(&self.picked) == 2) {
+            self.prev.clear();
+            self.notice(b"detach cancelled");
+            return;
+        }
+        self.prev.clear();
+        if !sh::tm(&[b"detach-client"]).ok {
+            self.notice(b"couldn't detach");
+        }
     }
 
     /// act's S: a snapshot taken now, said on the key bar
@@ -505,14 +634,15 @@ impl Ui {
                 Class::View => {
                     // drawn at once from what was gathered, then looked at again
                     self.act(&key);
-                    self.draw();
+                    BoxHost::draw(self);
                     drawn = true;
                     nav = false;
                     break;
                 }
                 Class::Nothing => {}
                 Class::Act => {
-                    self.act(&key);
+                    // box_flow act KEY: Esc on a box brings the one before back
+                    self.box_flow(&mut |s: &mut Ui| s.act(&key));
                     nav = false;
                     break;
                 }
@@ -645,6 +775,10 @@ impl Ui {
         self.lbox_check();
         self.started = true;
         self.wait_gen = false;
+        // SEL_ID a key left for this gather (bash's main loop looks for it after gather)
+        if let Some(id) = self.pending_sel.take() {
+            self.c.p.sel_id = id;
+        }
         // The round: the mail after the panes (bash's draw runs messages after the gather), and
         // the peek, looked at again.
         self.wait_mail = true;
@@ -660,8 +794,9 @@ impl Ui {
     // ------------------------------------------------------------------ draw
 
     /// The main loop's draw: the selection kept, all of it sent again every 15 s, the frame
-    /// (render's draw) through the writer, the loading box over it
-    pub fn draw(&mut self) {
+    /// (render's draw) through the writer, the box up (if one is) painted over it again in the
+    /// same update when anything under it was, the loading box over it
+    pub fn paint(&mut self) {
         self.sel_keep();
         let secs = self.secs();
         // All of it drawn again every 15 s, not only what changed.
@@ -680,7 +815,13 @@ impl Ui {
         self.c.draw();
         self.c.p.print.clear();
         let out = std::mem::take(&mut self.c.out);
-        let buf = writer::frame(&out, &mut self.prev, None);
+        let mut buf = writer::frame(&out, &mut self.prev, None);
+        if let Some(o) = &self.over {
+            // after the frame's ESC[H, so the cursor ends where the box leaves it
+            if let Some(n) = buf.len().checked_sub(b"\x1b[?2026l".len()) {
+                buf.splice(n..n, o.iter().copied());
+            }
+        }
         term::out(&buf);
         if self.lbox.on {
             let b = screens::lbox_draw(&mut self.lbox, &self.c);
@@ -727,63 +868,8 @@ impl Ui {
 
     fn run(&mut self) -> ! {
         loop {
-            let now = Instant::now();
-            // How long to wait: for a frame due, for the clock's tick.
-            let mut until: Option<Instant> = None;
-            if self.want_draw {
-                until = Some(self.draw_at);
-            }
-            if let Some(t) = self.tick_at {
-                until = Some(until.map_or(t, |u| u.min(t)));
-            }
-            let ms: libc::c_int = match until {
-                None => -1,
-                Some(t) => t.saturating_duration_since(now).as_millis().min(i32::MAX as u128) as libc::c_int,
-            };
-            // Keys are read once the first look is in (bash reads none while it gathers).
-            let mut fds = [
-                libc::pollfd { fd: self.sig_r, events: libc::POLLIN, revents: 0 },
-                libc::pollfd { fd: self.wake_r, events: libc::POLLIN, revents: 0 },
-                libc::pollfd { fd: if self.started { 0 } else { -1 }, events: libc::POLLIN, revents: 0 },
-            ];
-            let r = unsafe { libc::poll(fds.as_mut_ptr(), 3, ms) };
-            if r < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
-                self.quit(1);
-            }
-            if fds[0].revents != 0 {
-                for b in term::drain(self.sig_r) {
-                    if b == b'X' || b == b'I' {
-                        self.quit(0);
-                    }
-                    // WINCH: all of it drawn again, at the new size
-                    term::out(b"\x1b[2J");
-                    self.prev.clear();
-                    self.c.p.atop.clear();
-                    self.want_draw = true;
-                    self.draw_at = Instant::now();
-                }
-            }
-            if fds[1].revents != 0 {
-                term::drain(self.wake_r);
-                self.take();
-            }
-            if fds[2].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
-                self.quit(0); // the terminal is gone
-            }
-            if fds[2].revents & libc::POLLIN != 0 {
+            if self.pump(true, -1, None) == modal::Woke::Key {
                 self.input();
-            }
-            if term::GONE.load(std::sync::atomic::Ordering::Relaxed) {
-                self.quit(0);
-            }
-            let now = Instant::now();
-            if self.tick_at.is_some_and(|t| now >= t) && !self.want_draw {
-                // read -t timed out: the animation moves on with the clock, and all is looked at
-                self.c.tick += 1;
-                self.look_again();
-            }
-            if self.want_draw && (now >= self.draw_at || (!self.wait_mail && !self.wait_peek && !self.wait_gen)) {
-                self.draw();
             }
         }
     }
@@ -843,6 +929,13 @@ pub fn run(root: &[u8]) -> ! {
         want_draw: false,
         draw_at: Instant::now(),
         tick_at: None,
+        bx: Boxes::default(),
+        over: None,
+        modal_on: false,
+        picked: Vec::new(),
+        pkey: Vec::new(),
+        reply: Vec::new(),
+        pending_sel: None,
     };
     drop(g0);
     match sh::env("REVIVE_PANEL_SPLASH").as_deref() {

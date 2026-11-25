@@ -297,13 +297,13 @@ impl Ctx {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::compat::tests::{bash, inputs, setup};
 
     /// panel.sh's colours and drawing helpers (the "colours" section up to banner_rows) and
     /// trim_colored, cut out of it as they are.
-    fn bash_prims() -> String {
+    pub fn bash_prims() -> String {
         let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/panel.sh")).unwrap();
         let a = src.find("\n# ------------------------------------------------------------------ colours\n").expect("colours in panel.sh");
         let b = src.find("\nbanner_rows() {").expect("banner_rows in panel.sh");
