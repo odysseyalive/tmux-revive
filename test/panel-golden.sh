@@ -1106,8 +1106,9 @@ la_step() { # la_step SA SB KEYS TEXT LABEL: KEYS to both, then the same questio
 		sleep 0.2
 	done
 	LV_TEXT=$4
-	check "$5after '$3': the same question, bar and cursor, above it masked ($4)" "grep -aqF -- \"\$LV_TEXT\" $T/shot.a && grep -aqF 'QUESTION · ' $T/shot.a && cmp -s $T/shot.a $T/shot.b"
-	grep -aqF -- "$LV_TEXT" "$T/shot.a" || plain <"$T/shot.a" | tail -n 4 | head -n 2 | sed 's/^/      A: /'
+	shot "$1" >"$T/full.a" # TEXT may be in a box over the rows masked
+	check "$5after '$3': the same question, bar and cursor, above it masked ($4)" "grep -aqF -- \"\$LV_TEXT\" $T/full.a && grep -aqF 'QUESTION · ' $T/shot.a && cmp -s $T/shot.a $T/shot.b"
+	grep -aqF -- "$LV_TEXT" "$T/full.a" || plain <"$T/shot.a" | tail -n 4 | head -n 2 | sed 's/^/      A: /'
 	cmp -s "$T/shot.a" "$T/shot.b" || diff "$T/shot.a" "$T/shot.b" | head -${GOLDEN_DIFF:-6} | sed 's/^/      /'
 }
 live_answer() {
