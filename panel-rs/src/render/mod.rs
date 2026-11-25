@@ -128,6 +128,10 @@ pub struct State {
     pub flash_t: i64,
     pub lbox: i64,
     pub answering: i64,
+    /// While the live panel answers: the pane answered, as it was when answering began. Bash's
+    /// P_*[SEL] hold still while answer() runs (nothing is gathered); here PANES goes on, so the
+    /// question, its title and the ANSWERING bar read this instead. None: SEL's, as in bash.
+    pub ans: Option<AnsPane>,
     pub atop: Vec<Bytes>,
     pub atop_bh: i64,
     pub qon: i64,
@@ -181,6 +185,14 @@ pub struct State {
     pub print: Bytes,
 }
 
+/// The pane answered: its P_ID, P_HOST, and ${P_NAME:-${P_LOC:-}}
+#[derive(Clone, Default, Debug)]
+pub struct AnsPane {
+    pub id: Bytes,
+    pub host: Bytes,
+    pub name: Bytes,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Nav {
     Pane(i64),
@@ -188,6 +200,33 @@ pub enum Nav {
 }
 
 impl State {
+    /// The answered pane while answering (ans), else None
+    fn answered(&self) -> Option<&AnsPane> {
+        self.ans.as_ref().filter(|_| self.answering != 0)
+    }
+    /// ${P_STATE[SEL]}: asking for the pane answered, as it is in bash till answer() ends
+    pub fn sel_state(&self) -> &[u8] {
+        if self.answered().is_some() {
+            return b"asking";
+        }
+        self.a("P_STATE", self.sel)
+    }
+    /// ${P_ID[SEL]}
+    pub fn sel_id(&self) -> Bytes {
+        self.answered().map_or_else(|| self.a("P_ID", self.sel).to_vec(), |a| a.id.clone())
+    }
+    /// ${P_HOST[SEL]}
+    pub fn sel_host(&self) -> Bytes {
+        self.answered().map_or_else(|| self.a("P_HOST", self.sel).to_vec(), |a| a.host.clone())
+    }
+    /// ${P_NAME[SEL]:-${P_LOC[SEL]:-}}
+    pub fn sel_name(&self) -> Bytes {
+        if let Some(a) = self.answered() {
+            return a.name.clone();
+        }
+        let n = self.a("P_NAME", self.sel);
+        if n.is_empty() { self.a("P_LOC", self.sel) } else { n }.to_vec()
+    }
     /// `${A[i]}` of an indexed array in the snapshot ("" when unset)
     pub fn a(&self, name: &str, i: i64) -> &[u8] {
         self.snap.arrays.get(name).and_then(|m| m.get(&i)).map(|v| v.as_slice()).unwrap_or(b"")

@@ -6,8 +6,7 @@
 //!                                              takes it (REVIVE_PANEL_SIZES as bash's); without,
 //!                                              it gathers for itself, as bash's --once does
 //!                                              (save:FILE writes the snapshot as snap_save)
-//!   tmux-revive-panel                          the live panel (Phase 3; keys not ported yet are
-//!                                              handed over to the bash panel, ui/handoff.rs)
+//!   tmux-revive-panel                          the live panel, every key its own (ui/)
 //!   tmux-revive-panel --probe                  "ok VERSION": the install-time check (Phase 6.2)
 //!   tmux-revive-panel --remote-run HOST REQ... remote_run HOST REQ... (a U job for a linked
 //!                                              computer, ui/upd.rs): its output, its status

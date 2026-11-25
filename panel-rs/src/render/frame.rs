@@ -291,7 +291,7 @@ impl Ctx {
         }
         self.p.ph = ph;
         let sel = self.p.sel;
-        let sst: Bytes = if self.p.hsel.is_empty() { self.p.a("P_STATE", sel).to_vec() } else { Vec::new() };
+        let sst: Bytes = if self.p.hsel.is_empty() { self.p.sel_state().to_vec() } else { Vec::new() };
         let pbf = cat(&[&self.p.sel_id, b"|", &self.p.hsel]);
         if pbf != self.p.pb_for {
             self.p.pb = 0;
@@ -564,7 +564,7 @@ impl Ctx {
         }
         // While answering keys go to the agent, so the bar says that and how to stop.
         if self.p.answering != 0 {
-            let name: Bytes = if !self.p.a("P_NAME", sel).is_empty() { self.p.a("P_NAME", sel).to_vec() } else { self.p.a("P_LOC", sel).to_vec() };
+            let name = self.p.sel_name();
             k = cat(&[b"\x1b[45m", B, BWHT, b" ANSWERING ", &name, b" ", R, b"  ", BMAG, " keys go to its question ·".as_bytes(), R, b" "]);
             k.extend(cat(&[B, BYEL, b"Esc", R, BMAG, b" or ", B, BYEL, b"Ctrl-]", R, BMAG, b" leaves", R]));
             if flash_on {

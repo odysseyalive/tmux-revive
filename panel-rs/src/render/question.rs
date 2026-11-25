@@ -12,10 +12,9 @@ const TABBAR: &str = "^[[:space:]]*←.*→[[:space:]]*$";
 impl Ctx {
     /// draw_question LINES: only the dialog at the bottom of its screen, bright
     pub fn draw_question(&mut self, lines: i64) {
-        let sel = self.p.sel;
-        let id = self.p.a("P_ID", sel).to_vec();
-        let name: Bytes = if !self.p.a("P_NAME", sel).is_empty() { self.p.a("P_NAME", sel).to_vec() } else { self.p.a("P_LOC", sel).to_vec() };
-        let host = self.p.a("P_HOST", sel).to_vec();
+        let id = self.p.sel_id();
+        let name = self.p.sel_name();
+        let host = self.p.sel_host();
         let keys = if self.p.answering != 0 {
             // On a free-text choice, [E]nter opens the box to write its answer in.
             let kc = if self.p.qon != 0 {

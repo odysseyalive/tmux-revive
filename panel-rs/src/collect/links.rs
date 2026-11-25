@@ -150,11 +150,22 @@ pub fn rows_get(c: &LinkCfg, h: &[u8], f: &[u8]) {
 
 /// peek_get HOST %ID LINES FILE: that pane's screen into FILE, or FILE.fail when the ask failed
 pub fn peek_get(c: &LinkCfg, h: &[u8], id: &[u8], n: &[u8], f: &[u8]) -> bool {
+    peek_get_or_drop(c, h, id, n, f, None)
+}
+
+/// peek_get, told to stop (DROPPED set by peek_drop) while it asks: bash's fetch, killed, still
+/// finishes asking (its TERM trap waits for that), then throws the screen away (`rm -f
+/// "$PEEK_TMP"`) instead of putting it in place
+fn peek_get_or_drop(c: &LinkCfg, h: &[u8], id: &[u8], n: &[u8], f: &[u8], dropped: Option<&AtomicBool>) -> bool {
     if !(m("^%[0-9]+$", id) && m("^[0-9]{1,2}$", n)) {
         return false;
     }
     let Some(t) = mktemp(f) else { return false };
     let (st, out) = remote_run(c, h, &[b"peek", id, n], 65536);
+    if dropped.is_some_and(|d| d.load(Ordering::SeqCst)) {
+        let _ = std::fs::remove_file(sh::os(&t));
+        return true;
+    }
     let _ = std::fs::write(sh::os(&t), &out);
     let fail = sh::path(&[f, b".fail"]);
     if st == 0 || st == 141 {
@@ -174,6 +185,8 @@ pub fn peek_get(c: &LinkCfg, h: &[u8], id: &[u8], n: &[u8], f: &[u8]) -> bool {
 pub struct Gate {
     t: HashMap<Bytes, i64>,
     busy: HashMap<Bytes, Arc<AtomicBool>>,
+    /// each ask's "let go" flag (peek_drop), for it to throw its answer away
+    dropped: HashMap<Bytes, Arc<AtomicBool>>,
 }
 
 impl Gate {
@@ -188,7 +201,16 @@ impl Gate {
         self.t.insert(k.to_vec(), secs);
         let b = Arc::new(AtomicBool::new(true));
         self.busy.insert(k.to_vec(), b.clone());
+        self.dropped.insert(k.to_vec(), Arc::new(AtomicBool::new(false)));
         Some(b)
+    }
+    /// `[[ -n ${PFETCH_PID[$k]:-} ]] && kill -0 "${PFETCH_PID[$k]}"`: an ask for K in flight
+    pub fn busy(&self, k: &[u8]) -> bool {
+        self.busy.get(k).is_some_and(|b| b.load(Ordering::SeqCst))
+    }
+    /// The flag the ask for K last started watches: set, it throws its answer away
+    fn dropped(&self, k: &[u8]) -> Arc<AtomicBool> {
+        self.dropped.get(k).cloned().unwrap_or_default()
     }
     /// RFETCH_T[$h]=0 (every key with None): the next ask may start at once, though not
     /// while one is still running
@@ -202,6 +224,9 @@ impl Gate {
     }
     /// peek_drop: the ask in flight is let go (its answer thrown away), the next may start at once
     pub fn drop_key(&mut self, k: &[u8]) {
+        if let Some(d) = self.dropped.remove(k) {
+            d.store(true, Ordering::SeqCst);
+        }
         self.busy.remove(k);
         self.t.remove(k);
     }
@@ -246,10 +271,18 @@ impl G {
         }
         let k = sh::path(&[h, b" ", id]);
         let Some(flag) = self.pgate.start(&k, sh::seconds(), self.peek_every) else { return };
+        let dropped = self.pgate.dropped(&k);
         let (h, id, f) = (h.to_vec(), id.to_vec(), f.to_vec());
         spawn(flag, move || {
-            peek_get(&c, &h, &id, &ns, &f);
+            peek_get_or_drop(&c, &h, &id, &ns, &f, Some(&dropped));
         });
+    }
+
+    /// peek_drop HOST %ID: a key was just sent there, so the screen being asked for now (asked
+    /// before the key landed) is out of date. It's let go of (its answer thrown away) and the
+    /// next look asks again at once.
+    pub fn peek_drop(&mut self, h: &[u8], id: &[u8]) {
+        self.pgate.drop_key(&sh::path(&[h, b" ", id]));
     }
 
     /// peek_look HOST %ID LINES -> RPEEK_AT (new, fail or nothing), RPEEK
@@ -659,7 +692,11 @@ mod tests {
         assert!(g.start(b"h %2", 51, every).is_some(), "each pane its own");
         assert!(g.start(b"h %1", 52, every).is_some());
         // peek_drop lets the next go at once (a key was just sent)
+        let d = g.dropped(b"h %1");
+        assert!(g.busy(b"h %1"));
         g.drop_key(b"h %1");
+        assert!(d.load(Ordering::SeqCst) && !g.busy(b"h %1"), "the ask let go of is told, and isn't in flight");
         assert!(g.start(b"h %1", 52, every).is_some());
+        assert!(!g.dropped(b"h %1").load(Ordering::SeqCst), "the new ask has a flag of its own");
     }
 }

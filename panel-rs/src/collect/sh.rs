@@ -480,6 +480,33 @@ pub fn tm(args: &[&[u8]]) -> Out {
     run_env(&argv, &[], Some(*UMASK.get().unwrap_or(&0o022)))
 }
 
+/// `printf '%s' INPUT | tm ARGS`: tm with INPUT on its stdin -> its status is ok
+pub fn tm_in(args: &[&[u8]], input: &[u8]) -> bool {
+    use std::io::Write;
+    use std::os::unix::process::CommandExt;
+    let sock = env("REVIVE_SOCKET").unwrap_or_default();
+    let mut c = Command::new("tmux");
+    if !sock.is_empty() {
+        c.arg("-S").arg(os(&sock));
+    }
+    for a in args {
+        c.arg(os(a));
+    }
+    let m = *UMASK.get().unwrap_or(&0o022);
+    unsafe {
+        c.pre_exec(move || {
+            libc::umask(m);
+            Ok(())
+        });
+    }
+    c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+    let Ok(mut ch) = c.spawn() else { return false };
+    if let Some(mut i) = ch.stdin.take() {
+        let _ = i.write_all(input);
+    }
+    ch.wait().is_ok_and(|s| s.success())
+}
+
 /// opt NAME DEFAULT: a global tmux user option, else DEFAULT
 pub fn opt(name: &[u8], d: &[u8]) -> Bytes {
     let v = cmdsub(&tm(&[b"show-option", b"-gqv", name]).out);

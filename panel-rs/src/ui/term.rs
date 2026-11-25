@@ -197,7 +197,7 @@ pub fn enter() {
 }
 
 /// The keys, from fd 0 one byte at a time (as bash's read takes them, so nothing is read ahead
-/// that a hand-over to bash would lose)
+/// that the send worker, answering, would miss: it reads fd 0 itself)
 pub struct Stdin;
 
 impl super::keys::Src for Stdin {

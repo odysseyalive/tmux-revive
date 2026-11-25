@@ -5,23 +5,24 @@
 //! (edit_box, editbox.rs), the ? page (help.rs), and O M N where the key bar fades them, are here
 //! too; every key act() runs goes through box_flow (boxes.rs), and the boxes it opens (pick, ask,
 //! note, edit_box, tmux's popups) wait in modal.rs with the panel going on under them. Enter on
-//! a question, not ported yet, is handed over to the bash panel for that one action (handoff.rs).
+//! a question answers it (answer.rs), the panel going on meanwhile. No key goes to the bash panel.
 //!
 //! What runs where:
 //! - UI thread (here): input, the act() keys above and their boxes, the flash, the loading
 //!   screen, the loading box and the splash, the frame and its writer.
 //! - a thread per command that can take a while (agent-say, remote_run, tmux's popups), the
 //!   panel drawing while it waits (modal.rs wait_job);
+//! - while answering, the send worker (answer.rs): the keys, the sends, the looks at the pane;
 //! - U's jobs, each a child of its own that outlives the panel (upd.rs).
 //! - collectors.rs: panes (gather), mail (messages, links_saves, intros) and peek, a thread
 //!   each, kicked as bash looks again: every REVIVE_PANEL_REFRESH seconds without a key, and
 //!   after any key but a move.
 
+pub mod answer;
 pub mod boxes;
 pub mod collectors;
 pub mod editbox;
 pub mod flows;
-pub mod handoff;
 pub mod help;
 pub mod keys;
 pub mod modal;
@@ -146,6 +147,9 @@ pub struct Ui {
     eb_winch: bool,
     /// The ? page is up: it moves TICK itself (every other second), the panel's clock doesn't
     help_on: bool,
+    /// Answering a question (answer.rs): the keys are the send worker's, the peek looks at
+    /// nothing (the worker's looks are drawn), and the clock's tick isn't put off by its frames
+    ans_on: bool,
     /// pick's PICKED and PKEY, ask's REPLY
     picked: Bytes,
     pkey: Bytes,
@@ -379,7 +383,7 @@ impl Ui {
         }
         let sel = self.c.p.sel;
         // O M N where they can't act (a heading, a linked computer's pane: faded on the key bar)
-        // say why here, as act()'s early returns do, with no hand-over.
+        // say why here, as act()'s early returns do.
         if let Some(said) = pane_key_early(&self.c.p, key) {
             if let Some(t) = said {
                 self.notice(&t);
@@ -413,7 +417,7 @@ impl Ui {
                         self.c.p.po = 1 << 30; // opened: its panes into view, under its heading
                     }
                 } else if self.c.p.a("P_STATE", sel) == b"asking" {
-                    self.handoff(b"enter"); // answering: Phase 5
+                    self.answer(); // answering (answer.rs), the panel going on
                 }
             }
             b"f" => {
@@ -702,7 +706,7 @@ impl Ui {
         let h = p.a("P_HOST", sel).to_vec();
         let rid = p.a("P_RID", sel).to_vec();
         let on = p.peek != 0 && (p.peek_all != 0 || p.peek_sel.is_empty() || p.peek_sel == id);
-        let w = if !p.hsel.is_empty() || st.is_empty() || st == b"self" || !(on || st == b"asking") {
+        let w = if self.ans_on || !p.hsel.is_empty() || st.is_empty() || st == b"self" || !(on || st == b"asking") {
             Want::None
         } else if !h.is_empty() {
             if m(HOST_RE, &h) && m("^%[0-9]+$", &rid) {
@@ -810,8 +814,11 @@ impl Ui {
         self.hub.mail_k.kick();
         self.sel_keep();
         self.want_peek();
-        self.hub.peek_k.kick();
-        self.wait_peek = true;
+        // While answering the question's looks are the send worker's: no peek to wait for.
+        if !self.ans_on {
+            self.hub.peek_k.kick();
+            self.wait_peek = true;
+        }
         self.want_draw = true;
         self.draw_at = Instant::now() + ROUND_WAIT;
     }
@@ -837,6 +844,12 @@ impl Ui {
         p.secs = secs;
         p.now = now;
         p.lbox = self.lbox.on as i64;
+        // Answering, bash keeps the rows above the question from its first frame (ATOP): nothing
+        // there could change, as nothing was gathered. Here PANES, the banner and the spark go on
+        // (the plan's one intended change), so they are drawn afresh each frame.
+        if self.ans_on {
+            p.atop.clear();
+        }
         self.c.draw();
         self.c.p.print.clear();
         let out = std::mem::take(&mut self.c.out);
@@ -854,7 +867,9 @@ impl Ui {
             term::out(&b);
         }
         self.want_draw = false;
-        if !self.wait_gen {
+        // REFRESH after the last frame (bash's read -t); while answering, after the last look
+        // round, not put off by the question's own frames (every 40 ms after a key)
+        if !self.wait_gen && !(self.ans_on && self.tick_at.is_some()) {
             self.tick_at = Some(Instant::now() + self.refresh);
         }
     }
@@ -961,6 +976,7 @@ pub fn run(root: &[u8]) -> ! {
         eb_on: false,
         eb_winch: false,
         help_on: false,
+        ans_on: false,
         picked: Vec::new(),
         pkey: Vec::new(),
         reply: Vec::new(),
@@ -1054,7 +1070,7 @@ mod tests {
         assert_eq!(state(&none, 0, "").keys_off(), b" N M O ");
     }
 
-    /// Every key the bar fades is said here, with bash act()'s words, and never handed over
+    /// Every key the bar fades is said here, with bash act()'s words, from the Rust panel itself
     #[test]
     fn a_faded_key_says_why_and_goes_nowhere() {
         use super::pane_key_early as early;

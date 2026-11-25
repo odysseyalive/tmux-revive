@@ -110,7 +110,7 @@ impl Ctx {
         let sel = self.p.sel;
         let id = self.p.a("P_ID", sel).to_vec();
         let name: Bytes = if !self.p.a("P_NAME", sel).is_empty() { self.p.a("P_NAME", sel).to_vec() } else { self.p.a("P_LOC", sel).to_vec() };
-        let st = self.p.a("P_STATE", sel).to_vec();
+        let st = self.p.sel_state().to_vec();
         if st == b"asking" {
             self.draw_question(lines);
             return;

@@ -94,7 +94,7 @@ pub struct Hub {
     /// the files peek_look fetched, removed when the panel closes
     pub peek_files: Mutex<Vec<Bytes>>,
     /// Rows to ask a linked computer for at the next gather, as bash's RFETCH_T[$h]=0 after
-    /// N, U or an answer there (handed over), each kept till then: None every computer's,
+    /// N, U or an answer there, each kept till then: None every computer's,
     /// Some(h) one's (rows_again)
     pub rows_again: Mutex<Vec<Option<Bytes>>>,
     /// VERSION read again (U updated this computer: upd_poll), for the gathers from now on
@@ -195,7 +195,13 @@ pub fn start(root: &[u8], hub: &Arc<Hub>, wake: RawFd) {
                         let (at, rp) = g.peek_look(host, rid, 60);
                         p.rpeek_at = at;
                         p.rpeek = rp;
-                        *h.peek_files.lock().unwrap() = g.peek_files.iter().cloned().collect();
+                        // with the ones answering fetched (answer.rs)
+                        let mut pf = h.peek_files.lock().unwrap();
+                        for f in &g.peek_files {
+                            if !pf.contains(f) {
+                                pf.push(f.clone());
+                            }
+                        }
                     }
                 }
                 *h.peek.lock().unwrap() = Some(p);
