@@ -64,7 +64,7 @@ fn swap_gen(s: &mut Snapshot, g: &Snapshot) {
             s.arrays.insert(k, v.clone());
         }
     }
-    for k in ["RVER", "ROWNER"] {
+    for k in ["RVER", "ROWNER", "LUP"] {
         s.assoc.insert(k, g.assoc.get(k).cloned().unwrap_or_default());
     }
 }

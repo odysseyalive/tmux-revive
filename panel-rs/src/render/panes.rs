@@ -531,7 +531,12 @@ impl Ctx {
                     } else {
                         cat(&[BLU, "▓▒░".as_bytes(), R, b" ", B, BWHT, &case_map(group, true), R])
                     };
-                    mark.extend(cat(&[b" ", GRY, "· linked · ".as_bytes(), &itoa(c), b" pane"]));
+                    // Its link working, or not: then the key that makes it again (B), whatever the reason.
+                    if self.p.assoc("LUP", group) == b"1" {
+                        mark.extend(cat(&[b" ", GRY, "· linked · ".as_bytes(), &itoa(c), b" pane"]));
+                    } else {
+                        mark.extend(cat(&[b" ", GRY, "· not connected ·".as_bytes(), R, b" ", BBLU, b"[", B, BYEL, b"B", R, BBLU, b"]", R, BWHT, b"ridge", R, b" ", GRY, "· ".as_bytes(), &itoa(c), b" pane"]));
+                    }
                     if c != 1 {
                         mark.push(b's');
                     }

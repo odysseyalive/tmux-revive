@@ -155,6 +155,7 @@ impl G {
             let h: Option<BTreeMap<Bytes, Bytes>> = match nm {
                 "RVER" => Some(self.rver.clone()),
                 "ROWNER" => Some(self.rowner.clone()),
+                "LUP" => Some(self.lup.clone()),
                 "FOLD" => Some(s.fold.clone()),
                 _ => None,
             };

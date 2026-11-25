@@ -139,6 +139,8 @@ pub struct G {
     // links'
     pub rver: BTreeMap<Bytes, Bytes>,
     pub rowner: BTreeMap<Bytes, Bytes>,
+    /// LUP: each link's 1 (working) or 0, as remote_panes found it; links_saves reads it
+    pub lup: BTreeMap<Bytes, Bytes>,
     pub peek_files: HashSet<Bytes>,
     /// RFETCH_T/RFETCH_PID and PFETCH_T/PFETCH_PID: when each host's rows (each pane's peek)
     /// were last asked for, and whether that ask is still going

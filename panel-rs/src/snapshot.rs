@@ -29,7 +29,7 @@ pub const SNAP_VARS: &[(Kind, &str)] = &[
     (Indexed, "P_USER"), (Indexed, "P_INST"), (Indexed, "P_ACCT"), (Indexed, "P_SRV"), (Indexed, "P_LIM"),
     (Indexed, "P_LWHY"), (Scalar, "P_GROUPS"),
     (Indexed, "W_SINCE"), (Indexed, "W_FROM"), (Indexed, "X_SSH"), (Indexed, "X_WHERE"), (Assoc, "RVER"),
-    (Assoc, "ROWNER"), (Assoc, "FOLD"), (Indexed, "CPU_HIST"),
+    (Assoc, "ROWNER"), (Assoc, "LUP"), (Assoc, "FOLD"), (Indexed, "CPU_HIST"),
     (Scalar, "VERSION"), (Scalar, "HOST"), (Scalar, "SCENE"), (Scalar, "TICK"), (Scalar, "SECONDS"),
     // What draw reads from outside (snap_look).
     (Indexed, "MSG"), (Scalar, "MOLD"), (Scalar, "MWAIT"), (Scalar, "MSG_INTRO"), (Scalar, "INTRO_ON"),

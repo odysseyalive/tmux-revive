@@ -163,6 +163,7 @@ pub fn start(root: &[u8], hub: &Arc<Hub>, wake: RawFd) {
                     g.p = gen.panes.clone();
                     g.x_ssh = gen.x_ssh.clone();
                     g.x_where = gen.x_where.clone();
+                    g.lup = gen.snap.assoc.get("LUP").cloned().unwrap_or_default();
                 }
                 let intros = g.intros_look();
                 let (msg, mold, mwait, intro_on) = g.messages();

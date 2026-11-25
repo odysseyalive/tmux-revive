@@ -26,6 +26,14 @@ pub const REMOTE_PASTE_CMD: &[u8] = b"PATH=\"$HOME/.local/bin:$PATH\" tmux-reviv
 pub const REMOTE_UPDATE_CMD: &[u8] = b"PATH=\"$HOME/.local/bin:$PATH\" tmux-revive update </dev/null 2>&1";
 pub const REMOTE_NAME_CMD: &[u8] = b"PATH=\"$HOME/.local/bin:$PATH\" agent-say name";
 
+/// Whether the link in folder D (D ends in /) to HOST works: its poller in the process list
+/// gather read (`pid=""; read -r pid <D/pid`, then `${PARGS[$pid]}` holds `_poll HOST`), and
+/// no error left
+fn link_up(t: &super::procs::Table, d: &[u8], h: &[u8]) -> bool {
+    let pid = sh::read_ws(&sh::read_line(&sh::path(&[d, b"pid"])).unwrap_or_default(), 1, b" \t\n").remove(0);
+    m("^[0-9]+$", &pid) && sh::contains(t.args_of(&pid), &sh::path(&[b"_poll ", h])) && !sh::nonempty(&sh::path(&[d, b"error"]))
+}
+
 /// What remote_run needs, apart from the panel (a worker thread takes a copy)
 #[derive(Clone, Default)]
 pub struct LinkCfg {
@@ -328,11 +336,16 @@ impl G {
                 }
             }
         }
+        self.lup.clear();
         for d in crate::compat::glob_dirs(&sh::path(&[&self.astate, b"/links"])) {
             if !sh::is_file(&sh::path(&[&d, b"on"])) {
                 continue;
             }
             let h = sh::basename_dir(&d);
+            // LUP[HOST]: 1 while its link works, else 0. Its heading and its LINKS row
+            // (links_saves) both go by it alone.
+            let up = link_up(&self.t, &d, &h);
+            self.lup.insert(h.clone(), if up { b"1".to_vec() } else { b"0".to_vec() });
             if !m(HOST_RE, &h) {
                 continue;
             }
@@ -698,5 +711,36 @@ mod tests {
         assert!(d.load(Ordering::SeqCst) && !g.busy(b"h %1"), "the ask let go of is told, and isn't in flight");
         assert!(g.start(b"h %1", 52, every).is_some());
         assert!(!g.dropped(b"h %1").load(Ordering::SeqCst), "the new ask has a flag of its own");
+    }
+
+    #[test]
+    fn a_link_works_only_with_its_poller_running_and_no_error() {
+        let d = std::env::temp_dir().join(format!("trp-lup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let _t = Tmp(d.clone());
+        let mut t = super::super::procs::Table::default();
+        t.args.insert(b"123".to_vec(), b"/usr/bin/agent-say _poll h.example".to_vec());
+        t.args.insert(b"124".to_vec(), b"/usr/bin/agent-say _poll other.example".to_vec());
+        let dir = sh::path(&[d.as_os_str().as_encoded_bytes(), b"/"]);
+        let pid = d.join("pid");
+        let err = d.join("error");
+        let up = || link_up(&t, &dir, b"h.example");
+        assert!(!up(), "no pid file");
+        std::fs::write(&pid, b"123\n").unwrap();
+        assert!(up(), "its poller running, no error");
+        std::fs::write(&pid, b"  123 \t\nmore\n").unwrap();
+        assert!(up(), "read -r: the first line, blanks around it gone");
+        std::fs::write(&pid, b"123").unwrap();
+        assert!(up(), "no newline at the end");
+        std::fs::write(&err, b"").unwrap();
+        assert!(up(), "an empty error file is no error");
+        std::fs::write(&err, b"can't reach (no such host name) \xc2\xb7 B to try again\n").unwrap();
+        assert!(!up(), "an error left (paused, or needs login)");
+        std::fs::remove_file(&err).unwrap();
+        for p in [&b"124"[..], b"125", b"", b"12x", b"-123"] {
+            std::fs::write(&pid, p).unwrap();
+            assert!(!up(), "pid {:?}: not this link's poller", String::from_utf8_lossy(p));
+        }
     }
 }

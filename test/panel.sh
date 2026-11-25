@@ -65,12 +65,21 @@ cleanup() {
 	tmux -L "revive-panel-detach-$$" -f /dev/null kill-server 2>/dev/null
 	tmux -L "revive-panel-grant-$$" -f /dev/null kill-server 2>/dev/null
 	[[ -n ${dpid:-} ]] && kill "$dpid" 2>/dev/null
+	((${#POLLERS[@]})) && kill "${POLLERS[@]}" 2>/dev/null
 	rm -rf "$T"
 }
 trap cleanup EXIT
 # Cut short (timeout's TERM, Ctrl-C, a closed terminal): still clean up the private servers.
 trap 'exit 1' INT TERM HUP
 plain() { sed 's/\x1b\[[0-9;]*m//g'; }
+# poller STATE HOST: a stand-in for HOST's link poller (a process named as agent-say's), its pid
+# in the link's folder as agent-say keeps it: that link works. Ended when the suite ends.
+POLLERS=()
+poller() {
+	bash -c 'exec -a "agent-say _poll $0" sleep 100000' "$2" </dev/null >/dev/null 2>&1 &
+	POLLERS+=($!)
+	echo $! >"$1/links/$2/pid"
+}
 screen() { tm capture-pane -p -t work:panel; }
 wait_screen() { for _ in $(seq 1 30); do screen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 # wait_ok CHECK: CHECK (eval'd) comes true within 6 seconds.
@@ -1767,15 +1776,16 @@ check "Unlink there unlinks the failing link" "gone_sk"
 broken
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh "link again" >/dev/null; hl_line "devbox.example  · stopped"; tm send-keys -t work:sshpanel U
 check "and so does U on its line in B" "gone_sk"
-# A link stopped on a failure (paused): LINKS says why, and B tries it once more, with its key.
+# A link stopped on a failure (paused): LINKS says it's not connected, and B, whose list says
+# why, tries it once more, with its key.
 mkdir -p "$sk"; touch "$sk/on" "$sk/paused"; echo "$fp (ED25519)" >"$sk/fingerprint"
 # Written as an older agent-say wrote it, with L: the popup drops that too.
 echo "can't reach (connection timed out) · L to try again" >"$sk/error"
-check "LINKS shows a stopped link's reason" "wait_ssh \"devbox.example can't reach\""
+check "LINKS shows a stopped link as not connected, with [B]ridge, not its reason" "wait_ssh 'devbox.example · not connected · [B]ridge' && ! sshscreen | grep -c \"devbox.example can't reach\" >/dev/null"
 tm send-keys -t work:sshpanel B; sleep 0.7
-check "B offers it, to try again" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -c \"devbox.example  · can't reach (connection timed out) · try again\" >/dev/null"
+check "B offers it, saying why, to try again" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -c \"devbox.example  · can't reach (connection timed out) · try again\" >/dev/null"
 pick_line "devbox.example  · can.t reach"
-check "picking it tries once, with no questions, and LINKS says why it failed again, no box" "wait_ssh 'devbox.example ssh to devbox.example failed' && nobox sshscreen && ! sshscreen | grep -c 'AGAIN?' >/dev/null && [[ -e $sk/paused && -e $sk/on ]] && grep -q 'B to try again' $sk/error"
+check "picking it tries once, with no questions; failing again, LINKS says not connected, no box" "for _ in \$(seq 1 50); do grep -q 'B to try again' $sk/error && break; sleep 0.2; done; grep -q 'B to try again' $sk/error && wait_ssh 'devbox.example · not connected · [B]ridge' && nobox sshscreen && ! sshscreen | grep -c 'AGAIN?' >/dev/null && [[ -e $sk/paused && -e $sk/on ]]"
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh 'try again' >/dev/null; hl_line "devbox.example  ·"; tm send-keys -t work:sshpanel u
 check "U in B unlinks it" "gone_sk"
 tm send-keys -t work:sshpanel q
@@ -1854,6 +1864,7 @@ printf '#!/bin/sh\nexit 1\n' >"$T/norowssh" # reached, but its tmux-revive has n
 chmod +x "$T/fakessh" "$T/oldssh" "$T/deadssh" "$T/norowssh"
 st=$(dirname "$AGENT_SAY_MAILBOX")
 mkdir -p "$st/links/far.example"; touch "$st/links/far.example/on"; printf 'far-top\nfar-two\n' >"$st/links/far.example/names"
+poller "$st" far.example # its link works: its heading says linked
 far() { tm run-shell "AGENT_SAY_SSH=$1 COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain; }
 out=$(far "$T/fakessh")
 check "panes are grouped by computer" "grep -q 'this computer' <<<\"\$out\" && grep -q 'FAR.EXAMPLE · linked' <<<\"\$out\""
@@ -2232,6 +2243,24 @@ check "one that answers no rows shows its names, with no user or version" "grep 
 check "and its names-only rows are numbered by their count" "grep -q '║ \[[1-9]\] *far-two ' <<<\"\$out\" && ! grep -q '\[[0-9]*\.[0-9]*\] *far-two' <<<\"\$out\""
 out=$(farv "$T/deadssh" | plain)
 check "one that can't be reached still has its heading" "grep -c 'FAR.EXAMPLE · linked · [0-9]* panes\{0,1\} *║' <<<\"\$out\" >/dev/null"
+# Its link not working, whatever the reason (here stopped on a failure, its error as agent-say
+# writes it): not connected and [B]ridge, on its heading and in LINKS, never the error itself;
+# its panes still listed, as last known; and nothing asked of it over ssh.
+lk=$st/links/far.example
+echo "can't reach (no such host name) · B to try again" >"$lk/error"; touch "$lk/paused"
+: >"$T/far.calls"
+raw=$(farv "$T/logssh") out=$(plain <<<"$raw")
+check "a link that isn't working: its heading says not connected · [B]ridge, its panes still listed" "grep -c 'FAR.EXAMPLE · not connected · \[B\]ridge · 2 panes *║' <<<\"\$out\" >/dev/null && grep -c '║ \[[1-9]\] *far-top ' <<<\"\$out\" >/dev/null && grep -c '║ \[[1-9]\] *far-two ' <<<\"\$out\" >/dev/null"
+check "and its LINKS row says the same, not the error" "grep -c '● far.example · not connected · \[B\]ridge' <<<\"\$out\" >/dev/null && ! grep -c 'no such host name' <<<\"\$out\" >/dev/null"
+check "B in the panel's key style, then ridge" "grep -F 'FAR.EXAMPLE' <<<\"\$raw\" | grep -cF $'\\e[90m· not connected ·\\e[0m \\e[94m[\\e[1m\\e[93mB\\e[0m\\e[94m]\\e[0m\\e[97mridge\\e[0m' >/dev/null"
+check "and nothing went over ssh to it" "[[ ! -s $T/far.calls ]]"
+rm -f "$lk/error" "$lk/paused"
+mv "$lk/pid" "$lk/pid.kept"
+out=$(farv "$T/fakessh" | plain)
+check "one whose poller isn't running is not connected too, on its heading and in LINKS" "grep -c 'FAR.EXAMPLE · not connected · \[B\]ridge · [0-9]* panes\{0,1\} *║' <<<\"\$out\" >/dev/null && grep -c '● far.example · not connected · \[B\]ridge' <<<\"\$out\" >/dev/null && ! grep -c 'not running' <<<\"\$out\" >/dev/null"
+mv "$lk/pid.kept" "$lk/pid"
+out=$(farv "$T/fakessh" | plain)
+check "working again, both say linked" "grep -c 'FAR.EXAMPLE · linked · [0-9]* panes\{0,1\} *║' <<<\"\$out\" >/dev/null && grep -c '● far.example · linked · 2 names' <<<\"\$out\" >/dev/null"
 printf '#version 1.2.3;touch %s/pwn\n' "$T" >"$T/badver"; head -c 2000 /dev/zero | tr '\0' 9 >>"$T/badver"; printf '\n' >>"$T/badver"
 printf '#!/bin/bash\n%q "$@" | sed 1d | cat %q -\n' "$T/fakessh" "$T/badver" >"$T/badverssh"; chmod +x "$T/badverssh"
 out=$(farv "$T/badverssh" | plain)
@@ -2678,13 +2707,14 @@ check "and once it's typed, the link is made, with no box" "for _ in \$(seq 1 75
 check "the poller and the panel's calls over it ask nothing more" "wait_pw 'far-top' 75 && [[ \$(grep -c 'ControlMaster=yes' $T/pwssh.log) == 1 ]]"
 check "LINKS shows it linked" "wait_pw 'pw.example · linked' 50"
 rm -f "$T/pw.master" # the login dropped: a reboot over there, or the network gone a while
-check "a dropped login shows in LINKS as needing one, and no box opens for it" "wait_pw 'pw.example · needs login · [B] log in' 75 && sleep 2.5 && nobox pws"
-# Nor does a panel started while it needs one; LINKS there says so too. A login-said folder an
-# older panel left is cleared away.
+check "a dropped login shows in LINKS as not connected, with [B]ridge, and no box opens for it" "wait_pw 'pw.example · not connected · [B]ridge' 75 && [[ -e $pwl/login ]] && sleep 2.5 && nobox pws"
+check "its heading in PANES says the same" "wait_pw 'PW.EXAMPLE · not connected · [B]ridge' 25"
+# Nor does a panel started while it needs one; LINKS there says not connected too. A
+# login-said folder an older panel left is cleared away.
 mkdir -p "$REVIVE_DIR/panel/login-said" && : >"$REVIVE_DIR/panel/login-said/pw.example"
 tm new-window -d -t work -n pw2 "env AGENT_SAY_SSH=$T/pwssh AGENT_SAY_KEYSCAN=$T/pwscan AGENT_SAY_LOGIN_RETRY=600 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 pw2() { tm capture-pane -p -t work:pw2; }
-check "a panel started while it needs a login opens no box, and its LINKS says it needs one" "for _ in \$(seq 1 40); do pw2 | grep -c 'pw.example · needs login · \\[B\\] log in' >/dev/null && break; sleep 0.2; done; pw2 | grep -c 'pw.example · needs login · \\[B\\] log in' >/dev/null && sleep 2.5 && nobox pw2 && [[ ! -e $REVIVE_DIR/panel/login-said ]]"
+check "a panel started while it needs a login opens no box, and its LINKS says not connected" "for _ in \$(seq 1 40); do pw2 | grep -c 'pw.example · not connected · \\[B\\]ridge' >/dev/null && break; sleep 0.2; done; pw2 | grep -c 'pw.example · not connected · \\[B\\]ridge' >/dev/null && sleep 2.5 && nobox pw2 && [[ ! -e $REVIVE_DIR/panel/login-said ]]"
 tm kill-window -t work:pw2
 check "its panes too, not as unreachable" "wait_pw 'needs login · B' 50 && ! pws | grep -c 'unreachable' >/dev/null"
 pw_tries() { grep -c 'BatchMode=yes.* pw.example ' "$T/pwssh.log"; }
@@ -2700,7 +2730,7 @@ check "a host with a key (far.example) never got a login" "! grep 'ControlMaster
 ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey9"
 echo "$T/hostkey9.pub" >"$T/pw.presented"
 p=$(prompts); rm -f "$T/pw.master"
-check "a link answered by another key stops on the key error, not 'needs login'" "for _ in \$(seq 1 75); do grep -q 'host key changed' $pwl/error 2>/dev/null && break; sleep 0.2; done; grep -q 'host key changed' $pwl/error && wait_pw 'pw.example stopped' 75 && ! pws | grep -c 'pw.example · needs login' >/dev/null && [[ ! -e $pwl/login && \$(prompts) == $p ]]"
+check "a link answered by another key stops on the key error, not 'needs login'" "for _ in \$(seq 1 75); do grep -q 'host key changed' $pwl/error 2>/dev/null && break; sleep 0.2; done; grep -q 'host key changed' $pwl/error && wait_pw 'pw.example · not connected · [B]ridge' 75 && [[ ! -e $pwl/login && \$(prompts) == $p ]]"
 # A first link, pw.example not in known_hosts yet: you confirm the key ssh-keyscan shows, and
 # the login then goes only to a computer holding that key.
 tm send-keys -t work:pwpanel q
@@ -2797,7 +2827,7 @@ out=$(raw)
 bare=$(sed 's/\x1b\[[0-9;]*m//g' <<<"$out")
 check "the folder name shows, its escape sequence doesn't" "grep -qF 'evil]52;c;cHduZWQ=[2Jdir' <<<\"\$bare\""
 check "a pane name's escape is stripped" "grep -qF 'bad]0;xname' <<<\"\$bare\""
-check "a link's error (remote ssh stderr) is stripped" "grep -qF 'ssh: ]52;c;eA==down' <<<\"\$bare\""
+check "a link's error (remote ssh stderr) isn't shown: its row says not connected" "grep -qF 'faraway · not connected · [B]ridge' <<<\"\$bare\" && ! grep -qF ']52;c;eA==' <<<\"\$bare\""
 check "a mailbox body's OSC 52 is stripped" "grep -qF 'hi]52;c;cHduZWQ=there' <<<\"\$bare\""
 check "and its bidi override and zero-width space" "grep -qF 'rlognp.exe zerowidth' <<<\"\$bare\""
 check "the only escapes in a frame are the panel's own colours" "! LC_ALL=C grep -q '[[:cntrl:]]' <<<\"\$bare\""
@@ -2953,7 +2983,7 @@ sm new-window -d -t s: -n asker "$T/bin/codex $T/ask.sh $T/ans9"
 sm set-option -p -t s:asker @agent asker9
 SMAIL=$T/smail/mailbox.md
 mkdir -p "$T/smail/links/fold.example" "$T/smail/panel"
-touch "$T/smail/links/fold.example/on"
+touch "$T/smail/links/fold.example/on"; poller "$T/smail" fold.example
 printf 'fold-a\nfold-b\n' >"$T/smail/links/fold.example/names"
 frows() { printf '#owner fx\n%s\n%s\n' "%1"$'\x1f'"main:7.0"$'\x1f'"fold-a"$'\x1f'"codex"$'\x1f'"asking"$'\x1f'"/tmp"$'\x1f\x1f'"0"$'\x1f'"1000"$'\x1f'"1" "%2"$'\x1f'"main:7.1"$'\x1f'"fold-b"$'\x1f'"bash"$'\x1f'"shell"$'\x1f'"/tmp"$'\x1f\x1f'"0"$'\x1f'"1000"$'\x1f'"0" >"$T/smail/panel/fold.example.rows"; }
 frows
@@ -3084,7 +3114,7 @@ tm_s f
 check "f on this computer's pane does nothing, and opens no box" "sleep 1 && nobox sscr && [[ ! -e $REVIVE_DIR/panel/fold/fold.example ]]"
 # A second linked computer: f folds one, F every one, and F again opens them all. This
 # computer's panes never fold. F is the help page's secret: the bar offers only [F]old, for one.
-mkdir -p "$T/smail/links/later.example"; touch "$T/smail/links/later.example/on"
+mkdir -p "$T/smail/links/later.example"; touch "$T/smail/links/later.example/on"; poller "$T/smail" later.example
 printf 'later-a\nlater-b\n' >"$T/smail/links/later.example/names"
 lrows() { printf '#owner fx\n%s\n%s\n' "%1"$'\x1f'"main:3.0"$'\x1f'"later-a"$'\x1f'"bash"$'\x1f'"shell"$'\x1f'"/tmp"$'\x1f\x1f'"0"$'\x1f'"1000"$'\x1f'"0" "%2"$'\x1f'"main:3.1"$'\x1f'"later-b"$'\x1f'"bash"$'\x1f'"shell"$'\x1f'"/tmp"$'\x1f\x1f'"0"$'\x1f'"1000"$'\x1f'"0" >"$T/smail/panel/later.example.rows"; }
 frows; lrows

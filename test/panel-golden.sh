@@ -63,11 +63,22 @@ check() {
 		printf '  \033[31mFAIL\033[0m %s\n' "$1"; ((fail++))
 	fi
 }
-sockets=()
+sockets=() POLLERS=()
+# poller STATE HOST: a stand-in for HOST's link poller (a process named as agent-say's), its pid
+# in the link's folder as agent-say keeps it: that link works. pollers_stop ends them all.
+poller() {
+	bash -c 'exec -a "agent-say _poll $0" sleep 100000' "$2" </dev/null >/dev/null 2>&1 &
+	POLLERS+=($!)
+	echo $! >"$1/links/$2/pid"
+}
+pollers_stop() {
+	((${#POLLERS[@]})) && kill "${POLLERS[@]}" 2>/dev/null
+	POLLERS=()
+}
 cleanup() {
 	local s
 	for s in "${sockets[@]}"; do tmux -S "$s" kill-server 2>/dev/null; done
-	[[ -n ${POLLER:-} ]] && kill "$POLLER" 2>/dev/null # live-once's stand-in for a link's poller
+	pollers_stop
 	[[ -n ${KEEP:-} ]] || rm -rf "$T"
 }
 trap cleanup EXIT
@@ -292,6 +303,8 @@ snaps() {
 	mkdir -p "$T/snap" "$T/fx"
 	FS=$T/fx.sock
 	fixtures "$T/fx" "$FS" links
+	# far.example's link works; folded.example's poller isn't running, Zed.example's failed.
+	poller "$T/fx/state" far.example
 	env_for "$T/fx" "$FS"
 	sleep 1 # the panes draw their screens
 	SAVED=()
@@ -395,7 +408,13 @@ snaps() {
 	check "question: the question shows" "sframe question | grep -ac 'QUESTION · asker' >/dev/null"
 	check "answering: the ANSWERING bar" "sframe answering | grep -ac 'ANSWERING asker' >/dev/null"
 	check "linked: its peek, from the fake ssh" "sframe linked | grep -ac 'load average: 0.10' >/dev/null"
-	check "linked: Zed.example can't be reached" "sframe linked | grep -ac '● Zed.example ssh: connect to host' >/dev/null"
+	# A link working: its heading and its LINKS row say linked. One that isn't, failed (Zed) or
+	# its poller not running (folded), whatever the reason: not connected, and [B]ridge, in both.
+	check "linked: far.example's link works: linked, on its heading and in LINKS" "sframe linked | grep -ac 'FAR.EXAMPLE · linked · 2 panes · 1 needs you' >/dev/null && sframe linked | grep -ac '● far.example · linked · 2 names' >/dev/null"
+	check "linked: Zed.example's failed: not connected · [B]ridge on its heading, its error not shown" "sframe linked | grep -ac 'ZED.EXAMPLE · not connected · \\[B\\]ridge · 2 panes *║' >/dev/null && ! sframe linked | grep -ac 'Connection refused' >/dev/null"
+	check "linked: and in LINKS, for it and for folded.example, whose poller isn't running" "sframe linked | grep -ac '● Zed.example · not connected · \\[B\\]ridge' >/dev/null && sframe linked | grep -ac '● folded.example · not connected · \\[B\\]ridge' >/dev/null && ! sframe linked | grep -ac 'not running' >/dev/null"
+	check "linked: B in the panel's key style, then ridge, on the heading" "env \"\${RENV[@]}\" COLUMNS=130 LINES=45 REVIVE_PANEL_SNAP=load:$T/snap/linked bash $ROOT/scripts/panel.sh --once </dev/null | grep -a 'ZED.EXAMPLE' | grep -acF $'\\e[90m· not connected ·\\e[0m \\e[94m[\\e[1m\\e[93mB\\e[0m\\e[94m]\\e[0m\\e[97mridge\\e[0m' >/dev/null"
+	check "linked: at 80 columns too, with its pane count" "sframe linked 80 40 | grep -ac 'ZED.EXAMPLE · not connected · \\[B\\]ridge · 2 panes' >/dev/null"
 	check "folded: far.example folded to its heading" "sframe folded | grep -ac '▶.*FAR.EXAMPLE · linked · 2 panes' >/dev/null && ! sframe folded | grep -ac '0\\.1\\] *far-top' >/dev/null"
 	check "help: the ? page" "sframe help | grep -ac 'HELP · HOW TO USE REVIVE' >/dev/null"
 	check "notice: on the key bar, no box over the panel" "sframe notice | grep -ac ' saved .*\\[O\\]pen' >/dev/null && ! sframe notice | grep -ac 'Esc closes' >/dev/null && sframe notice | grep -ac 'C O N T R O L' >/dev/null"
@@ -473,9 +492,7 @@ mail_addon() {
 	printf 'no newline' >"$st/intros/i4/from"
 	mkdir -p "$st/peers/peer.example" && : >"$st/peers/peer.example/alive"
 	: >"$st/links/folded.example/read-only"; printf 'fold-sh\nother\n' >"$st/links/folded.example/allow"
-	bash -c 'exec -a "agent-say _poll far.example" sleep 100000' </dev/null >/dev/null 2>&1 &
-	POLLER=$!
-	echo "$POLLER" >"$st/links/far.example/pid"
+	poller "$st" far.example
 }
 # agents_addon DIR SOCKET: stand-in Claude Codes and a Codex in a window each, with the files the
 # panel reads for them under DIR/home (their HOME too): session records, transcripts (context
@@ -610,8 +627,7 @@ liveonce() {
 		fi
 	done
 	tmux -S "$LS" kill-server 2>/dev/null
-	kill "$POLLER" 2>/dev/null
-	POLLER=""
+	pollers_stop
 	echo "  $n scenarios: $sdiff with snapshots that differ, $fdiff with frames that differ"
 	check "git_info ran no filter of a submodule's own config (neither panel)" "[[ ! -e $T/lx/submodule-filter-ran ]]"
 	check "every scenario: A and B gather the same snapshot (CPU and memory masked)" "((sdiff == 0 && n > 0))"

@@ -1904,7 +1904,7 @@ REMOTE_UPDATE_CMD='PATH="$HOME/.local/bin:$PATH" tmux-revive update </dev/null 2
 # agent-say name there, for the pane AGENT_SAY_PANE gives. The pane id and the name are
 # checked before they go into the command line, and agent-say checks the name again there.
 REMOTE_NAME_CMD='PATH="$HOME/.local/bin:$PATH" agent-say name'
-declare -A RFETCH_T=() RFETCH_PID=() PFETCH_T=() PFETCH_PID=() PEEK_FILES=() RVER=() ROWNER=()
+declare -A RFETCH_T=() RFETCH_PID=() PFETCH_T=() PFETCH_PID=() PEEK_FILES=() RVER=() ROWNER=() LUP=()
 PEEK_EVERY=$REFRESH # seconds between asks for a linked pane's screen; none while answering
 cache_dir() { # $RDIR, for this user only (an older panel made it with the default umask)
 	[[ -d $RDIR ]] || mkdir -p "$RDIR"
@@ -2063,15 +2063,22 @@ peek_look() {
 	fi
 }
 remote_panes() {
-	local d h f id loc name app st folder git cpu mem agent got v wp lg ft S=$'\x1f'
+	local d h f id loc name app st folder git cpu mem agent got v wp lg ft pid S=$'\x1f'
 	local -A rctx rbg rsrv ruser rinst rwait racct rlim
 	P_GROUPS=0
 	# Other computers' screens are kept no longer than they're shown: a minute at most. So are
 	# the temporary files of an ask cut off by the panel closing.
 	[[ -d $RDIR ]] && find "$RDIR" -maxdepth 1 \( -name '*.peek-*' -o -name '*.answered-*' -o -name '*.rows.??????' \) -mmin +1 -delete 2>/dev/null
+	LUP=()
 	for d in "$ASTATE"/links/*/; do
 		[[ -f $d/on ]] || continue
 		h=$(basename "$d")
+		# LUP[HOST]: 1 while its link works (its poller in the process list gather read, and no
+		# error), else 0. Its heading here and its LINKS row (links_saves) both go by it alone.
+		pid=""
+		read -r pid 2>/dev/null <"$d/pid"
+		LUP[$h]=0
+		[[ $pid =~ ^[0-9]+$ && ${PARGS[$pid]:-} == *"_poll $h"* && ! -s $d/error ]] && LUP[$h]=1
 		[[ $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
 		# A link waiting for its login (press B) shows its names, marked so, and isn't asked.
 		lg=0
@@ -2537,7 +2544,9 @@ draw_panes() {
 			fi
 			c=${cnt[$group]:-0}
 			if [[ $HSEL == "$group" ]]; then mark="$BYEL▶$R$BLU▒░$R $REV$B$BCYN${group^^}$R"; else mark="$BLU▓▒░$R $B$BWHT${group^^}$R"; fi
-			mark+=" $GRY· linked · $c pane"
+			# Its link working, or not: then the key that makes it again (B), whatever the reason.
+			if [[ ${LUP[$group]:-} == 1 ]]; then mark+=" $GRY· linked · $c pane"
+			else mark+=" $GRY· not connected ·$R $BBLU[$B${BYEL}B$R$BBLU]$R${BWHT}ridge$R $GRY· $c pane"; fi
 			((c == 1)) || mark+=s
 			mark+=$R
 			((${needc[$group]:-0})) && mark+=" $GRY·$R $B$BMAG${needc[$group]} needs you$R"
@@ -3005,7 +3014,7 @@ messages() { # -> MSG lines for the message center; INTRO_ON
 
 links_saves() { # -> SIDE lines: saves, then links
 	SIDE=()
-	local last at reason n iv d h pid names err mode al
+	local last at reason n iv d h up names mode al
 	last=$(cd -P "$DIR/last" 2>/dev/null && pwd)
 	# The folders in snapshots/ (as find -type d counts them: dot ones too, no links), without a
 	# find and a wc each frame.
@@ -3024,9 +3033,9 @@ links_saves() { # -> SIDE lines: saves, then links
 	SIDE+=("$GRY  $n kept · every ${iv}s · on detach$R")
 	for d in "$ASTATE"/links/*/; do
 		[[ -f $d/on ]] || continue
-		h=$(basename "$d") err=$(head -c 60 "$d/error" 2>/dev/null)
-		clean h err
-		pid=$(cat "$d/pid" 2>/dev/null)
+		h=$(basename "$d")
+		up=${LUP[$h]:-}
+		clean h
 		names=$(grep -c . "$d/names" 2>/dev/null)
 		# What the link lets that computer do here (agent-say link HOST --read-only / --allow).
 		mode=""
@@ -3036,14 +3045,12 @@ links_saves() { # -> SIDE lines: saves, then links
 			clean al
 			mode+=" $BYEL· only ${al:0:40}$R"
 		fi
-		if [[ -n $pid ]] && [[ $(ps -ww -o args= -p "$pid" 2>/dev/null) == *"_poll $h"* ]] && [[ ! -s $d/error ]]; then
+		# Working or not, as gather found it (LUP, as the heading in PANES says). Not: B makes it
+		# again, and its list says why it isn't.
+		if [[ $up == 1 ]]; then
 			SIDE+=("$BGRN●$R $BWHT$h$R$mode $GRY· linked · ${names:-0} names$R")
-		elif [[ -f $d/login ]]; then
-			SIDE+=("$BYEL●$R $BWHT$h$R$mode $BYEL· needs login ·$R $BBLU[$B${BYEL}B$R$BBLU]$R${BWHT} log in$R")
-		elif [[ -s $d/error ]]; then
-			SIDE+=("$BRED●$R $BWHT$h$R$mode $BRED$err$R")
 		else
-			SIDE+=("$BRED●$R $BWHT$h$R$mode $GRY· not running$R")
+			SIDE+=("$BRED●$R $BWHT$h$R$mode $GRY· not connected ·$R $BBLU[$B${BYEL}B$R$BBLU]$R${BWHT}ridge$R")
 		fi
 	done
 	for d in "$ASTATE"/peers/*/; do
@@ -5194,7 +5201,7 @@ SNAP_VARS=(
 	# What the looks gathered.
 	a:P_ID a:P_LOC a:P_NAME a:P_APP a:P_STATE a:P_DIR a:P_GIT a:P_CPU a:P_MEM a:P_CTX a:P_AGENT
 	a:P_SSH a:P_HOST a:P_RID a:P_WP a:P_USER a:P_INST a:P_ACCT a:P_SRV a:P_LIM a:P_LWHY s:P_GROUPS
-	a:W_SINCE a:W_FROM a:X_SSH a:X_WHERE A:RVER A:ROWNER A:FOLD a:CPU_HIST
+	a:W_SINCE a:W_FROM a:X_SSH a:X_WHERE A:RVER A:ROWNER A:LUP A:FOLD a:CPU_HIST
 	s:VERSION s:HOST s:SCENE s:TICK s:SECONDS
 	# What draw reads from outside (snap_look).
 	a:MSG s:MOLD s:MWAIT s:MSG_INTRO s:INTRO_ON a:SIDE a:INTROS

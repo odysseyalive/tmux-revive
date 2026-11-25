@@ -1,10 +1,10 @@
 //! What draw reads beside the panes: scripts/panel.sh's intros_look, messages and links_saves,
 //! ported line for line (bash names in the comments). Their awk, find, wc, grep, paste and jq
-//! are reads of the same files; tmux's @revive-interval is asked as bash asks it, and a link's
-//! poller is looked for in the process table as `ps -o args= -p PID` gives it.
+//! are reads of the same files; tmux's @revive-interval is asked as bash asks it. Whether a
+//! link works is gather's (LUP, remote_panes).
 
 use super::sh::{self, Bytes};
-use super::{m, n, procs, G};
+use super::{m, n, G};
 use crate::compat::{clean, re, substr};
 use crate::render::{cat, B, BBLU, BCYN, BGRN, BLINK, BMAG, BRED, BWHT, BYEL, GRY, R};
 use std::collections::{HashMap, HashSet};
@@ -15,15 +15,6 @@ fn read_ok(f: &[u8]) -> Option<Bytes> {
     let d = std::fs::read(sh::os(f)).ok()?;
     let nl = d.iter().position(|&c| c == b'\n')?;
     Some(sh::read_ws(&d[..nl], 1, b" \t\n").remove(0))
-}
-
-/// `$(ps -ww -o args= -p PID)`: from /proc as ps prints it (ps itself where /proc can't answer)
-fn ps_args(pid: &[u8]) -> Bytes {
-    if !procs::use_ps() && m("^[0-9]+$", pid) {
-        let up = std::fs::read("/proc/uptime").ok().and_then(|u| String::from_utf8_lossy(&u).split(' ').next().and_then(|x| x.parse().ok())).unwrap_or(0.0);
-        return procs::proc_row(pid, up, procs::clk()).map(|r| r.args).unwrap_or_default();
-    }
-    sh::cmdsub(&sh::run(&[b"ps", b"-ww", b"-o", b"args=", b"-p", pid]).out)
 }
 
 impl G {
@@ -251,9 +242,9 @@ impl G {
             if !sh::is_file(&sh::path(&[&d, b"on"])) {
                 continue;
             }
-            let h = clean(&sh::basename_dir(&d));
-            let err = clean(&sh::cmdsub(&sh::head_c(&sh::path(&[&d, b"error"]), 60)));
-            let pid = sh::cmdsub(&std::fs::read(sh::os(&sh::path(&[&d, b"pid"]))).unwrap_or_default());
+            let h = sh::basename_dir(&d);
+            let up = self.lup.get(&h).map(|v| v.as_slice()) == Some(b"1");
+            let h = clean(&h);
             // names=$(grep -c . "$d/names")
             let names: Bytes = match std::fs::read(sh::os(&sh::path(&[&d, b"names"]))) {
                 Ok(x) => sh::split_lines(&x).iter().filter(|l| !l.is_empty()).count().to_string().into_bytes(),
@@ -270,17 +261,13 @@ impl G {
                 let al = clean(&sh::split_lines(&raw).join(&b','));
                 mode.extend(cat(&[b" ", BYEL, "· only ".as_bytes(), &substr(&al, 0, Some(40)).unwrap_or_default(), R]));
             }
-            let ef = sh::path(&[&d, b"error"]);
-            let poll = sh::path(&[b"_poll ", &h]);
-            if !pid.is_empty() && sh::contains(&ps_args(&pid), &poll) && !sh::nonempty(&ef) {
+            // Working or not, as gather found it (LUP, as the heading in PANES says). Not: B makes
+            // it again, and its list says why it isn't.
+            if up {
                 let nm = if names.is_empty() { b"0".to_vec() } else { names };
                 side.push(cat(&[BGRN, "●".as_bytes(), R, b" ", BWHT, &h, R, &mode, b" ", GRY, "· linked · ".as_bytes(), &nm, b" names", R]));
-            } else if sh::is_file(&sh::path(&[&d, b"login"])) {
-                side.push(cat(&[BYEL, "●".as_bytes(), R, b" ", BWHT, &h, R, &mode, b" ", BYEL, "· needs login ·".as_bytes(), R, b" ", BBLU, b"[", B, BYEL, b"B", R, BBLU, b"]", R, BWHT, b" log in", R]));
-            } else if sh::nonempty(&ef) {
-                side.push(cat(&[BRED, "●".as_bytes(), R, b" ", BWHT, &h, R, &mode, b" ", BRED, &err, R]));
             } else {
-                side.push(cat(&[BRED, "●".as_bytes(), R, b" ", BWHT, &h, R, &mode, b" ", GRY, "· not running".as_bytes(), R]));
+                side.push(cat(&[BRED, "●".as_bytes(), R, b" ", BWHT, &h, R, &mode, b" ", GRY, "· not connected ·".as_bytes(), R, b" ", BBLU, b"[", B, BYEL, b"B", R, BBLU, b"]", R, BWHT, b"ridge", R]));
             }
         }
         for d in crate::compat::glob_dirs(&sh::path(&[&self.astate, b"/peers"])) {
