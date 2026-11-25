@@ -27,6 +27,8 @@ cleanup() {
 	local s
 	[[ -n $HOGPG ]] && kill -- -"$HOGPG" 2>/dev/null
 	for s in "${sockets[@]}"; do tmux -S "$s" kill-server 2>/dev/null; done
+	pkill -f -- "$T/" 2>/dev/null # a strace or panel the hangup left going
+	sleep 0.5
 	[[ -n ${KEEP:-} ]] || rm -rf "$T"
 }
 trap cleanup EXIT
@@ -117,7 +119,17 @@ panel_up() {
 	echo "  $n never drew its panel" >&2
 	return 1
 }
-panel_down() { tmux -S "$S" kill-window -t "work:$1" 2>/dev/null; sleep 0.5; }
+# panel_down NAME: its window gone, and everything in the pane's session with it (a strace can
+# outlive the hangup and keep its panel going)
+panel_down() {
+	local sid
+	sid=$(tmux -S "$S" display -p -t "work:$1" '#{pane_pid}' 2>/dev/null)
+	[[ -n $sid ]] && pkill -TERM -s "$sid" 2>/dev/null
+	tmux -S "$S" kill-window -t "work:$1" 2>/dev/null
+	sleep 0.5
+	[[ -n $sid ]] && pkill -KILL -s "$sid" 2>/dev/null
+	return 0
+}
 
 # keylat.py SOCKET PANE N MODE OUT: N arrow keys sent through one tmux control-mode client, the
 # time from writing send-keys to the end (?2026l) of the first frame that moves the selection
