@@ -1449,6 +1449,7 @@ check "and the answer arrives whole" "for _ in \$(seq 1 25); do [[ -s $T/ans4 ]]
 for _ in $(seq 1 25); do sscreen | grep -c ANSWERING >/dev/null || break; sleep 0.2; done
 tm new-window -d -t work -n asker3 "$T/bin/codex $T/ask.sh $T/ans5 nofree"
 tm set-option -p -t work:asker3 @agent asker3
+wait_s 'asker3' >/dev/null # in PANES first: moves only redraw, they don't look again
 for _ in $(seq 1 20); do sscreen | grep -c '▶ asker3' >/dev/null && break; tm send-keys -t work:qshim Down; sleep 0.3; done
 wait_s 'QUESTION · asker3' >/dev/null
 tm send-keys -t work:qshim Enter; wait_s 'ANSWERING asker3' >/dev/null
