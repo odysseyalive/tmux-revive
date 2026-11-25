@@ -19,6 +19,8 @@
 #                                      key its own (no hand-over), answering a question included
 #   bash test/panel-golden.sh live-ubg the end of live alone: U, B and G, the Rust panel's own,
 #                                      against bash's
+#   bash test/panel-golden.sh live-answer  live's answering alone: a twin of bash's, above the
+#                                      question masked, and PANES going on while it answers
 #
 # GOLDEN_A and GOLDEN_B: the two panels, as commands: A bash scripts/panel.sh, B the Rust one,
 # panel-rs/target/release/tmux-revive-panel (built here with cargo unless GOLDEN_B is given). The
