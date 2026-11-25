@@ -1,17 +1,18 @@
 //! The live panel (plan Phase 3): scripts/panel.sh's main loop, keys() and the act() keys that
 //! move, scroll, fold, peek and change the art, on a UI thread that never waits on a collector.
 //! Every frame is render::Ctx::draw's, the same builders --once draws with; the writer sends the
-//! lines that changed inside ?2026. O, N, S, D, the empty G, and O M N where the key bar fades
-//! them, are here too; every key act() runs goes through box_flow (boxes.rs), and the boxes it
-//! opens (pick, ask, note) wait in modal.rs with the panel going on under them. Keys whose act()
-//! branch isn't ported yet (M B U G I ?, Enter on a question) are handed over to the bash panel
-//! for that one action (handoff.rs).
+//! lines that changed inside ?2026. O, N, S, D, U (upd.rs), B and G (flows.rs, popups.rs), and
+//! O M N where the key bar fades them, are here too; every key act() runs goes through box_flow
+//! (boxes.rs), and the boxes it opens (pick, ask, note, tmux's popups) wait in modal.rs with the
+//! panel going on under them. Keys whose act() branch isn't ported yet (M ?, Enter on a
+//! question) are handed over to the bash panel for that one action (handoff.rs).
 //!
 //! What runs where:
 //! - UI thread (here): input, the act() keys above and their boxes, the flash, the loading
 //!   screen, the loading box and the splash, the frame and its writer.
-//! - a thread per command that can take a while (agent-say name, remote_run), the panel drawing
-//!   while it waits (modal.rs wait_job).
+//! - a thread per command that can take a while (agent-say, remote_run, tmux's popups), the
+//!   panel drawing while it waits (modal.rs wait_job);
+//! - U's jobs, each a child of its own that outlives the panel (upd.rs).
 //! - collectors.rs: panes (gather), mail (messages, links_saves, intros) and peek, a thread
 //!   each, kicked as bash looks again: every REVIVE_PANEL_REFRESH seconds without a key, and
 //!   after any key but a move.
@@ -164,9 +165,13 @@ impl BoxHost for Ui {
     fn prev_clear(&mut self) {
         self.prev.clear();
     }
-    /// draw, as a key's own steps call it: its BOX_ lines, then the frame
+    /// draw, as a key's own steps call it: its BOX_ lines, then the frame. Bash's draw looks at
+    /// the messages, LINKS · SAVES and the intros again each time a key draws (G's _cull, B's
+    /// link, a deny: what they changed shows under the next box): the mail thread is kicked,
+    /// and what it finds is painted when it comes.
     fn draw(&mut self) {
         self.draw_box_lines();
+        self.hub.mail_k.kick();
         self.paint();
     }
 }

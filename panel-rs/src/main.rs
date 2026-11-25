@@ -9,6 +9,8 @@
 //!   tmux-revive-panel                          the live panel (Phase 3; keys not ported yet are
 //!                                              handed over to the bash panel, ui/handoff.rs)
 //!   tmux-revive-panel --probe                  "ok VERSION": the install-time check (Phase 6.2)
+//!   tmux-revive-panel --remote-run HOST REQ... remote_run HOST REQ... (a U job for a linked
+//!                                              computer, ui/upd.rs): its output, its status
 
 // The port is under way: colours, helpers and snapshot fields the later steps use are here already.
 #![allow(dead_code)]

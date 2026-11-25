@@ -476,9 +476,8 @@ impl Ui {
             cmd.clear();
             'f: for f in [&b"/README.md"[..], b"/install.sh"] {
                 let t = std::fs::read(sh::os(&sh::path(&[&self.root, f]))).unwrap_or_default();
-                // while IFS= read -r l (IFS whitespace trimmed: read -r with the default IFS)
+                // while IFS= read -r l: each whole line (one with no newline at its end isn't read)
                 for l in sh::lines(&t) {
-                    let l = trim_ifs(&l);
                     let l = l.strip_prefix(b"#   ".as_slice()).unwrap_or(&l).to_vec();
                     if m(r"^curl -fsSL https://[A-Za-z0-9./_-]+/install\.sh \| sh$", &l) {
                         cmd = l;
