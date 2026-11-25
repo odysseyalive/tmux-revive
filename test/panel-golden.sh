@@ -17,6 +17,8 @@
 #                                      (tier 3)
 #   bash test/panel-golden.sh live     the Rust panel live (B) against bash (A), twins' way, and a
 #                                      key it hands over to bash (Enter, Esc) coming back to it
+#   bash test/panel-golden.sh live-ubg the end of live alone: U, B and G, the Rust panel's own,
+#                                      against bash's
 #
 # GOLDEN_A and GOLDEN_B: the two panels, as commands: A bash scripts/panel.sh, B the Rust one,
 # panel-rs/target/release/tmux-revive-panel (built here with cargo unless GOLDEN_B is given). The
@@ -1149,6 +1151,7 @@ SSH
 	# The link waiting for its login: a login window (no client to show a popup), then its check.
 	lv_step "$H" "$I" "B 1" "▸ PANES" "B, needs login: "
 	check "B, needs login: a login window ran agent-say _login, then its check, on both" "for _ in \$(seq 1 25); do grep -q '^_login pw.example --check' $T/lvh/state/asay.log && grep -q '^_login pw.example --check' $T/lvi/state/asay.log && break; sleep 0.2; done; grep -qx '_login pw.example' $T/lvi/state/asay.log && grep -q '^_login pw.example --check' $T/lvi/state/asay.log && grep -qx '_login pw.example' $T/lvh/state/asay.log"
+	lv_step "$H" "$I" "" "▸ PANES" "B, needs login, its check done: "
 	# Another host, typed: a new key to confirm, then the link key's line to place.
 	lv_step "$H" "$I" "B 5" "Host to link" "B, other host: "
 	lv_step "$H" "$I" "keyhost.example" "keyhost.example" "B, other host: "
@@ -1184,7 +1187,7 @@ twins) twins ;;
 live) live ;;
 live-ubg) build_b && live_ubg ;; # U, B and G alone, as live ends with them
 all) snaps; render; twins ;;
-*) echo "usage: panel-golden.sh [snaps|render|live-once|twins|live]" >&2; exit 2 ;;
+*) echo "usage: panel-golden.sh [snaps|render|live-once|twins|live|live-ubg]" >&2; exit 2 ;;
 esac
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 ((fail == 0))
