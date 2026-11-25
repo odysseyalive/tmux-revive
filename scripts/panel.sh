@@ -5514,30 +5514,6 @@ keys() {
 		read -t 0 && IFS= read -rsn1 key || break
 	done
 }
-# A hand-over from the Rust panel (panel-rs, REVIVE_PANEL_RS=1) for a key it doesn't do yet:
-# REVIVE_PANEL_HANDOFF is the key, as keys() names it, and REVIVE_PANEL_SEL the pane it had
-# selected (REVIVE_PANEL_HSEL its heading, REVIVE_PANEL_FLASH and _AGE its flash). That one key
-# is acted on here, every box it opens and a question's answering with it; then this panel
-# exits 100 for the Rust one to carry on, its flash (what the key did) left in
-# REVIVE_PANEL_HANDBACK.
-HANDOFF=${REVIVE_PANEL_HANDOFF:-}
-handback() {
-	local f=${REVIVE_PANEL_HANDBACK:-}
-	[[ -n $f && -n $FLASH ]] && printf 'FLASH\0\0%s\0FLASH_AGE\0\0%s\0' "$FLASH" $((SECONDS - FLASH_T)) >"$f"
-	exit 100
-}
-if [[ -n $HANDOFF ]]; then
-	gather
-	for i in "${!P_ID[@]}"; do [[ ${P_ID[i]} == "${REVIVE_PANEL_SEL:-}" ]] && SEL=$i; done
-	HSEL=${REVIVE_PANEL_HSEL:-}
-	sel_fix
-	LOAD_AT=""
-	[[ ${REVIVE_PANEL_FLASH_AGE:-} =~ ^-?[0-9]{1,12}$ ]] && FLASH=${REVIVE_PANEL_FLASH:-} FLASH_T=$((SECONDS - REVIVE_PANEL_FLASH_AGE))
-	messages # G on the key bar: draw doesn't look at the messages while the pane asks
-	draw
-	box_flow act "$HANDOFF" # as keys() runs it: Esc on a box brings the one before back
-	handback
-fi
 held=0 FULL_T=$SECONDS
 while :; do
 	# Moving the selection only redraws from what was gathered last; everything is looked at

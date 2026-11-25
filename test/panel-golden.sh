@@ -15,8 +15,8 @@
 #                                      fixtures, the same keys sent to both, their screens and
 #                                      cursors compared with CPU, memory and the cpu graph masked
 #                                      (tier 3)
-#   bash test/panel-golden.sh live     the Rust panel live (B) against bash (A), twins' way, and a
-#                                      key it hands over to bash (Enter, Esc) coming back to it
+#   bash test/panel-golden.sh live     the Rust panel live (B) against bash (A), twins' way, every
+#                                      key its own (no hand-over), answering a question included
 #   bash test/panel-golden.sh live-ubg the end of live alone: U, B and G, the Rust panel's own,
 #                                      against bash's
 #
@@ -743,15 +743,14 @@ twins() {
 # The Rust panel live (GOLDEN_B) against the bash one (GOLDEN_A), each on a server of its own
 # with the same fixtures, the same keys sent to both: moves, the art, the peek, the focus, f on
 # a pane here (nothing to fold), compared as twins compares them. N (rename) and D (detach) and
-# their boxes, the Rust panel's own. Enter on the question, a key the Rust panel hands over to
-# the bash panel for that one action (REVIVE_PANEL_HANDOFF), backed out of with Esc: answering
-# and what it says after are bash's on both sides, and B is the Rust panel again, with the same
-# pane selected.
+# their boxes, the Rust panel's own. Enter on the question answers it, the Rust panel's own too,
+# backed out of with Esc; answering is checked further on (live_answer). No key runs the bash
+# panel: the hand-over is gone, and lv_shim's log of one stays empty.
 lv_cmd() { tmux -S "$1" display -p -t work:panel '#{pane_current_command}'; }
-# lv_bash SOCKET: its panel has a bash panel running for it (a hand-over)
+# lv_bash SOCKET: its panel has a bash panel running for it (a hand-over, which must not happen)
 lv_bash() { ps -o args= --ppid "$(tmux -S "$1" display -p -t work:panel '#{pane_pid}')" 2>/dev/null | grep -q 'scripts/panel\.sh'; }
-# lv_shim DIR: a bash on the Rust panel's PATH that notes in DIR/handoffs each hand-over's key
-# (a bash panel run for it), then runs the real bash
+# lv_shim DIR: a bash on the Rust panel's PATH that notes in DIR/handoffs every bash panel run
+# from it (none should be), then runs the real bash
 lv_shim() {
 	mkdir -p "$1"
 	printf '#!%s\n[[ $* == *scripts/panel.sh* ]] && echo "${REVIVE_PANEL_HANDOFF:-?}" >>%q\nexec %q "$@"\n' \
@@ -823,7 +822,7 @@ live() {
 		done
 		check "after '${keys:-the start}': the same screen and cursor ($text)" "grep -aqF -- '$text' $T/shot.a && cmp -s $T/shot.a $T/shot.b"
 		cmp -s "$T/shot.a" "$T/shot.b" || diff "$T/shot.a" "$T/shot.b" | head -${GOLDEN_DIFF:-6} | sed 's/^/      /'
-		[[ $keys == N ]] && check "N's box is the Rust panel's own (no hand-over)" "! lv_bash $B && [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
+		[[ $keys == N || $keys == Enter ]] && check "$keys is the Rust panel's own (no hand-over)" "! lv_bash $B && [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
 	done
 	check "and B is the Rust panel again" "! lv_bash $B && [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
 	check "with the same pane selected (asker)" "tmux -S $B capture-pane -p -t work:panel | grep -q '▶.*asker'"
@@ -832,7 +831,7 @@ live() {
 	# hand-overs above, so no bash panel gathered fresh shows a screen the other has yet to.
 	lv_step "$A" "$B" s "saved" "S: "
 	lv_step "$A" "$B" g "C O N T R O L" "G with nothing waiting: "
-	check "S and the empty G did not go to the bash panel" "! lv_bash $B && [[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
+	check "S and the empty G did not go to the bash panel" "! lv_bash $B && [[ -e $T/lvb-shim/handoffs && ! -s $T/lvb-shim/handoffs ]]"
 	# One made now waits: G's box is the Rust panel's own too, as bash's.
 	local tw
 	for tw in lva lvb; do
@@ -846,7 +845,7 @@ live() {
 	lv_step "$A" "$B" g "LINK AGENTS TOGETHER" "an intro waiting: "
 	check "G with an intro waiting stayed in Rust (no hand-over)" "! lv_bash $B && [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
 	lv_step "$A" "$B" Escape "▸ PANES" "an intro waiting: "
-	check "the one hand-over was Enter's: N, S and G, empty or not, stayed in Rust" "[[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
+	check "no hand-over at all: Enter (answering), N, S and G, empty or not, stayed in Rust" "[[ -e $T/lvb-shim/handoffs && ! -s $T/lvb-shim/handoffs ]]"
 	# N on a pane here: the ask line on the bottom row as bash's, what's typed shown (Backspace
 	# too), Enter renames it (agent-say name) and says so; then back to its own name.
 	lv_step "$A" "$B" N "New name for asker:" "N here: "
@@ -874,7 +873,7 @@ live() {
 	lv_step "$A" "$B" C-c "detach cancelled" "D, Ctrl-C: "
 	check "D, Ctrl-C: the box closed and neither panel ended" "[[ \$(lv_cmd $B) == tmux-revive-pan* && \$(lv_cmd $A) == bash ]]"
 	lv_step "$A" "$B" "D 2" "couldn't detach" "D, Yes with no client: "
-	check "N and D did not go to the bash panel" "! lv_bash $B && [[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
+	check "N and D did not go to the bash panel" "! lv_bash $B && [[ -e $T/lvb-shim/handoffs && ! -s $T/lvb-shim/handoffs ]]"
 	# M: edit_box as bash's, kept above the question's peek; what's typed and the cursor (in
 	# each shot), Alt-Enter's new line, the cursor moved, a paste of 40 lines that scrolls it,
 	# PgUp back to its top, Esc and Ctrl-C cancelling, then one sent through agent-say.
@@ -921,7 +920,7 @@ live() {
 	check "?, Ctrl-C: the page closed and neither panel ended" "[[ \$(lv_cmd $B) == tmux-revive-pan* && \$(lv_cmd $A) == bash ]]"
 	lv_step "$A" "$B" "? x" "▸ PANES" "?, x: "
 	lv_step "$A" "$B" "? Escape" "▸ PANES" "?, Esc: "
-	check "M and ? did not go to the bash panel" "! lv_bash $B && [[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
+	check "M and ? did not go to the bash panel" "! lv_bash $B && [[ -e $T/lvb-shim/handoffs && ! -s $T/lvb-shim/handoffs ]]"
 	# O on a pane here: the Rust panel opens it itself, as bash does. A client attached to each
 	# server (from a tmux of their own, at a size the panels' windows ignore) is switched to it.
 	local K=$T/lvk.sock
@@ -931,7 +930,7 @@ live() {
 	for _ in $(seq 1 25); do [[ -n $(tmux -S "$A" list-clients) && -n $(tmux -S "$B" list-clients) ]] && break; sleep 0.2; done
 	lv_step "$A" "$B" O "▸ PANES" ""
 	check "O: tmux's client went to the pane on both (asker)" "[[ \$(tmux -S $A list-clients -F '#{window_name}') == asker && \$(tmux -S $B list-clients -F '#{window_name}') == asker ]]"
-	check "O did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
+	check "O did not go to the bash panel" "[[ -e $T/lvb-shim/handoffs && ! -s $T/lvb-shim/handoffs ]]"
 	tmux -S "$K" kill-server 2>/dev/null
 	# REVIVE_PANEL_POPUP: the panel closes once O has opened the pane (bash's exit 0).
 	local s
@@ -952,7 +951,7 @@ live() {
 		[[ $s == "$B" ]] && who=B
 		check "$who with REVIVE_PANEL_POPUP: O opens the pane and the panel closes" "for _ in \$(seq 1 25); do tmux -S $s list-windows -F '#W' | grep -qx pop || break; sleep 0.2; done; ! tmux -S $s list-windows -F '#W' | grep -qx pop && [[ \$(tmux -S $s display -p -t work '#I') == 0 ]]"
 	done
-	check "O in the popup did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
+	check "O in the popup did not go to the bash panel" "[[ -e $T/lvb-shim/handoffs && ! -s $T/lvb-shim/handoffs ]]"
 	# Outside tmux (no TMUX): O selects the pane, puts the terminal back and becomes `tmux attach
 	# -t SESSION`. A tmux on PATH notes an attach and ends there (never your server); the rest
 	# go to the real one.
@@ -979,7 +978,7 @@ live() {
 		[[ $who == B ]] && s=$B
 		check "$who outside tmux: O selects the pane and becomes tmux attach -t work" "for _ in \$(seq 1 25); do tmux -S $s list-windows -F '#W' | grep -qx out || break; sleep 0.2; done; ! tmux -S $s list-windows -F '#W' | grep -qx out && [[ \$(tmux -S $s display -p -t work '#I') == 0 && \$(cat $at/attach.last.$who 2>/dev/null) == 'attach -t work' ]]"
 	done
-	check "O outside tmux did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
+	check "O outside tmux did not go to the bash panel" "[[ -e $T/lvb-shim/handoffs && ! -s $T/lvb-shim/handoffs ]]"
 	# A pane appearing between the pane list and the agents' look: a tmux on the Rust panel's
 	# PATH opens a window ahead of every other just before the batched look at the agents'
 	# screens. The asking agent's state stays on its own row, never the newcomer's.
@@ -1083,7 +1082,78 @@ live() {
 	cmp -s "$T/box.lvf.sock" "$T/box.lvg.sock" || diff "$T/box.lvf.sock" "$T/box.lvg.sock" | head -6 | cut -c1-300 | sed 's/^/      /'
 	for s in "$F" "$G"; do tmux -S "$s" send-keys -t work:panel Escape; done
 	check "a pane opened under D's box: Esc, and both show it" "for _ in \$(seq 1 40); do lvp $F | grep -q newcomer && lvp $G | grep -q newcomer && break; sleep 0.2; done; lvp $F | grep -q 'detach cancelled' && lvp $G | grep -q 'detach cancelled' && lvp $F | grep -q newcomer"
+	live_answer
 	live_ubg
+}
+
+# Answering a question, the Rust panel's own (plan Phase 5). A twin of bash's: the question and
+# the ANSWERING bar the same, cell for cell, everything above the question masked (bash holds
+# the banner and PANES still while it answers, the Rust panel goes on updating them); a letter
+# the free-text choice keeps, E's box (compared as a box), Esc closing it, Esc leaving. Then the
+# Rust panel alone, looking every second: a pane opened while it answers shows in PANES within
+# two refreshes, the question still being answered.
+# ashot SOCKET: shot, with every row above the question's title masked
+ashot() { shot "$1" | awk '!q && /QUESTION · / {q = 1} q {print; next} {print "<above the question>"}'; }
+la_step() { # la_step SA SB KEYS TEXT LABEL: KEYS to both, then the same question and bar (ashot)
+	local k i
+	# shellcheck disable=SC2086 # one tmux key name each
+	[[ -n $3 ]] && for k in $3; do tmux -S "$1" send-keys -t work:panel "$k"; tmux -S "$2" send-keys -t work:panel "$k"; sleep 0.15; done
+	settle "$1" "$4" && settle "$2" "$4"
+	for i in 1 2 3 4 5 6 7 8; do
+		ashot "$1" >"$T/shot.a"
+		ashot "$2" >"$T/shot.b"
+		cmp -s "$T/shot.a" "$T/shot.b" && break
+		sleep 0.2
+	done
+	LV_TEXT=$4
+	check "$5after '$3': the same question, bar and cursor, above it masked ($4)" "grep -aqF -- \"\$LV_TEXT\" $T/shot.a && grep -aqF 'QUESTION · ' $T/shot.a && cmp -s $T/shot.a $T/shot.b"
+	grep -aqF -- "$LV_TEXT" "$T/shot.a" || plain <"$T/shot.a" | tail -n 4 | head -n 2 | sed 's/^/      A: /'
+	cmp -s "$T/shot.a" "$T/shot.b" || diff "$T/shot.a" "$T/shot.b" | head -${GOLDEN_DIFF:-6} | sed 's/^/      /'
+}
+live_answer() {
+	local A=$T/lqa.sock B=$T/lqb.sock R=$T/lqr.sock s
+	twin_up "$T/lqa" "$A" "$GOLDEN_A"
+	lv_shim "$T/lqb-shim"
+	twin_up "$T/lqb" "$B" "env PATH=$T/lqb-shim:$PATH $GOLDEN_B"
+	lv_step "$A" "$B" "" "C O N T R O L" "answering: "
+	lv_step "$A" "$B" Down "QUESTION · asker" "answering: "
+	la_step "$A" "$B" Enter "ANSWERING asker" "answering: "
+	check "answering: the question offers [E]nter only on its free-text choice, not here" "! grep -aqF '[E]nter' $T/shot.b"
+	la_step "$A" "$B" x "[E]nter to type" "answering, a letter it keeps: "
+	la_step "$A" "$B" E "ANSWER · asker" "answering, E: "
+	for s in "$A" "$B"; do
+		tmux -S "$s" capture-pane -e -p -t work:panel | python3 "$T/box.py" 'ANSWER · asker' >"$T/abox.$(basename "$s")"
+		tmux -S "$s" display -p -t work:panel 'cursor #{cursor_x},#{cursor_y},#{cursor_flag}' >>"$T/abox.$(basename "$s")"
+	done
+	check "answering, E: the answer's box, its colours and the cursor are bash's" "[[ -s $T/abox.lqa.sock ]] && cmp -s $T/abox.lqa.sock $T/abox.lqb.sock"
+	cmp -s "$T/abox.lqa.sock" "$T/abox.lqb.sock" || diff "$T/abox.lqa.sock" "$T/abox.lqb.sock" | head -6 | cut -c1-300 | sed 's/^/      /'
+	la_step "$A" "$B" "h i" "ANSWER · asker" "answering, typed in E's box: "
+	la_step "$A" "$B" Escape "closed; nothing was sent" "answering, Esc on the box: "
+	la_step "$A" "$B" Escape "left the question" "answering, Esc: "
+	check "answering: no hand-over, the Rust panel's own" "! lv_bash $B && [[ -e $T/lqb-shim/handoffs && ! -s $T/lqb-shim/handoffs ]]"
+	tmux -S "$A" kill-server 2>/dev/null
+	tmux -S "$B" kill-server 2>/dev/null
+	# The Rust panel alone, looking every second.
+	fixtures "$T/lqr" "$R"
+	env_for "$T/lqr" "$R"
+	# shellcheck disable=SC2145
+	tmux -S "$R" new-window -d -t work -n panel "env ${ENV[*]} REVIVE_PANEL_REFRESH=1 REVIVE_PANEL_NOW=$RNOW AGENT_SAY_SSH=false $GOLDEN_B"
+	lqr() { tmux -S "$R" capture-pane -p -t work:panel; }
+	for _ in $(seq 1 50); do lqr | grep -q '▶' && break; sleep 0.2; done
+	for _ in $(seq 1 20); do lqr | grep -q '▶.*asker' && break; tmux -S "$R" send-keys -t work:panel Down; sleep 0.3; done
+	tmux -S "$R" send-keys -t work:panel Enter
+	for _ in $(seq 1 40); do lqr | grep -q 'ANSWERING asker' && break; sleep 0.2; done
+	tmux -S "$R" new-window -d -t work -n newcomer "bash --norc --noprofile"
+	tmux -S "$R" set-option -p -t work:newcomer @agent newcomer
+	local t0 t1
+	t0=$(date +%s%N)
+	for _ in $(seq 1 50); do lqr | grep -q 'newcomer' && break; sleep 0.1; done
+	t1=$(date +%s%N)
+	check "answering: a pane opened in another window shows in PANES within two refreshes ($(((t1 - t0) / 1000000)) ms)" "lqr | grep -q newcomer && (((t1 - t0) / 1000000 <= 2500))"
+	check "answering: and the question is still being answered" "lqr | grep -q 'ANSWERING asker' && lqr | grep -q 'QUESTION · asker'"
+	tmux -S "$R" send-keys -t work:panel Escape
+	check "answering: Esc leaves it, the newcomer still shown" "for _ in \$(seq 1 25); do lqr | grep -q 'left the question' && break; sleep 0.2; done; lqr | grep -q 'left the question' && lqr | grep -q newcomer"
+	tmux -S "$R" kill-server 2>/dev/null
 }
 
 # U, B and G, the Rust panel's own: their boxes and flashes against bash's, live, on the linked
@@ -1235,8 +1305,9 @@ live-once) liveonce ;;
 twins) twins ;;
 live) live ;;
 live-ubg) build_b && live_ubg ;; # U, B and G alone, as live ends with them
+live-answer) build_b && live_answer ;; # answering alone, as live runs it before U, B and G
 all) snaps; render; twins ;;
-*) echo "usage: panel-golden.sh [snaps|render|live-once|twins|live|live-ubg]" >&2; exit 2 ;;
+*) echo "usage: panel-golden.sh [snaps|render|live-once|twins|live|live-ubg|live-answer]" >&2; exit 2 ;;
 esac
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 ((fail == 0))
