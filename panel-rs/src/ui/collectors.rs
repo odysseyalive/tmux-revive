@@ -210,3 +210,25 @@ pub fn start(root: &[u8], hub: &Arc<Hub>, wake: RawFd) {
         })
         .expect("the peek thread starts");
 }
+
+#[cfg(test)]
+mod measure {
+    /// test/measure.sh's gather round time (plan Phase 7.2), not part of `cargo test`: the panes
+    /// collector's gather (live_g's), MEASURE_ROUNDS times a REFRESH (2 s) apart, each round's
+    /// wall time printed as "gather-us N", on the fixture server the environment names.
+    #[test]
+    #[ignore]
+    fn measure_gather() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).canonicalize().unwrap();
+        let root = root.as_os_str().as_encoded_bytes();
+        crate::collect::sh::init(root);
+        let mut g = super::live_g(root);
+        let n: u32 = std::env::var("MEASURE_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+        for _ in 0..n {
+            let t = std::time::Instant::now();
+            g.gather();
+            println!("gather-us {}", t.elapsed().as_micros());
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    }
+}
