@@ -829,7 +829,7 @@ live() {
 	lv_step "$A" "$B" s "saved" "S: "
 	lv_step "$A" "$B" g "C O N T R O L" "G with nothing waiting: "
 	check "S and the empty G did not go to the bash panel" "! lv_bash $B && [[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
-	# One made now waits: G goes to bash's box.
+	# One made now waits: G's box is the Rust panel's own too, as bash's.
 	local tw
 	for tw in lva lvb; do
 		mkdir -p "$T/$tw/state/intros/i9"
@@ -840,9 +840,9 @@ live() {
 	sleep 5
 	lv_step "$A" "$B" x "rant access" "an intro waiting: "
 	lv_step "$A" "$B" g "LINK AGENTS TOGETHER" "an intro waiting: "
-	check "G with an intro waiting went to the bash panel" "lv_bash $B"
+	check "G with an intro waiting stayed in Rust (no hand-over)" "! lv_bash $B && [[ \$(lv_cmd $B) == tmux-revive-pan* ]]"
 	lv_step "$A" "$B" Escape "▸ PANES" "an intro waiting: "
-	check "the hand-overs were Enter's and the waiting intro's G, no other: N, S and the empty G stayed in Rust" "[[ \$(cat $T/lvb-shim/handoffs) == \$'enter\\ng' ]]"
+	check "the one hand-over was Enter's: N, S and G, empty or not, stayed in Rust" "[[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
 	# N on a pane here: the ask line on the bottom row as bash's, what's typed shown (Backspace
 	# too), Enter renames it (agent-say name) and says so; then back to its own name.
 	lv_step "$A" "$B" N "New name for asker:" "N here: "
@@ -870,7 +870,7 @@ live() {
 	lv_step "$A" "$B" C-c "detach cancelled" "D, Ctrl-C: "
 	check "D, Ctrl-C: the box closed and neither panel ended" "[[ \$(lv_cmd $B) == tmux-revive-pan* && \$(lv_cmd $A) == bash ]]"
 	lv_step "$A" "$B" "D 2" "couldn't detach" "D, Yes with no client: "
-	check "N and D did not go to the bash panel" "! lv_bash $B && [[ \$(cat $T/lvb-shim/handoffs) == \$'enter\\ng' ]]"
+	check "N and D did not go to the bash panel" "! lv_bash $B && [[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
 	# O on a pane here: the Rust panel opens it itself, as bash does. A client attached to each
 	# server (from a tmux of their own, at a size the panels' windows ignore) is switched to it.
 	local K=$T/lvk.sock
@@ -880,7 +880,7 @@ live() {
 	for _ in $(seq 1 25); do [[ -n $(tmux -S "$A" list-clients) && -n $(tmux -S "$B" list-clients) ]] && break; sleep 0.2; done
 	lv_step "$A" "$B" O "▸ PANES" ""
 	check "O: tmux's client went to the pane on both (asker)" "[[ \$(tmux -S $A list-clients -F '#{window_name}') == asker && \$(tmux -S $B list-clients -F '#{window_name}') == asker ]]"
-	check "O did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'enter\\ng' ]]"
+	check "O did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
 	tmux -S "$K" kill-server 2>/dev/null
 	# REVIVE_PANEL_POPUP: the panel closes once O has opened the pane (bash's exit 0).
 	local s
@@ -901,7 +901,7 @@ live() {
 		[[ $s == "$B" ]] && who=B
 		check "$who with REVIVE_PANEL_POPUP: O opens the pane and the panel closes" "for _ in \$(seq 1 25); do tmux -S $s list-windows -F '#W' | grep -qx pop || break; sleep 0.2; done; ! tmux -S $s list-windows -F '#W' | grep -qx pop && [[ \$(tmux -S $s display -p -t work '#I') == 0 ]]"
 	done
-	check "O in the popup did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'enter\\ng' ]]"
+	check "O in the popup did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
 	# Outside tmux (no TMUX): O selects the pane, puts the terminal back and becomes `tmux attach
 	# -t SESSION`. A tmux on PATH notes an attach and ends there (never your server); the rest
 	# go to the real one.
@@ -928,7 +928,7 @@ live() {
 		[[ $who == B ]] && s=$B
 		check "$who outside tmux: O selects the pane and becomes tmux attach -t work" "for _ in \$(seq 1 25); do tmux -S $s list-windows -F '#W' | grep -qx out || break; sleep 0.2; done; ! tmux -S $s list-windows -F '#W' | grep -qx out && [[ \$(tmux -S $s display -p -t work '#I') == 0 && \$(cat $at/attach.last.$who 2>/dev/null) == 'attach -t work' ]]"
 	done
-	check "O outside tmux did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == \$'enter\\ng' ]]"
+	check "O outside tmux did not go to the bash panel" "[[ \$(cat $T/lvb-shim/handoffs) == enter ]]"
 	# A pane appearing between the pane list and the agents' look: a tmux on the Rust panel's
 	# PATH opens a window ahead of every other just before the batched look at the agents'
 	# screens. The asking agent's state stays on its own row, never the newcomer's.
@@ -1032,6 +1032,148 @@ live() {
 	cmp -s "$T/box.lvf.sock" "$T/box.lvg.sock" || diff "$T/box.lvf.sock" "$T/box.lvg.sock" | head -6 | cut -c1-300 | sed 's/^/      /'
 	for s in "$F" "$G"; do tmux -S "$s" send-keys -t work:panel Escape; done
 	check "a pane opened under D's box: Esc, and both show it" "for _ in \$(seq 1 40); do lvp $F | grep -q newcomer && lvp $G | grep -q newcomer && break; sleep 0.2; done; lvp $F | grep -q 'detach cancelled' && lvp $G | grep -q 'detach cancelled' && lvp $F | grep -q newcomer"
+	live_ubg
+}
+
+# U, B and G, the Rust panel's own: their boxes and flashes against bash's, live, on the linked
+# computers' fixture. Both panels run from a copy of this tree ($T/tree) whose bin/agent-say
+# answers for a few made-up hosts (their host keys, a link that gives a link key line, one
+# turned away for another key, a login) and is the real one for the rest; a tmux in front of
+# the real one stands in for the code popup (Esc in it, as no client is attached to show one);
+# tmux-revive update here is a stand-in installer (REVIVE_SOURCE) and there the fake ssh's,
+# both held until a gate file is there, so the two lists can be compared mid-way.
+live_ubg() {
+	local H=$T/lvh.sock I=$T/lvi.sock TR=$T/tree d s
+	mkdir -p "$TR"
+	tar -C "$ROOT" --exclude=./.git --exclude=./panel-rs/target --exclude=./.claude -cf - . | tar -C "$TR" -xf -
+	mkdir -p "$TR/panel-rs/target/release"
+	cp "$GOLDEN_B" "$TR/panel-rs/target/release/tmux-revive-panel"
+	cat >"$TR/bin/agent-say" <<ASAY
+#!/bin/bash
+REAL=$(printf %q "$ROOT/bin/agent-say")
+if [[ \${BASH_SOURCE[0]} != "\$0" ]]; then source "\$REAL"; return; fi
+echo "\$*" >>"\$(dirname "\${AGENT_SAY_MAILBOX:-/nonexistent/x}")/asay.log"
+case \$1 in _host-keys | link | _login) echo "\${AGENT_SAY_SCAN_ID:-none} \$1 \${2:-}" >>"\$(dirname "\${AGENT_SAY_MAILBOX:-/nonexistent/x}")/scan.log" ;; esac
+case "\$1 \${2:-}" in
+"_host-keys keyhost.example") printf 'state: unknown\nSHA256:KeyHost0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (ED25519)\n'; exit 0 ;;
+"_host-keys changed.example")
+	if [[ \${3:-} == --new ]]; then printf 'SHA256:NewKey1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (ED25519)\n'
+	else printf 'state: trusted\nSHA256:OldKey0cccccccccccccccccccccccccccccccccccccccc (ED25519)\n'; fi
+	exit 0 ;;
+"link keyhost.example") printf 'linked to keyhost.example\nlink key: set up; one line is yours to place\nlink key line, put it in ~/.ssh/authorized_keys there: restrict,command="agent-say _link" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOv4Q0bFz2k9yW3mXr7Pq8sTu1VcL6nJ0hGdE5aB2cK9 link@golden\n'; exit 0 ;;
+"link changed.example") echo "agent-say: changed.example answers with another host key; check it, then link again and confirm the new key"; exit 1 ;;
+"_login pw.example") [[ \${3:-} == --check ]] && exit 1; exit 0 ;;
+esac
+exec "\$REAL" "\$@"
+ASAY
+	chmod +x "$TR/bin/agent-say"
+	local shim=$T/lvubg-shim
+	mkdir -p "$shim"
+	printf '#!/bin/bash\nif [[ " $* " == *" display-popup "* ]]; then st=$(dirname "$AGENT_SAY_MAILBOX"); echo "$*" >>"$st/popup.log"; printf "\\37" >"$st/intros/.allow.out"; exit 0; fi\nexec %q "$@"\n' "$(command -v tmux)" >"$shim/tmux"
+	chmod +x "$shim/tmux"
+	lv_shim "$T/lvi-shim"
+	for d in lvh lvi; do
+		s=$T/$d.sock
+		fixtures "$T/$d" "$s" links
+		# A link that waits for its login.
+		mkdir -p "$T/$d/state/links/pw.example" && : >"$T/$d/state/links/pw.example/on" && : >"$T/$d/state/links/pw.example/login"
+		# An intro waiting now, to approve or deny.
+		local id=9999999999999999aaaaaaaaaaaaaaaa
+		mkdir -p "$T/$d/state/intros/$id/held"
+		echo near@far.example >"$T/$d/state/intros/$id/from"; echo asker@golden >"$T/$d/state/intros/$id/to"
+		echo "s:$id@far.example" >"$T/$d/state/intros/$id/from-session"; echo "s:to$id@golden" >"$T/$d/state/intros/$id/to-session"
+		date +%s >"$T/$d/state/intros/$id/created"; printf 'may I see the build log? it failed twice tonight' >"$T/$d/state/intros/$id/intro"
+		echo "to see why it failed" >"$T/$d/state/intros/$id/why"
+		# tmux-revive update, here and there: logged, then held until the gate is there.
+		mkdir -p "$T/$d/src"
+		printf '#!/bin/sh\necho run >>%q\n[ -e %q ] && { echo "mv: cannot move: Permission denied"; exit 1; }\nwhile [ ! -e %q ]; do sleep 0.1; done\necho "==> tmux-revive 1.0.0 -> 9.9.9, release v9.9.9"\n' \
+			"$T/$d/update.log" "$T/$d/update.perm" "$T/$d/update.gate" >"$T/$d/src/install.sh"
+		{
+			printf '#!/bin/bash\nT=%q\n' "$T/$d"
+			cat <<'SSH'
+cmd=${!#}
+if [[ $cmd == *' tmux-revive update '* && ${*: -2:1} != Zed.example ]]; then
+	echo "${*: -2:1}" >>"$T/update.calls"
+	while [[ ! -e $T/update.gate ]]; do sleep 0.1; done
+	echo "==> tmux-revive 1.2.0 -> 9.9.9, release v9.9.9"; exit 0
+fi
+SSH
+			printf 'exec %q "$@"\n' "$T/$d/bin/fakessh"
+		} >"$T/$d/bin/updssh"
+		chmod +x "$T/$d/bin/updssh"
+		env_for "$T/$d" "$s"
+		local cmd="bash $TR/scripts/panel.sh" path=$shim:$PATH
+		[[ $d == lvi ]] && cmd=$TR/panel-rs/target/release/tmux-revive-panel path=$T/lvi-shim:$path
+		# shellcheck disable=SC2145
+		tmux -S "$s" new-window -d -t work -n panel "env ${ENV[*]} PATH=$path AGENT_SAY_SSH=$T/$d/bin/updssh REVIVE_SOURCE=$T/$d/src REVIVE_PANEL_REFRESH=60 REVIVE_PANEL_NOW=$RNOW REVIVE_PANEL_PEEK=0 AGENT_SAY_KEYSCAN=false AGENT_SAY_KNOWN_HOSTS=$T/$d/kh AGENT_SAY_TEST_NO_LINK_KEY=1 $cmd"
+	done
+	check "U B G: B is the Rust panel" "for _ in \$(seq 1 25); do [[ \$(lv_cmd $I) == tmux-revive-pan* ]] && break; sleep 0.2; done; [[ \$(lv_cmd $I) == tmux-revive-pan* ]]"
+	settle "$H" far-top && settle "$I" far-top
+	both() { [[ $(cat "$T/lvh/$1" 2>/dev/null) == "$2" && $(cat "$T/lvi/$1" 2>/dev/null) == "$2" ]]; }
+	# U: every job at once, each once; Zed.example (unreachable) done first, the rest held.
+	lv_step "$H" "$I" U "unreachable" "U: "
+	check "U: the list mid-way, its bar at 1/4" "grep -aqF ' 1/4' $T/shot.b"
+	check "U: this computer and each linked one updated once, asking nothing" "for _ in \$(seq 1 25); do both update.log run && break; sleep 0.2; done; both update.log run && [[ \$(sort $T/lvh/update.calls) == \$'far.example\\nfolded.example' && \$(sort $T/lvi/update.calls) == \$'far.example\\nfolded.example' ]]"
+	: >"$T/lvh/update.gate"; : >"$T/lvi/update.gate"
+	lv_step "$H" "$I" "" "4/4" "U, the gate open: "
+	tmux -S "$I" capture-pane -p -t work:panel >"$T/ubg-done.b"
+	check "U: the list ticked to done on its own (1.0.0 → 9.9.9 here, 1.2.0 → 9.9.9 there)" "grep -aq 'this computer .*1\\.0\\.0 → 9\\.9\\.9' $T/ubg-done.b && grep -aq 'far\\.example .*1\\.2\\.0 → 9\\.9\\.9' $T/ubg-done.b"
+	lv_step "$H" "$I" Escape "▸ PANES" "U: "
+	# Closed while it runs: the bar says so, and U shows that round again, never a second try.
+	rm -f "$T"/lv[hi]/update.gate "$T"/lv[hi]/update.log "$T"/lv[hi]/update.calls
+	lv_step "$H" "$I" U "unreachable" "U again: "
+	lv_step "$H" "$I" Escape "still updating · U shows it" "U, closed while it runs: "
+	lv_step "$H" "$I" U "updating…" "U while it runs: "
+	check "U while it runs: nothing tried twice" "both update.log run && [[ \$(wc -l <$T/lvi/update.calls) == 2 && \$(wc -l <$T/lvh/update.calls) == 2 ]]"
+	: >"$T/lvh/update.gate"; : >"$T/lvi/update.gate"
+	lv_step "$H" "$I" "" "4/4" "U while it runs, the gate open: "
+	lv_step "$H" "$I" Escape "▸ PANES" "U: "
+	# Not this user's to update: [I], and I shows the command for their pane, copied.
+	: >"$T/lvh/update.perm"; : >"$T/lvi/update.perm"
+	lv_step "$H" "$I" U "no permission" "U, no permission: "
+	lv_step "$H" "$I" "" "4/4" "U, no permission: "
+	lv_step "$H" "$I" i "Run this in" "U, I: "
+	check "U, I: the command is in tmux's paste buffer on both" "[[ \$(tmux -S $H show-buffer) == 'tmux-revive update' && \$(tmux -S $I show-buffer) == 'tmux-revive update' ]]"
+	lv_step "$H" "$I" x "I: command" "U, I, a key: "
+	lv_step "$H" "$I" Escape "▸ PANES" "U: "
+	# B: the list (a link waiting for its login first, the failing one, the linked ones, other
+	# host…); LINK AGAIN? for a link, and Esc there brings the list back as it was (going back:
+	# act runs again, the list answered as it was, unseen).
+	lv_step "$H" "$I" B "ATTACH SERVERS" "B: "
+	lv_step "$H" "$I" "Down Down" "ATTACH SERVERS" "B: "
+	lv_step "$H" "$I" Enter "LINK far.example AGAIN?" "B, relink: "
+	lv_step "$H" "$I" Escape "ATTACH SERVERS" "B, going back: "
+	tmux -S "$I" capture-pane -p -t work:panel >"$T/ubg-back.b" # unmasked: the cpu graph's row is under the box
+	check "B, going back: the list as it was, far.example still highlighted" "grep -aq '▶ 3 *far\\.example' $T/ubg-back.b"
+	lv_step "$H" "$I" Escape "▸ PANES" "B: "
+	# The link waiting for its login: a login window (no client to show a popup), then its check.
+	lv_step "$H" "$I" "B 1" "▸ PANES" "B, needs login: "
+	check "B, needs login: a login window ran agent-say _login, then its check, on both" "for _ in \$(seq 1 25); do grep -q '^_login pw.example --check' $T/lvh/state/asay.log && grep -q '^_login pw.example --check' $T/lvi/state/asay.log && break; sleep 0.2; done; grep -qx '_login pw.example' $T/lvi/state/asay.log && grep -q '^_login pw.example --check' $T/lvi/state/asay.log && grep -qx '_login pw.example' $T/lvh/state/asay.log"
+	# Another host, typed: a new key to confirm, then the link key's line to place.
+	lv_step "$H" "$I" "B 5" "Host to link" "B, other host: "
+	lv_step "$H" "$I" "keyhost.example" "keyhost.example" "B, other host: "
+	lv_step "$H" "$I" Enter "LINK keyhost.example?" "B, a new key: "
+	lv_step "$H" "$I" 2 "LINK KEY FOR keyhost.example" "B, the link key's line: "
+	lv_step "$H" "$I" Enter "▸ PANES" "B, linked: "
+	# scanids DIR HOST: the AGENT_SAY_SCAN_ID each agent-say call for HOST had, one per line
+	scanids() { awk -v h="$2" '$3 == h {print $1}' "$1/state/scan.log" | sort -u; }
+	check "B: the key read and the link of one B shared one scan (AGENT_SAY_SCAN_ID), on both" "[[ \$(scanids $T/lvi keyhost.example) == b* && \$(scanids $T/lvi keyhost.example | wc -l) == 1 && \$(scanids $T/lvh keyhost.example) == b* && \$(scanids $T/lvh keyhost.example | wc -l) == 1 && \$(grep -c keyhost.example $T/lvi/state/scan.log) == 2 ]]"
+	# A trusted key, and the link turned away for another: the changed key, No first.
+	lv_step "$H" "$I" "B 5" "Host to link" "B, changed key: "
+	lv_step "$H" "$I" "changed.example Enter" "LINK changed.example?" "B, changed key: "
+	lv_step "$H" "$I" Enter "HOST KEY CHANGED" "B, changed key: "
+	lv_step "$H" "$I" 1 "▸ PANES" "B, changed key, No: "
+	# G: the list, an intro's box, Esc back to the list; Approve's popup closed with Esc brings
+	# the intro's box back; Deny declines it.
+	lv_step "$H" "$I" G "LINK AGENTS TOGETHER" "G: "
+	lv_step "$H" "$I" 1 "Approve" "G, an intro: "
+	lv_step "$H" "$I" Escape "LINK AGENTS TOGETHER" "G, going back: "
+	lv_step "$H" "$I" 1 "Approve" "G, an intro: "
+	lv_step "$H" "$I" 1 "Approve" "G, the code popup closed: "
+	check "G: Approve opened the code popup on both, and Esc in it brought the intro's box back" "grep -q 'display-popup' $T/lvh/state/popup.log && grep -q 'display-popup' $T/lvi/state/popup.log && grep -aq 'to see why it failed' $T/shot.b"
+	lv_step "$H" "$I" 2 "declined" "G, Deny: "
+	check "G, Deny: declined on both" "[[ ! -e $T/lvh/state/intros/9999999999999999aaaaaaaaaaaaaaaa && ! -e $T/lvi/state/intros/9999999999999999aaaaaaaaaaaaaaaa ]]"
+	check "U, B and G did not go to the bash panel" "! lv_bash $I && [[ -e $T/lvi-shim/handoffs && ! -s $T/lvi-shim/handoffs ]]"
 }
 
 case ${1:-all} in
@@ -1040,6 +1182,7 @@ render) snaps >/dev/null; render ;;
 live-once) liveonce ;;
 twins) twins ;;
 live) live ;;
+live-ubg) build_b && live_ubg ;; # U, B and G alone, as live ends with them
 all) snaps; render; twins ;;
 *) echo "usage: panel-golden.sh [snaps|render|live-once|twins|live]" >&2; exit 2 ;;
 esac
