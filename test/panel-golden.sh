@@ -1330,7 +1330,10 @@ SSH
 	check "G: Approve opened the code popup on both, and Esc in it brought the intro's box back" "grep -q 'display-popup' $T/lvh/state/popup.log && grep -q 'display-popup' $T/lvi/state/popup.log && grep -aq 'to see why it failed' $T/shot.b"
 	lv_step "$H" "$I" 2 "declined" "G, Deny: "
 	check "G, Deny: declined on both" "[[ ! -e $T/lvh/state/intros/9999999999999999aaaaaaaaaaaaaaaa && ! -e $T/lvi/state/intros/9999999999999999aaaaaaaaaaaaaaaa ]]"
-	# Two approved: Remove all grants, last; its box No first, then Yes removes both.
+	# Two approved: Remove all grants, last; its box No first, then Yes removes both. Deny's
+	# "declined" first runs out (5 s, each panel by its own whole-second clock, gone at its next
+	# draw): otherwise No's frame can fall either side of that edge on each panel.
+	sleep 6
 	local now
 	now=$(date +%s)
 	for d in lvh lvi; do

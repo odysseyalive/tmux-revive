@@ -303,7 +303,7 @@ gather_sh() { # gather_sh LOG: the bash panel live for 32 s, its gathers noted b
 	panel_up gsh "MEASURE_GATHER_LOG=$1.raw $SH" || return
 	sleep 32
 	panel_down gsh
-	tail -n +3 "$1.raw" | awk '{ print $2 }' >"$1" # the two of the start (the loading screen) left out
+	tail -n +3 "$1.raw" | awk '{ print $2 }' >"$1" # the two of the start left out
 }
 gather() {
 	echo "3. gather round time, $((NAG + 7)) panes ($((NAG + 5)) agents): bash's gather, the Rust panes collector's"

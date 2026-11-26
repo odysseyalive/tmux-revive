@@ -1,5 +1,5 @@
-//! What the live panel writes straight to the terminal, outside the frame: the splash, the
-//! loading screen and its bar, and the loading box (scripts/panel.sh `:4920-5065`).
+//! What the live panel writes straight to the terminal, outside the frame: the splash and the
+//! loading box (scripts/panel.sh `:4920-5065`).
 
 use super::keys::Src;
 use super::{term, Ui};
@@ -228,39 +228,5 @@ impl Ui {
             && self.typed(t + 4, left, &cat(&[B, BCYN]), &welcome)
             && self.pause(0.9);
         term::out(b"\x1b[2J");
-    }
-
-    /// loading: the logo and a word that it is loading, until the first look is in
-    pub(super) fn loading(&mut self) {
-        let (cols, rows) = term::size().unwrap_or((80, 30));
-        let top = ((rows - 8) / 2).max(1);
-        let left = ((cols - 44) / 2).max(1);
-        term::out(b"\x1b[2J");
-        for i in 0..6 {
-            let r = self.c.p.big_rows.get(i).cloned().unwrap_or_default();
-            term::out(&cat(&[&at(top + i as i64, left), &r]));
-        }
-        term::out(&cat(&[&at(top + 8, left + 18), GRY, "Loading…".as_bytes(), R]));
-        self.load_at = Some((top + 10, left));
-        self.load_bar(0, 1);
-    }
-
-    /// load_bar DONE TOTAL: under "Loading…", how far the first look has got; with the loading
-    /// box up, its spinner moves on instead
-    pub(super) fn load_bar(&mut self, done: i64, total: i64) {
-        if self.lbox.on {
-            if let Some((r, c)) = self.lbox.at {
-                self.lbox.spin += 1;
-                term::out(&cat(&[&at(r, c), BGBLU, BCYN, SPIN[self.lbox.spin.rem_euclid(4) as usize].as_bytes(), R]));
-                return;
-            }
-        }
-        let Some((r, c)) = self.load_at else { return };
-        let w = 36;
-        let t = if total > 0 { total } else { 1 };
-        let n = done.min(t) * w / t;
-        let on = self.c.rep("█".as_bytes(), n);
-        let off = self.c.rep("░".as_bytes(), w - n);
-        term::out(&cat(&[&at(r, c), BCYN, &on, GRY, &off, b" ", R, GRY, &itoa(done * 100 / t), b"%", R, b"  "]));
     }
 }

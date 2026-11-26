@@ -1751,7 +1751,7 @@ agents_look() {
 	JQ_ST=() JQ_SID=() JQ_SU=() JQ_SA=()
 }
 gather() {
-	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh ctx k all panes np nd
+	local pid ppid rss pcpu args id loc ppid0 cmd path name kind apid st q p tree cpu mem now dt t ssh ctx k all panes
 	local -A tnow=()
 	PCHILD=() PARGS=() PRSS=() PCPU=() PPAR=() PUID=() INPANE=()
 	# Read from a string, not straight from ps: read takes a pipe a byte at a time, and every
@@ -1766,12 +1766,8 @@ gather() {
 	P_SRV=() P_LIM=() P_LWHY=()
 	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=() P_ACCT=()
 	A_AT=() A_KIND=() A_PID=() A_TREE=() A_LOAD=() W_SINCE=() W_FROM=()
-	# The panes listed first, so the loading screen can count them off: steps are the process
-	# list, each pane, the agents' screens, then the links.
 	panes=$(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
-	k=${panes//[!$'\n']/}
-	np=$((${#k} + 3)) nd=1
-	load_bar $nd $np
+	lbox_spin
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
 		[[ -n $id ]] || continue
 		clean loc cmd path name
@@ -1847,10 +1843,10 @@ gather() {
 		P_ID+=("$id") P_LOC+=("$loc") P_NAME+=("$name") P_STATE+=("$st")
 		git_info "$path"
 		P_DIR+=("$path") P_GIT+=("$GITI") P_CPU+=("$cpu") P_MEM+=("$mem") P_CTX+=("$ctx")
-		load_bar $((++nd)) $np
+		lbox_spin
 	done <<<"$panes"
 	agents_look
-	load_bar $((++nd)) $np
+	lbox_spin
 	# Only the panes there now: a closed pane's count goes with it.
 	TICKS_PREV=()
 	for k in "${!tnow[@]}"; do TICKS_PREV[$k]=${tnow[$k]}; done
@@ -1858,7 +1854,7 @@ gather() {
 	outside_ssh
 	((ROWS)) || remote_panes
 	wait_watch
-	load_bar $np $np
+	lbox_spin
 }
 
 # The CPU counts --rows keeps between asks: the time of its look, then a "%pane:pid ticks" line
@@ -5111,38 +5107,11 @@ splash() {
 	printf '%s' "$e[2J"
 }
 
-# Until the first look at every pane is in (a while on a busy machine, or with links to
-# servers): the logo and a word that it is loading, not a blank screen.
-loading() {
-	local rows cols top left i
-	rows=$(tput lines 2>/dev/null || echo 30) cols=$(tput cols 2>/dev/null || echo 80)
-	top=$(((rows - 8) / 2)) left=$(((cols - 44) / 2))
-	((top < 1)) && top=1
-	((left < 1)) && left=1
-	printf '%s' "$e[2J"
-	for i in 0 1 2 3 4 5; do printf '%s' "$e[$((top + i));${left}H${BIG_ROWS[i]}"; done
-	printf '%s' "$e[$((top + 8));$((left + 18))H$GRY""Loading…$R"
-	LOAD_AT="$((top + 10)) $left"
-	load_bar 0 1
-}
-# load_bar DONE TOTAL: under the loading screen's "Loading…", how far the first look has got,
-# so a slow one shows it moving rather than looking hung. Once the panel is drawn, while the
-# loading box is up, its spinner moves on instead: the box stays alive through a slow look.
-LOAD_AT=""
-load_bar() {
-	if ((LBOX)) && [[ -n $LBOX_AT ]]; then
-		printf '%s' "$e[${LBOX_AT% *};${LBOX_AT#* }H$BGBLU$BCYN${SPIN[++LBOX_SPIN % 4]}$R"
-		return 0
-	fi
-	[[ -n $LOAD_AT ]] || return 0
-	local w=36 n=$1 t=$2
-	((t > 0)) || t=1
-	((n > t)) && n=$t
-	n=$((n * w / t))
-	rep █ "$n"
-	local on=$REP
-	rep ░ $((w - n))
-	printf '%s' "$e[${LOAD_AT% *};${LOAD_AT#* }H$BCYN$on$GRY$REP $R$GRY$(( $1 * 100 / t ))%$R  "
+# lbox_spin: while the loading box is up, a step of the first look moves its spinner on, so the
+# box stays alive through a slow look.
+lbox_spin() {
+	((LBOX)) && [[ -n $LBOX_AT ]] || return 0
+	printf '%s' "$e[${LBOX_AT% *};${LBOX_AT#* }H$BGBLU$BCYN${SPIN[++LBOX_SPIN % 4]}$R"
 }
 
 # The loading box: right after tmux starts, agents still starting show --- for a while, and a
@@ -5537,7 +5506,6 @@ case ${REVIVE_PANEL_SPLASH:-} in
 0) ;;
 *) [[ $(opt @revive-panel-splashed '') == 1 ]] || { splash; tm set-option -g @revive-panel-splashed 1 2>/dev/null; } ;;
 esac
-loading
 PREV=() # after the splash: paint the whole panel
 
 rm -rf "$DIR/panel/login-said" # (what an older panel kept here)
@@ -5593,7 +5561,6 @@ while :; do
 	if ((!nav)); then
 		gather
 		TCOLS="" MSG_OLD=1 # looked at again along with the panes
-		LOAD_AT="" # the first look is in: no more loading bar
 		lbox_check
 		((UPD_N)) && upd_poll # what U started, finished since
 	fi

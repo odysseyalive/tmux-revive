@@ -9,7 +9,7 @@
 //!
 //! What runs where:
 //! - UI thread (here): input, the act() keys above and their boxes, the flash, the loading
-//!   screen, the loading box and the splash, the frame and its writer.
+//!   box and the splash, the frame and its writer.
 //! - a thread per command that can take a while (agent-say, remote_run, tmux's popups), the
 //!   panel drawing while it waits (modal.rs wait_job);
 //! - while answering, the send worker (answer.rs): the keys, the sends, the looks at the pane;
@@ -130,8 +130,6 @@ pub struct Ui {
     rdir: Bytes,
     folddir: Bytes,
     clk: i64,
-    /// LOAD_AT: where the loading screen's bar is, until the first look is in
-    load_at: Option<(i64, i64)>,
     lbox: screens::Lbox,
     a_load: BTreeMap<i64, Bytes>,
     full_t: i64,
@@ -801,7 +799,7 @@ impl Ui {
     }
 
     /// A gather is in: its rows, then what the main loop does after each (1.2.57): the loading
-    /// bar gone, the loading box checked
+    /// box checked
     fn apply_gen(&mut self, g: &collectors::Gen) {
         swap_gen(&mut self.c.p.snap, &g.snap);
         lup_over(&mut self.c.p.snap, &self.mail_lup);
@@ -813,7 +811,6 @@ impl Ui {
             self.c.p.host = v.to_vec();
         }
         self.a_load = g.a_load.clone();
-        self.load_at = None; // the first look is in: no more loading bar
         self.lbox_check();
         self.started = true;
         self.wait_gen = false;
@@ -950,7 +947,7 @@ pub fn run(root: &[u8]) -> ! {
     let (wake_r, wake_w) = term::pipe();
     let hub = Arc::new(Hub::default());
     collectors::start(root, &hub, wake_w);
-    // The first look starts now, under the splash and the loading screen.
+    // The first look starts now, under the splash.
     hub.panes_k.kick();
     let env = Env::read();
     let mut c = Ctx::load(&Snapshot::apply(&[]).unwrap_or_default(), &env);
@@ -975,7 +972,6 @@ pub fn run(root: &[u8]) -> ! {
         rdir: g0.rdir.clone(),
         folddir: sh::path(&[&dir, b"/panel/fold"]),
         clk: g0.clk,
-        load_at: None,
         lbox: screens::Lbox::default(),
         a_load: BTreeMap::new(),
         full_t: 0,
@@ -1013,7 +1009,6 @@ pub fn run(root: &[u8]) -> ! {
             }
         }
     }
-    ui.loading();
     ui.prev.clear(); // after the splash: paint the whole panel
     let _ = std::fs::remove_dir_all(sh::os(&sh::path(&[&dir, b"/panel/login-said"]))); // (what an older panel kept here)
     ui.fold_load();
