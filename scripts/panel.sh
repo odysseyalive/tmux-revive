@@ -4751,8 +4751,8 @@ act() {
 		fi
 		# Its host key, found the way ssh itself has it: the one in your known_hosts, else the one
 		# your open ssh connection to it uses, else (a host never connected to) the one ssh-keyscan
-		# shows first, of the type ssh would pick. You only say yes or no to linking; a key ssh
-		# hasn't seen before, or one that changed, has No first, so Enter alone doesn't take it.
+		# shows first, of the type ssh would pick. You only say yes or no to linking, Yes first; a
+		# key that changed since you linked it has No first, so Enter alone doesn't take it.
 		flash "reading $h's host key…"; draw
 		# What link is told: the keys shown here (--fingerprint), so it is bound to exactly those,
 		# never to what it might scan a moment later; or, linking with no key found, that none is
@@ -4765,14 +4765,14 @@ act() {
 		if [[ $KEY_STATE == recorded ]]; then
 			linked_msg="relinked $h with the key you confirmed"
 		else
-			# Only a key from your known_hosts (ssh itself trusts it) has Yes first. One read through
+			# Yes first, but for a key that changed (it could be someone in between). One read through
 			# your open connection, or shown by ssh-keyscan, is whatever answers there says: seen for
 			# the first time, to check.
-			title="LINK $h?" yn=("No, don't link $h" "Yes, link $h") first=""
+			title="LINK $h?" yn=("Yes, link $h" "No, don't link $h") first=""
 			case $KEY_STATE in
-				trusted) note="key from your known_hosts" yn=("${yn[1]}" "${yn[0]}") ;;
+				trusted) note="key from your known_hosts" ;;
 				live) note="key read through your open ssh connection" first=1 ;;
-				changed) note="its key now"; title="WARNING: $h's HOST KEY CHANGED since you linked it" ;;
+				changed) note="its key now" title="WARNING: $h's HOST KEY CHANGED since you linked it" yn=("${yn[1]}" "${yn[0]}") ;;
 				*) note="new host: first key seen" first=1 ;;
 			esac
 			# Linked before, and none of the keys you confirmed then is among these: say so, whatever

@@ -1302,7 +1302,9 @@ SSH
 	lv_step "$H" "$I" "B 5" "Host to link" "B, other host: "
 	lv_step "$H" "$I" "keyhost.example" "keyhost.example" "B, other host: "
 	lv_step "$H" "$I" Enter "LINK keyhost.example?" "B, a new key: "
-	lv_step "$H" "$I" 2 "LINK KEY FOR keyhost.example" "B, the link key's line: "
+	tmux -S "$H" capture-pane -p -t work:panel >"$T/ubg-newkey.a"; tmux -S "$I" capture-pane -p -t work:panel >"$T/ubg-newkey.b"
+	check "B, a new key: Yes first and highlighted, No second, on both" "grep -aq '▶ 1 *Yes, link keyhost\\.example' $T/ubg-newkey.a && grep -aq '▶ 1 *Yes, link keyhost\\.example' $T/ubg-newkey.b && grep -aq \"2 *No, don't link keyhost\\.example\" $T/ubg-newkey.b"
+	lv_step "$H" "$I" 1 "LINK KEY FOR keyhost.example" "B, the link key's line: "
 	lv_step "$H" "$I" Enter "▸ PANES" "B, linked: "
 	# scanids DIR HOST: the AGENT_SAY_SCAN_ID each agent-say call for HOST had, one per line
 	scanids() { awk -v h="$2" '$3 == h {print $1}' "$1/state/scan.log" | sort -u; }
@@ -1311,6 +1313,8 @@ SSH
 	lv_step "$H" "$I" "B 5" "Host to link" "B, changed key: "
 	lv_step "$H" "$I" "changed.example Enter" "LINK changed.example?" "B, changed key: "
 	lv_step "$H" "$I" Enter "HOST KEY CHANGED" "B, changed key: "
+	tmux -S "$H" capture-pane -p -t work:panel >"$T/ubg-changed.a"; tmux -S "$I" capture-pane -p -t work:panel >"$T/ubg-changed.b"
+	check "B, changed key: No first and highlighted, Yes second, on both" "grep -aq \"▶ 1 *No, don't link changed\\.example\" $T/ubg-changed.a && grep -aq \"▶ 1 *No, don't link changed\\.example\" $T/ubg-changed.b && grep -aq '2 *Yes, link changed\\.example' $T/ubg-changed.b"
 	lv_step "$H" "$I" 1 "▸ PANES" "B, changed key, No: "
 	# G: the list, an intro's box, Esc back to the list; Approve's popup closed with Esc brings
 	# the intro's box back; Deny declines it.

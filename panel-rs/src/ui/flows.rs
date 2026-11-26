@@ -440,8 +440,8 @@ impl Ui {
                 }
             }
         }
-        // Its host key, found the way ssh itself has it. You only say yes or no to linking; a
-        // key ssh hasn't seen before, or one that changed, has No first, so Enter alone doesn't
+        // Its host key, found the way ssh itself has it. You only say yes or no to linking, Yes
+        // first; a key that changed since you linked it has No first, so Enter alone doesn't
         // take it.
         self.flash(&cat(&[b"reading ", &h, "'s host key…".as_bytes()]));
         BoxHost::draw(self);
@@ -453,20 +453,19 @@ impl Ui {
             linked_msg = cat(&[b"relinked ", &h, b" with the key you confirmed"]);
         } else {
             let mut title = cat(&[b"LINK ", &h, b"?"]);
-            let mut yn = vec![cat(&[b"No, don't link ", &h]), cat(&[b"Yes, link ", &h])];
+            // Yes first, but for a key that changed (it could be someone in between).
+            let mut yn = vec![cat(&[b"Yes, link ", &h]), cat(&[b"No, don't link ", &h])];
             let mut first = false;
             let warn = cat(&[b"WARNING: ", &h, b"'s HOST KEY CHANGED since you linked it"]);
             let mut note: Bytes = match key_state.as_slice() {
-                b"trusted" => {
-                    yn.swap(0, 1);
-                    b"key from your known_hosts".to_vec()
-                }
+                b"trusted" => b"key from your known_hosts".to_vec(),
                 b"live" => {
                     first = true;
                     b"key read through your open ssh connection".to_vec()
                 }
                 b"changed" => {
                     title = warn.clone();
+                    yn.swap(0, 1);
                     b"its key now".to_vec()
                 }
                 _ => {

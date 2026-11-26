@@ -1700,14 +1700,14 @@ popup_square() {
 check "the popup's edges line up on every row" "popup_square"
 tm send-keys -t work:sshpanel Escape
 check "Esc closes the popup, and no box says it was cancelled" "for _ in \$(seq 1 20); do sshscreen | grep -c 'ATTACH SERVERS' >/dev/null || break; sleep 0.2; done; ! sshscreen | grep -c 'ATTACH SERVERS' >/dev/null && nobox sshscreen && ! sshscreen | grep -cF 'link cancelled' >/dev/null"
-# Linking a host ssh has no key for asks you to confirm one first, as ssh would; No (the first
-# choice, so a bare Enter) links nothing.
+# Linking a host ssh has no key for asks you to confirm one first, as ssh would, Yes first; No
+# (the second choice) links nothing.
 ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey"
 : >"$T/known_hosts"
 fp=$(ssh-keygen -lf "$T/hostkey.pub" | awk '{print $2}')
 tm send-keys -t work:sshpanel B; sleep 0.7; tm send-keys -t work:sshpanel Enter
-check "picking a host ssh has no key for asks yes or no, and says none was found" "wait_ssh 'LINK devbox.example?' && wait_ssh 'no key found (not in known_hosts' && wait_ssh \"No, don't link\" && wait_ssh 'Yes, link devbox.example'"
-tm send-keys -t work:sshpanel Enter
+check "picking a host ssh has no key for asks yes or no, and says none was found" "wait_ssh 'LINK devbox.example?' && wait_ssh 'no key found (not in known_hosts' && wait_ssh \"2 *No, don't link\" && sshscreen | grep -c '▶ 1 *Yes, link devbox.example' >/dev/null"
+tm send-keys -t work:sshpanel 2
 check "No links nothing, and opens no box" "for _ in \$(seq 1 20); do sshscreen | grep -c 'LINK devbox.example?' >/dev/null || break; sleep 0.2; done; ! sshscreen | grep -c 'LINK devbox.example?' >/dev/null && nobox sshscreen && [[ ! -e $(dirname "$AGENT_SAY_MAILBOX")/links/devbox.example ]]"
 # A host ssh already trusts (its key in known_hosts): only yes or no, Yes first, its key shown.
 printf 'devbox.example %s\n' "$(cut -d' ' -f1,2 "$T/hostkey.pub")" >"$T/known_hosts"
@@ -1745,7 +1745,7 @@ pick_line "devbox.example  · stopped"
 check "picking it asks: leave it, link it again, or unlink it" "wait_ssh 'LINK devbox.example AGAIN?' && wait_ssh 'No, leave it as is' && wait_ssh 'Yes, link devbox.example again' && wait_ssh 'Unlink devbox.example'"
 tm send-keys -t work:sshpanel 2
 # It was linked to another key: that is said, with No first, though known_hosts has this one.
-check "linking again shows the key ssh uses now, warns it isn't the one linked before, No first, alone: LINK AGAIN? is gone from under it" "wait_ssh \"WARNING: devbox.example's HOST KEY CHANGED\" && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -c \"1 *No, don't link devbox.example\" >/dev/null && [[ \$(nboxes sshscreen) == 1 ]]"
+check "linking again shows the key ssh uses now, warns it isn't the one linked before, No first, alone: LINK AGAIN? is gone from under it" "wait_ssh \"WARNING: devbox.example's HOST KEY CHANGED\" && wait_ssh 'key from your known_hosts: $fp (ED25519)' && sshscreen | grep -c \"▶ 1 *No, don't link devbox.example\" >/dev/null && [[ \$(nboxes sshscreen) == 1 ]]"
 tm send-keys -t work:sshpanel 2
 check "and yes unlinks the old one and links again (its old key and error gone)" "wait_ssh \"couldn't run agent-say on devbox.example\" && [[ ! -e $sk/on && ! -e $sk/error && ! -e $sk/fingerprint ]]"
 broken
@@ -1792,7 +1792,7 @@ tm send-keys -t work:sshpanel q
 tm kill-window -t work:remote 2>/dev/null
 # live.example: ssh keeps no key for it (known_hosts /dev/null, keys not checked), but an ssh
 # connection of yours is open to it, through which its key file reads. That key is shown, as
-# one seen for the first time, with No first.
+# one seen for the first time, with Yes first.
 {
 	printf '#!/bin/bash\nT=%q\n' "$T"
 	cat <<'EOF'
@@ -1813,9 +1813,9 @@ wait_lv 'live.example · ssh in' >/dev/null
 tm send-keys -t work:livepanel B; wait_lv 'ATTACH SERVERS' >/dev/null
 n=$(lvs | grep -o '[1-9] *live.example  · ssh in' | head -c 1)
 tm send-keys -t work:livepanel "$n"
-check "a key read through your open ssh connection: shown, said to be seen for the first time, No first" "wait_lv 'key read through your open ssh connection: $fp (ED25519)' && wait_lv 'First time we see this key' && lvs | grep -c \"1 *No, don't link live.example\" >/dev/null"
-tm send-keys -t work:livepanel Enter
-check "and Enter links nothing, with no box" "for _ in \$(seq 1 40); do lvs | grep -c 'LINK live.example?' >/dev/null || break; sleep 0.2; done; ! lvs | grep -c 'LINK live.example?' >/dev/null && nobox lvs && [[ ! -e $st/links/live.example ]]"
+check "a key read through your open ssh connection: shown, said to be seen for the first time, Yes first" "wait_lv 'key read through your open ssh connection: $fp (ED25519)' && wait_lv 'First time we see this key' && lvs | grep -c '▶ 1 *Yes, link live.example' >/dev/null && lvs | grep -c \"2 *No, don't link live.example\" >/dev/null"
+tm send-keys -t work:livepanel 2
+check "and No links nothing, with no box" "for _ in \$(seq 1 40); do lvs | grep -c 'LINK live.example?' >/dev/null || break; sleep 0.2; done; ! lvs | grep -c 'LINK live.example?' >/dev/null && nobox lvs && [[ ! -e $st/links/live.example ]]"
 tm send-keys -t work:livepanel q
 tm kill-window -t work:liveremote 2>/dev/null
 
