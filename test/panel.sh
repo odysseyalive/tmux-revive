@@ -2748,7 +2748,7 @@ login_win() { tm list-windows -t work -F '#{window_id} #{window_name}' | awk '$2
 link_pw() {
 	wait_pw 'pw.example · ssh in' 50 >/dev/null
 	tm send-keys -t work:pwpanel B; wait_pw 'ATTACH SERVERS' >/dev/null; tm send-keys -t work:pwpanel Enter
-	wait_pw 'new host: first key seen' >/dev/null; tm send-keys -t work:pwpanel 2
+	wait_pw 'new host: first key seen' >/dev/null; tm send-keys -t work:pwpanel 1
 }
 link_pw
 check "with another key presented, it stops there, said on the bar: no login opens, nothing is asked or linked" "wait_pw \"pw.example's host key isn't the one you confirmed; not linked\" 50 && nobox pws && [[ -z \$(login_win) && \$(prompts) == $p && ! -e $T/pw.master && ! -e $pwl/on ]]"
