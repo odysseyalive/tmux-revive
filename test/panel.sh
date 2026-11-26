@@ -1706,7 +1706,7 @@ ssh-keygen -q -t ed25519 -N '' -C '' -f "$T/hostkey"
 : >"$T/known_hosts"
 fp=$(ssh-keygen -lf "$T/hostkey.pub" | awk '{print $2}')
 tm send-keys -t work:sshpanel B; sleep 0.7; tm send-keys -t work:sshpanel Enter
-check "picking a host ssh has no key for asks yes or no, and says none was found" "wait_ssh 'LINK devbox.example?' && wait_ssh 'no key found (not in known_hosts' && wait_ssh \"2 *No, don't link\" && sshscreen | grep -c '▶ 1 *Yes, link devbox.example' >/dev/null"
+check "picking a host ssh has no key for asks yes or no, and says none was found" "wait_ssh 'LINK devbox.example?' && wait_ssh 'no key found (not in known_hosts' && wait_ssh \"No, don't link\" && sshscreen | grep -c '▶ 1 *Yes, link devbox.example' >/dev/null && sshscreen | grep -c \"2 *No, don't link devbox.example\" >/dev/null"
 tm send-keys -t work:sshpanel 2
 check "No links nothing, and opens no box" "for _ in \$(seq 1 20); do sshscreen | grep -c 'LINK devbox.example?' >/dev/null || break; sleep 0.2; done; ! sshscreen | grep -c 'LINK devbox.example?' >/dev/null && nobox sshscreen && [[ ! -e $(dirname "$AGENT_SAY_MAILBOX")/links/devbox.example ]]"
 # A host ssh already trusts (its key in known_hosts): only yes or no, Yes first, its key shown.
