@@ -4369,25 +4369,36 @@ user_note() {
 	note "$1 for $u" "Run this in $who:" "" "$cmd" "" "Copied. Paste it there, or press prefix ]."
 }
 # unlink_host HOST: agent-say unlink. Gone from LINKS, it says nothing more; still there, what
-# agent-say said, on the bar.
+# agent-say said, on the bar. All it said: UNLINK_OUT.
 unlink_host() {
 	local out
 	flash "unlinking $1…"; draw
-	out=$(timeout 30 "$ASAY" unlink "$1" 2>&1 | tail -n 1)
+	UNLINK_OUT=$(timeout 30 "$ASAY" unlink "$1" 2>&1; echo .)
+	UNLINK_OUT=${UNLINK_OUT%.}
+	out=$(printf '%s' "$UNLINK_OUT" | tail -n 1)
 	clean out
 	if [[ -d $ASTATE/links/$1 ]]; then flash "${out#agent-say: }"
 	else FLASH=""; rm -f "$RDIR/$1.rows"; fi # what it kept of that computer
 }
 # unlink_all HOST...: B's "Unlink all". Each is unlinked as U does one, once and never tried
-# again (a server's fail2ban counts every try); then how many went, or each that didn't and why.
+# again (a server's fail2ban counts every try); then how many went, and each still linked, or
+# unlinked here but not told (it couldn't be reached), with why.
 unlink_all() {
-	local h k=0 bad=""
+	local h k=0 bad="" why l
 	for h in "$@"; do
 		unlink_host "$h"
-		if [[ ! -d $ASTATE/links/$h ]]; then k=$((k + 1))
-		else bad+="${bad:+ · }$h: $FLASH"; fi
+		why=""
+		while IFS= read -r l; do [[ $l == "agent-say: couldn't tell $h;"* ]] && { why=${l#agent-say: }; break; }; done <<<"$UNLINK_OUT"
+		clean why
+		if [[ -d $ASTATE/links/$h ]]; then bad+="${bad:+ · }$h: $FLASH"
+		else
+			k=$((k + 1))
+			[[ -n $why ]] && bad+="${bad:+ · }$h: $why"
+		fi
 	done
-	if [[ -z $bad ]]; then flash "Unlinked $# computers"; else flash "Unlinked $k of $#. $bad"; fi
+	if [[ -z $bad ]]; then flash "Unlinked $# computers"
+	elif ((k == $#)); then flash "Unlinked $# computers. $bad"
+	else flash "Unlinked $k of $#. $bad"; fi
 }
 
 # U: tmux-revive updated everywhere it can be, all at once, in a popup that shows each line

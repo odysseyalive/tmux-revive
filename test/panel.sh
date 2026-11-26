@@ -1794,7 +1794,8 @@ broken
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh "link again" >/dev/null; hl_line "devbox.example  · stopped"; tm send-keys -t work:sshpanel U
 check "and so does U on its line in B" "gone_sk"
 # Two or more linked: "Unlink all", above other host…, No first. Each is unlinked once; one that
-# stays (here: a file in it rm can't take) is named on the bar with why.
+# stays (here: a file in it rm can't take) is named on the bar with why, and so is one unlinked
+# here that couldn't be told (this panel's ssh is false; a paused link isn't tried).
 s2=$st/links/second.example
 mkdir -p "$sk" "$s2"; touch "$sk/on" "$s2/on" "$s2/paused"
 tm send-keys -t work:sshpanel B; sleep 0.7
@@ -1803,14 +1804,18 @@ pick_line 'Unlink all'
 check "it asks first, how many, No first" "wait_ssh 'UNLINK ALL 2 COMPUTERS?' && wait_ssh 'Each computer is unlinked in turn.' && wait_ssh \"Any that can't be reached are listed.\" && sshscreen | grep -cF '▶ 1  No, keep them' >/dev/null && wait_ssh '2  Yes, unlink all 2'"
 tm send-keys -t work:sshpanel Enter
 check "Enter there (No) unlinks nothing, and no box" "for _ in \$(seq 1 20); do sshscreen | grep -c 'UNLINK ALL' >/dev/null || break; sleep 0.2; done; nobox sshscreen && [[ -e $sk/on && -e $s2/on ]]"
-mkdir -p "$s2/stuck"; touch "$s2/stuck/f"; chmod a-w "$s2/stuck"
+mkdir -p "$s2/stuck"; touch "$s2/stuck/f" "$sk/paused"; chmod a-w "$s2/stuck"
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh 'Unlink all' >/dev/null; pick_line 'Unlink all'
 wait_ssh '2  Yes, unlink all 2' >/dev/null; tm send-keys -t work:sshpanel 2
 check "Yes unlinks each; one that stays is named, with how many went" "wait_ssh 'Unlinked 1 of 2. second.example: ' 100 && [[ ! -e $sk && -d $s2 ]] && nobox sshscreen"
 chmod u+w "$s2/stuck"; rm -rf "$s2/stuck"; mkdir -p "$sk"; touch "$sk/on" "$s2/on"
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh 'Unlink all' >/dev/null; pick_line 'Unlink all'
 wait_ssh '2  Yes, unlink all 2' >/dev/null; tm send-keys -t work:sshpanel 2
-check "all gone, it says so" "wait_ssh 'Unlinked 2 computers' 100 && [[ ! -e $sk && ! -e $s2 ]] && nobox sshscreen"
+check "all gone, one not told: it says so, and names that one with why" "wait_ssh \"Unlinked 2 computers. devbox.example: couldn't tell devbox.example\" 100 && ! sshscreen | grep -cF 'second.example: ' >/dev/null && [[ ! -e $sk && ! -e $s2 ]] && nobox sshscreen"
+mkdir -p "$sk" "$s2"; touch "$sk/on" "$sk/paused" "$s2/on" "$s2/paused"
+tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh 'Unlink all' >/dev/null; pick_line 'Unlink all'
+wait_ssh '2  Yes, unlink all 2' >/dev/null; tm send-keys -t work:sshpanel 2
+check "all gone, none untold: just how many" "wait_ssh 'Unlinked 2 computers' 100 && ! sshscreen | grep -cF 'Unlinked 2 computers.' >/dev/null && [[ ! -e $sk && ! -e $s2 ]] && nobox sshscreen"
 # A link stopped on a failure (paused): LINKS says it's not connected, and B, whose list says
 # why, tries it once more, with its key.
 mkdir -p "$sk"; touch "$sk/on" "$sk/paused"; echo "$fp (ED25519)" >"$sk/fingerprint"

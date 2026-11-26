@@ -233,7 +233,7 @@ confirmed it yet, so No comes first. A link that stops working shows why in LINK
 and **B** on it tries it once more. **B** on a working link links it again or
 unlinks it, and on a link not yet on the link key (see Linking computers) it offers
 **Use the link key**, which moves it there without unlinking. With two or more
-linked, **Unlink all** unlinks each one, once.
+computers linked, **Unlink all** unlinks every one and lists any it can't reach.
 
 Once linked, that computer's panes show up in the list too, grouped under its
 name, with their USER and VER. **U** updates tmux-revive there over ssh, along
@@ -522,7 +522,7 @@ ends with one line counting them.
 
 Permission is per pair of agent sessions, so a new session in a pane asks again.
 **G** also lists what you've approved. Pick one to Refresh it for another 24 hours (with a code, as for Approve),
-or to Remove it. With two or more, **Remove all grants** removes them all. Esc closes without changing anything. The sending agent is
+or to Remove it. With two or more grants, **Remove all grants** removes every one; agents still waiting for approval keep waiting. Esc closes without changing anything. The sending agent is
 told plainly what happened (`introduction sent`, `held`, `declined`). At most 5
 messages wait per pair, and 3 introductions per server. `agent-say intros` lists
 them from a terminal.

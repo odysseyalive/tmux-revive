@@ -254,40 +254,48 @@ impl Ui {
     }
 
     /// unlink_host HOST: agent-say unlink. Gone from LINKS, it says nothing more; still there,
-    /// what agent-say said, on the bar.
-    pub(super) fn unlink_host(&mut self, h: &[u8], scan: &[u8]) {
+    /// what agent-say said, on the bar. -> all it said (bash's UNLINK_OUT)
+    pub(super) fn unlink_host(&mut self, h: &[u8], scan: &[u8]) -> Bytes {
         self.flash(&cat(&[b"unlinking ", h, "…".as_bytes()]));
         BoxHost::draw(self);
         let argv = vec![b"timeout".to_vec(), b"30".to_vec(), self.asay(), b"unlink".to_vec(), h.to_vec()];
         let env = scan_env(scan);
-        let out = self.wait_job(move || run_all(&argv, &env).1);
-        let out = clean(&last_line(&out));
+        let all = self.wait_job(move || run_all(&argv, &env).1);
+        let out = clean(&last_line(&all));
         if sh::is_dir(&sh::path(&[&self.astate, b"/links/", h])) {
             self.flash(&unsay(&out));
         } else {
             self.c.p.flash.clear();
             let _ = std::fs::remove_file(sh::os(&sh::path(&[&self.rdir, b"/", h, b".rows"]))); // what it kept of that computer
         }
+        all
     }
 
     /// unlink_all HOST...: B's "Unlink all". Each is unlinked as U does one, once and never
-    /// tried again (a server's fail2ban counts every try); then how many went, or each that didn't
-    /// and why.
+    /// tried again (a server's fail2ban counts every try); then how many went, and each still
+    /// linked, or unlinked here but not told (it couldn't be reached), with why.
     pub(super) fn unlink_all(&mut self, hosts: &[Bytes], scan: &[u8]) {
         let mut k = 0i64;
         let mut bad: Bytes = Vec::new();
         for h in hosts {
-            self.unlink_host(h, scan);
-            if !sh::is_dir(&sh::path(&[&self.astate, b"/links/", h])) {
-                k += 1;
-            } else {
-                let sep: &[u8] = if bad.is_empty() { b"" } else { " · ".as_bytes() };
+            let all = self.unlink_host(h, scan);
+            let told = cat(&[b"agent-say: couldn't tell ", h, b";"]);
+            let why = all.split(|&c| c == b'\n').find(|l| l.starts_with(&told)).map(|l| clean(unsay(l).as_slice())).unwrap_or_default();
+            let sep: &[u8] = if bad.is_empty() { b"" } else { " · ".as_bytes() };
+            if sh::is_dir(&sh::path(&[&self.astate, b"/links/", h])) {
                 bad = cat(&[&bad, sep, h, b": ", &self.c.p.flash]);
+            } else {
+                k += 1;
+                if !why.is_empty() {
+                    bad = cat(&[&bad, sep, h, b": ", &why]);
+                }
             }
         }
         let n = itoa(hosts.len() as i64);
         if bad.is_empty() {
             self.flash(&cat(&[b"Unlinked ", &n, b" computers"]));
+        } else if k == hosts.len() as i64 {
+            self.flash(&cat(&[b"Unlinked ", &n, b" computers. ", &bad]));
         } else {
             self.flash(&cat(&[b"Unlinked ", &itoa(k), b" of ", &n, b". ", &bad]));
         }
