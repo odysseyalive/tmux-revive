@@ -1284,8 +1284,8 @@ SSH
 	check "U, I: the command is in tmux's paste buffer on both" "[[ \$(tmux -S $H show-buffer) == 'tmux-revive update' && \$(tmux -S $I show-buffer) == 'tmux-revive update' ]]"
 	lv_step "$H" "$I" x "I: command" "U, I, a key: "
 	lv_step "$H" "$I" Escape "▸ PANES" "U: "
-	# B: the list (a link waiting for its login first, the failing one, the linked ones, other
-	# host…); LINK AGAIN? for a link, and Esc there brings the list back as it was (going back:
+	# B: the list (a link waiting for its login first, the failing one, the linked ones, Unlink
+	# all, other host…); LINK AGAIN? for a link, and Esc there brings the list back as it was (going back:
 	# act runs again, the list answered as it was, unseen).
 	lv_step "$H" "$I" B "ATTACH SERVERS" "B: "
 	lv_step "$H" "$I" "Down Down" "ATTACH SERVERS" "B: "
@@ -1298,8 +1298,12 @@ SSH
 	lv_step "$H" "$I" "B 1" "▸ PANES" "B, needs login: "
 	check "B, needs login: a login window ran agent-say _login, then its check, on both" "for _ in \$(seq 1 25); do grep -q '^_login pw.example --check' $T/lvh/state/asay.log && grep -q '^_login pw.example --check' $T/lvi/state/asay.log && break; sleep 0.2; done; grep -qx '_login pw.example' $T/lvi/state/asay.log && grep -q '^_login pw.example --check' $T/lvi/state/asay.log && grep -qx '_login pw.example' $T/lvh/state/asay.log"
 	lv_step "$H" "$I" "" "▸ PANES" "B, needs login, its check done: "
+	# Unlink all asks first, No first: Enter there unlinks nothing.
+	lv_step "$H" "$I" "B 5" "UNLINK ALL 4 COMPUTERS?" "B, unlink all: "
+	lv_step "$H" "$I" Enter "▸ PANES" "B, unlink all, No: "
+	check "B, unlink all, No: every link still there, on both" "[[ \$(ls $T/lvh/state/links/*/on | wc -l) == 4 && \$(ls $T/lvi/state/links/*/on | wc -l) == 4 ]]"
 	# Another host, typed: a new key to confirm, then the link key's line to place.
-	lv_step "$H" "$I" "B 5" "Host to link" "B, other host: "
+	lv_step "$H" "$I" "B 6" "Host to link" "B, other host: "
 	lv_step "$H" "$I" "keyhost.example" "keyhost.example" "B, other host: "
 	lv_step "$H" "$I" Enter "LINK keyhost.example?" "B, a new key: "
 	tmux -S "$H" capture-pane -p -t work:panel >"$T/ubg-newkey.a"; tmux -S "$I" capture-pane -p -t work:panel >"$T/ubg-newkey.b"
@@ -1310,7 +1314,7 @@ SSH
 	scanids() { awk -v h="$2" '$3 == h {print $1}' "$1/state/scan.log" | sort -u; }
 	check "B: the key read and the link of one B shared one scan (AGENT_SAY_SCAN_ID), on both" "[[ \$(scanids $T/lvi keyhost.example) == b* && \$(scanids $T/lvi keyhost.example | wc -l) == 1 && \$(scanids $T/lvh keyhost.example) == b* && \$(scanids $T/lvh keyhost.example | wc -l) == 1 && \$(grep -c keyhost.example $T/lvi/state/scan.log) == 2 ]]"
 	# A trusted key, and the link turned away for another: the changed key, No first.
-	lv_step "$H" "$I" "B 5" "Host to link" "B, changed key: "
+	lv_step "$H" "$I" "B 6" "Host to link" "B, changed key: "
 	lv_step "$H" "$I" "changed.example Enter" "LINK changed.example?" "B, changed key: "
 	lv_step "$H" "$I" Enter "HOST KEY CHANGED" "B, changed key: "
 	tmux -S "$H" capture-pane -p -t work:panel >"$T/ubg-changed.a"; tmux -S "$I" capture-pane -p -t work:panel >"$T/ubg-changed.b"
@@ -1326,6 +1330,17 @@ SSH
 	check "G: Approve opened the code popup on both, and Esc in it brought the intro's box back" "grep -q 'display-popup' $T/lvh/state/popup.log && grep -q 'display-popup' $T/lvi/state/popup.log && grep -aq 'to see why it failed' $T/shot.b"
 	lv_step "$H" "$I" 2 "declined" "G, Deny: "
 	check "G, Deny: declined on both" "[[ ! -e $T/lvh/state/intros/9999999999999999aaaaaaaaaaaaaaaa && ! -e $T/lvi/state/intros/9999999999999999aaaaaaaaaaaaaaaa ]]"
+	# Two approved: Remove all grants, last; its box No first, then Yes removes both.
+	local now
+	now=$(date +%s)
+	for d in lvh lvi; do
+		printf 'allow s:g1@far.example s:h1@golden ann@far.example asker@golden %s\nallow s:g2@far.example s:h2@golden bob@far.example asker@golden %s\n' "$now" "$now" >>"$T/$d/state/grants"
+	done
+	lv_step "$H" "$I" G "Remove all grants" "G, two approved: "
+	lv_step "$H" "$I" 3 "REMOVE ALL GRANTS?" "G, remove all: "
+	lv_step "$H" "$I" Enter "▸ PANES" "G, remove all, No: "
+	lv_step "$H" "$I" "G 3 2" "Removed 2 grants" "G, remove all, Yes: "
+	check "G, remove all: none approved on both" "! grep -q '^allow ' $T/lvh/state/grants && ! grep -q '^allow ' $T/lvi/state/grants"
 	check "U, B and G did not go to the bash panel" "! lv_bash $I && [[ -e $T/lvi-shim/handoffs && ! -s $T/lvi-shim/handoffs ]]"
 }
 

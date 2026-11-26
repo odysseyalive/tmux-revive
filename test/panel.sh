@@ -1017,6 +1017,7 @@ akey g
 check "G opens LINK AGENTS TOGETHER: WAITING, then APPROVED with the time left" "wait_a 'LINK AGENTS TOGETHER' && wait_a 'WAITING' && wait_a 'APPROVED' && wait_a 'ann@far.invalid → bob@near.invalid · 2' && wait_a 'm left'"
 check "each waiting one as FROM → TO, and no declined one" "ascreen | grep -cF '1  live-root@far.invalid → dev-root@near.invalid' >/dev/null && ascreen | grep -cF '2  cx@far.invalid' >/dev/null && ! ascreen | grep -cF 'cat@far.invalid' >/dev/null"
 check "the headings aren't choices" "! ascreen | grep -cE '[0-9] (WAITING|APPROVED)' >/dev/null"
+check "with one approved, no line removes them all" "! ascreen | grep -cF 'Remove all grants' >/dev/null"
 akey Escape
 check "Esc closes it, nothing changed" "gone_a 'APPROVED' && [[ \$(state) == '$before' ]]"
 akey i
@@ -1066,6 +1067,21 @@ check "Refresh restarts its day" "wait_a 'refreshed: ann@far.invalid → bob@nea
 check "and logs it" "grep -q ' refresh s:a1@far.invalid s:b1@near.invalid ' $T/mail/grants.log"
 akey g; wait_a 'APPROVED' >/dev/null; akey 1; wait_a '2  Remove' >/dev/null; akey 2
 check "Remove takes it away" "wait_a 'removed: ann@far.invalid → bob@near.invalid' && ! grep -q 'ann@far.invalid' $T/mail/grants && grep -q 'live-root@far.invalid' $T/mail/grants"
+# Three approved, two of them one pair both ways (revoke takes a pair both ways), and one
+# waiting: Remove all is a last line, No first, and takes the approved ones only.
+printf 'allow s:to%s@near.invalid s:%s@far.invalid dev-root@near.invalid live-root@far.invalid %s\nallow s:e1@far.invalid s:f1@near.invalid eve@far.invalid fay@near.invalid %s\n' $ia $ia "$(date +%s)" "$(date +%s)" >>"$T/mail/grants"
+intro $ib cx@far.invalid dev-root@near.invalid 'hello'
+before=$(state)
+akey g; wait_a 'APPROVED' >/dev/null
+check "two or more approved: Remove all grants is the last line" "wait_a '5  Remove all grants' && ascreen | grep -cF '4  eve@far.invalid → fay@near.invalid' >/dev/null"
+akey 5
+check "it asks first, No first" "wait_a 'REMOVE ALL GRANTS?' && wait_a \"Approved agents can't message until you approve them again.\" && wait_a 'Pending ones stay pending.' && ascreen | grep -cF '▶ 1  No, keep them' >/dev/null && wait_a '2  Yes, remove all 3'"
+akey Enter
+check "Enter there (No) removes nothing, and no box" "gone_a 'REMOVE ALL GRANTS?' && nobox ascreen && [[ \$(state) == '$before' ]]"
+akey g; wait_a 'Remove all grants' >/dev/null; akey 5; wait_a '2  Yes, remove all 3' >/dev/null; akey 2
+check "Yes removes every approved one, says how many, and leaves the waiting one" "wait_a 'Removed 3 grants' && ! grep -q '^allow ' $T/mail/grants && [[ -e $T/mail/intros/$ib ]] && nobox ascreen"
+check "with none approved, MESSAGES has no approved count" "gone_a ' approved'"
+rm -rf "$T/mail/intros/$ib"
 rm -f "$T/mail/grants"
 check "with nothing left, the bar has no [G]rant access" "gone_a '[G]rant access' && gone_a ' approved'"
 akey g
@@ -1663,7 +1679,7 @@ check "only your own ssh outside tmux is offered, not another user's" "grep -c '
 
 tm new-window -d -t work -n sshpanel "env REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX AGENT_SAY_SSH=false REVIVE_PANEL_REFRESH=1 $PANEL"
 sshscreen() { tm capture-pane -p -t work:sshpanel; }
-wait_ssh() { for _ in $(seq 1 40); do sshscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
+wait_ssh() { for _ in $(seq 1 ${2:-40}); do sshscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 wait_ssh 'C O N T R O L'
 # A pane connecting somewhere: a process whose command line is an ssh one.
 tm new-window -d -t work -n remote "bash -c 'exec -a \"ssh -p 2222 me@devbox.example\" sleep 300'"
@@ -1726,6 +1742,7 @@ check "a linked host is no longer offered" "for _ in \$(seq 1 20); do sshscreen 
 hl_line() { local n i; n=$(sshscreen | grep -o "[1-9] *$1" | head -c 1); for ((i = 1; i < n; i++)); do tm send-keys -t work:sshpanel Down; sleep 0.1; done; }
 tm send-keys -t work:sshpanel B; sleep 0.7
 check "B lists the link, and says U unlinks it" "wait_ssh 'ATTACH SERVERS' && wait_ssh 'devbox.example  · linked · link again' && wait_ssh 'U unlinks'"
+check "with one link, no line unlinks them all" "! sshscreen | grep -cF 'Unlink all' >/dev/null"
 hl_line 'other host'; tm send-keys -t work:sshpanel u; sleep 0.5
 check "U on a line that isn't a link does nothing" "sshscreen | grep -c 'ATTACH SERVERS' >/dev/null && [[ -e $st/links/devbox.example/on ]]"
 tm send-keys -t work:sshpanel Up; sleep 0.2; tm send-keys -t work:sshpanel u
@@ -1776,6 +1793,24 @@ check "Unlink there unlinks the failing link" "gone_sk"
 broken
 tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh "link again" >/dev/null; hl_line "devbox.example  · stopped"; tm send-keys -t work:sshpanel U
 check "and so does U on its line in B" "gone_sk"
+# Two or more linked: "Unlink all", above other host…, No first. Each is unlinked once; one that
+# stays (here: a file in it rm can't take) is named on the bar with why.
+s2=$st/links/second.example
+mkdir -p "$sk" "$s2"; touch "$sk/on" "$s2/on" "$s2/paused"
+tm send-keys -t work:sshpanel B; sleep 0.7
+check "two links: Unlink all is the line above other host…" "wait_ssh 'ATTACH SERVERS' && sshscreen | grep -A1 -E '[1-9]  Unlink all' | grep -cF 'other host' >/dev/null"
+pick_line 'Unlink all'
+check "it asks first, how many, No first" "wait_ssh 'UNLINK ALL 2 COMPUTERS?' && wait_ssh 'Each computer is unlinked in turn.' && wait_ssh \"Any that can't be reached are listed.\" && sshscreen | grep -cF '▶ 1  No, keep them' >/dev/null && wait_ssh '2  Yes, unlink all 2'"
+tm send-keys -t work:sshpanel Enter
+check "Enter there (No) unlinks nothing, and no box" "for _ in \$(seq 1 20); do sshscreen | grep -c 'UNLINK ALL' >/dev/null || break; sleep 0.2; done; nobox sshscreen && [[ -e $sk/on && -e $s2/on ]]"
+mkdir -p "$s2/stuck"; touch "$s2/stuck/f"; chmod a-w "$s2/stuck"
+tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh 'Unlink all' >/dev/null; pick_line 'Unlink all'
+wait_ssh '2  Yes, unlink all 2' >/dev/null; tm send-keys -t work:sshpanel 2
+check "Yes unlinks each; one that stays is named, with how many went" "wait_ssh 'Unlinked 1 of 2. second.example: ' 100 && [[ ! -e $sk && -d $s2 ]] && nobox sshscreen"
+chmod u+w "$s2/stuck"; rm -rf "$s2/stuck"; mkdir -p "$sk"; touch "$sk/on" "$s2/on"
+tm send-keys -t work:sshpanel B; sleep 0.7; wait_ssh 'Unlink all' >/dev/null; pick_line 'Unlink all'
+wait_ssh '2  Yes, unlink all 2' >/dev/null; tm send-keys -t work:sshpanel 2
+check "all gone, it says so" "wait_ssh 'Unlinked 2 computers' 100 && [[ ! -e $sk && ! -e $s2 ]] && nobox sshscreen"
 # A link stopped on a failure (paused): LINKS says it's not connected, and B, whose list says
 # why, tries it once more, with its key.
 mkdir -p "$sk"; touch "$sk/on" "$sk/paused"; echo "$fp (ED25519)" >"$sk/fingerprint"

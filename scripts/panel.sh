@@ -4378,6 +4378,17 @@ unlink_host() {
 	if [[ -d $ASTATE/links/$1 ]]; then flash "${out#agent-say: }"
 	else FLASH=""; rm -f "$RDIR/$1.rows"; fi # what it kept of that computer
 }
+# unlink_all HOST...: B's "Unlink all". Each is unlinked as U does one, once and never tried
+# again (a server's fail2ban counts every try); then how many went, or each that didn't and why.
+unlink_all() {
+	local h k=0 bad=""
+	for h in "$@"; do
+		unlink_host "$h"
+		if [[ ! -d $ASTATE/links/$h ]]; then k=$((k + 1))
+		else bad+="${bad:+ · }$h: $FLASH"; fi
+	done
+	if [[ -z $bad ]]; then flash "Unlinked $# computers"; else flash "Unlinked $k of $#. $bad"; fi
+}
 
 # U: tmux-revive updated everywhere it can be, all at once, in a popup that shows each line
 # as it goes: this computer's (yours), and each linked computer's over its link. Each is tried
@@ -4678,8 +4689,9 @@ act() {
 		export AGENT_SAY_SCAN_ID="b$$$RANDOM$SECONDS"
 		# Links waiting for their login first, then every ssh host not linked yet (the selected
 		# pane's first), then the links there are to link again (one that fails first), then
-		# "other host...". U on a link's line unlinks it (kr: those lines).
-		local hosts=() labels=() seen=" " h i j d why pass l kr=" " hint=""
+		# "other host...", with "Unlink all" above it when two or more are linked (all: them).
+		# U on a link's line unlinks it (kr: those lines).
+		local hosts=() labels=() seen=" " h i j d why pass l kr=" " hint="" all=()
 		for d in "$ASTATE"/links/*/; do
 			[[ -f $d/on && -f $d/login ]] || continue
 			h=$(basename "$d")
@@ -4712,11 +4724,22 @@ act() {
 				[[ -n $l ]] && kr+="${#hosts[@]} " seen+="$h " hosts+=("$h") labels+=("$l")
 			done
 		done
+		for d in "$ASTATE"/links/*/; do
+			h=$(basename "$d")
+			[[ -f $d/on && $h =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && all+=("$h")
+		done
+		((${#all[@]} > 1)) && hosts+=("*") labels+=("Unlink all") # "*": no host is named that
 		hosts+=("") labels+=("other host… (type its name)")
 		[[ $kr != " " ]] && hint="↑↓ choose · Enter picks · U unlinks · Esc closes"
 		PKEYS=u PKROWS=$kr PHINT=$hint pick "ATTACH SERVERS" "${labels[@]}" || return
 		h=${hosts[PICKED]}
 		[[ $PKEY == u ]] && { unlink_host "$h"; return; }
+		if [[ $h == "*" ]]; then
+			pick "UNLINK ALL ${#all[@]} COMPUTERS?" "${NOTE}Each computer is unlinked in turn." \
+				"${NOTE}Any that can't be reached are listed." "No, keep them" "Yes, unlink all ${#all[@]}" && ((PICKED == 3)) || return
+			unlink_all "${all[@]}"
+			return
+		fi
 		if [[ -z $h ]]; then
 			ask "Host to link (as you'd type after ssh):" || return
 			h=$REPLY
@@ -4878,10 +4901,25 @@ act() {
 			((${#ids[@]} > nw)) || ids+=("") labels+=("${NOTE}APPROVED")
 			ids+=("g $a $b") labels+=("${f:0:30} → ${t:0:30} · $((w / 3600))h $((w % 3600 / 60))m left")
 		done < <(cat "$ASTATE/grants" 2>/dev/null)
+		local ng=$((${#ids[@]} - nw - 1)) # the approvals; two or more, a last line removes them all
+		((ng > 1)) && ids+=("all") labels+=("Remove all grants")
 		((${#ids[@]})) || return
 		pick "LINK AGENTS TOGETHER" "${labels[@]}" || return
 		read -r g a b <<<"${ids[PICKED]}"
-		if [[ $g == i ]]; then
+		if [[ $g == all ]]; then
+			# No first, so a bare Enter takes nothing away. Each pair once: revoke takes it both ways.
+			pick "REMOVE ALL GRANTS?" "${NOTE}Approved agents can't message until you approve them again." \
+				"${NOTE}Pending ones stay pending." "No, keep them" "Yes, remove all $ng" && ((PICKED == 3)) || { PREV=(); return; }
+			local x bad=""
+			local -A gone=()
+			for x in "${ids[@]}"; do
+				read -r g a b <<<"$x"
+				[[ $g == g && -z ${gone["$a $b"]:-} && -z ${gone["$b $a"]:-} ]] || continue
+				gone["$a $b"]=1
+				out=$("$ASAY" revoke "$a" "$b" 2>&1) || [[ -n $bad ]] || bad=${out##*$'\n'}
+			done
+			out=${bad:-"Removed $ng grants"}
+		elif [[ $g == i ]]; then
 			d="$ASTATE/intros/$a"
 			[[ $a =~ ^[0-9a-f]{32}$ && -f $d/from ]] || return
 			f=$(head -n 1 "$d/from") t=$(head -n 1 "$d/to") txt=$(head -c 180 "$d/intro")

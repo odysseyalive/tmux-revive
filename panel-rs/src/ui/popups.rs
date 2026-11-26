@@ -1,5 +1,5 @@
 //! What B and G open besides pick and ask: scripts/panel.sh's code_popup, login_window,
-//! read_host_keys and unlink_host, ported literally. The popups are tmux's own (display-popup,
+//! read_host_keys, unlink_host and unlink_all, ported literally. The popups are tmux's own (display-popup,
 //! or a window of its own for a login when no client can show one), running bash and agent-say
 //! as bash's do; the panel keeps drawing under them (each waits in wait_job).
 
@@ -267,6 +267,29 @@ impl Ui {
         } else {
             self.c.p.flash.clear();
             let _ = std::fs::remove_file(sh::os(&sh::path(&[&self.rdir, b"/", h, b".rows"]))); // what it kept of that computer
+        }
+    }
+
+    /// unlink_all HOST...: B's "Unlink all". Each is unlinked as U does one, once and never
+    /// tried again (a server's fail2ban counts every try); then how many went, or each that didn't
+    /// and why.
+    pub(super) fn unlink_all(&mut self, hosts: &[Bytes], scan: &[u8]) {
+        let mut k = 0i64;
+        let mut bad: Bytes = Vec::new();
+        for h in hosts {
+            self.unlink_host(h, scan);
+            if !sh::is_dir(&sh::path(&[&self.astate, b"/links/", h])) {
+                k += 1;
+            } else {
+                let sep: &[u8] = if bad.is_empty() { b"" } else { " · ".as_bytes() };
+                bad = cat(&[&bad, sep, h, b": ", &self.c.p.flash]);
+            }
+        }
+        let n = itoa(hosts.len() as i64);
+        if bad.is_empty() {
+            self.flash(&cat(&[b"Unlinked ", &n, b" computers"]));
+        } else {
+            self.flash(&cat(&[b"Unlinked ", &itoa(k), b" of ", &n, b". ", &bad]));
         }
     }
 }

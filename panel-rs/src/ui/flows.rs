@@ -30,9 +30,20 @@ fn linked(astate: &[u8], h: &[u8]) -> bool {
     sh::is_file(&sh::path(&[astate, b"/links/", h, b"/on"]))
 }
 
+/// Every link there is (links/*/on, by a name a host can have): what B's "Unlink all" unlinks
+fn all_links(astate: &[u8]) -> Vec<Bytes> {
+    glob_dirs(&sh::path(&[astate, b"/links"]))
+        .into_iter()
+        .filter(|d| sh::is_file(&sh::path(&[d, b"/on"])))
+        .map(|d| sh::basename_dir(&d))
+        .filter(|h| m(HOST_RE, h))
+        .collect()
+}
+
 /// What B lists: links waiting for their login first, then every ssh host not linked yet (the
 /// selected pane's first), then the links there are to link again (one that fails first), then
-/// "other host...". -> (hosts, labels, kr: the lines U unlinks (" 0 3 "), the hint)
+/// "other host...", with "Unlink all" ("*") above it when two or more are linked. -> (hosts,
+/// labels, kr: the lines U unlinks (" 0 3 "), the hint)
 pub fn link_hosts(astate: &[u8], p: &State) -> (Vec<Bytes>, Vec<Bytes>, Bytes, Bytes) {
     let mut hosts: Vec<Bytes> = Vec::new();
     let mut labels: Vec<Bytes> = Vec::new();
@@ -108,6 +119,10 @@ pub fn link_hosts(astate: &[u8], p: &State) -> (Vec<Bytes>, Vec<Bytes>, Bytes, B
             }
         }
     }
+    if all_links(astate).len() > 1 {
+        hosts.push(b"*".to_vec()); // no host is named that
+        labels.push(b"Unlink all".to_vec());
+    }
     hosts.push(Vec::new());
     labels.push("other host… (type its name)".as_bytes().to_vec());
     let hint = if kr != b" " { "↑↓ choose · Enter picks · U unlinks · Esc closes".as_bytes().to_vec() } else { Vec::new() };
@@ -149,6 +164,11 @@ pub fn access_list(astate: &[u8], ttl: i64, now: i64) -> (Vec<Bytes>, Vec<Bytes>
         }
         ids.push(cat(&[b"g ", a, b" ", b]));
         labels.push(cat(&[&cut(&f, 30), " → ".as_bytes(), &cut(&t, 30), " · ".as_bytes(), &itoa(w / 3600), b"h ", &itoa(w % 3600 / 60), b"m left"]));
+    }
+    // the approvals; two or more, a last line removes them all
+    if ids.len() as i64 - nw as i64 - 1 > 1 {
+        ids.push(b"all".to_vec());
+        labels.push(b"Remove all grants".to_vec());
     }
     (ids, labels)
 }
@@ -278,7 +298,41 @@ impl Ui {
         let r = sh::read_ws(&ids[picked], 3, b" \t\n");
         let (g, a, b) = (r[0].clone(), r[1].clone(), r[2].clone());
         let mut out: Bytes;
-        if g == b"i" {
+        if g == b"all" {
+            // No first, so a bare Enter takes nothing away. Each pair once: revoke takes it both ways.
+            let ng = itoa(ids.iter().filter(|x| x.starts_with(b"g ")).count() as i64);
+            let items = vec![
+                cat(&[&[NOTE], b"Approved agents can't message until you approve them again."]),
+                cat(&[&[NOTE], b"Pending ones stay pending."]),
+                b"No, keep them".to_vec(),
+                cat(&[b"Yes, remove all ", &ng]),
+            ];
+            if !(self.pick(&mut PickOpts::default(), b"REMOVE ALL GRANTS?", &items) && num(&self.picked) == 3) {
+                self.prev.clear();
+                return;
+            }
+            let mut bad: Bytes = Vec::new();
+            let mut gone: std::collections::HashSet<(Bytes, Bytes)> = std::collections::HashSet::new();
+            for x in &ids {
+                let r = sh::read_ws(x, 3, b" \t\n");
+                let (g, a, b) = (r[0].clone(), r[1].clone(), r[2].clone());
+                if !(g == b"g" && !gone.contains(&(a.clone(), b.clone())) && !gone.contains(&(b.clone(), a.clone()))) {
+                    continue;
+                }
+                gone.insert((a.clone(), b.clone()));
+                let argv = vec![self.asay(), b"revoke".to_vec(), a, b];
+                let (st, o) = self.wait_job(move || run_all(&argv, &[]));
+                if st != 0 && bad.is_empty() {
+                    // ${out##*$'\n'}
+                    let o = sh::cmdsub(&o);
+                    bad = match o.iter().rposition(|&c| c == b'\n') {
+                        Some(i) => o[i + 1..].to_vec(),
+                        None => o,
+                    };
+                }
+            }
+            out = if bad.is_empty() { cat(&[b"Removed ", &ng, b" grants"]) } else { bad };
+        } else if g == b"i" {
             let d = sh::path(&[&self.astate, b"/intros/", &a]);
             if !(m("^[0-9a-f]{32}$", &a) && sh::is_file(&sh::path(&[&d, b"/from"]))) {
                 return;
@@ -373,6 +427,7 @@ impl Ui {
     pub(super) fn link(&mut self) {
         let scan = cat(&[b"b", &itoa(std::process::id() as i64), &itoa((unsafe { libc::rand() } % 32768) as i64), &itoa(self.secs())]);
         let (hosts, labels, kr, hint) = link_hosts(&self.astate, &self.c.p);
+        let all = all_links(&self.astate); // what "Unlink all" unlinks, as the list had them
         let mut o = PickOpts { keys: b"u".to_vec(), krows: kr, hint: Some(hint), ..Default::default() };
         if !self.pick(&mut o, b"ATTACH SERVERS", &labels) {
             return;
@@ -380,6 +435,19 @@ impl Ui {
         let mut h = hosts[num(&self.picked) as usize].clone();
         if self.pkey == b"u" {
             self.unlink_host(&h, &scan);
+            return;
+        }
+        if h == b"*" {
+            let items = vec![
+                cat(&[&[NOTE], b"Each computer is unlinked in turn."]),
+                cat(&[&[NOTE], b"Any that can't be reached are listed."]),
+                b"No, keep them".to_vec(),
+                cat(&[b"Yes, unlink all ", &itoa(all.len() as i64)]),
+            ];
+            if !(self.pick(&mut PickOpts::default(), &cat(&[b"UNLINK ALL ", &itoa(all.len() as i64), b" COMPUTERS?"]), &items) && num(&self.picked) == 3) {
+                return;
+            }
+            self.unlink_all(&all, &scan);
             return;
         }
         if h.is_empty() {
@@ -664,8 +732,8 @@ mod tests {
 
     /// B's list against bash's: links needing their login, ssh hosts (the selected pane's first,
     /// none twice, none linked), outside ones, links to link again (failing first, an older
-    /// agent-say's "· L to try again" dropped, a long error cut), the "other host…" line, which
-    /// lines U unlinks and the hint
+    /// agent-say's "· L to try again" dropped, a long error cut), "Unlink all" and the "other host…"
+    /// line, which lines U unlinks and the hint
     #[test]
     fn link_hosts_as_bash() {
         setup();
@@ -724,8 +792,9 @@ mod tests {
 
     /// G's list and an intro's box against bash's: waiting intros (an odd name cleaned and cut),
     /// approvals in their time with what's left (lapsed, declined and unfinished lines not), the
-    /// why lines (both ways with the earlier first, from how the message opens when there's no
-    /// why whole, cut at 80), the words in three lines at most, and the restarted line
+    /// line that removes them all, the why lines (both ways with the earlier first, from how the
+    /// message opens when there's no why whole, cut at 80), the words in three lines at most, and
+    /// the restarted line
     #[test]
     fn access_as_bash() {
         setup();
@@ -780,7 +849,7 @@ mod tests {
             "{}\nNOTE=$'\\x1f' ASTATE=$1 now=$2 ttl=86400\nlst() {{ local ids=() labels=() d f t w g a b\n{}\nprintf '%s\\n' \"${{ids[@]}}\" -- \"${{labels[@]}}\" --; }}\nlst\n\
              one() {{ local labels=() d=$ASTATE/intros/$1 f t txt\nf=$(head -n 1 \"$d/from\") t=$(head -n 1 \"$d/to\") txt=$(head -c 180 \"$d/intro\")\nclean f t txt\n{}\nprintf '%s\\n' \"${{labels[@]}}\" --; }}\none {}; one {}; one {}",
             bash_prims(),
-            act_lines("for d in \"$ASTATE\"/intros/*/; do", "done < <(cat \"$ASTATE/grants\""),
+            act_lines("for d in \"$ASTATE\"/intros/*/; do", "ids+=(\"all\")"),
             act_lines("\t\t\tlabels=()", "local nt=${#labels[@]}"),
             ia,
             ib,
