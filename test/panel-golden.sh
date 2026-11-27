@@ -365,6 +365,9 @@ snaps() {
 	)
 	snapedit "$T/snap/shell" "$T/snap/states" "${st[@]}"
 	snapedit "$T/snap/states" "$T/snap/states-plan" SEL=4 SEL_ID=
+	# Waiting on an answer to a message it sent: a turn you began and one a message began alike,
+	# and over 90 minutes, IDLE all the same.
+	snapedit "$T/snap/states" "$T/snap/states-reply" W_REPLY[2]=1 W_REPLY[3]=1 W_REPLY[5]=1
 	st=(
 		P_STATE[0]=limit "P_LIM[0]=$((RNOW + 2 * 86400 + 240))" P_STATE[2]=waiting "W_SINCE[2]=$((RNOW - 1500))" W_FROM[2]=u
 		P_STATE[3]=waiting "W_SINCE[3]=$((RNOW - 3000))" W_FROM[3]=u P_STATE[4]=ready P_STATE[5]=waiting
@@ -526,6 +529,8 @@ CL
 	tmux -S "$s" new-window -d -t work -n cl-limit -c "$d/work" "env HOME=$h bash $d/claude.sh $h idle bbbb-2"
 	tmux -S "$s" new-window -d -t work -n cl-busy -c "$d/work" "env HOME=$h bash $d/claude.sh $h busy cccc-3"
 	tmux -S "$s" set-option -p -t work:cl-wait @agent cl-wait
+	# In that turn it asked bob a question, not answered yet: it waits on an agent.
+	printf '## [cl-wait -> bob@x %s] #m6\nhave a look?\n' "$(date -u -d "@$((now - 60))" +%Y-%m-%dT%H:%M:%SZ)" >>"$d/state/mailbox.md"
 	# A Codex at its prompt: its rollout names its folder, a start after its own and its tokens.
 	cat >"$d/codex.sh" <<'CX'
 h=$1 cwd=$2
