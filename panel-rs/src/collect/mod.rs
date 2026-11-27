@@ -18,8 +18,9 @@ use sh::Bytes;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The P_* arrays: one record per pane, by row. The dense ones grow together; P_SRV, P_LIM,
-/// P_LWHY, W_SINCE and W_FROM are sparse (set by row). P_LWHY: "plan" when its plan changed
-/// since its limit, "login" on a names-only row whose link waits for its login.
+/// P_LWHY, W_SINCE, W_FROM and W_REPLY are sparse (set by row). P_LWHY: "plan" when its plan
+/// changed since its limit, "login" on a names-only row whose link waits for its login.
+/// W_REPLY: "1" when it waits on another session's answer to a message it sent.
 #[derive(Default, Clone, Debug)]
 pub struct Panes {
     pub id: Vec<Bytes>,
@@ -45,6 +46,7 @@ pub struct Panes {
     pub lwhy: BTreeMap<i64, Bytes>,
     pub w_since: BTreeMap<i64, Bytes>,
     pub w_from: BTreeMap<i64, Bytes>,
+    pub w_reply: BTreeMap<i64, Bytes>,
 }
 
 /// `${A[i]:-}` of a dense array
@@ -121,6 +123,7 @@ pub struct G {
     pub ww_t0: HashMap<Bytes, Bytes>,
     pub ww_w0: HashMap<Bytes, Bytes>,
     pub mail_t: HashMap<Bytes, i64>,
+    pub mail_s: HashMap<Bytes, i64>,
     pub mail_stamp: Bytes,
     pub ctx_stamp: HashMap<Bytes, Bytes>,
     pub ctx_val: HashMap<Bytes, Bytes>,

@@ -419,6 +419,7 @@ impl G {
             HashMap<Bytes, Bytes>,
             HashMap<Bytes, Bytes>,
         ) = Default::default();
+        let mut rreply: HashMap<Bytes, Bytes> = HashMap::new();
         let mut ft: Bytes = Vec::new();
         let raw = std::fs::read(sh::os(f)).unwrap_or_default();
         let sub = |s: &[u8], k: i64| substr(s, 0, Some(k)).unwrap_or_default();
@@ -451,6 +452,11 @@ impl G {
                 }
                 if let Some(mm) = re("^#wait (%[0-9]{1,9}) ([0-9]{1,9}) ([au])$").matches(&id40) {
                     rwait.insert(mm[1].clone(), sh::path(&[&mm[2], b" ", &mm[3]]));
+                    continue;
+                }
+                // Waiting on another session's answer to a message it sent, likewise.
+                if let Some(mm) = re("^#reply (%[0-9]{1,9})$").matches(&id40) {
+                    rreply.insert(mm[1].clone(), b"1".to_vec());
                     continue;
                 }
                 if let Some(mm) = re("^#limit (%[0-9]{1,9}) (-|[0-9]{1,9}) ([01])$").matches(&id40) {
@@ -562,6 +568,9 @@ impl G {
                     let now = self.now();
                     self.p.w_since.insert(row, (now - secs).to_string().into_bytes());
                     self.p.w_from.insert(row, who);
+                    if rreply.contains_key(&id) {
+                        self.p.w_reply.insert(row, b"1".to_vec());
+                    }
                 }
             }
             got = true;

@@ -73,19 +73,21 @@ pub fn ver_lt(a: &[u8], b: &[u8]) -> bool {
     false
 }
 
-/// What wait_colour leaves: WCOL, WIDLE, WAGENT, WUNK
+/// What wait_colour leaves: WCOL, WIDLE, WREPLY, WAGENT, WUNK
 pub struct Wait {
     pub col: Bytes,
     pub idle: bool,
+    pub reply: bool,
     pub agent: bool,
     pub unk: bool,
 }
 
 impl Ctx {
-    /// wait_colour ROW -> WCOL, WIDLE, WAGENT, WUNK: WAITING ON YOU's colour, by how long ago
-    /// the turn began (W_SINCE) and who began it (W_FROM)
+    /// wait_colour ROW -> WCOL, WIDLE, WREPLY, WAGENT, WUNK: WAITING ON YOU's colour, by how
+    /// long ago the turn began (W_SINCE), whether it waits on an answer (W_REPLY) and who began
+    /// it (W_FROM)
     pub fn wait_colour(&self, row: &[u8]) -> Wait {
-        let mut w = Wait { col: BGRN.to_vec(), idle: false, agent: false, unk: false };
+        let mut w = Wait { col: BGRN.to_vec(), idle: false, reply: false, agent: false, unk: false };
         let mut s: &[u8] = b"";
         if all_digits(row) {
             s = self.p.a("W_SINCE", num(row));
@@ -97,6 +99,10 @@ impl Ctx {
         let a = self.p.now.wrapping_sub(num(s));
         if a >= 5400 {
             w.idle = true;
+            return w;
+        }
+        if !self.p.a("W_REPLY", num(row)).is_empty() {
+            w.reply = true;
             return w;
         }
         let from = self.p.a("W_FROM", num(row));
@@ -270,6 +276,8 @@ impl Ctx {
                     }
                 } else if w.idle {
                     cat(&[GRY, "◇ IDLE            ".as_bytes(), R])
+                } else if w.reply {
+                    cat(&[&w.col, "◆ WAITING ON AGENT".as_bytes(), R])
                 } else if w.agent && sw != 0 {
                     self.p.cpad = b" ".to_vec();
                     cat(&[&w.col, "◆ AGENT'S TURN DONE".as_bytes(), R])

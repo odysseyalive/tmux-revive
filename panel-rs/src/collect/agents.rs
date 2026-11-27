@@ -80,6 +80,17 @@ pub fn iso_epoch(s: &[u8]) -> Option<i64> {
     Some((era * 146097 + doe - 719468) * 86400 + d10(&mm[4]) * 3600 + d10(&mm[5]) * 60 + d10(&mm[6]))
 }
 
+/// in_turn TIME W0 SINCE: TIME is in the pane's last working stretch: after it last began to
+/// work (W0, a few seconds' grace: a message starts it), or, that not seen, in the ten minutes
+/// before it began to wait (SINCE)
+fn in_turn(t: i64, w0: &[u8], since: i64) -> bool {
+    if w0.is_empty() {
+        t > since - 600 && t <= since + 5
+    } else {
+        t >= n(w0) - 15
+    }
+}
+
 /// lim_at ISO-TIME -> ISO_S, as iso_epoch, its fraction of a second dropped
 pub fn lim_at(s: &[u8]) -> Option<i64> {
     let t = s.strip_suffix(b"Z").unwrap_or(s);
@@ -825,7 +836,8 @@ impl G {
         (tfrom, tat)
     }
 
-    /// mail_times -> MAIL_T[NAME]: when a message was last delivered to each name
+    /// mail_times -> MAIL_T[NAME]: when a message was last delivered to each name, and
+    /// MAIL_S["FROM TO"]: when one from FROM to TO last was
     fn mail_times(&mut self) {
         let me = sh::env("AGENT_SAY_HOST").filter(|v| !v.is_empty()).unwrap_or_else(|| self.host.clone());
         let st = match std::fs::metadata(sh::os(&self.amail)) {
@@ -840,6 +852,7 @@ impl G {
         }
         self.mail_stamp = st.clone();
         self.mail_t.clear();
+        self.mail_s.clear();
         if st.is_empty() {
             return;
         }
@@ -849,11 +862,9 @@ impl G {
             if !l.starts_with(b"## [") {
                 continue;
             }
-            // cut -d' ' -f4-
-            let parts: Vec<&[u8]> = l.splitn(4, |&c| c == b' ').collect();
-            let cut: &[u8] = if parts.len() >= 4 { parts[3] } else { b"" };
-            let f = sh::read_ws(cut, 3, b" \t\n");
-            let (mut to, when, rest) = (f[0].clone(), f[1].clone(), f[2].clone());
+            // read -r _ from _ to when rest
+            let f = sh::read_ws(l, 6, b" \t\n");
+            let (mut from, mut to, when, rest) = (f[1].clone(), f[3].clone(), f[4].clone(), f[5].clone());
             if sh::contains(&rest, b"(held") || sh::contains(&rest, b"NOT DELIVERED") {
                 continue;
             }
@@ -864,16 +875,30 @@ impl G {
                 continue;
             }
             let w = when.strip_suffix(b"]").unwrap_or(&when);
-            if let Some(t) = iso_epoch(w) {
-                if t > *self.mail_t.get(&to).unwrap_or(&0) {
-                    self.mail_t.insert(to, t);
-                }
+            let Some(t) = iso_epoch(w) else { continue };
+            if t > *self.mail_t.get(&to).unwrap_or(&0) {
+                self.mail_t.insert(to.clone(), t);
+            }
+            if from.first() == Some(&b'[') {
+                from.remove(0);
+            }
+            if from.ends_with(&at_me) {
+                from.truncate(from.len() - at_me.len());
+            }
+            if !m("^[A-Za-z0-9][A-Za-z0-9_.:+=@-]*$", &from) {
+                continue;
+            }
+            let k = sh::path(&[&from, b" ", &to]);
+            if t > *self.mail_s.get(&k).unwrap_or(&0) {
+                self.mail_s.insert(k, t);
             }
         }
     }
 
     /// wait_watch: for the panes nothing above said it of, when they began to wait as the panel
-    /// saw it, and from the mailbox whether a message reached it since it last began to work
+    /// saw it, and from the mailbox whether a message reached it since it last began to work.
+    /// And for this computer's, whether it sent one in that time that nothing has answered
+    /// since (W_REPLY).
     pub fn wait_watch(&mut self) {
         let now = self.now();
         let ost = std::mem::take(&mut self.ww_st);
@@ -914,12 +939,22 @@ impl G {
                     }
                     let t = self.mail_t.get(&t).copied();
                     let w = self.ww_w0.get(&k).cloned().unwrap_or_default();
-                    let ws = n(&ws);
-                    let a = match t {
-                        Some(t) => (!w.is_empty() && t >= n(&w) - 15) || (w.is_empty() && t > ws - 600 && t <= ws + 5),
-                        None => false,
-                    };
+                    let a = t.is_some_and(|t| in_turn(t, &w, n(&ws)));
                     self.p.w_from.insert(ii, if a { b"a".to_vec() } else { b"u".to_vec() });
+                }
+                // A linked computer's panes bring their own (#reply), from the mailbox there.
+                let name = &self.p.name[i];
+                if !ws.is_empty() && self.p.host[i].is_empty() && !name.is_empty() {
+                    let w = self.ww_w0.get(&k).cloned().unwrap_or_default();
+                    let pre = sh::path(&[name, b" "]);
+                    let waits = self.mail_s.iter().any(|(m, &t)| {
+                        m.starts_with(&pre)
+                            && in_turn(t, &w, n(&ws))
+                            && *self.mail_s.get(&sh::path(&[&m[pre.len()..], b" ", name])).unwrap_or(&0) < t
+                    });
+                    if waits {
+                        self.p.w_reply.insert(ii, b"1".to_vec());
+                    }
                 }
             }
         }
@@ -1579,6 +1614,52 @@ mod tests {
             let theirs = bash(&format!("{}\niso_epoch \"$1\"; printf %s \"$ISO_S\"", f), &[c.as_bytes()]);
             assert_eq!(iso_epoch(c.as_bytes()).map(|x| x.to_string().into_bytes()).unwrap_or_default(), theirs, "{}", c);
         }
+    }
+
+    #[test]
+    fn in_turn_as_bash() {
+        let f = bash_fn("in_turn");
+        for (t, w, s) in [(100, "", 100), (105, "", 100), (106, "", 100), (-500, "", 100), (-499, "", 100), (85, "100", 0), (84, "100", 0), (900, "100", 0)] {
+            let theirs = bash(&format!("{}\nin_turn \"$1\" \"$2\" \"$3\" && printf 1; :", f), &[t.to_string().as_bytes(), w.as_bytes(), s.to_string().as_bytes()]);
+            assert_eq!(in_turn(t, w.as_bytes(), s), theirs == b"1", "{} {} {}", t, w, s);
+        }
+    }
+
+    #[test]
+    fn mail_times_as_bash() {
+        let d = std::env::temp_dir().join(format!("trp-mail-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mb = d.join("mailbox.md");
+        std::fs::write(
+            &mb,
+            "## [amish-dev@here -> oa-work@here 2026-11-27T21:21:56Z] #h1.0001 (held: waiting for access)\nhi\n\n\
+             ## [amish-dev -> oa-work 2026-11-27T21:22:04Z] #20261127212204-1\nhi\n\n\
+             ## [amish-dev@here -> oa-work@here 2026-11-27T21:22:05Z] #h1.0001 (delivered)\nhi\n\n\
+             ## [oa-work -> amish-dev 2026-11-27T21:20:00Z] #2\nold\n\n\
+             ## [cx@far -> dr 2026-11-27T21:23:00Z] #h2.0001 (NOT DELIVERED: no)\nx\n\n\
+             ## [tr@far -> pw 2026-11-27T21:24:00Z] #3\nx\n\n\
+             ## [tmux-revive -> %10 2026-11-27T21:25:00Z] #4\nx\n\n\
+             ## [%5 -> pw 2026-11-27T21:26:00Z] #5\nx\n\n\
+             ## [pw -> tr@far 2026-11-27T21:27:00Z] #6\nx\n\n\
+             ## [pw -> tr@far bad-time] #7\nx\n",
+        )
+        .unwrap();
+        let mbb = mb.as_os_str().as_encoded_bytes().to_vec();
+        let f = format!("{}\n{}", bash_fn("iso_epoch"), bash_fn("mail_times"));
+        let theirs = bash(
+            &format!("{}\ndeclare -A MAIL_T MAIL_S; MAIL_STAMP=; AMAIL=$1 HOST=here; mail_times\nfor k in \"${{!MAIL_T[@]}}\"; do printf 't %s=%s\\n' \"$k\" \"${{MAIL_T[$k]}}\"; done\nfor k in \"${{!MAIL_S[@]}}\"; do printf 's %s=%s\\n' \"$k\" \"${{MAIL_S[$k]}}\"; done | sort", f),
+            &[&mbb],
+        );
+        let mut theirs: Vec<String> = String::from_utf8(theirs).unwrap().lines().map(String::from).collect();
+        theirs.sort();
+        let mut g = G { amail: mbb, host: b"here".to_vec(), ..Default::default() };
+        g.mail_times();
+        let mut ours: Vec<String> = g.mail_t.iter().map(|(k, v)| format!("t {}={}", String::from_utf8_lossy(k), v)).collect();
+        ours.extend(g.mail_s.iter().map(|(k, v)| format!("s {}={}", String::from_utf8_lossy(k), v)));
+        ours.sort();
+        std::fs::remove_dir_all(&d).ok();
+        assert!(ours.iter().any(|l| l.starts_with("s amish-dev oa-work=")), "{:?}", ours);
+        assert_eq!(ours, theirs);
     }
 
     #[test]

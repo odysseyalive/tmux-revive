@@ -141,6 +141,7 @@ impl G {
                 "P_LWHY" => Some(p.lwhy.clone()),
                 "W_SINCE" => Some(p.w_since.clone()),
                 "W_FROM" => Some(p.w_from.clone()),
+                "W_REPLY" => Some(p.w_reply.clone()),
                 "X_SSH" => Some(arr(&self.x_ssh)),
                 "X_WHERE" => Some(arr(&self.x_where)),
                 "WON" => Some(arr(&[b"1".to_vec(), b"0".to_vec(), b"0".to_vec(), b"0".to_vec()])),

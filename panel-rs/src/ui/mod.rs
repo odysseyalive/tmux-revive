@@ -52,7 +52,7 @@ const ROUND_WAIT: Duration = Duration::from_millis(300);
 /// The names a generation brings (what the looks gathered): the rest of the snapshot is the
 /// panel's own (selection, folds, screens, messages)
 fn gathered(name: &str) -> bool {
-    name.starts_with("P_") || matches!(name, "W_SINCE" | "W_FROM" | "X_SSH" | "X_WHERE")
+    name.starts_with("P_") || matches!(name, "W_SINCE" | "W_FROM" | "W_REPLY" | "X_SSH" | "X_WHERE")
 }
 
 /// A generation's rows into the panel's snapshot, all of them at once: every gathered array
@@ -1149,7 +1149,7 @@ mod tests {
     #[test]
     fn gathered_names_are_the_looks_only() {
         use super::gathered;
-        for n in ["P_ID", "P_STATE", "P_LIM", "W_SINCE", "W_FROM", "X_SSH", "X_WHERE"] {
+        for n in ["P_ID", "P_STATE", "P_LIM", "W_SINCE", "W_FROM", "W_REPLY", "X_SSH", "X_WHERE"] {
             assert!(gathered(n), "{}", n);
         }
         for n in ["MSG", "SIDE", "INTROS", "SCREEN", "SCREEN_E", "RPEEK", "NOTICES", "CPU_HIST", "ATOP", "QL", "WON"] {
