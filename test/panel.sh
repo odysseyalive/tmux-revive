@@ -858,6 +858,18 @@ snap=$(pgrep -P "$clpid" -f 'source .*snapshot-x')
 pkill -P "$snap"; kill "$snap"; sleep 0.3
 out=$(bgframe)
 check "with that command ended (an MCP server still running under it), WAITING ON YOU" "pgrep -P $clpid -f mcp-server >/dev/null && grep -q 'claude *◆ WAITING ON YOU' <<<\"\$out\""
+# It sent another session a message in the turn you typed, not answered yet: WAITING ON AGENT,
+# in the usual green. Once the answer is delivered, WAITING ON YOU again.
+tm set-option -p -t work:cl @agent cl-asks
+mv "$AGENT_SAY_MAILBOX" "$T/mailbox.keep" 2>/dev/null
+printf '## [cl-asks -> oa-work %s] #r1\nwhat now?\n\n' "$(date -u -d '-1 minute' +%Y-%m-%dT%H:%M:%SZ)" >"$AGENT_SAY_MAILBOX"
+raw=$(tm run-shell "HOME=$H CLAUDE_CODE_TMPDIR=$T/ltmp COLUMNS=130 LINES=45 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once")
+check "a message it sent in its turn, not answered: WAITING ON AGENT, in the usual green" "grep 'cl-asks' <<<\"\$raw\" | grep -cF $'\e[92m◆ WAITING ON AGENT' >/dev/null"
+printf '## [oa-work -> cl-asks %s] #r2\nthis\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$AGENT_SAY_MAILBOX"
+out=$(bgframe)
+check "once the answer is delivered, WAITING ON YOU again" "grep -q 'cl-asks .*claude *◆ WAITING ON YOU' <<<\"\$out\" && ! grep -q 'WAITING ON AGENT' <<<\"\$out\""
+rm -f "$AGENT_SAY_MAILBOX"; mv "$T/mailbox.keep" "$AGENT_SAY_MAILBOX" 2>/dev/null
+tm set-option -pu -t work:cl @agent
 # A server it left running (a background command listening on a port) isn't work: it waits on
 # you, and says a server runs. Claude Code's record says shell for it, as for any.
 if command -v python3 >/dev/null && { command -v ss || command -v lsof; } >/dev/null; then
@@ -2024,11 +2036,29 @@ far_back() { # far_back NAME SECONDS-AGO
 }
 far_back cl-back 7200
 far_back cl-back5 300
+# Four that sent another session a message in the turn you typed: one not answered yet, one
+# answered since, one whose message is still held for access (not sent), and one an hour and a
+# half ago.
+far_turn cl-asks "ask oa-work"
+far_turn cl-told "ask oa-work too"
+far_turn cl-held "ask oa-new"
+far_turn cl-oldask "ask, long ago"
+sed -i 's/"statusUpdatedAt":[0-9]*/"statusUpdatedAt":'"$(($(date +%s) - 5500))"'000/' "$(grep -l '"s-cl-oldask"' "$T"/rhome/.claude/sessions/*.json)"
+ago() { date -u -d "-$1 seconds" +%Y-%m-%dT%H:%M:%SZ; }
+mv "$AGENT_SAY_MAILBOX" "$T/mailbox.keep" 2>/dev/null
+{
+	printf '## [cl-asks -> oa-work %s] #r1\nwhat now?\n\n' "$(ago 60)"
+	printf '## [cl-told -> oa-work %s] #r2\nwhat now?\n\n## [oa-work -> cl-told %s] #r3\nthis\n\n' "$(ago 60)" "$(ago 30)"
+	printf '## [cl-held@far.example -> oa-new@far.example %s] #h9.0001 (held: waiting for access)\nhello\n\n' "$(ago 60)"
+	printf '## [cl-oldask -> oa-work %s] #r4\nwhat now?\n\n' "$(ago 5560)"
+} >"$AGENT_SAY_MAILBOX"
 sleep 0.5
 rows=$(CLAUDE_CODE_TMPDIR=$T/rtmp REVIVE_SOCKET=$rsock REVIVE_DIR=$T/remote-data HOME=$T/rhome bash "$ROOT/scripts/panel.sh" --rows)
 check "--rows there: waiting since just now, a turn you typed, is a #wait line saying u" "grep -B3 $'\x1fcl-typed\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Ec '^#wait %[0-9]+ [0-9] u\$' >/dev/null"
 check "--rows there: and one an agent-say message started, a" "grep -B3 $'\x1fcl-msg\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Ec '^#wait %[0-9]+ [0-9] a\$' >/dev/null"
 check "--rows there: one whose record says nothing of when, no #wait line" "! grep -B3 $'\x1fcl-idle\x1f' <<<\"\$rows\" | grep -c '^#wait' >/dev/null"
+check "--rows there: one whose message isn't answered yet, a #reply line after its #wait" "grep -B2 $'\x1fcl-asks\x1fclaude\x1fwaiting\x1f' <<<\"\$rows\" | grep -Ec '^#wait %[0-9]+ [0-9] u\$' >/dev/null && grep -B1 $'\x1fcl-asks\x1f' <<<\"\$rows\" | grep -Ec '^#reply %[0-9]+\$' >/dev/null"
+check "--rows there: none for one answered or held; the one from long ago has its own" "[[ \$(grep -c '^#reply' <<<\"\$rows\") == 2 ]] && grep -B1 $'\x1fcl-oldask\x1f' <<<\"\$rows\" | grep -c '^#reply' >/dev/null"
 rm -f "$st/panel/far.example.rows"*
 raw=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh COLUMNS=140 LINES=50 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once")
 out=$(plain <<<"$raw")
@@ -2039,6 +2069,15 @@ check "here: resumed just now, its last turn two hours ago, shows IDLE" "grep -q
 check "here: resumed just now, its last turn five minutes ago, shows WAITING ON YOU" "grep -q 'cl-back5 .*claude *◆ WAITING ON YOU' <<<\"\$out\""
 check "here: one waiting since a time not known shows --- in grey, not WAITING ON YOU" "grep 'cl-idle' <<<\"\$raw\" | grep -cF $'\e[90m  --- ' >/dev/null && ! grep 'cl-idle' <<<\"\$raw\" | grep -c WAITING >/dev/null"
 check "here: AGENT'S TURN DONE leaves a gap before the folder, and the frame is still 140 wide" "grep -q \"AGENT'S TURN DONE \" <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '140 ' ]]"
+# More rows than PANES has room for at 50 lines: these on a taller panel, the peek hidden.
+raw=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh REVIVE_PANEL_PEEK=0 COLUMNS=140 LINES=90 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once")
+out=$(plain <<<"$raw")
+check "here: one whose message isn't answered yet is WAITING ON AGENT, in the usual green" "grep 'cl-asks' <<<\"\$raw\" | grep -cF $'\e[92m◆ WAITING ON AGENT' >/dev/null && grep -q 'cl-asks .*claude *◆ WAITING ON AGENT  ' <<<\"\$out\""
+check "here: one answered since, or whose message is held, WAITING ON YOU" "grep -q 'cl-told .*claude *◆ WAITING ON YOU' <<<\"\$out\" && grep -q 'cl-held .*claude *◆ WAITING ON YOU' <<<\"\$out\""
+check "here: one that asked an hour and a half ago shows IDLE" "grep -q 'cl-oldask .*claude *◇ IDLE  ' <<<\"\$out\""
+out=$(tm run-shell "AGENT_SAY_SSH=$T/fakessh REVIVE_PANEL_PEEK=0 COLUMNS=80 LINES=90 REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX $PANEL --once" | plain)
+check "here: a narrow panel says WAITING ON AGENT too, and is still 80 wide" "grep -q 'cl-asks .*◆ WAITING ON AGENT' <<<\"\$out\" && [[ \$(awk '{w[length]=1} END{for (k in w) printf \"%s \", k}' <<<\"\$out\") == '80 ' ]]"
+rm -f "$AGENT_SAY_MAILBOX"; mv "$T/mailbox.keep" "$AGENT_SAY_MAILBOX" 2>/dev/null
 # Live, as right after tmux starts (REVIVE_PANEL_LOADBOX=1 stands in for that), with a linked
 # computer slow to send its rows: a box says it is loading, with a bar of what is ready, over
 # the panel as it goes on. No key closes it; it goes once the rows are in, for good.
@@ -2064,7 +2103,7 @@ tm new-window -d -t work -n lboxp "env AGENT_SAY_SSH=$T/fakessh REVIVE_DIR=$REVI
 wait_lb 'cl-idle' && sleep 1.5
 check "REVIVE_PANEL_LOADBOX=0 (the tests' default): no box" "! lbs | grep -c '▓ LOADING ▓' >/dev/null"
 tm kill-window -t work:lboxp
-for w in cl-typed cl-msg cl-old cl-back cl-back5; do far_tm kill-window -t far:$w; done
+for w in cl-typed cl-msg cl-old cl-back cl-back5 cl-asks cl-told cl-held cl-oldask; do far_tm kill-window -t far:$w; done
 # Their CPU and context left, drawn as this computer's own are. A busy pane there; a Claude
 # Code whose record names its transcript; and three with no record to be found, as over a
 # link's ssh: one whose config folder is in its own environment and whose session is the

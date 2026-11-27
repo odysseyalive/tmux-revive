@@ -936,9 +936,10 @@ claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting
 # a message from another session (a). W_SINCE[row], the time it began to wait, in seconds, and
 # W_FROM[row]: set by agents_look from a Claude Code record, by remote_panes from a linked
 # computer's #wait line, and otherwise by wait_watch from what the panel saw. Neither known,
-# it shows --- (see wait_colour).
-declare -a W_SINCE=() W_FROM=()
-declare -A TF_K=() TF_V=() TF_A=() WW_ST=() WW_T0=() WW_W0=() MAIL_T=()
+# it shows --- (see wait_colour). W_REPLY[row]: 1 when it waits on another session's answer to
+# a message it sent (wait_watch; a linked computer's #reply line).
+declare -a W_SINCE=() W_FROM=() W_REPLY=()
+declare -A TF_K=() TF_V=() TF_A=() WW_ST=() WW_T0=() WW_W0=() MAIL_T=() MAIL_S=()
 MAIL_STAMP=""
 # claude_turn_from PID SINCE -> TFROM: a when the last prompt in its transcript was an
 # agent-say message ([agent-msg from=...]), u when it was typed, nothing when that can't be
@@ -977,26 +978,38 @@ iso_epoch() { # iso_epoch 2026-11-15T03:01:54Z -> ISO_S: seconds since 1970, or 
 	ISO_S=$(((era * 146097 + doe - 719468) * 86400 + 10#${BASH_REMATCH[4]} * 3600 + 10#${BASH_REMATCH[5]} * 60 + 10#${BASH_REMATCH[6]}))
 }
 # mail_times -> MAIL_T[NAME]: when a message was last delivered to each name (name@host for
-# another computer's), read again only when the mailbox changes.
+# another computer's), and MAIL_S["FROM TO"]: when one from FROM to TO last was, read again only
+# when the mailbox changes.
 mail_times() {
-	local st me=${AGENT_SAY_HOST:-$HOST} to when rest
+	local st me=${AGENT_SAY_HOST:-$HOST} from to when rest
 	st=$(stat -c '%Y %s' "$AMAIL" 2>/dev/null || stat -f '%m %z' "$AMAIL" 2>/dev/null)
 	[[ $st == "$MAIL_STAMP" ]] && return 0
-	MAIL_STAMP=$st MAIL_T=()
+	MAIL_STAMP=$st MAIL_T=() MAIL_S=()
 	[[ -n $st ]] || return 0
-	while read -r to when rest; do
+	while read -r _ from _ to when rest; do
 		[[ $rest == *"(held"* || $rest == *"NOT DELIVERED"* ]] && continue
 		to=${to%"@$me"}
 		[[ $to =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=@-]*$ ]] || continue
 		iso_epoch "${when%]}"
-		[[ -n $ISO_S ]] && ((ISO_S > ${MAIL_T[$to]:-0})) && MAIL_T[$to]=$ISO_S
-	done < <(tail -n 600 "$AMAIL" 2>/dev/null | grep '^## \[' | cut -d' ' -f4-)
+		[[ -n $ISO_S ]] || continue
+		((ISO_S > ${MAIL_T[$to]:-0})) && MAIL_T[$to]=$ISO_S
+		from=${from#\[} from=${from%"@$me"}
+		[[ $from =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=@-]*$ ]] || continue
+		((ISO_S > ${MAIL_S["$from $to"]:-0})) && MAIL_S["$from $to"]=$ISO_S
+	done < <(tail -n 600 "$AMAIL" 2>/dev/null | grep '^## \[')
+}
+# in_turn TIME W0 SINCE: TIME is in the pane's last working stretch: after it last began to
+# work (W0, a few seconds' grace: a message starts it), or, that not seen, in the ten minutes
+# before it began to wait (SINCE).
+in_turn() {
+	if [[ -n $2 ]]; then (($1 >= $2 - 15)); else (($1 > $3 - 600 && $1 <= $3 + 5)); fi
 }
 # wait_watch: for the panes nothing above said it of, when they began to wait as the panel saw
 # it (not known for one already waiting when it first looked), and from the mailbox whether a
-# message reached it since it last began to work.
+# message reached it since it last began to work. And for this computer's, whether it sent one
+# in that time that nothing has answered since (W_REPLY).
 wait_watch() {
-	local i k st now t w
+	local i k st now t w m
 	now_s
 	now=$NOW
 	local -A ost=() ot0=() ow0=()
@@ -1020,30 +1033,36 @@ wait_watch() {
 				t=${P_NAME[i]:-.}
 				[[ -n ${P_HOST[i]} ]] && t+=@${P_HOST[i]}
 				t=${MAIL_T[$t]:-}
-				w=${WW_W0[$k]:-}
-				# Delivered after it last began to work (a few seconds' grace: the message starts
-				# it), or, that not seen, in the ten minutes before it began to wait.
-				if [[ -n $t ]] && { [[ -n $w ]] && ((t >= w - 15)) || { [[ -z $w ]] && ((t > W_SINCE[i] - 600 && t <= W_SINCE[i] + 5)); }; }; then
-					W_FROM[i]=a
+				if [[ -n $t ]] && in_turn "$t" "${WW_W0[$k]:-}" "${W_SINCE[i]}"; then W_FROM[i]=a
 				else W_FROM[i]=u; fi
+			fi
+			# A linked computer's panes bring their own (#reply), from the mailbox there.
+			if [[ -n ${W_SINCE[i]:-} && -z ${P_HOST[i]} && -n ${P_NAME[i]} ]]; then
+				for m in "${!MAIL_S[@]}"; do
+					[[ $m == "${P_NAME[i]} "* ]] || continue
+					t=${MAIL_S[$m]}
+					in_turn "$t" "${WW_W0[$k]:-}" "${W_SINCE[i]}" && ((${MAIL_S["${m#* } ${P_NAME[i]}"]:-0} < t)) && { W_REPLY[i]=1; break; }
+				done
 			fi ;;
 		esac
 	done
 }
 # wait_colour ROW -> WCOL: WAITING ON YOU's colour. A turn you started yourself lights it for
 # 90 minutes, cooling as it ages: under 10 minutes bold vivid lime, under 45 vivid lime, then a
-# paler lime. WIDLE=1: waiting over 90 minutes, whoever started it, shown as IDLE, in gray. WAGENT=1:
-# under 90 minutes, a turn a message from another session started, done: shown as AGENT'S
-# TURN DONE in the usual green, since nothing in it waits on you (or on anyone). WUNK=1:
-# when it began isn't known (yet), shown as ---
+# paler lime. WIDLE=1: waiting over 90 minutes, whoever started it, shown as IDLE, in gray.
+# WREPLY=1: under 90 minutes, waiting on another session's answer to a message it sent (W_REPLY):
+# shown as WAITING ON AGENT in the usual green. WAGENT=1: under 90 minutes, a turn a message
+# from another session started, done: shown as AGENT'S TURN DONE in the usual green, since
+# nothing in it waits on you (or on anyone). WUNK=1: when it began isn't known (yet), shown as ---
 wait_colour() {
 	local s="" a
-	WCOL=$BGRN WIDLE=0 WAGENT=0 WUNK=0
+	WCOL=$BGRN WIDLE=0 WREPLY=0 WAGENT=0 WUNK=0
 	[[ ${1:-} =~ ^[0-9]+$ ]] && s=${W_SINCE[$1]:-}
 	[[ -n $s ]] || { WUNK=1; return 0; }
 	now_s
 	a=$((NOW - s))
 	((a >= 5400)) && { WIDLE=1; return 0; }
+	[[ -n ${W_REPLY[$1]:-} ]] && { WREPLY=1; return 0; }
 	[[ ${W_FROM[$1]:-} == a ]] && { WAGENT=1; return 0; }
 	[[ ${W_FROM[$1]:-} == u ]] || return 0
 	if ((a < 600)); then WCOL="$B$e[38;5;118m"; elif ((a < 2700)); then WCOL="$e[38;5;118m"
@@ -1765,7 +1784,7 @@ gather() {
 	((++GATHER_N)) # a look of its own: what was read for the last one is read again
 	P_SRV=() P_LIM=() P_LWHY=()
 	P_ID=() P_LOC=() P_NAME=() P_APP=() P_STATE=() P_DIR=() P_GIT=() P_CPU=() P_MEM=() P_CTX=() P_AGENT=() P_SSH=() P_HOST=() P_RID=() P_WP=() P_USER=() P_INST=() P_ACCT=()
-	A_AT=() A_KIND=() A_PID=() A_TREE=() A_LOAD=() W_SINCE=() W_FROM=()
+	A_AT=() A_KIND=() A_PID=() A_TREE=() A_LOAD=() W_SINCE=() W_FROM=() W_REPLY=()
 	panes=$(tm list-panes -a -F $'#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{@agent}' 2>/dev/null)
 	lbox_spin
 	while IFS=$'\t' read -r id loc ppid0 cmd path name; do
@@ -2064,7 +2083,7 @@ peek_look() {
 }
 remote_panes() {
 	local d h f id loc name app st folder git cpu mem agent got v wp lg ft pid S=$'\x1f'
-	local -A rctx rbg rsrv ruser rinst rwait racct rlim
+	local -A rctx rbg rsrv ruser rinst rwait rreply racct rlim
 	P_GROUPS=0
 	# Other computers' screens are kept no longer than they're shown: a minute at most. So are
 	# the temporary files of an ask cut off by the panel closing.
@@ -2084,7 +2103,7 @@ remote_panes() {
 		lg=0
 		[[ -f $d/login ]] && lg=1
 		if ((lg)); then :; elif ((ONCE)); then remote_fetch "$h" now; else remote_fetch "$h"; fi
-		f="$RDIR/$h.rows" got=0 RVER[$h]="" ROWNER[$h]="" rctx=() rbg=() rsrv=() ruser=() rinst=() rwait=() racct=() rlim=() ft=""
+		f="$RDIR/$h.rows" got=0 RVER[$h]="" ROWNER[$h]="" rctx=() rbg=() rsrv=() ruser=() rinst=() rwait=() rreply=() racct=() rlim=() ft=""
 		# Rows a minute old or newer; older means that computer stopped answering.
 		if ((!lg)) && [[ -s $f ]] && young "$f"; then
 			while IFS=$S read -r id loc name app st folder git cpu mem agent; do
@@ -2115,6 +2134,11 @@ remote_panes() {
 				# a message from another session started its turn (a) or you did (u), likewise.
 				if [[ ${id:0:40} =~ ^\#wait\ (%[0-9]{1,9})\ ([0-9]{1,9})\ ([au])$ && -z $loc ]]; then
 					rwait[${BASH_REMATCH[1]}]="${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
+					continue
+				fi
+				# Waiting on another session's answer to a message it sent, likewise.
+				if [[ ${id:0:40} =~ ^\#reply\ (%[0-9]{1,9})$ && -z $loc ]]; then
+					rreply[${BASH_REMATCH[1]}]=1
 					continue
 				fi
 				# Stopped at its usage limit: the seconds until it lifts (- not known), and whether
@@ -2177,6 +2201,7 @@ remote_panes() {
 				if [[ $st == waiting && -n ${rwait[$id]:-} ]]; then
 					now_s
 					W_SINCE[${#P_ID[@]} - 1]=$((NOW - ${rwait[$id]% *})) W_FROM[${#P_ID[@]} - 1]=${rwait[$id]#* }
+					[[ -n ${rreply[$id]:-} ]] && W_REPLY[${#P_ID[@]} - 1]=1
 				fi
 				got=1
 			done < <(head -n 200 "$f")
@@ -2390,6 +2415,7 @@ state_cell() { # state_cell STATE [ROW] -> CELL: coloured status, 18 characters 
 		elif [[ -n ${2:-} && -n ${P_SRV[$2]:-} ]]; then
 			if ((WIDLE)); then CELL="$GRY◇ IDLE · server   $R"; else CELL="$WCOL◆ WAITING · server$R"; fi
 		elif ((WIDLE)); then CELL="$GRY◇ IDLE            $R"
+		elif ((WREPLY)); then CELL="$WCOL◆ WAITING ON AGENT$R"
 		# The whole of it where the column is 20 wide, one space left before FOLDER.
 		elif ((WAGENT && ${sw:-0})); then CELL="$WCOL◆ AGENT'S TURN DONE$R" CPAD=" "
 		elif ((WAGENT)); then CELL="$WCOL◆ AGENT TURN DONE $R"
@@ -5225,7 +5251,7 @@ SNAP_VARS=(
 	# What the looks gathered.
 	a:P_ID a:P_LOC a:P_NAME a:P_APP a:P_STATE a:P_DIR a:P_GIT a:P_CPU a:P_MEM a:P_CTX a:P_AGENT
 	a:P_SSH a:P_HOST a:P_RID a:P_WP a:P_USER a:P_INST a:P_ACCT a:P_SRV a:P_LIM a:P_LWHY s:P_GROUPS
-	a:W_SINCE a:W_FROM a:X_SSH a:X_WHERE A:RVER A:ROWNER A:LUP A:FOLD a:CPU_HIST
+	a:W_SINCE a:W_FROM a:W_REPLY a:X_SSH a:X_WHERE A:RVER A:ROWNER A:LUP A:FOLD a:CPU_HIST
 	s:VERSION s:HOST s:SCENE s:TICK s:SECONDS
 	# What draw reads from outside (snap_look).
 	a:MSG s:MOLD s:MWAIT s:MSG_INTRO s:INTRO_ON a:SIDE a:INTROS
@@ -5441,6 +5467,9 @@ if ((ROWS)); then
 		[[ -n ${P_SRV[i]:-} ]] && printf '#serving %s\n' "${P_ID[i]}"
 		[[ $st == waiting && -n ${W_SINCE[i]:-} && ${W_FROM[i]:-} =~ ^[au]$ ]] &&
 			printf '#wait %s %s %s\n' "${P_ID[i]}" $((W_SINCE[i] > NOW_S ? 0 : NOW_S - W_SINCE[i])) "${W_FROM[i]}"
+		# Waiting on another session's answer, likewise (a panel from before this shows the #wait).
+		[[ $st == waiting && -n ${W_SINCE[i]:-} && ${W_FROM[i]:-} =~ ^[au]$ && -n ${W_REPLY[i]:-} ]] &&
+			printf '#reply %s\n' "${P_ID[i]}"
 		printf '%s\x1f' "${P_ID[i]}" "${P_LOC[i]}" "${P_NAME[i]}" "${P_APP[i]}" "$st" "$folder" "${P_GIT[i]}" "${P_CPU[i]}" "${P_MEM[i]}"
 		printf '%s\n' "${P_AGENT[i]}"
 	done
