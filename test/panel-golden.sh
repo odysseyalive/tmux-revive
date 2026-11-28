@@ -942,7 +942,7 @@ live() {
 	lv_step "$A" "$B" "i" "yes, run it" "?, install: "
 	lv_step "$A" "$B" "n" "install cancelled · nothing was run" "?, n: "
 	check "?, n: nothing ran" "! tmux -S $A list-windows -F '#W' | grep -qx workforce && ! tmux -S $B list-windows -F '#W' | grep -qx workforce"
-	lv_step "$A" "$B" "p" "This runs playwright-mcp's installer" "?, install: "
+	lv_step "$A" "$B" "e" "This runs e2e-proof-mcp's installer" "?, install: "
 	lv_step "$A" "$B" "Escape" "install cancelled · nothing was run" "?, Esc on the confirm: "
 	# The cancel's flash runs out first: the Rust panel drops it at its next draw (a look under
 	# the page), bash only on a key, so a Ctrl-C near its 5 s would compare two moments.

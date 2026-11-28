@@ -425,9 +425,9 @@ chmod +x "$T/stub/xdg-open"
 # The installer runs in a new tmux window, which takes the server's environment: the stand-in
 # goes there too, so even if the panel failed to pass it along, the real one wouldn't run.
 tm set-environment -g REVIVE_WORKFORCE_INSTALL_CMD "touch $T/installed"
-tm set-environment -g REVIVE_PLAYWRIGHT_INSTALL_CMD "touch $T/pw-installed"
+tm set-environment -g REVIVE_E2E_INSTALL_CMD "touch $T/pw-installed"
 tm set-environment -g REVIVE_CODEX_INSTALL_CMD "touch $T/cx-installed"
-tm new-window -d -t work -n helpw "env PATH=$T/stub:$PATH REVIVE_WORKFORCE_INSTALL_CMD='touch $T/installed' REVIVE_PLAYWRIGHT_INSTALL_CMD='touch $T/pw-installed' REVIVE_CODEX_INSTALL_CMD='touch $T/cx-installed' REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
+tm new-window -d -t work -n helpw "env PATH=$T/stub:$PATH REVIVE_WORKFORCE_INSTALL_CMD='touch $T/installed' REVIVE_E2E_INSTALL_CMD='touch $T/pw-installed' REVIVE_CODEX_INSTALL_CMD='touch $T/cx-installed' REVIVE_DIR=$REVIVE_DIR AGENT_SAY_MAILBOX=$AGENT_SAY_MAILBOX REVIVE_PANEL_REFRESH=1 $PANEL"
 hscreen() { tm capture-pane -p -t work:helpw; }
 hwait() { for _ in $(seq 1 30); do hscreen | grep -cF -- "$1" >/dev/null && return 0; sleep 0.2; done; return 1; }
 hgone() { for _ in $(seq 1 30); do hscreen | grep -cF -- "$1" >/dev/null || return 0; sleep 0.2; done; return 1; }
@@ -452,7 +452,7 @@ p1=$(hpos)
 check "PgDn scrolls a page ($p1)" "(( \${p1%%-*} > 10 )) && hwhole"
 tm send-keys -t work:helpw End; sleep 0.5
 p2=$(hpos) last=${p2#*-} last=${last%% *}
-check "End shows the bottom: the ads ($p2)" "[[ $last == \${p2##* } ]] && hscreen | grep -c 'Install playwright-mcp' >/dev/null"
+check "End shows the bottom: the ads ($p2)" "[[ $last == \${p2##* } ]] && hscreen | grep -c 'Install e2e-proof-mcp' >/dev/null"
 tm send-keys -t work:helpw Home
 check "Home goes back to the top" "hwait ' 1-' && hscreen | grep -c 'C H E A T   S H E E T' >/dev/null"
 # This short, there's no room to pin the ads under a few rows of words: they scroll with them.
@@ -470,12 +470,12 @@ check "y runs the installer in a new tmux window" "installed && tm list-windows 
 check "and says where on the key bar" "barred hscreen 'installing in the new tmux window: workforce' && hscreen | grep -c 'HELP · HOW TO USE' >/dev/null"
 check "the help page still open" "hscreen | grep -c 'HELP · HOW TO USE' >/dev/null"
 tm kill-window -t work:workforce 2>/dev/null
-tm send-keys -t work:helpw p
-check "p asks before installing playwright-mcp, showing what it would run" "hwait \"This runs playwright-mcp's installer\" && hscreen | grep -c 'touch $T/pw-installed' >/dev/null"
+tm send-keys -t work:helpw e
+check "e asks before installing e2e-proof-mcp, showing what it would run" "hwait \"This runs e2e-proof-mcp's installer\" && hscreen | grep -c 'touch $T/pw-installed' >/dev/null"
 tm send-keys -t work:helpw y
 pwinstalled() { for _ in $(seq 1 30); do [[ -e $T/pw-installed ]] && return 0; sleep 0.2; done; return 1; }
-check "and y runs it in a new tmux window of its own" "pwinstalled && tm list-windows -F '#{window_name}' | grep -cx playwright-mcp >/dev/null"
-tm kill-window -t work:playwright-mcp 2>/dev/null
+check "and y runs it in a new tmux window of its own" "pwinstalled && tm list-windows -F '#{window_name}' | grep -cx e2e-proof-mcp >/dev/null"
+tm kill-window -t work:e2e-proof-mcp 2>/dev/null
 tm send-keys -t work:helpw c
 check "c asks before installing Codex Workforce, showing what it would run" "hwait \"This runs Codex Workforce's installer\" && hscreen | grep -c 'touch $T/cx-installed' >/dev/null"
 tm send-keys -t work:helpw y
