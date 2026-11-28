@@ -868,6 +868,30 @@ check "a message it sent in its turn, not answered: WAITING ON AGENT, in the usu
 printf '## [oa-work -> cl-asks %s] #r2\nthis\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$AGENT_SAY_MAILBOX"
 out=$(bgframe)
 check "once the answer is delivered, WAITING ON YOU again" "grep -q 'cl-asks .*claude *◆ WAITING ON YOU' <<<\"\$out\" && ! grep -q 'WAITING ON AGENT' <<<\"\$out\""
+# The session it asked is a pane here too: an answer from it while it keeps working doesn't end
+# the wait, nor does a later turn of the asker's that sent nothing; its going back to its prompt
+# does, answered or not.
+tm new-window -d -t work -n clx "$T/bin/claude -c 'printf \"> \"; sleep 300; :'"
+tm set-option -p -t work:clx @agent cl-x
+sleep 0.5
+xpid=$(tm display -p -t work:clx '#{pane_pid}')
+xrec() { printf '{"pid":%s,"sessionId":"s-x","status":"%s","statusUpdatedAt":%s000}\n' "$xpid" "$1" "$(date +%s)" >"$H/.claude/sessions/$xpid.json"; }
+xago() { date -u -d "-$1 seconds" +%Y-%m-%dT%H:%M:%SZ; }
+xrec busy
+printf '## [cl-asks -> cl-x %s] #r3\ndo this?\n\n## [cl-x -> cl-asks %s] #r4\ntaken, I will message you then\n\n' "$(xago 60)" "$(xago 30)" >"$AGENT_SAY_MAILBOX"
+out=$(bgframe)
+check "it answered, but works on: WAITING ON AGENT" "grep -q 'cl-x .*claude *. WORKING' <<<\"\$out\" && grep -q 'cl-asks .*claude *◆ WAITING ON AGENT' <<<\"\$out\""
+printf '## [cl-asks -> cl-x %s] #r3\ndo this?\n\n## [cl-x -> cl-asks %s] #r4\ntaken, I will message you then\n\n' "$(xago 900)" "$(xago 870)" >"$AGENT_SAY_MAILBOX"
+out=$(bgframe)
+check "asked in a turn before the last (one that sent nothing since), it works on: WAITING ON AGENT" "grep -q 'cl-asks .*claude *◆ WAITING ON AGENT' <<<\"\$out\""
+xrec idle
+out=$(bgframe)
+check "it answered, and is at its prompt: WAITING ON YOU" "grep -q 'cl-x .*claude *◆ WAITING' <<<\"\$out\" && grep -q 'cl-asks .*claude *◆ WAITING ON YOU' <<<\"\$out\""
+printf '## [cl-asks -> cl-x %s] #r3\ndo this?\n\n' "$(xago 60)" >"$AGENT_SAY_MAILBOX"
+out=$(bgframe)
+check "at its prompt, not answered: WAITING ON YOU all the same" "grep -q 'cl-asks .*claude *◆ WAITING ON YOU' <<<\"\$out\""
+tm kill-window -t work:clx
+rm -f "$H/.claude/sessions/$xpid.json"
 rm -f "$AGENT_SAY_MAILBOX"; mv "$T/mailbox.keep" "$AGENT_SAY_MAILBOX" 2>/dev/null
 tm set-option -pu -t work:cl @agent
 # A server it left running (a background command listening on a port) isn't work: it waits on
