@@ -897,13 +897,17 @@ impl G {
 
     /// wait_watch: for the panes nothing above said it of, when they began to wait as the panel
     /// saw it, and from the mailbox whether a message reached it since it last began to work.
-    /// And for this computer's, whether it sent one in that time that nothing has answered
-    /// since (W_REPLY).
+    /// WW_W0: when it last began to work, as the panel saw it (when it first looked, for one
+    /// already working then); WW_B0: when the panel saw it leave its prompt for work. And then,
+    /// every pane's state known, for this computer's waiting at their prompt, whether one waits
+    /// on another session's answer to a message it sent (W_REPLY): see reply_open.
     pub fn wait_watch(&mut self) {
         let now = self.now();
         let ost = std::mem::take(&mut self.ww_st);
         let ot0 = std::mem::take(&mut self.ww_t0);
         let ow0 = std::mem::take(&mut self.ww_w0);
+        let ob0 = std::mem::take(&mut self.ww_b0);
+        let mut at: std::collections::HashMap<Bytes, usize> = Default::default();
         self.mail_times();
         let nb = |s: i64| s.to_string().into_bytes();
         for i in 0..self.p.id.len() {
@@ -915,10 +919,14 @@ impl G {
             let st = self.p.state[i].clone();
             self.ww_st.insert(k.clone(), st.clone());
             self.ww_w0.insert(k.clone(), ow0.get(&k).cloned().unwrap_or_default());
+            self.ww_b0.insert(k.clone(), ob0.get(&k).cloned().unwrap_or_default());
             let os = ost.get(&k).map(|v| v.as_slice());
             if st == b"working" || st == b"agents" {
                 if !(os == Some(b"working") || os == Some(b"agents")) {
                     self.ww_w0.insert(k.clone(), nb(now));
+                }
+                if os == Some(b"waiting") {
+                    self.ww_b0.insert(k.clone(), nb(now));
                 }
             } else if st == b"waiting" {
                 let ws = self.p.w_since.get(&ii).cloned().unwrap_or_default();
@@ -942,20 +950,64 @@ impl G {
                     let a = t.is_some_and(|t| in_turn(t, &w, n(&ws)));
                     self.p.w_from.insert(ii, if a { b"a".to_vec() } else { b"u".to_vec() });
                 }
-                // A linked computer's panes bring their own (#reply), from the mailbox there.
-                let name = &self.p.name[i];
-                if !ws.is_empty() && self.p.host[i].is_empty() && !name.is_empty() {
-                    let w = self.ww_w0.get(&k).cloned().unwrap_or_default();
-                    let pre = sh::path(&[name, b" "]);
-                    let waits = self.mail_s.iter().any(|(m, &t)| {
-                        m.starts_with(&pre)
-                            && in_turn(t, &w, n(&ws))
-                            && *self.mail_s.get(&sh::path(&[&m[pre.len()..], b" ", name])).unwrap_or(&0) < t
-                    });
-                    if waits {
-                        self.p.w_reply.insert(ii, b"1".to_vec());
-                    }
+            }
+            // Its name as the mailbox says it (name@host for a linked computer's), the first
+            // pane with that name.
+            if !self.p.name[i].is_empty() {
+                let mut t = self.p.name[i].clone();
+                if !self.p.host[i].is_empty() {
+                    t = sh::path(&[&t, b"@", &self.p.host[i]]);
                 }
+                at.entry(t).or_insert(i);
+            }
+        }
+        // This computer's, at their prompt: whether one waits on an answer to a message sent in
+        // the last 90 minutes or in its last turn (one older, from a turn before, waits no
+        // more). A linked computer's panes bring their own (#reply), from the mailbox there.
+        for i in 0..self.p.id.len() {
+            let ii = i as i64;
+            let name = &self.p.name[i];
+            if self.p.state[i] != b"waiting" || self.p.w_since.get(&ii).is_none_or(|v| v.is_empty()) || !self.p.host[i].is_empty() || name.is_empty() {
+                continue;
+            }
+            let pre = sh::path(&[name, b" "]);
+            let w0 = self.ww_w0.get(&self.p.id[i]).cloned().unwrap_or_default();
+            let ws = n(&self.p.w_since.get(&ii).cloned().unwrap_or_default());
+            if self.mail_s.iter().any(|(m, &t)| m.starts_with(&pre) && (t > now - 5400 || in_turn(t, &w0, ws)) && self.reply_open(i, &m[pre.len()..], t, &at)) {
+                self.p.w_reply.insert(ii, b"1".to_vec());
+            }
+        }
+    }
+
+    /// reply_open ROW NAME TIME: the message ROW's pane sent NAME at TIME waits on an answer
+    /// yet: NAME's pane hasn't been at its prompt since, however many turns ROW's has had
+    /// since. Waiting there now, since before the message reached it (five seconds' grace): not
+    /// yet. Working, or idle while its agents work: not yet, unless the panel saw it leave its
+    /// prompt for work since (fifteen seconds' grace: the message starts it); that not seen (the
+    /// panel started since), it may be on the message yet. Asking, or stopped at its usage
+    /// limit, the same as working. An answer from it while it works doesn't close the wait; its prompt
+    /// closes it, answered or not. A name with no agent in a pane the panel sees (gone, or not
+    /// known here), as before: sent in ROW's last turn, and no message back from NAME since.
+    /// at: wait_watch's, the row of each name.
+    fn reply_open(&self, i: usize, x: &[u8], t: i64, at: &std::collections::HashMap<Bytes, usize>) -> bool {
+        let j = at.get(x).copied();
+        let st: &[u8] = j.map(|j| self.p.state[j].as_slice()).unwrap_or(b"");
+        match st {
+            b"waiting" => {
+                let ws = self.p.w_since.get(&(j.unwrap() as i64)).cloned().unwrap_or_default();
+                !ws.is_empty() && n(&ws) <= t + 5
+            }
+            b"" | b"shell" | b"program" | b"self" => {
+                let w = self.ww_w0.get(&self.p.id[i]).cloned().unwrap_or_default();
+                let ws = self.p.w_since.get(&(i as i64)).cloned().unwrap_or_default();
+                let name = &self.p.name[i];
+                in_turn(t, &w, n(&ws)) && *self.mail_s.get(&sh::path(&[x, b" ", name])).unwrap_or(&0) < t
+            }
+            _ => {
+                let j = j.unwrap();
+                let k = if self.p.id[j].is_empty() { sh::path(&[&self.p.host[j], b":", &self.p.rid[j]]) } else { self.p.id[j].clone() };
+                let w = self.ww_b0.get(&k).cloned().unwrap_or_default();
+                w.is_empty() || n(&w) <= t + 15
             }
         }
     }
@@ -1623,6 +1675,103 @@ mod tests {
             let theirs = bash(&format!("{}\nin_turn \"$1\" \"$2\" \"$3\" && printf 1; :", f), &[t.to_string().as_bytes(), w.as_bytes(), s.to_string().as_bytes()]);
             assert_eq!(in_turn(t, w.as_bytes(), s), theirs == b"1", "{} {} {}", t, w, s);
         }
+    }
+
+    /// wait_watch's W_REPLY over three looks, as bash's: an answer while it works keeps the wait
+    /// open, its prompt closes it (answered or not), a later turn of the sender's doesn't, and
+    /// a name with no pane here is as before
+    #[test]
+    fn wait_reply_as_bash() {
+        let t0: i64 = 1_800_000_000;
+        let iso = |t: i64| {
+            let o = bash("date -u -d \"@$1\" +%Y-%m-%dT%H:%M:%SZ", &[t.to_string().as_bytes()]);
+            String::from_utf8(o).unwrap().trim().to_string()
+        };
+        let d = std::env::temp_dir().join(format!("trp-reply-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mb = d.join("mailbox.md");
+        let mut box_ = String::new();
+        for (f, to, t) in [
+            ("pa", "xa", t0), ("xa", "pa", t0 + 60), ("pb", "xb", t0), ("xb", "pb", t0 + 60), ("pc", "xc", t0),
+            ("pd", "xd", t0), ("pe", "gone", t0), ("pf", "xf", t0), ("pg", "rb@far", t0), ("ph", "gone2", t0),
+            ("gone2", "ph", t0 + 30),
+        ] {
+            box_.push_str(&format!("## [{} -> {} {}] #m\nx\n\n", f, to, iso(t)));
+        }
+        std::fs::write(&mb, box_).unwrap();
+        let mbb = mb.as_os_str().as_encoded_bytes().to_vec();
+        // Rows: name, host, rid, state and W_SINCE (-1 none) at each look: just after the
+        // messages, a few seconds on, and ten minutes on. pa and pb took the answers they had in
+        // turns of their own; pc had a later turn that sent nothing.
+        let rows: [(&str, &str, &str, [&str; 3], [i64; 3]); 15] = [
+            ("pa", "", "", ["waiting"; 3], [t0 + 1, t0 + 1, t0 + 70]),
+            ("xa", "", "", ["waiting", "working", "working"], [t0 - 100, -1, -1]),
+            ("pb", "", "", ["waiting"; 3], [t0 + 1, t0 + 1, t0 + 80]),
+            ("xb", "", "", ["working", "working", "waiting"], [-1, -1, t0 + 70]),
+            ("pc", "", "", ["waiting"; 3], [t0 + 1, t0 + 1, t0 + 600]),
+            ("xc", "", "", ["working"; 3], [-1; 3]),
+            ("pd", "", "", ["waiting"; 3], [t0 + 1; 3]),
+            ("xd", "", "", ["working", "working", "waiting"], [-1, -1, t0 + 100]),
+            ("pe", "", "", ["waiting"; 3], [t0 + 1; 3]),
+            ("pf", "", "", ["waiting"; 3], [t0 + 1; 3]),
+            ("xf", "", "", ["working", "waiting", "working"], [-1, t0 + 7, -1]),
+            ("pg", "", "", ["waiting"; 3], [t0 + 1; 3]),
+            ("rb", "far", "%9", ["working"; 3], [-1; 3]),
+            ("ph", "", "", ["waiting"; 3], [t0 + 1, t0 + 1, t0 + 31]),
+            ("xx", "", "", ["shell"; 3], [-1; 3]),
+        ];
+        let looks = [t0 + 3, t0 + 8, t0 + 700];
+        // bash: both looks, W_REPLY's rows after each
+        let mut sc = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\nAMAIL=$1 HOST=here MAIL_STAMP=\ndeclare -A WW_ST=() WW_T0=() WW_W0=() WW_B0=() MAIL_T=() MAIL_S=()\n",
+            "now_s() { NOW=$NOW_PIN; }",
+            bash_fn("iso_epoch"),
+            bash_fn("mail_times"),
+            bash_fn("in_turn"),
+            bash_fn("wait_watch"),
+            bash_fn("reply_open")
+        );
+        for (l, at) in looks.iter().enumerate() {
+            sc.push_str(&format!("NOW_PIN={} P_ID=() P_HOST=() P_RID=() P_NAME=() P_STATE=() W_SINCE=() W_FROM=() W_REPLY=()\n", at));
+            for (i, r) in rows.iter().enumerate() {
+                let id = if r.1.is_empty() { format!("%{}", i + 1) } else { String::new() };
+                sc.push_str(&format!("P_ID+=('{}') P_HOST+=('{}') P_RID+=('{}') P_NAME+=('{}') P_STATE+=('{}')\n", id, r.1, r.2, r.0, r.3[l]));
+                if r.4[l] >= 0 {
+                    sc.push_str(&format!("W_SINCE[{}]={}\n", i, r.4[l]));
+                }
+            }
+            sc.push_str("wait_watch; printf '%s ' \"${!W_REPLY[@]}\"; echo\n");
+        }
+        let theirs = String::from_utf8(bash(&sc, &[&mbb])).unwrap();
+        let mut g = G { amail: mbb, host: b"here".to_vec(), ..Default::default() };
+        let mut ours = String::new();
+        for (l, at) in looks.iter().enumerate() {
+            g.now_pin = Some(*at);
+            g.p = Default::default();
+            for (i, r) in rows.iter().enumerate() {
+                let id = if r.1.is_empty() { format!("%{}", i + 1) } else { String::new() };
+                g.p.id.push(id.into_bytes());
+                g.p.host.push(r.1.as_bytes().to_vec());
+                g.p.rid.push(r.2.as_bytes().to_vec());
+                g.p.name.push(r.0.as_bytes().to_vec());
+                g.p.state.push(r.3[l].as_bytes().to_vec());
+                if r.4[l] >= 0 {
+                    g.p.w_since.insert(i as i64, r.4[l].to_string().into_bytes());
+                }
+            }
+            g.wait_watch();
+            for k in g.p.w_reply.keys() {
+                ours.push_str(&format!("{} ", k));
+            }
+            ours.push('\n');
+        }
+        std::fs::remove_dir_all(&d).ok();
+        assert_eq!(ours, theirs);
+        // The last look: pa (an answer, still working), pc (a later turn, it still works), pe
+        // (no pane by that name, in its turn) and pg (a linked computer's, busy since the panel
+        // first looked) wait; pb (answered, then its prompt), pd (its prompt, no answer), pf (it
+        // left its prompt for work since), ph (no pane, answered) don't.
+        assert_eq!(ours.lines().nth(2).unwrap(), "0 4 8 11 ");
     }
 
     #[test]

@@ -122,6 +122,7 @@ pub struct G {
     pub ww_st: HashMap<Bytes, Bytes>,
     pub ww_t0: HashMap<Bytes, Bytes>,
     pub ww_w0: HashMap<Bytes, Bytes>,
+    pub ww_b0: HashMap<Bytes, Bytes>,
     pub mail_t: HashMap<Bytes, i64>,
     pub mail_s: HashMap<Bytes, i64>,
     pub mail_stamp: Bytes,
