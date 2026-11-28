@@ -837,7 +837,7 @@ impl G {
     }
 
     /// mail_times -> MAIL_T[NAME]: when a message was last delivered to each name, and
-    /// MAIL_S["FROM TO"]: when one from FROM to TO last was
+    /// MAIL_A["FROM TO"]: when one from FROM to TO last was; MAIL_S: the same less (no reply) notices
     fn mail_times(&mut self) {
         let me = sh::env("AGENT_SAY_HOST").filter(|v| !v.is_empty()).unwrap_or_else(|| self.host.clone());
         let st = match std::fs::metadata(sh::os(&self.amail)) {
@@ -853,6 +853,7 @@ impl G {
         self.mail_stamp = st.clone();
         self.mail_t.clear();
         self.mail_s.clear();
+        self.mail_a.clear();
         if st.is_empty() {
             return;
         }
@@ -889,6 +890,12 @@ impl G {
                 continue;
             }
             let k = sh::path(&[&from, b" ", &to]);
+            if t > *self.mail_a.get(&k).unwrap_or(&0) {
+                self.mail_a.insert(k.clone(), t);
+            }
+            if sh::contains(&rest, b"(no reply)") {
+                continue;
+            }
             if t > *self.mail_s.get(&k).unwrap_or(&0) {
                 self.mail_s.insert(k, t);
             }
@@ -1001,7 +1008,7 @@ impl G {
                 let w = self.ww_w0.get(&self.p.id[i]).cloned().unwrap_or_default();
                 let ws = self.p.w_since.get(&(i as i64)).cloned().unwrap_or_default();
                 let name = &self.p.name[i];
-                in_turn(t, &w, n(&ws)) && *self.mail_s.get(&sh::path(&[x, b" ", name])).unwrap_or(&0) < t
+                in_turn(t, &w, n(&ws)) && *self.mail_a.get(&sh::path(&[x, b" ", name])).unwrap_or(&0) < t
             }
             _ => {
                 let j = j.unwrap();
@@ -1723,7 +1730,7 @@ mod tests {
         let looks = [t0 + 3, t0 + 8, t0 + 700];
         // bash: both looks, W_REPLY's rows after each
         let mut sc = format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\nAMAIL=$1 HOST=here MAIL_STAMP=\ndeclare -A WW_ST=() WW_T0=() WW_W0=() WW_B0=() MAIL_T=() MAIL_S=()\n",
+            "{}\n{}\n{}\n{}\n{}\n{}\nAMAIL=$1 HOST=here MAIL_STAMP=\ndeclare -A WW_ST=() WW_T0=() WW_W0=() WW_B0=() MAIL_T=() MAIL_S=() MAIL_A=()\n",
             "now_s() { NOW=$NOW_PIN; }",
             bash_fn("iso_epoch"),
             bash_fn("mail_times"),
@@ -1790,13 +1797,14 @@ mod tests {
              ## [tmux-revive -> %10 2026-11-27T21:25:00Z] #4\nx\n\n\
              ## [%5 -> pw 2026-11-27T21:26:00Z] #5\nx\n\n\
              ## [pw -> tr@far 2026-11-27T21:27:00Z] #6\nx\n\n\
-             ## [pw -> tr@far bad-time] #7\nx\n",
+             ## [pw -> tr@far bad-time] #7\nx\n\n\
+             ## [oa-work -> pw 2026-11-27T21:28:00Z] #8 (no reply)\n(no reply) oa-work finished\n",
         )
         .unwrap();
         let mbb = mb.as_os_str().as_encoded_bytes().to_vec();
         let f = format!("{}\n{}", bash_fn("iso_epoch"), bash_fn("mail_times"));
         let theirs = bash(
-            &format!("{}\ndeclare -A MAIL_T MAIL_S; MAIL_STAMP=; AMAIL=$1 HOST=here; mail_times\nfor k in \"${{!MAIL_T[@]}}\"; do printf 't %s=%s\\n' \"$k\" \"${{MAIL_T[$k]}}\"; done\nfor k in \"${{!MAIL_S[@]}}\"; do printf 's %s=%s\\n' \"$k\" \"${{MAIL_S[$k]}}\"; done | sort", f),
+            &format!("{}\ndeclare -A MAIL_T MAIL_S MAIL_A; MAIL_STAMP=; AMAIL=$1 HOST=here; mail_times\nfor k in \"${{!MAIL_T[@]}}\"; do printf 't %s=%s\\n' \"$k\" \"${{MAIL_T[$k]}}\"; done\nfor k in \"${{!MAIL_S[@]}}\"; do printf 's %s=%s\\n' \"$k\" \"${{MAIL_S[$k]}}\"; done\nfor k in \"${{!MAIL_A[@]}}\"; do printf 'a %s=%s\\n' \"$k\" \"${{MAIL_A[$k]}}\"; done | sort", f),
             &[&mbb],
         );
         let mut theirs: Vec<String> = String::from_utf8(theirs).unwrap().lines().map(String::from).collect();
@@ -1805,6 +1813,8 @@ mod tests {
         g.mail_times();
         let mut ours: Vec<String> = g.mail_t.iter().map(|(k, v)| format!("t {}={}", String::from_utf8_lossy(k), v)).collect();
         ours.extend(g.mail_s.iter().map(|(k, v)| format!("s {}={}", String::from_utf8_lossy(k), v)));
+        ours.extend(g.mail_a.iter().map(|(k, v)| format!("a {}={}", String::from_utf8_lossy(k), v)));
+        assert!(ours.iter().any(|l| l.starts_with("a oa-work pw=")) && !ours.iter().any(|l| l.starts_with("s oa-work pw=")), "{:?}", ours);
         ours.sort();
         std::fs::remove_dir_all(&d).ok();
         assert!(ours.iter().any(|l| l.starts_with("s amish-dev oa-work=")), "{:?}", ours);

@@ -939,7 +939,7 @@ claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting
 # it shows --- (see wait_colour). W_REPLY[row]: 1 when it waits on another session's answer to
 # a message it sent (wait_watch; a linked computer's #reply line).
 declare -a W_SINCE=() W_FROM=() W_REPLY=()
-declare -A TF_K=() TF_V=() TF_A=() WW_ST=() WW_T0=() WW_W0=() WW_B0=() MAIL_T=() MAIL_S=()
+declare -A TF_K=() TF_V=() TF_A=() WW_ST=() WW_T0=() WW_W0=() WW_B0=() MAIL_T=() MAIL_S=() MAIL_A=()
 MAIL_STAMP=""
 # claude_turn_from PID SINCE -> TFROM: a when the last prompt in its transcript was an
 # agent-say message ([agent-msg from=...]), u when it was typed, nothing when that can't be
@@ -978,13 +978,14 @@ iso_epoch() { # iso_epoch 2026-11-15T03:01:54Z -> ISO_S: seconds since 1970, or 
 	ISO_S=$(((era * 146097 + doe - 719468) * 86400 + 10#${BASH_REMATCH[4]} * 3600 + 10#${BASH_REMATCH[5]} * 60 + 10#${BASH_REMATCH[6]}))
 }
 # mail_times -> MAIL_T[NAME]: when a message was last delivered to each name (name@host for
-# another computer's), and MAIL_S["FROM TO"]: when one from FROM to TO last was, read again only
-# when the mailbox changes.
+# another computer's), MAIL_A["FROM TO"]: when one from FROM to TO last was, and MAIL_S["FROM
+# TO"]: the same less the (no reply) notices agent-say sends for a turn that ended unanswered (a
+# notice answers, and asks nothing). Read again only when the mailbox changes.
 mail_times() {
 	local st me=${AGENT_SAY_HOST:-$HOST} from to when rest
 	st=$(stat -c '%Y %s' "$AMAIL" 2>/dev/null || stat -f '%m %z' "$AMAIL" 2>/dev/null)
 	[[ $st == "$MAIL_STAMP" ]] && return 0
-	MAIL_STAMP=$st MAIL_T=() MAIL_S=()
+	MAIL_STAMP=$st MAIL_T=() MAIL_S=() MAIL_A=()
 	[[ -n $st ]] || return 0
 	while read -r _ from _ to when rest; do
 		[[ $rest == *"(held"* || $rest == *"NOT DELIVERED"* ]] && continue
@@ -995,6 +996,8 @@ mail_times() {
 		((ISO_S > ${MAIL_T[$to]:-0})) && MAIL_T[$to]=$ISO_S
 		from=${from#\[} from=${from%"@$me"}
 		[[ $from =~ ^[A-Za-z0-9][A-Za-z0-9_.:+=@-]*$ ]] || continue
+		((ISO_S > ${MAIL_A["$from $to"]:-0})) && MAIL_A["$from $to"]=$ISO_S
+		[[ $rest == *"(no reply)"* ]] && continue
 		((ISO_S > ${MAIL_S["$from $to"]:-0})) && MAIL_S["$from $to"]=$ISO_S
 	done < <(tail -n 600 "$AMAIL" 2>/dev/null | grep '^## \[')
 }
@@ -1075,7 +1078,7 @@ reply_open() {
 	local j=${at[$2]:-} w
 	case ${j:+${P_STATE[j]}} in
 	waiting) [[ -n ${W_SINCE[j]:-} ]] && ((W_SINCE[j] <= $3 + 5)) ;;
-	"" | shell | program | self) in_turn "$3" "${WW_W0[${P_ID[$1]}]:-}" "${W_SINCE[$1]}" && ((${MAIL_S["$2 ${P_NAME[$1]}"]:-0} < $3)) ;;
+	"" | shell | program | self) in_turn "$3" "${WW_W0[${P_ID[$1]}]:-}" "${W_SINCE[$1]}" && ((${MAIL_A["$2 ${P_NAME[$1]}"]:-0} < $3)) ;;
 	*)
 		w=${P_ID[j]:-${P_HOST[j]}:${P_RID[j]}}
 		w=${WW_B0[$w]:-}
