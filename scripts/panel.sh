@@ -939,7 +939,7 @@ claude_look() { # claude_look PID -> CST: its record's status (busy/idle/waiting
 # it shows --- (see wait_colour). W_REPLY[row]: 1 when it waits on another session's answer to
 # a message it sent (wait_watch; a linked computer's #reply line).
 declare -a W_SINCE=() W_FROM=() W_REPLY=()
-declare -A TF_K=() TF_V=() TF_A=() WW_ST=() WW_T0=() WW_W0=() MAIL_T=() MAIL_S=()
+declare -A TF_K=() TF_V=() TF_A=() WW_ST=() WW_T0=() WW_W0=() WW_B0=() MAIL_T=() MAIL_S=()
 MAIL_STAMP=""
 # claude_turn_from PID SINCE -> TFROM: a when the last prompt in its transcript was an
 # agent-say message ([agent-msg from=...]), u when it was typed, nothing when that can't be
@@ -1006,23 +1006,28 @@ in_turn() {
 }
 # wait_watch: for the panes nothing above said it of, when they began to wait as the panel saw
 # it (not known for one already waiting when it first looked), and from the mailbox whether a
-# message reached it since it last began to work. And for this computer's, whether it sent one
-# in that time that nothing has answered since (W_REPLY).
+# message reached it since it last began to work. WW_W0: when it last began to work, as the
+# panel saw it (when it first looked, for one already working then); WW_B0: when the panel saw
+# it leave its prompt for work. And then, every pane's state known, for this computer's waiting
+# at their prompt, whether one waits on another session's answer to a message it sent
+# (W_REPLY): see reply_open.
 wait_watch() {
 	local i k st now t w m
 	now_s
 	now=$NOW
-	local -A ost=() ot0=() ow0=()
-	for k in "${!WW_ST[@]}"; do ost[$k]=${WW_ST[$k]} ot0[$k]=${WW_T0[$k]:-} ow0[$k]=${WW_W0[$k]:-}; done
-	WW_ST=() WW_T0=() WW_W0=()
+	local -A ost=() ot0=() ow0=() ob0=() at=()
+	for k in "${!WW_ST[@]}"; do ost[$k]=${WW_ST[$k]} ot0[$k]=${WW_T0[$k]:-} ow0[$k]=${WW_W0[$k]:-} ob0[$k]=${WW_B0[$k]:-}; done
+	WW_ST=() WW_T0=() WW_W0=() WW_B0=()
 	mail_times
 	for i in "${!P_ID[@]}"; do
 		k=${P_ID[i]:-${P_HOST[i]}:${P_RID[i]}}
 		[[ $k == : ]] && continue
 		st=${P_STATE[i]}
-		WW_ST[$k]=$st WW_W0[$k]=${ow0[$k]:-}
+		WW_ST[$k]=$st WW_W0[$k]=${ow0[$k]:-} WW_B0[$k]=${ob0[$k]:-}
 		case $st in
-		working | agents) [[ ${ost[$k]:-} == working || ${ost[$k]:-} == agents ]] || WW_W0[$k]=$now ;;
+		working | agents)
+			[[ ${ost[$k]:-} == working || ${ost[$k]:-} == agents ]] || WW_W0[$k]=$now
+			[[ ${ost[$k]:-} == waiting ]] && WW_B0[$k]=$now ;;
 		waiting)
 			if [[ -n ${W_SINCE[i]:-} ]]; then WW_T0[$k]=${W_SINCE[i]}
 			elif [[ -n ${ost[$k]+set} ]]; then
@@ -1035,17 +1040,47 @@ wait_watch() {
 				t=${MAIL_T[$t]:-}
 				if [[ -n $t ]] && in_turn "$t" "${WW_W0[$k]:-}" "${W_SINCE[i]}"; then W_FROM[i]=a
 				else W_FROM[i]=u; fi
-			fi
-			# A linked computer's panes bring their own (#reply), from the mailbox there.
-			if [[ -n ${W_SINCE[i]:-} && -z ${P_HOST[i]} && -n ${P_NAME[i]} ]]; then
-				for m in "${!MAIL_S[@]}"; do
-					[[ $m == "${P_NAME[i]} "* ]] || continue
-					t=${MAIL_S[$m]}
-					in_turn "$t" "${WW_W0[$k]:-}" "${W_SINCE[i]}" && ((${MAIL_S["${m#* } ${P_NAME[i]}"]:-0} < t)) && { W_REPLY[i]=1; break; }
-				done
 			fi ;;
 		esac
+		# Its name as the mailbox says it (name@host for a linked computer's), the first pane
+		# with that name.
+		if [[ -n ${P_NAME[i]} ]]; then
+			t=${P_NAME[i]}
+			[[ -n ${P_HOST[i]} ]] && t+=@${P_HOST[i]}
+			[[ -n ${at[$t]+set} ]] || at[$t]=$i
+		fi
 	done
+	# This computer's, at their prompt: whether one waits on an answer to a message sent in the
+	# last 90 minutes or in its last turn (one older, from a turn before, waits no more). A
+	# linked computer's panes bring their own (#reply), from the mailbox there.
+	for i in "${!P_ID[@]}"; do
+		[[ ${P_STATE[i]} == waiting && -n ${W_SINCE[i]:-} && -z ${P_HOST[i]} && -n ${P_NAME[i]} ]] || continue
+		for m in "${!MAIL_S[@]}"; do
+			[[ $m == "${P_NAME[i]} "* ]] || continue
+			((MAIL_S[$m] > now - 5400)) || in_turn "${MAIL_S[$m]}" "${WW_W0[${P_ID[i]}]:-}" "${W_SINCE[i]}" || continue
+			reply_open "$i" "${m#* }" "${MAIL_S[$m]}" && { W_REPLY[i]=1; break; }
+		done
+	done
+}
+# reply_open ROW NAME TIME: the message ROW's pane sent NAME at TIME waits on an answer yet:
+# NAME's pane hasn't been at its prompt since, however many turns ROW's has had since. Waiting
+# there now, since before the message reached it (five seconds' grace): not yet. Working, or
+# idle while its agents work: not yet, unless the panel saw it leave its prompt for work since
+# (fifteen seconds' grace: the message starts it); that not seen (the panel started since), it
+# may be on the message yet. Asking, or stopped at its usage limit, the same as working. An answer from it
+# while it works doesn't close the wait; its prompt closes it, answered or not. A name with no
+# agent in a pane the panel sees (gone, or not known here), as before: sent in ROW's last turn,
+# and no message back from NAME since. at: wait_watch's, the row of each name.
+reply_open() {
+	local j=${at[$2]:-} w
+	case ${j:+${P_STATE[j]}} in
+	waiting) [[ -n ${W_SINCE[j]:-} ]] && ((W_SINCE[j] <= $3 + 5)) ;;
+	"" | shell | program | self) in_turn "$3" "${WW_W0[${P_ID[$1]}]:-}" "${W_SINCE[$1]}" && ((${MAIL_S["$2 ${P_NAME[$1]}"]:-0} < $3)) ;;
+	*)
+		w=${P_ID[j]:-${P_HOST[j]}:${P_RID[j]}}
+		w=${WW_B0[$w]:-}
+		[[ -z $w ]] || ((w <= $3 + 15)) ;;
+	esac
 }
 # wait_colour ROW -> WCOL: WAITING ON YOU's colour. A turn you started yourself lights it for
 # 90 minutes, cooling as it ages: under 10 minutes bold vivid lime, under 45 vivid lime, then a
