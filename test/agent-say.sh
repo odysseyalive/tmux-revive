@@ -738,6 +738,52 @@ out=$(in0 $LP "$ROOT/bin/agent-say --from lp lb 'from a person in a shell'")
 check "what a person sends from a shell isn't held ($out)" "[[ \$out == 'sent to lb'* ]] && seen $LB 'from a person in a shell'"
 out=$(in0 $LA "$ROOT/bin/agent-say la 'note to self'")
 check "nor what an agent sends itself ($out)" "[[ \$out == 'sent to la'* ]]"
+
+echo "a turn a message started that ends with no reply tells the sender so (claude-hook.sh on Stop)"
+# A transcript as Claude Code keeps it: the turn's prompt, then the commands its tool calls ran.
+# turn FILE UUID SECONDS-AGO PROMPT [COMMAND...]
+turn() {
+	local f=$1 u=$2 when c
+	when=$(date -u -d "@$(($(date +%s) - $3))" +%FT%T.000Z)
+	jq -nc --arg u "$u" --arg t "$when" --arg p "$4" '{type: "user", uuid: $u, timestamp: $t, origin: {kind: "human"}, message: {role: "user", content: $p}}' >"$f"
+	for c in "${@:5}"; do
+		jq -nc --arg c "$c" '{type: "assistant", message: {role: "assistant", content: [{type: "tool_use", name: "Bash", input: {command: $c}}]}}' >>"$f"
+	done
+}
+stop() { # stop PANE TRANSCRIPT: Claude Code's Stop hook, run by the agent in PANE
+	run "0$1" "printf '%s' $(printf %q "$(jq -nc --arg t "$2" '{session_id: "s-hook", transcript_path: $t, hook_event_name: "Stop"}')") | $E0 bash $ROOT/scripts/claude-hook.sh ctx; echo rc=\$?"
+}
+nr() { mailcount "^## \[$1 -> $2 .*(no reply)\$"; }
+asked="[agent-msg from=la 12:00Z re=0123abcd/i5] Can you run the tests? -- To answer, run the shell command: agent-say --from lb la \"<your reply>\""
+sleep 1 # lb's answer to la above is from before these turns
+turn "$T/tr1" u1 0 "$asked" 'ls -la' 'make test'
+n=$(nr lb la)
+out=$(stop $LB "$T/tr1")
+check "a turn la's message started, with nothing sent back, has lb tell la ($out)" "[[ \$out == rc=0 ]] && wait_seen $LA '[agent-msg from=lb ' && (( \$(nr lb la) == n + 1 ))"
+check "in one line, with the message's re= carried back in its header, and no reply address" "wait_seen $LA \"re=0123abcd/i5] (no reply) lb finished the turn your message started and didn't reply.\" && ! seen $LA \"didn't reply. -- To answer\""
+check "the mailbox keeps its re: line, marked (no reply)" "grep -A2 '^## \[lb -> la .*(no reply)\$' $AGENT_SAY_MAILBOX | grep -qx 're: 0123abcd/i5'"
+check "and what it did is logged, not shown" "grep -q ' lb -> la: sent to la' \$(dirname $AGENT_SAY_MAILBOX)/noreply.log"
+out=$(stop $LB "$T/tr1")
+check "a second Stop for that turn sends nothing more ($out)" "[[ \$out == rc=0 ]] && (( \$(nr lb la) == n + 1 ))"
+turn "$T/tr2" u2 0 "$asked" "agent-say --from lb la 'all green'"
+out=$(stop $LB "$T/tr2")
+check "a turn that answered la (an agent-say command naming it) sends nothing ($out)" "[[ \$out == rc=0 ]] && (( \$(nr lb la) == n + 1 ))"
+turn "$T/tr3" u3 0 "$asked" 'make test'
+in0 $LB "$ROOT/bin/agent-say la 'answered by a script'" >/dev/null
+out=$(stop $LB "$T/tr3")
+check "nor one with a message from lb to la in the mailbox since it began ($out)" "[[ \$out == rc=0 ]] && (( \$(nr lb la) == n + 1 ))"
+turn "$T/tr4" u4 0 'Please run the tests' 'make test'
+out=$(stop $LB "$T/tr4")
+check "nor a turn the user started ($out)" "[[ \$out == rc=0 ]] && (( \$(nr lb la) == n + 1 ))"
+turn "$T/tr5" u5 2 "[agent-msg from=lb 12:00Z] note to self -- To answer, run the shell command: agent-say --from lb lb \"<your reply>\""
+out=$(stop $LB "$T/tr5")
+check "nor a message lb sent itself ($out)" "[[ \$out == rc=0 ]] && (( \$(nr lb lb) == 0 ))"
+notice=$(tmux capture-pane -p -J -t "$LA" -S -100 | grep -o "\\[agent-msg from=lb [^]]*\\] (no reply) lb finished the turn your message started and didn't reply\\." | tail -n 1)
+turn "$T/tr6" u6 2 "$notice" 'true'
+out=$(stop $LA "$T/tr6")
+check "and a turn a notice started never sends one back: no loop ($out)" "[[ -n \$notice && \$out == rc=0 ]] && (( \$(nr la lb) == 0 ))"
+out=$(run "0$LB" "printf '%s' '{\"session_id\":\"s-hook\",\"transcript_path\":\"$T/none\",\"hook_event_name\":\"Stop\"}' | $E0 bash $ROOT/scripts/claude-hook.sh ctx; echo rc=\$?")
+check "a Stop with no transcript to read exits quietly ($out)" "[[ \$out == rc=0 ]]"
 out=$(in0 $LA "$ROOT/bin/agent-say --from francis lc 'not really francis'")
 check "an agent sending as a person's name (--from) is held all the same, as itself ($out)" "[[ \$out == 'introduction sent to lc@laptop;'* ]] && wait_intro 'la@laptop wants to talk with lc@laptop' && ! seen $LK 'not really francis'"
 say _intro deny "$(intro_id 'la@laptop wants to talk with lc@laptop')" >/dev/null
