@@ -58,11 +58,12 @@ I built Claude Workforce, and Codex Workforce for Codex, because I wanted my AI 
 .button c Codex Workforce
 .end
 
-.box playwright-mcp
-I wanted Claude to browse the web the way I do.
-- A real browser in every project, so pages built on JavaScript just work.
-- Log in to a site once and Claude can use it everywhere. Your password never goes to Claude.
-- Pages come back with their author, date and publisher, so citing them is easy.
-- It can also write a ready-to-run e2e test suite for a site you're logged in to. Those tests run on their own, no Claude needed.
-.button p Install playwright-mcp
+.box e2e-proof-mcp
+Out of the box, Claude reads a web page as plain text. I wanted it to see pages the way I do, in a real browser, and to prove its work.
+- Sites built on JavaScript load for Claude just like they load for you.
+- Log in to a site once and Claude can reuse that login in every project. Your password never passes through Claude.
+- Every page it fetches comes back with its author, date and publisher, so citing a source is easy.
+- It writes end-to-end tests for your site, runs them, fixes what breaks and runs them again, so "it works" comes with proof.
+- Already using playwright-mcp? This replaces it: same server under a new name, with more tools.
+.button e Install e2e-proof-mcp
 .end

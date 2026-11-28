@@ -680,7 +680,7 @@ impl Ctx {
         }
         self.rbar = Vec::new();
         let last = if top + view < n { top + view } else { n };
-        let mut k = self.kcs(&["↑↓/j/k".as_bytes(), b" scroll", b"PgUp/PgDn", b" page", b"i/c/p", b" install", b"Esc", b" close"]);
+        let mut k = self.kcs(&["↑↓/j/k".as_bytes(), b" scroll", b"PgUp/PgDn", b" page", b"i/c/e", b" install", b"Esc", b" close"]);
         if !self.p.flash.is_empty() && self.p.secs - self.p.flash_t < 5 {
             k = cat(&[BGBLU, B, BWHT, b" ", &self.p.flash, b" ", R, b"  ", &k]);
         }

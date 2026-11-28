@@ -5,7 +5,7 @@
 # stay put at the bottom while the words above them scroll, when there's room for both.
 #
 # Sourced by panel.sh, which gives it the colours, row/sect/tab, draw and notice. Run on its
-# own, `help.sh --install workforce|codex|playwright` is what an install button starts in a new tmux window.
+# own, `help.sh --install workforce|codex|e2e` is what an install button starts in a new tmux window.
 
 HELP_FILE="$(dirname "${BASH_SOURCE[0]}")/help.txt"
 HELP=0 HELP_TOP=0 HELP_VIEW=1 HELP_W=-1 HROWS=() HSPLIT=0
@@ -17,8 +17,8 @@ HELP_MIN=8
 [[ ${REVIVE_PANEL_HELP:-} == 1 && ${1:-} == --once ]] && HELP=1
 
 WF_URL=https://raw.githubusercontent.com/odysseyalive/claude-workforce/main/install
-PW_URL=https://github.com/odysseyalive/playwright-mcp
-PWI_URL=https://raw.githubusercontent.com/odysseyalive/playwright-mcp/main/install
+E2E_URL=https://github.com/odysseyalive/e2e-proof-mcp
+E2EI_URL=https://raw.githubusercontent.com/odysseyalive/e2e-proof-mcp/main/install
 CWF_URL=https://raw.githubusercontent.com/odysseyalive/codex-workforce/main/install
 
 # Claude Workforce's own one-line installer for this system, from its README: the bash one
@@ -44,23 +44,23 @@ codex_cmd() {
 	esac
 }
 
-# playwright-mcp's one-line installer, the same way (it also updates an install that's there).
-# REVIVE_PLAYWRIGHT_INSTALL_CMD stands in for it in tests.
-playwright_cmd() {
-	if [[ -n ${REVIVE_PLAYWRIGHT_INSTALL_CMD:-} ]]; then printf '%s' "$REVIVE_PLAYWRIGHT_INSTALL_CMD"; return; fi
+# e2e-proof-mcp's one-line installer, the same way (it also updates an install that's there, and
+# takes over from playwright-mcp). REVIVE_E2E_INSTALL_CMD stands in for it in tests.
+e2e_cmd() {
+	if [[ -n ${REVIVE_E2E_INSTALL_CMD:-} ]]; then printf '%s' "$REVIVE_E2E_INSTALL_CMD"; return; fi
 	case $(uname -s) in
-	Linux | Darwin | *BSD) printf 'bash -c "$(curl -fsSL %s.sh)"' "$PWI_URL" ;;
-	MINGW* | MSYS* | CYGWIN*) printf 'powershell.exe -NoProfile -Command "irm %s.ps1 | iex"' "$PWI_URL" ;;
+	Linux | Darwin | *BSD) printf 'bash -c "$(curl -fsSL %s.sh)"' "$E2EI_URL" ;;
+	MINGW* | MSYS* | CYGWIN*) printf 'powershell.exe -NoProfile -Command "irm %s.ps1 | iex"' "$E2EI_URL" ;;
 	*) return 1 ;;
 	esac
 }
 # what WHAT -> WNAME, WCMD, WWIN, WENV: the name shown, the installer's command, the window it
-# runs in, and the stand-in tests set.
+# runs in, and the stand-in tests set. playwright: what a panel from before e2e-proof-mcp runs.
 what() {
 	case $1 in
 	workforce) WNAME="Claude Workforce" WCMD=workforce_cmd WWIN=workforce WENV=REVIVE_WORKFORCE_INSTALL_CMD ;;
 	codex) WNAME="Codex Workforce" WCMD=codex_cmd WWIN=codex-workforce WENV=REVIVE_CODEX_INSTALL_CMD ;;
-	playwright) WNAME="playwright-mcp" WCMD=playwright_cmd WWIN=playwright-mcp WENV=REVIVE_PLAYWRIGHT_INSTALL_CMD ;;
+	e2e | playwright) WNAME="e2e-proof-mcp" WCMD=e2e_cmd WWIN=e2e-proof-mcp WENV=REVIVE_E2E_INSTALL_CMD ;;
 	*) return 1 ;;
 	esac
 }
@@ -419,7 +419,7 @@ help_frame() {
 	done
 	RBAR=""
 	last=$((HELP_TOP + view < n ? HELP_TOP + view : n))
-	kcs ↑↓/j/k " scroll" PgUp/PgDn " page" i/c/p " install" Esc " close"
+	kcs ↑↓/j/k " scroll" PgUp/PgDn " page" i/c/e " install" Esc " close"
 	k=$KC
 	if [[ -n $FLASH ]] && ((${SNAP_SECS:-$SECONDS} - FLASH_T < 5)); then k="$BGBLU$B$BWHT $FLASH $R  $k"; fi
 	vlen "$k"
@@ -481,8 +481,8 @@ help_view() {
 		j) ((HELP_TOP++)) ;;
 		i | I) help_install workforce ;;
 		c | C) help_install codex ;;
-		p | P) help_install playwright ;;
-		o | O) help_open "$PW_URL" ;;
+		e | E) help_install e2e ;;
+		o | O) help_open "$E2E_URL" ;;
 		$'\e')
 			rest="" seq=""
 			IFS= read -rsn1 -t 0.05 rest
@@ -543,7 +543,7 @@ help_confirm() {
 
 # The install button: ask, then run the installer in a new tmux window of its own, where its
 # output and its question can be seen. Nothing runs without a y.
-help_install() { # help_install workforce|codex|playwright
+help_install() { # help_install workforce|codex|e2e
 	local cmd run
 	what "$1" || return
 	cmd=$("$WCMD") || { notice "no $WNAME installer for $OS"; return; }
@@ -574,13 +574,13 @@ help_open() {
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	# --install-workforce: what older panels run.
 	case ${1:-} in --install) w=${2:-} ;; --install-workforce) w=workforce ;; *) w="" ;; esac
-	what "$w" || { echo "usage: help.sh --install workforce|codex|playwright" >&2; exit 2; }
+	what "$w" || { echo "usage: help.sh --install workforce|codex|e2e" >&2; exit 2; }
 	cmd=$("$WCMD") || { echo "There's no $WNAME installer for $(uname -s)."; exit 1; }
 	printf 'Installing %s:\n  %s\n\n' "$WNAME" "$cmd"
 	bash -c "$cmd"
 	st=$?
 	if ((st)); then printf '\nThe installer stopped (exit %s).' "$st"
-	elif [[ $w == playwright ]]; then printf '\nDone. Restart Claude Code to use it.'
+	elif [[ $WNAME == e2e-proof-mcp ]]; then printf '\nDone. Restart Claude Code or Codex to use it.'
 	else printf '\nDone.'; fi
 	printf ' Press Enter to close this window.'
 	read -r _

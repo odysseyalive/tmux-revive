@@ -12,8 +12,8 @@ use crate::render::{cat, Ctx, B, BGBLU, BLU, BWHT, BYEL, GRY, R};
 use std::time::Duration;
 
 pub const WF_URL: &str = "https://raw.githubusercontent.com/odysseyalive/claude-workforce/main/install";
-pub const PW_URL: &str = "https://github.com/odysseyalive/playwright-mcp";
-pub const PWI_URL: &str = "https://raw.githubusercontent.com/odysseyalive/playwright-mcp/main/install";
+pub const E2E_URL: &str = "https://github.com/odysseyalive/e2e-proof-mcp";
+pub const E2EI_URL: &str = "https://raw.githubusercontent.com/odysseyalive/e2e-proof-mcp/main/install";
 pub const CWF_URL: &str = "https://raw.githubusercontent.com/odysseyalive/codex-workforce/main/install";
 
 /// What an install button installs (what WHAT): WNAME, the name shown; WWIN, the window it runs
@@ -31,7 +31,7 @@ pub fn what(w: &[u8]) -> Option<What> {
     match w {
         b"workforce" => Some(What { name: "Claude Workforce", win: "workforce", env: "REVIVE_WORKFORCE_INSTALL_CMD", url: WF_URL, ext: "" }),
         b"codex" => Some(What { name: "Codex Workforce", win: "codex-workforce", env: "REVIVE_CODEX_INSTALL_CMD", url: CWF_URL, ext: "" }),
-        b"playwright" => Some(What { name: "playwright-mcp", win: "playwright-mcp", env: "REVIVE_PLAYWRIGHT_INSTALL_CMD", url: PWI_URL, ext: ".sh" }),
+        b"e2e" | b"playwright" => Some(What { name: "e2e-proof-mcp", win: "e2e-proof-mcp", env: "REVIVE_E2E_INSTALL_CMD", url: E2EI_URL, ext: ".sh" }),
         _ => None,
     }
 }
@@ -47,7 +47,7 @@ pub fn os() -> Bytes {
 }
 
 impl What {
-    /// workforce_cmd, codex_cmd, playwright_cmd: the stand-in when set, else the installer's own
+    /// workforce_cmd, codex_cmd, e2e_cmd: the stand-in when set, else the installer's own
     /// one line for this system (None: there's none)
     pub fn cmd(&self) -> Option<Bytes> {
         let v = sh::env(self.env).unwrap_or_default();
@@ -163,8 +163,8 @@ impl Ui {
                 b"j" => self.c.p.help_top += 1,
                 b"i" | b"I" => self.help_install(b"workforce"),
                 b"c" | b"C" => self.help_install(b"codex"),
-                b"p" | b"P" => self.help_install(b"playwright"),
-                b"o" | b"O" => self.help_open(PW_URL.as_bytes()),
+                b"e" | b"E" => self.help_install(b"e2e"),
+                b"o" | b"O" => self.help_open(E2E_URL.as_bytes()),
                 b"\x1b" => {
                     let (rest, _) = self.mread(1, Duration::from_millis(50));
                     if rest.is_empty() {
@@ -213,7 +213,7 @@ impl Ui {
         k == b"y" || k == b"Y"
     }
 
-    /// help_install workforce|codex|playwright: the install button. Ask, then run the
+    /// help_install workforce|codex|e2e: the install button. Ask, then run the
     /// installer in a new tmux window of its own, where its output and its question can be
     /// seen. Nothing runs without a y.
     fn help_install(&mut self, w: &[u8]) {
@@ -305,7 +305,7 @@ mod tests {
         let long = "bash -c \"$(curl -fsSL https://raw.githubusercontent.com/odysseyalive/claude-workforce/main/install)\" and then some more words to wrap";
         for (rows, cols, title, wname, cmd) in [
             (40, 130, "INSTALL CLAUDE WORKFORCE?", "Claude Workforce", "touch /tmp/x/installed"),
-            (24, 80, "INSTALL PLAYWRIGHT-MCP?", "playwright-mcp", long),
+            (24, 80, "INSTALL E2E-PROOF-MCP?", "e2e-proof-mcp", long),
             (30, 60, "INSTALL CODEX WORKFORCE?", "Codex Workforce", long),
         ] {
             let body = format!(
