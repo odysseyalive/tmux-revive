@@ -24,8 +24,14 @@ impl Default for Page {
 /// finds it from where it is: the first folder above it holding scripts/help.txt, which is the
 /// install's for vendor/bin/tmux-revive-panel and the checkout's for
 /// panel-rs/target/release/tmux-revive-panel. None found: the install's place, two up; never the
-/// working folder (as root() in main.rs).
+/// working folder (as root() in main.rs). Found once, at start (main calls it first), as root()
+/// is: an update moves this binary to app.old and deletes it while the panel runs, and the
+/// path it had then is the one the new install's help.txt is at.
 pub fn help_file() -> PathBuf {
+    static F: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    F.get_or_init(find_help_file).clone()
+}
+fn find_help_file() -> PathBuf {
     let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
     if let Some(exe) = &exe {
         for d in exe.ancestors().skip(1) {

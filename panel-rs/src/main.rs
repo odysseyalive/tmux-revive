@@ -67,6 +67,7 @@ fn root() -> Vec<u8> {
 
 fn main() {
     compat::init_locale();
+    render::help::help_file(); // where help.txt is, before an update can move this binary
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let a: Vec<&str> = args.iter().map(|s| s.to_str().unwrap_or("")).collect();
     match a.as_slice() {
