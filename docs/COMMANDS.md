@@ -308,8 +308,10 @@ tells it the pane's name, the `agent-say` commands, and that a first message to
 another server waits for your OK in the panel. Outside tmux it says nothing.
 
 The same hook also reports the session's context left after each tool call and
-each turn, for the panel's CTX LEFT. `--no-config` skips it, uninstall takes it
-out, and `tmux-revive doctor` shows whether it's there.
+each turn, for the panel's CTX LEFT. And when another agent's message
+starts a turn that ends without a reply, the hook sends that agent a
+`(no reply)` message so it isn't left waiting. `--no-config` skips the
+hook, uninstall takes it out, and `tmux-revive doctor` shows whether it's there.
 
 Sessions started as another user, like root after `sudo -i`, get the hook from
 that user's own tmux-revive (see below).
